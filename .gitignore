@@ -1,0 +1,14 @@
+.DS_Store
+
+.env
+.env.*
+!.env.example
+
+# Go build/test output
+/bin/
+*.test
+*.out
+
+.terraform/
+*.tfstate
+*.tfstate.*
