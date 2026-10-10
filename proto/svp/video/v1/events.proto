@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package svp.video.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "svp/event/v1/event.proto";
+
+// VideoEvent is every record on topic `video.lifecycle.v1`.
+// Producer: video-service, through its outbox. Record key: video_id, so the
+// lifecycle events of one video stay in order on one partition.
+// Dead letters go to `video.lifecycle.v1.dlq`.
+message VideoEvent {
+  svp.event.v1.EventMeta meta = 1;
+
+  oneof event {
+    // Catalog name: video.uploaded. Consumed by media-worker.
+    VideoUploaded video_uploaded = 2;
+    // Catalog name: video.ready. Consumed by feed-service.
+    VideoReady video_ready = 3;
+  }
+}
+
+// VideoUploaded: the source file is confirmed and the video is PROCESSING.
+// Carries what media-worker needs to fetch and transcode the source.
+message VideoUploaded {
+  string video_id = 1;
+  string author_id = 2;
+  // Object key of the source file in the uploads bucket, `uploads/<video_id>`.
+  string source_key = 3;
+  // MIME type declared at InitUpload and checked at CompleteUpload.
+  string content_type = 4;
+  // Size of the source object in bytes.
+  int64 size_bytes = 5;
+}
+
+// VideoReady: the video is READY and published. Carries every field a feed
+// item needs, so feed-service never calls video-service back.
+message VideoReady {
+  string video_id = 1;
+  string author_id = 2;
+  string title = 3;
+  google.protobuf.Duration duration = 4;
+  // Object key of the HLS master playlist, `media/<video_id>/master.m3u8`.
+  string playlist_key = 5;
+  // Object key of the thumbnail image under `media/<video_id>/`.
+  string thumbnail_key = 6;
+  // Publication time used to order feeds.
+  google.protobuf.Timestamp published_at = 7;
+}

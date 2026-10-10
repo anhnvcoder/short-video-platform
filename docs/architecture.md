@@ -1,0 +1,403 @@
+# Kiến trúc short-video platform
+
+> Trạng thái: giai đoạn 0 xong (2026-10-11). ADR 0001–0006, contract ở [`proto/`](../proto/) ([§8](#8-contract)), threat
+> model ở [`threat-model.md`](threat-model.md).
+
+Tài liệu này mô tả hệ thống sẽ được xây và lý do. Mỗi quyết định lớn có một ADR trong [`adr/`](adr/); ở đây chỉ tóm tắt
+và trỏ tới.
+
+## 1. Phạm vi
+
+**Chức năng (MVP):**
+
+| Mã | Chức năng |
+| --- | --- |
+| F1 | Đăng ký, đăng nhập bằng email + mật khẩu, nhận JWT |
+| F2 | Follow, unfollow người dùng khác |
+| F3 | Upload video tối đa 3 phút; hệ thống transcode ra HLS; trạng thái `UPLOADING → PROCESSING → READY` hoặc `FAILED` |
+| F4 | Phát video bằng HLS, tự đổi chất lượng theo mạng |
+| F5 | Feed "đang theo dõi": video mới nhất của người mình follow, phân trang bằng cursor |
+| F6 | Feed "khám phá": video mới nhất toàn hệ thống, cho người chưa follow ai |
+| F7 | Like, unlike; ghi lượt xem; hiện số lượt xem, số like và mình đã like chưa |
+
+**Ngoài phạm vi:** app client (vai trò client do k6, curl và một trang HTML thử HLS đảm nhận), comment, tìm kiếm,
+gợi ý bằng ML, thông báo, xoá/sửa video, kiểm duyệt nội dung. Thêm sau thì viết ADR.
+
+## 2. Yêu cầu phi chức năng
+
+| Mảng | Yêu cầu | Đo ở đâu |
+| --- | --- | --- |
+| Độ trễ | Feed p99 < 150 ms tại 1.000 req/s | Gateway, k6 (giai đoạn 3, 6) |
+| Sẵn sàng | Khởi tạo upload thành công 99,9%; đọc feed 99,9% | SLO + burn rate (giai đoạn 3) |
+| Xử lý video | Video 1 phút sẵn sàng phát p95 < 2 phút kể từ lúc upload xong | Từ `CompleteUpload` tới `READY` |
+| Độ tươi | Video `READY` xuất hiện trong feed follower p95 < 10 s | Từ `video.ready` tới dòng timeline cuối cùng |
+| Bền dữ liệu | Video đã `CompleteUpload` thành công thì không mất; event không mất | Diễn tập kill worker (giai đoạn 2) |
+| Đúng đắn | Event gửi trùng không làm sai bộ đếm, không transcode hai lần ra kết quả khác | Test gửi trùng (giai đoạn 2) |
+| Nhất quán | Số lượt xem trễ tối đa ~1 phút; like của chính mình thấy ngay | — |
+| Vận hành | Mọi request có `trace_id`; deploy không downtime; cảnh báo theo SLO | Giai đoạn 3, 4 |
+| Chi phí | Local trước; tài nguyên cloud dựng và xoá trong cùng buổi | Budget alert |
+
+Hai dòng "Độ tươi" và "Nhất quán" không có trong plan gốc; người học đã duyệt ngày 2026-10-11. Hệ thống dùng event nên
+dữ liệu nhất quán sau cùng, phải ghi rõ chấp nhận trễ bao nhiêu thì mới thiết kế và đo được.
+
+## 3. Ước lượng quy mô
+
+### 3.1 Giả định
+
+Ba số đầu có trong plan; các số còn lại là giả định của bản thiết kế này, sai thì sửa ở đây rồi tính lại.
+
+| | Giả định |
+| --- | --- |
+| P1 | 100k người dùng hoạt động mỗi ngày (DAU) |
+| P2 | Feed 1.000 request/giây lúc cao điểm |
+| P3 | 1.000 video upload mỗi ngày, mỗi video tối đa 3 phút |
+| A1 | Mỗi DAU xem 60 video/ngày, trung bình 20 s/video (20 phút/ngày) |
+| A2 | Một trang feed 10 video, nên mỗi DAU gọi feed 6 lần/ngày |
+| A3 | Cao điểm = 3 × trung bình |
+| A4 | 5% lượt xem có like |
+| A5 | Video trung bình 60 s; file gốc quay 1080p khoảng 10 Mbps, tức 75 MB |
+| A6 | HLS 3 bản: 360p 0,8 Mbps + 720p 2,5 Mbps + 1080p 5 Mbps = 8,3 Mbps (62 MB cho video 60 s); người xem nhận trung bình 2,5 Mbps |
+| A7 | 1 triệu tài khoản, mỗi tài khoản follow trung bình 50 người; video upload được fan-out tới trung bình 2.000 follower; tài khoản lớn nhất 200k follower |
+| A8 | Một worker 2 vCPU transcode video 60 s ra 3 bản mất khoảng 60 s (đo lại ở giai đoạn 2) |
+
+P1 dùng để ước lượng dung lượng, băng thông, chi phí; P2 là mục tiêu tải cho k6, không suy ra từ P1 (xem 3.3).
+
+Một ngày có 86.400 giây.
+
+### 3.2 Kết quả
+
+| Đại lượng | Cách tính | Kết quả |
+| --- | --- | --- |
+| Request feed | 100k × 6 / 86.400 | ~7 req/s trung bình, **~21 req/s** cao điểm |
+| Lượt xem | 100k × 60 / 86.400 | ~70/s trung bình, ~210/s cao điểm |
+| Lượt xem ở mục tiêu tải | 1.000 req/s × 10 video | **~10.000 event/s** |
+| Like | 5% × 6 triệu = 300k/ngày | ~10/s cao điểm |
+| Upload | 1.000 / 24 × 3 | ~125 video/giờ, khoảng **2 video/phút** cao điểm |
+| Băng thông upload | 1.000 × 75 MB = 75 GB/ngày | ~7 Mbps trung bình, ~21 Mbps cao điểm |
+| Transcode | 2 video/phút × 60 s/video | ~2 worker bận lúc cao điểm; cần **≥ 3** để chờ ít và giữ p95 < 2 phút; ban đêm gần 0 |
+| Lưu trữ video | (75 + 62) MB × 1.000 | ~137 GB/ngày ≈ 4 TB/tháng ≈ **50 TB/năm** (giữ cả file gốc) |
+| Egress phát video | 6 triệu × 20 s × 2,5 Mbps | ~37,5 TB/ngày ≈ **1,1 PB/tháng**; ~3,5 Gbps trung bình, ~10 Gbps cao điểm |
+| Postgres: follow | 1 triệu × 50 cạnh, ~160 B/cạnh kể cả 2 index | ~8 GB, lưu 2 nơi (user-service và bản sao ở feed-service) |
+| Postgres: timeline | 1.000 × 2.000 = 2 triệu dòng/ngày, giữ 30 ngày, ~110 B/dòng | 60 triệu dòng ≈ 7 GB |
+| Postgres: video, like | video ~1 KB/dòng; like 300k dòng/ngày | video không đáng kể; like ~15 GB/năm |
+| Redpanda: lượt xem | 6 triệu × ~200 B, giữ 7 ngày | ~8 GB |
+
+### 3.3 Rút ra gì
+
+1. **Hai giả định gốc không khớp nhau, và đã chốt cách dùng.** 100k DAU chỉ sinh ~21 req/s feed lúc cao điểm; 1.000 req/s
+   tương ứng khoảng 5 triệu DAU với cùng hành vi. P1 (100k DAU) là giả định để ước lượng dung lượng, băng thông, chi phí;
+   P2 (1.000 req/s) là **mục tiêu tải** cho k6, khoảng 50 lần cao điểm thật, đặt ra có chủ ý: ở 21 req/s một Postgres
+   không cache cũng thừa sức, sẽ không còn gì để học về cache, singleflight, đo p99, gom ghi lượt xem. Không nâng DAU lên
+   ~5 triệu cho khớp, vì khi đó egress phình lên ~55 PB/tháng (1,1 PB × 50) và mô hình chi phí ở giai đoạn 9 mất ý nghĩa. Hệ quả:
+   ở mục tiêu tải có ~10.000 event lượt xem/giây, lab `hot-counter` đo ở mức này. Các con số còn lại tính theo 100k DAU.
+2. **Tiền nằm ở egress, không nằm ở service.** Dữ liệu phát ra mỗi tháng (1,1 PB) lớn gấp khoảng 275 lần dữ liệu lưu
+   thêm (4 TB). CDN là bắt buộc; thứ đáng tối ưu nhất là bitrate ladder và tỉ lệ cache hit của CDN, không phải code Go.
+   Feed vuốt thường tải trước vài video kế tiếp, nên egress thật còn cao hơn. Quy ra USD để giai đoạn 9.
+3. **Đọc metadata nhỏ.** Ngay ở 1.000 req/s, Postgres có index đúng vẫn chịu được. Cache dùng để chống **key nóng**
+   (feed khám phá: mọi người đọc cùng một danh sách), không phải vì tổng tải ([ADR-0005](adr/0005-feed-fan-out-on-write.md)).
+4. **Ghi nóng nằm ở lượt xem.** ~10.000 event/s ở mục tiêu tải, dồn vào vài video viral: cập nhật từng dòng sẽ tranh
+   khoá trên cùng một row. Cần gom ghi theo lô; lab `hot-counter` chọn cách cụ thể.
+5. **Transcode ít nhưng nặng và dồn cục.** Tách worker riêng, scale theo độ trễ hàng chờ (KEDA ở giai đoạn 4)
+   ([ADR-0001](adr/0001-service-boundaries-and-data-ownership.md)).
+6. **Upload nhỏ về băng thông nhưng mỗi kết nối kéo dài.** Không cho file đi qua service; client đẩy thẳng lên object
+   storage ([ADR-0004](adr/0004-direct-upload-and-hls.md)).
+
+## 4. C4 mức context
+
+```mermaid
+flowchart TB
+    user["<b>Người dùng</b><br/>[Người]<br/>Xem feed, upload, like"]
+    ops["<b>Người vận hành</b><br/>[Người]<br/>Dev, on-call"]
+    svp["<b>Short-video platform</b><br/>[Hệ thống]<br/>Upload, transcode HLS, feed, like/view"]
+    sentry["<b>Sentry</b><br/>[SaaS]<br/>Gom lỗi ứng dụng"]
+    chat["<b>Slack / Telegram</b><br/>[SaaS]<br/>Kênh cảnh báo"]
+
+    user -->|"REST/JSON, tải HLS qua HTTPS"| svp
+    ops -->|"Grafana, Argo CD"| svp
+    svp -->|"gửi lỗi ứng dụng"| sentry
+    svp -->|"gửi cảnh báo"| chat
+    chat -->|"báo"| ops
+```
+
+## 5. C4 mức container
+
+Nét liền là gọi đồng bộ, nét đứt là event qua Redpanda.
+
+```mermaid
+flowchart LR
+    client["<b>Client</b><br/>[k6, curl, trang thử HLS]"]
+
+    subgraph svp["Short-video platform"]
+        gw["<b>gateway</b><br/>[Go, net/http]<br/>JWT, rate limit, ghép dữ liệu"]
+        us["<b>user-service</b><br/>[Go, gRPC]<br/>Tài khoản, follow"]
+        vs["<b>video-service</b><br/>[Go, gRPC]<br/>Metadata, vòng đời video"]
+        mw["<b>media-worker</b><br/>[Go + ffmpeg]<br/>Transcode HLS"]
+        es["<b>engagement-service</b><br/>[Go, gRPC]<br/>Like, view, bộ đếm"]
+        fs["<b>feed-service</b><br/>[Go, gRPC]<br/>Read model feed"]
+        bus[["<b>Redpanda</b><br/>[Kafka API]"]]
+        obj[("<b>Object storage</b><br/>[MinIO / S3 / GCS]<br/>bucket uploads, media")]
+        cdn["<b>CDN</b><br/>[CloudFront / Cloud CDN]<br/>chỉ có trên cloud"]
+        redis[("<b>Redis</b>")]
+        udb[("svp_user")]
+        vdb[("svp_video")]
+        edb[("svp_engagement")]
+        fdb[("svp_feed")]
+    end
+
+    client -->|"REST/JSON"| gw
+    client -->|"POST bằng presigned URL"| obj
+    client -->|"GET HLS"| cdn
+    cdn --> obj
+
+    gw -->|"rate limit"| redis
+    gw -->|gRPC| us
+    gw -->|gRPC| vs
+    gw -->|gRPC| es
+    gw -->|gRPC| fs
+
+    us --> udb
+    vs --> vdb
+    vs -->|"ký URL, HEAD"| obj
+    mw -->|"đọc file gốc, ghi HLS"| obj
+    es --> edb
+    fs --> fdb
+    fs -->|"cache feed khám phá"| redis
+
+    us -.->|"user.followed, user.unfollowed"| bus
+    vs -.->|"video.uploaded, video.ready"| bus
+    bus -.->|"video.uploaded"| mw
+    mw -.->|"transcode.completed, transcode.failed"| bus
+    bus -.->|"transcode.*"| vs
+    es -.->|"view.recorded"| bus
+    bus -.->|"view.recorded"| es
+    bus -.->|"user.*, video.ready"| fs
+```
+
+Local: Postgres và Redis native trên máy (mỗi service một database, xem [`CLAUDE.md`](../CLAUDE.md)), MinIO thay S3, không có
+CDN (client đọc thẳng MinIO).
+
+## 6. Sở hữu dữ liệu và event
+
+Luật ([ADR-0001](adr/0001-service-boundaries-and-data-ownership.md)): mỗi service chỉ đọc ghi database của mình; event về một thực thể chỉ do service
+sở hữu thực thể đó phát.
+
+| Service | Sở hữu | Bản sao (dựng từ event) |
+| --- | --- | --- |
+| `user-service` | tài khoản, hash mật khẩu, follow | — |
+| `video-service` | metadata video, trạng thái, đường dẫn object | — |
+| `media-worker` | không có database | — |
+| `engagement-service` | like, bộ đếm lượt xem/like | — |
+| `feed-service` | timeline | follow, video đã `READY` |
+| `gateway` | không có database (Redis cho rate limit) | — |
+
+**Danh mục event v1** (schema Protobuf ở [`proto/`](../proto/), topic và envelope ở [§8](#8-contract)):
+
+| Event | Phát | Key (partition) | Nhận | Để làm gì |
+| --- | --- | --- | --- | --- |
+| `user.followed` | user-service (outbox) | `follower_id` | feed-service | Thêm cạnh vào bản sao, đưa video gần đây của người được follow vào timeline |
+| `user.unfollowed` | user-service (outbox) | `follower_id` | feed-service | Xoá cạnh, bỏ video của người đó khỏi timeline |
+| `video.uploaded` | video-service (outbox) | `video_id` | media-worker | Bắt đầu transcode |
+| `transcode.completed` | media-worker | `video_id` | video-service | Báo kết quả: các bản HLS, thời lượng, thumbnail |
+| `transcode.failed` | media-worker | `video_id` | video-service | Báo lỗi; video-service chuyển `FAILED` và dọn file (bước bù của saga) |
+| `video.ready` | video-service (outbox) | `video_id` | feed-service | Video phát hành, kèm đủ metadata để feed không phải gọi lại |
+| `view.recorded` | engagement-service (produce thẳng) | `video_id` | engagement-service | Hàng đệm cho lượt xem; consumer gom theo lô rồi cộng vào bộ đếm |
+
+**Khác với bảng Hệ thống trong plan** (đã chốt, lý do ở [ADR-0003](adr/0003-async-events-outbox.md)):
+
+- `video.ready` do **video-service** phát chứ không phải media-worker, vì video-service sở hữu video. media-worker chỉ báo
+  kết quả job (`transcode.completed` / `transcode.failed`); video-service quyết định trạng thái rồi mới phát.
+- Chưa tạo `video.failed` và `like.toggled`: chưa có service nào cần nhận. Client xem trạng thái `FAILED` qua API; số like
+  đọc thẳng từ engagement-service. Thêm event khi có người nhận (ví dụ service thông báo, bảng xu hướng).
+
+## 7. Luồng chính
+
+### 7.1 Upload tới khi vào feed (saga dạng choreography)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant GW as gateway
+    participant VS as video-service
+    participant S3 as Object storage
+    participant RP as Redpanda
+    participant MW as media-worker
+    participant FS as feed-service
+
+    C->>GW: POST /videos (title, size, content_type)
+    GW->>VS: InitUpload
+    VS->>VS: INSERT video, trạng thái UPLOADING
+    VS-->>C: video_id, URL và field của presigned POST (hết hạn 15 phút)
+    C->>S3: POST file gốc (form kèm policy đã ký)
+    C->>GW: POST /videos/{id}/complete
+    GW->>VS: CompleteUpload
+    VS->>S3: HEAD: kiểm kích thước, content type
+    VS->>VS: 1 transaction: trạng thái PROCESSING + outbox video.uploaded
+    VS-->>C: 202, PROCESSING
+    VS--)RP: relay đọc outbox, phát video.uploaded
+    RP--)MW: video.uploaded
+    MW->>S3: tải file gốc, ffmpeg, ghi HLS vào media/{video_id}/
+    MW--)RP: transcode.completed
+    RP--)VS: transcode.completed
+    VS->>VS: 1 transaction: trạng thái READY + outbox video.ready
+    VS--)RP: relay phát video.ready
+    RP--)FS: video.ready
+    FS->>FS: lưu bản sao video, ghi theo lô vào timeline của từng follower
+```
+
+Không ai điều phối trung tâm: mỗi service nghe event rồi làm phần của mình (choreography). Nếu transcode lỗi, media-worker
+phát `transcode.failed`; video-service chuyển `FAILED` và xoá file dở dang. Mọi bước chịu được việc nhận trùng event:
+media-worker ghi vào đường dẫn cố định theo `video_id` nên chạy lại chỉ ghi đè; video-service chỉ chuyển trạng thái theo
+một chiều; feed-service ghi timeline với khoá chính chống trùng.
+
+### 7.2 Đọc feed
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant GW as gateway
+    participant FS as feed-service
+    participant ES as engagement-service
+
+    C->>GW: GET /feed?cursor=...
+    GW->>GW: kiểm JWT, rate limit (Redis)
+    GW->>FS: GetFollowingFeed / GetExploreFeed(page_size, page_token), metadata x-user-id
+    FS-->>GW: 10 video kèm metadata và object key, next_page_token
+    GW->>GW: ghép URL HLS từ object key
+    GW->>ES: GetStats(video_ids), metadata x-user-id, timeout ngắn
+    ES-->>GW: lượt xem, số like, đã like chưa
+    GW-->>C: JSON, nếu ES lỗi hoặc quá hạn thì trả video không kèm số đếm
+```
+
+Gateway ghép dữ liệu từ hai service (vai trò BFF). Số đếm là phần phụ: engagement-service chậm thì feed vẫn trả về, chỉ
+thiếu số. Đây là graceful degradation, giữ SLO của feed không phụ thuộc vào service kém quan trọng hơn.
+
+### 7.3 Ghi lượt xem
+
+Client gọi `POST /videos/{id}/views`; engagement-service phát `view.recorded` lên Redpanda rồi trả 202 ngay, không chạm
+database. Consumer của chính nó đọc theo lô, cộng dồn theo `video_id` trong bộ nhớ, rồi mỗi lô chỉ ghi một câu `UPDATE` cho
+mỗi video. Redpanda vừa là hàng đệm chống dồn tải, vừa giữ lượt xem nếu consumer chết giữa chừng.
+
+### 7.4 Xác thực
+
+user-service cấp JWT ký bằng khoá riêng; gateway kiểm chữ ký bằng khoá công khai, không gọi user-service mỗi request.
+Gateway chuyển `user_id` xuống các service qua gRPC metadata. Bên trong cluster tạm thời tin nhau qua mạng; mTLS giữa
+các service để giai đoạn 6. Threat model đã xét lại điểm này ở
+[mục 4.5 của `threat-model.md`](threat-model.md#45-mức-tin-cậy-giữa-các-service).
+
+## 8. Contract
+
+Contract nội bộ nằm ở [`proto/`](../proto/), quản lý bằng `buf` theo [ADR-0002](adr/0002-sync-rest-edge-grpc-internal.md).
+Các quyết định khó đảo ngược (kiểu ID, envelope event, cách chia topic, versioning, bố cục thư mục, danh tính người gọi,
+đường dẫn media) và lựa chọn đã cân nhắc ở [ADR-0006](adr/0006-contract-ids-and-event-envelope.md). Mục này tóm tắt chúng,
+và ghi hai quyết định đổi được ở một chỗ: cách mã hoá cursor (8.3) và cách đổi mã lỗi sang HTTP (8.4).
+
+### 8.1 Bố cục và quy ước chung
+
+```text
+buf.yaml                         v2, module proto, lint STANDARD, breaking FILE, không deps
+proto/svp/
+├── event/v1/event.proto         EventMeta: envelope chung của mọi event
+├── user/v1/                     user_service.proto, events.proto
+├── video/v1/                    video_service.proto, events.proto
+├── engagement/v1/               engagement_service.proto, events.proto
+├── feed/v1/                     feed_service.proto
+└── media/v1/events.proto        event của media-worker (không có service gRPC)
+```
+
+- Kiểm từ gốc repo: `buf lint` (sạch, không output) và `buf build`. `buf breaking` (luật `FILE`) so với nhánh `main` ở CI.
+  Chưa sinh code Go; `buf.gen.yaml` và `go_package` chốt ở giai đoạn 1.
+- ID là UUIDv7, trong proto là `string` 36 ký tự chữ thường, trong Postgres là `uuid`, sinh ở code Go.
+- Người gọi không nằm trong request: gateway đặt `user_id` đã xác thực vào gRPC metadata `x-user-id` ([§7.4](#74-xác-thực)).
+- API và event mang object key (`uploads/<video_id>`, `media/<video_id>/master.m3u8`), không mang URL; gateway ghép URL
+  công khai từ cấu hình của môi trường. Ngoại lệ: `upload_url` của presigned POST.
+- Mỗi RPC có comment ghi ngữ nghĩa, idempotency và các mã lỗi chính.
+
+### 8.2 Topic
+
+Một topic cho một luồng thực thể của một producer, không phải cho mỗi loại event, để mọi event của một thực thể giữ thứ
+tự trên một partition. Mỗi topic có một message bọc: field 1 là `svp.event.v1.EventMeta meta` (`event_id` UUIDv7,
+`occurred_at`), sau đó `oneof event` với mỗi loại event của [danh mục §6](#6-sở-hữu-dữ-liệu-và-event) là một nhánh.
+
+| Topic | Message bọc | Event (nhánh `oneof`) | Phát | Key |
+| --- | --- | --- | --- | --- |
+| `user.follows.v1` | `svp.user.v1.FollowEvent` | `user.followed` (`UserFollowed`), `user.unfollowed` (`UserUnfollowed`) | user-service | `follower_id` |
+| `video.lifecycle.v1` | `svp.video.v1.VideoEvent` | `video.uploaded` (`VideoUploaded`), `video.ready` (`VideoReady`) | video-service | `video_id` |
+| `media.transcodes.v1` | `svp.media.v1.TranscodeEvent` | `transcode.completed` (`TranscodeCompleted`), `transcode.failed` (`TranscodeFailed`) | media-worker | `video_id` |
+| `engagement.views.v1` | `svp.engagement.v1.ViewEvent` | `view.recorded` (`ViewRecorded`) | engagement-service | `video_id` |
+
+- DLQ: `<topic>.dlq` ([ADR-0003](adr/0003-async-events-outbox.md)).
+- Trace context (`traceparent`) đi trong header Kafka theo quy ước OpenTelemetry, không nằm trong proto.
+- Thêm loại event = thêm một nhánh `oneof`; consumer gặp nhánh chưa biết thì bỏ qua và commit offset.
+
+### 8.3 Phân trang feed
+
+Field theo Google AIP-158: request có `page_size`, `page_token`; response có `next_page_token`.
+
+- `page_size` 0 thì dùng mặc định 10; lớn hơn 50 thì hạ về 50; số âm thì `INVALID_ARGUMENT`.
+- `next_page_token` rỗng nghĩa là hết trang.
+- `page_token` **mờ** với client và gateway: gateway chuyển nguyên giá trị (query `?cursor=`), không đọc, không tự tạo.
+- Bên trong, token là base64url không padding của bytes protobuf một message nội bộ của feed-service, gồm
+  (`published_at`, `video_id`) của item cuối trang, đúng cursor keyset của [ADR-0005](adr/0005-feed-fan-out-on-write.md).
+  Message này **không** nằm trong `proto/` vì không phải contract công khai; feed-service tự định nghĩa ở giai đoạn 1 và
+  đổi được bất cứ lúc nào (token cũ không giải mã được thì client tải lại từ trang đầu).
+- Token hỏng (không phải base64url, không giải mã được) thì `INVALID_ARGUMENT`.
+- **Không ký HMAC.** Token chỉ lọc trong timeline của chính người gọi (`user_id` lấy từ metadata, không từ token), hoặc
+  trong feed khám phá vốn công khai; sửa token chỉ đổi vị trí đọc trong dữ liệu mình vốn được xem. Lựa chọn khác: ký HMAC
+  để phát hiện sửa (thêm quản lý khoá, không chặn được gì thêm); dùng `OFFSET` (bị lệch trang khi có video mới, ADR-0005).
+
+### 8.4 Mã lỗi gRPC sang HTTP ở gateway
+
+Service trả mã gRPC chuẩn, kèm lý do máy đọc được bằng `google.rpc.ErrorInfo.reason` trong status details (dạng
+`UPPER_SNAKE_CASE`, ví dụ `VIDEO_NOT_FOUND`; gắn bằng gói Go `errdetails`, proto không cần import `google/rpc`). Gateway đổi
+theo bảng:
+
+| Mã gRPC | HTTP |
+| --- | --- |
+| `OK` | 200 |
+| `INVALID_ARGUMENT` | 400 |
+| `FAILED_PRECONDITION` | 400 |
+| `OUT_OF_RANGE` | 400 |
+| `UNAUTHENTICATED` | 401 |
+| `PERMISSION_DENIED` | 403 |
+| `NOT_FOUND` | 404 |
+| `ALREADY_EXISTS` | 409 |
+| `ABORTED` | 409 |
+| `RESOURCE_EXHAUSTED` | 429 |
+| `CANCELLED` | 499 (client đóng kết nối, mã không chuẩn theo nginx; client thường không nhận được) |
+| `UNKNOWN` | 500 |
+| `INTERNAL` | 500 |
+| `DATA_LOSS` | 500 |
+| `UNIMPLEMENTED` | 501 |
+| `UNAVAILABLE` | 503 |
+| `DEADLINE_EXCEEDED` | 504 |
+
+Thân lỗi theo RFC 9457 (`Content-Type: application/problem+json`):
+
+```json
+{
+  "type": "about:blank",
+  "title": "Not Found",
+  "status": 404,
+  "detail": "video not found",
+  "code": "VIDEO_NOT_FOUND",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
+}
+```
+
+- `type` là `about:blank` và `title` là tên chuẩn của mã HTTP; `detail` là message của service; `code` là
+  `ErrorInfo.reason`, không có thì là tên mã gRPC (`NOT_FOUND`); `trace_id` để tra log và trace.
+- Với mã 5xx, gateway **không** trả message gốc và lý do của service (tránh lộ chi tiết nội bộ): `detail` bỏ trống, `code`
+  là tên mã gRPC, chỉ `trace_id` để tra.
+- Lỗi do chính gateway sinh (JWT sai hoặc hết hạn: 401; vượt rate limit: 429) dùng cùng định dạng.
+- Lỗi từ engagement-service khi ghép feed **không** đi qua bảng này: gateway nuốt lỗi và trả feed không kèm số đếm
+  (graceful degradation, [§7.2](#72-đọc-feed)).
+
+## 9. Quyết định
+
+Danh sách ADR và trạng thái: [`adr/README.md`](adr/README.md).
+
+## 10. Câu hỏi mở
+
+- **Giữ file gốc bao lâu** (50 hay ~25 TB/năm): chốt ở giai đoạn 7 (lifecycle S3) và mô hình chi phí ở giai đoạn 9.
+- **Trên cloud dùng chung một instance Postgres cho mọi service hay tách:** chốt ở giai đoạn 7.

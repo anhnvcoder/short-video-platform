@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package svp.feed.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+// FeedService serves the read model built from user.follows.v1 and
+// video.lifecycle.v1. It never calls other services to answer a request.
+// Counters and "liked by me" are not part of a feed item; the gateway fetches
+// them from EngagementService.GetStats.
+//
+// Caller identity: the gateway passes the authenticated user id in the gRPC
+// metadata key `x-user-id`; requests never carry the caller's own id. Every
+// RPC requires it and returns UNAUTHENTICATED when it is missing or not a
+// valid UUID.
+//
+// Pagination follows Google AIP-158. page_token is opaque to clients and to
+// the gateway: pass back next_page_token unchanged. An empty next_page_token
+// means there are no more items. page_size 0 means the default of 10; values
+// above 50 are lowered to 50. Feeds are newest first by (published_at,
+// video_id), so items published while paging never shift later pages.
+service FeedService {
+  // GetFollowingFeed returns the newest READY videos of the users the caller
+  // follows, from the caller's own timeline (last 30 days).
+  //
+  // Errors:
+  // - INVALID_ARGUMENT: negative page_size, or a page_token that cannot be
+  //   decoded.
+  rpc GetFollowingFeed(GetFollowingFeedRequest) returns (GetFollowingFeedResponse);
+
+  // GetExploreFeed returns the newest READY videos across the whole system,
+  // the same list for every caller.
+  //
+  // Errors:
+  // - INVALID_ARGUMENT: negative page_size, or a page_token that cannot be
+  //   decoded.
+  rpc GetExploreFeed(GetExploreFeedRequest) returns (GetExploreFeedResponse);
+}
+
+// FeedItem is feed-service's own copy of a published video, taken from
+// video.ready. It is deliberately not svp.video.v1.Video: the feed contract
+// does not change when video-service's API does.
+message FeedItem {
+  string video_id = 1;
+  string author_id = 2;
+  string title = 3;
+  google.protobuf.Duration duration = 4;
+  // Object key of the HLS master playlist, `media/<video_id>/master.m3u8`.
+  // The gateway turns it into a public URL.
+  string playlist_key = 5;
+  // Object key of the thumbnail image under `media/<video_id>/`.
+  string thumbnail_key = 6;
+  google.protobuf.Timestamp published_at = 7;
+}
+
+message GetFollowingFeedRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message GetFollowingFeedResponse {
+  repeated FeedItem items = 1;
+  string next_page_token = 2;
+}
+
+message GetExploreFeedRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message GetExploreFeedResponse {
+  repeated FeedItem items = 1;
+  string next_page_token = 2;
+}

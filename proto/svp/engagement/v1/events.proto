@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package svp.engagement.v1;
+
+import "svp/event/v1/event.proto";
+
+// ViewEvent is every record on topic `engagement.views.v1`.
+// Producer: engagement-service, produced directly with acks=all (no outbox:
+// nothing is written to the database at the same time). Record key:
+// video_id, so one consumer batches all views of a video. Consumed by
+// engagement-service itself. Dead letters go to `engagement.views.v1.dlq`.
+message ViewEvent {
+  svp.event.v1.EventMeta meta = 1;
+
+  oneof event {
+    // Catalog name: view.recorded.
+    ViewRecorded view_recorded = 2;
+  }
+}
+
+// ViewRecorded: viewer_id viewed video_id once.
+message ViewRecorded {
+  string video_id = 1;
+  // The authenticated caller of RecordView.
+  string viewer_id = 2;
+}

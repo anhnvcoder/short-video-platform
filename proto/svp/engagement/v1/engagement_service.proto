@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package svp.engagement.v1;
+
+// EngagementService owns likes and the view and like counters.
+//
+// Caller identity: the gateway passes the authenticated user id in the gRPC
+// metadata key `x-user-id`; requests never carry the caller's own id. Every
+// RPC requires it and returns UNAUTHENTICATED when it is missing or not a
+// valid UUID.
+//
+// All ids are UUIDv7 strings in canonical lowercase form (36 chars).
+// engagement-service does not own videos and does not check that video_id
+// exists: a like or view on an unknown id only creates a counter no feed
+// will ever read.
+service EngagementService {
+  // Like records that the caller likes video_id. Idempotent: liking a video
+  // already liked succeeds and does not change like_count. The caller sees
+  // their own like immediately in GetStats.
+  //
+  // Errors:
+  // - INVALID_ARGUMENT: video_id is not a UUID.
+  rpc Like(LikeRequest) returns (LikeResponse);
+
+  // Unlike removes the caller's like of video_id. Idempotent: unliking a
+  // video not liked succeeds and does not change like_count.
+  //
+  // Errors:
+  // - INVALID_ARGUMENT: video_id is not a UUID.
+  rpc Unlike(UnlikeRequest) returns (UnlikeResponse);
+
+  // RecordView counts one view of video_id by the caller. It produces
+  // view.recorded (topic engagement.views.v1) and returns without touching
+  // the database; view_count catches up within about a minute. Not
+  // idempotent: every call is one view.
+  //
+  // Errors:
+  // - INVALID_ARGUMENT: video_id is not a UUID.
+  // - UNAVAILABLE: the event could not be produced; the client may retry.
+  rpc RecordView(RecordViewRequest) returns (RecordViewResponse);
+
+  // GetStats returns counters for up to 50 videos, plus whether the caller
+  // liked each one. Stats come back in request order, one per requested id;
+  // unknown ids get zero counters.
+  //
+  // Errors:
+  // - INVALID_ARGUMENT: more than 50 ids, or an id that is not a UUID.
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+}
+
+message LikeRequest {
+  string video_id = 1;
+}
+
+message LikeResponse {}
+
+message UnlikeRequest {
+  string video_id = 1;
+}
+
+message UnlikeResponse {}
+
+message RecordViewRequest {
+  string video_id = 1;
+}
+
+message RecordViewResponse {}
+
+message GetStatsRequest {
+  // At most 50 ids.
+  repeated string video_ids = 1;
+}
+
+message GetStatsResponse {
+  repeated VideoStats stats = 1;
+}
+
+message VideoStats {
+  string video_id = 1;
+  // Total views; eventually consistent, lags by up to about a minute.
+  int64 view_count = 2;
+  // Total likes.
+  int64 like_count = 3;
+  // Whether the caller currently likes the video.
+  bool liked_by_me = 4;
+}

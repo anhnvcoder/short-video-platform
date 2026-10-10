@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+package svp.media.v1;
+
+import "google/protobuf/duration.proto";
+import "svp/event/v1/event.proto";
+
+// TranscodeEvent is every record on topic `media.transcodes.v1`.
+// Producer: media-worker, produced directly after the HLS output is written
+// (media-worker has no database, hence no outbox). Record key: video_id.
+// Consumed by video-service. Dead letters go to `media.transcodes.v1.dlq`.
+//
+// Transcoding the same video again overwrites the same object keys, so a
+// redelivered video.uploaded yields the same result.
+message TranscodeEvent {
+  svp.event.v1.EventMeta meta = 1;
+
+  oneof event {
+    // Catalog name: transcode.completed.
+    TranscodeCompleted transcode_completed = 2;
+    // Catalog name: transcode.failed.
+    TranscodeFailed transcode_failed = 3;
+  }
+}
+
+// TranscodeCompleted: the HLS output of video_id is fully written under
+// `media/<video_id>/`.
+message TranscodeCompleted {
+  string video_id = 1;
+  // Object key of the HLS master playlist, `media/<video_id>/master.m3u8`.
+  string playlist_key = 2;
+  // Object key of the thumbnail image under `media/<video_id>/`.
+  string thumbnail_key = 3;
+  // Length of the transcoded video.
+  google.protobuf.Duration duration = 4;
+  // One entry per HLS variant, lowest bitrate first.
+  repeated Rendition renditions = 5;
+}
+
+// Rendition describes one HLS variant stream.
+message Rendition {
+  // Ladder name, for example `720p`.
+  string name = 1;
+  // Frame width in pixels.
+  int32 width = 2;
+  // Frame height in pixels.
+  int32 height = 3;
+  // Target video bitrate in bits per second.
+  int32 bitrate_bps = 4;
+}
+
+// TranscodeFailed: video_id cannot be transcoded. Transient errors (storage
+// timeouts, a killed worker) are retried by media-worker with backoff and do
+// not produce this event; it is emitted only for permanent errors or once
+// retries are exhausted. video-service then marks the video FAILED and
+// deletes partial files (the saga's compensation step).
+message TranscodeFailed {
+  string video_id = 1;
+  TranscodeFailureReason reason = 2;
+  // Human-readable diagnostic for operators (for example the ffmpeg error
+  // line). Not shown to end users.
+  string detail = 3;
+}
+
+enum TranscodeFailureReason {
+  TRANSCODE_FAILURE_REASON_UNSPECIFIED = 0;
+  // The source object is missing from the uploads bucket.
+  TRANSCODE_FAILURE_REASON_SOURCE_MISSING = 1;
+  // The source is not a decodable video (corrupt file, unsupported codec or
+  // container).
+  TRANSCODE_FAILURE_REASON_INVALID_INPUT = 2;
+  // The source is longer than the 3-minute limit.
+  TRANSCODE_FAILURE_REASON_DURATION_EXCEEDED = 3;
+  // A transient error persisted after every retry.
+  TRANSCODE_FAILURE_REASON_RETRIES_EXHAUSTED = 4;
+}

@@ -2,7 +2,7 @@
 
 > Ngày lập: 2026-10-04
 >
-> Trạng thái: chưa bắt đầu
+> Trạng thái: giai đoạn 0 xong (2026-10-11); đang làm chặng G
 
 ## Mục tiêu
 
@@ -19,13 +19,15 @@ Một hệ thống thật, làm xuyên suốt từ thiết kế, code, hạ tầ
 
 ## Hệ thống
 
+> Bảng dưới là phác thảo lúc lập plan. Thiết kế hiện hành ở [`docs/architecture.md`](../../docs/architecture.md); danh mục event đã chỉnh ở đó (mục 6, lý do ở ADR-0003).
+
 | Service | Sở hữu dữ liệu | Giao tiếp |
 | --- | --- | --- |
 | `gateway` | — | REST/OpenAPI ra ngoài, gRPC vào trong; JWT, rate limit, timeout, circuit breaker |
 | `user-service` | user, follow | gRPC; phát `user.followed` |
-| `video-service` | metadata video, trạng thái | gRPC; presigned upload (MinIO/S3); outbox phát `video.uploaded` |
-| `media-worker` | — | Tiêu thụ `video.uploaded`, ffmpeg → HLS, phát `video.ready` / `video.failed` |
-| `engagement-service` | like, view, bộ đếm | Tiêu thụ `view.recorded`; phát `like.toggled` |
+| `video-service` | metadata video, trạng thái | gRPC; presigned upload (MinIO/S3); outbox phát `video.uploaded` và `video.ready` |
+| `media-worker` | — | Tiêu thụ `video.uploaded`, ffmpeg → HLS, phát `transcode.completed` / `transcode.failed` |
+| `engagement-service` | like, view, bộ đếm | Tiêu thụ `view.recorded` |
 | `feed-service` | read model feed | Tiêu thụ event, dựng bảng đọc (CQRS), cache Redis |
 
 - **Dữ liệu:** mỗi service một database Postgres riêng, không service nào đọc database của service khác.
@@ -35,6 +37,8 @@ Một hệ thống thật, làm xuyên suốt từ thiết kế, code, hạ tầ
 - 100k người dùng hoạt động mỗi ngày;
 - feed 1.000 request/giây lúc cao điểm;
 - 1.000 video upload mỗi ngày, mỗi video tối đa 3 phút.
+
+1.000 req/s là mục tiêu tải cho k6 (khoảng 50 lần cao điểm thật của 100k DAU); 100k DAU dùng để ước lượng dung lượng, băng thông, chi phí ([`docs/architecture.md`](../../docs/architecture.md) §3.3).
 
 **SLO đề xuất:**
 - feed p99 < 150 ms;
@@ -132,7 +136,7 @@ Khác biệt cần chú ý khi chuyển từ TypeScript:
   - Redpanda;
   - upload presigned lên MinIO; `media-worker` transcode bằng ffmpeg;
   - outbox; consumer idempotent + DLQ;
-  - saga cho luồng upload: lỗi transcode thì phát `video.failed` và dọn dẹp;
+  - saga cho luồng upload: lỗi transcode thì media-worker phát `transcode.failed`, video-service chuyển `FAILED` và dọn file (bước bù);
   - `engagement-service` (bộ đếm gom ghi theo lô);
   - `feed-service` (CQRS + cache + singleflight);
   - rate limit ở gateway; timeout/retry/circuit breaker cho mọi lời gọi.
@@ -248,8 +252,14 @@ Tổng ước lượng: khoảng 8–10 tháng làm cuối tuần, đã tính ch
 
 ## Tiến độ
 
-- [ ] 0. Thiết kế
-- [ ] G. Nền tảng Go (song song với 0)
+- [x] Khởi tạo repo (2026-10-04): git, `CLAUDE.md` (mục tiêu, nguyên tắc, quy ước, chế độ mentor, an toàn cloud), repo private `anhnvcoder/short-video-platform`.
+- [x] 0. Thiết kế (xong 2026-10-11).
+  - Thiết kế và ADR [0001–0005](../../docs/adr/README.md) đã chấp nhận (2026-10-11): [`docs/architecture.md`](../../docs/architecture.md) gồm yêu cầu, NFR, ước lượng quy mô, C4 context/container, sở hữu dữ liệu, danh mục event, các luồng chính. Ba quyết định đã chốt:
+    - 1.000 req/s là mục tiêu tải cho k6 (khoảng 50 lần cao điểm thật), 100k DAU để ước lượng; không nâng DAU (architecture.md §3.3);
+    - `video.ready` do video-service phát qua outbox, media-worker chỉ phát `transcode.completed` / `transcode.failed`;
+    - chưa tạo `video.failed`, `like.toggled` vì chưa có service nhận; thêm sau là message proto mới, không phá contract.
+  - Hoàn tất ngày 2026-10-11: contract ở `proto/` (`buf lint` sạch) cùng [ADR-0006](../../docs/adr/0006-contract-ids-and-event-envelope.md) chốt ID là UUIDv7, event bọc theo topic của luồng thực thể, bố cục `proto/svp/<domain>/v1`, danh tính người gọi qua metadata `x-user-id`; threat model STRIDE ở [`docs/threat-model.md`](../../docs/threat-model.md); NFR "Độ tươi" và "Nhất quán" đã chốt.
+- [ ] G. Nền tảng Go (song song với 0): tuần 1 đang làm (giao 2026-10-04, bắt đầu 2026-10-05). Bài giao và nhật ký review ở [`plans/261004-go-foundations/plan.md`](../261004-go-foundations/plan.md).
 - [ ] 1. Service lõi
 - [ ] 2. Bất đồng bộ và pattern
 - [ ] 3. Observability
@@ -288,9 +298,11 @@ Tổng ước lượng: khoảng 8–10 tháng làm cuối tuần, đã tính ch
 
 - Go 1.27.1 cài qua Homebrew; `~/go/bin` đã có trong PATH (dotfiles).
 - Docker Desktop: 8 CPU, khoảng 7,7 GB RAM, đủ cho chặng G và giai đoạn 0–2; nâng lên khoảng 10 GB khi tới giai đoạn 3–4.
-- Đã có sẵn: kubectl, helm, k6, terraform, gcloud, gh (đăng nhập tài khoản `anhnvcoder`). Chưa có: k3d, kind, buf, golangci-lint.
+- Đã có sẵn: kubectl, helm, k6, terraform, gcloud, gh (đăng nhập tài khoản `anhnvcoder`). Đã cài `buf` 1.73.0. Chưa có: k3d, kind, golangci-lint.
 - Postgres native 5432, Redis native 6379.
 
 ## Câu hỏi mở
 
-- Không còn.
+- Giữ file gốc bao lâu (50 hay ~25 TB/năm): chốt ở giai đoạn 7 (lifecycle S3) và giai đoạn 9 (mô hình chi phí).
+- Trên cloud dùng chung một instance Postgres hay tách: chốt ở giai đoạn 7.
+- Chi tiết ở [`docs/architecture.md`](../../docs/architecture.md) §10.

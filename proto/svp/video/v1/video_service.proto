@@ -1,0 +1,126 @@
+syntax = "proto3";
+
+package svp.video.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+// VideoService owns video metadata and the video lifecycle
+// (UPLOADING -> PROCESSING -> READY or FAILED), and drives the upload saga.
+//
+// Caller identity: the gateway passes the authenticated user id in the gRPC
+// metadata key `x-user-id`; requests never carry the caller's own id. Every
+// RPC requires it and returns UNAUTHENTICATED when it is missing or not a
+// valid UUID.
+//
+// All ids are UUIDv7 strings in canonical lowercase form (36 chars). Media
+// locations are object keys (for example `media/<video_id>/master.m3u8`),
+// never absolute URLs: the gateway builds public URLs from per-environment
+// configuration (MinIO locally, a CDN in the cloud).
+service VideoService {
+  // InitUpload creates a video in UPLOADING owned by the caller and returns a
+  // presigned POST for the object key `uploads/<video_id>`. The policy limits
+  // the object to size_bytes (at most 500 MB) and content_type, and expires
+  // after 15 minutes. Not idempotent: each call creates a new video.
+  //
+  // Errors:
+  // - INVALID_ARGUMENT: empty title, size_bytes not in (0, 500 MB], or
+  //   content_type not a `video/*` type.
+  rpc InitUpload(InitUploadRequest) returns (InitUploadResponse);
+
+  // CompleteUpload checks that the uploaded object exists with the declared
+  // size and content type, then moves the video to PROCESSING and emits
+  // video.uploaded (topic video.lifecycle.v1) in the same transaction.
+  // Idempotent: calling it again on a video already PROCESSING or READY
+  // returns the current video and emits nothing.
+  //
+  // Errors:
+  // - INVALID_ARGUMENT: video_id is not a UUID.
+  // - NOT_FOUND: no such video, or the caller is not its author. Both cases
+  //   return the same reason (`VIDEO_NOT_FOUND`) and the same message, so the
+  //   response does not reveal that another user's video exists.
+  // - FAILED_PRECONDITION: the object is missing or does not match the
+  //   declared size or content type, or the video is already FAILED.
+  rpc CompleteUpload(CompleteUploadRequest) returns (CompleteUploadResponse);
+
+  // GetVideo returns one video. Videos that are not READY are visible only
+  // to their author, so processing or failed videos do not leak.
+  //
+  // Errors:
+  // - INVALID_ARGUMENT: video_id is not a UUID.
+  // - NOT_FOUND: no such video, or it is not READY and the caller is not its
+  //   author. All cases return the same reason (`VIDEO_NOT_FOUND`) and the
+  //   same message, so the response does not reveal that a hidden video
+  //   exists.
+  rpc GetVideo(GetVideoRequest) returns (GetVideoResponse);
+}
+
+// VideoStatus is the lifecycle state. Transitions only move forward:
+// UPLOADING -> PROCESSING -> READY, and UPLOADING or PROCESSING -> FAILED.
+enum VideoStatus {
+  VIDEO_STATUS_UNSPECIFIED = 0;
+  // Created by InitUpload; the client is uploading the source file.
+  VIDEO_STATUS_UPLOADING = 1;
+  // Source file confirmed; transcoding in progress.
+  VIDEO_STATUS_PROCESSING = 2;
+  // HLS output available; the video is published to feeds.
+  VIDEO_STATUS_READY = 3;
+  // Upload abandoned (UPLOADING for more than 1 hour) or transcoding failed
+  // permanently. Terminal.
+  VIDEO_STATUS_FAILED = 4;
+}
+
+message Video {
+  string video_id = 1;
+  string author_id = 2;
+  string title = 3;
+  VideoStatus status = 4;
+  // Length of the transcoded video. Set once READY.
+  google.protobuf.Duration duration = 5;
+  // Object key of the HLS master playlist, `media/<video_id>/master.m3u8`.
+  // Set once READY.
+  string playlist_key = 6;
+  // Object key of the thumbnail image under `media/<video_id>/`. Set once
+  // READY.
+  string thumbnail_key = 7;
+  // When InitUpload created the video.
+  google.protobuf.Timestamp created_at = 8;
+  // When the video became READY. Set once READY.
+  google.protobuf.Timestamp published_at = 9;
+}
+
+message InitUploadRequest {
+  string title = 1;
+  // Exact size of the file the client will upload, in bytes.
+  int64 size_bytes = 2;
+  // MIME type of the file, for example `video/mp4`.
+  string content_type = 3;
+}
+
+message InitUploadResponse {
+  string video_id = 1;
+  // Absolute URL to POST the multipart form to. This is the one place an
+  // absolute URL appears: it is a short-lived credential for the storage
+  // endpoint, not a stored media location.
+  string upload_url = 2;
+  // Form fields (key, policy, signature, ...) to send before the file field.
+  map<string, string> form_fields = 3;
+  // When the presigned POST stops being accepted.
+  google.protobuf.Timestamp expires_at = 4;
+}
+
+message CompleteUploadRequest {
+  string video_id = 1;
+}
+
+message CompleteUploadResponse {
+  Video video = 1;
+}
+
+message GetVideoRequest {
+  string video_id = 1;
+}
+
+message GetVideoResponse {
+  Video video = 1;
+}

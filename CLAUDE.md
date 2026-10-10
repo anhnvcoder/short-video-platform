@@ -82,5 +82,10 @@ Người học bắt đầu Go từ con số 0, đã quen TypeScript/NestJS.
 
 ## Kiểm tra
 
-Chưa có code. Tới giai đoạn nào thì thêm lệnh kiểm tra của giai đoạn đó vào đây (dự kiến: `buf lint` cho
-`proto/`; `gofmt`, `go vet`, `golangci-lint run`, `go test -race ./...` cho `services/`).
+Từ gốc repo, cho `proto/`:
+
+- `buf lint` (phải sạch, không output) và `buf build -o /dev/null`.
+- `buf breaking --against '.git#branch=main'` khi sửa `proto/`. **Chỉ dùng được sau khi `proto/` đã có trong một commit
+  trên `main`**; trước đó buf báo "Module had no .proto files".
+
+Từ giai đoạn 1, cho `services/`: `gofmt`, `go vet`, `golangci-lint run`, `go test -race ./...`.

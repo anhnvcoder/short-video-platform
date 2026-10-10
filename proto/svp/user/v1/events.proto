@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package svp.user.v1;
+
+import "svp/event/v1/event.proto";
+
+// FollowEvent is every record on topic `user.follows.v1`.
+// Producer: user-service, through its outbox. Record key: follower_id, so all
+// follow changes of one follower stay in order on one partition.
+// Dead letters go to `user.follows.v1.dlq`.
+message FollowEvent {
+  svp.event.v1.EventMeta meta = 1;
+
+  oneof event {
+    // Catalog name: user.followed.
+    UserFollowed user_followed = 2;
+    // Catalog name: user.unfollowed.
+    UserUnfollowed user_unfollowed = 3;
+  }
+}
+
+// UserFollowed: follower_id started following followee_id.
+message UserFollowed {
+  string follower_id = 1;
+  string followee_id = 2;
+}
+
+// UserUnfollowed: follower_id stopped following followee_id.
+message UserUnfollowed {
+  string follower_id = 1;
+  string followee_id = 2;
+}
