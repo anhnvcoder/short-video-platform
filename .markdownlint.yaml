@@ -1,0 +1,5 @@
+# Docs are Vietnamese prose wrapped at ~120 columns, with wide tables.
+MD013: false
+# Go code blocks must keep gofmt tabs.
+MD010:
+  code_blocks: false

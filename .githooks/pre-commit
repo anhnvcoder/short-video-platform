@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Pre-commit checks: gofmt on staged Go files, golangci-lint, buf lint, gitleaks on staged changes.
+# Enable with `make hooks`; install the tools with `make tools`.
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+# Tools installed by `make tools` live in GOBIN, which may not be on PATH.
+PATH="$(go env GOPATH 2>/dev/null || true)/bin:$PATH"
+
+missing=()
+for tool in gofmt golangci-lint buf gitleaks; do
+  command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+done
+if [ "${#missing[@]}" -gt 0 ]; then
+  echo "pre-commit: missing tools: ${missing[*]}" >&2
+  echo "pre-commit: run 'make tools' (buf: 'brew install bufbuild/buf/buf')" >&2
+  exit 1
+fi
+
+# Staged Go files that are not generated code.
+unformatted=()
+while IFS= read -r -d '' file; do
+  case "$file" in gen/*) continue ;; esac
+  if [ -n "$(git show ":$file" | head -n 20 | grep '^// Code generated .* DO NOT EDIT\.$' || true)" ]; then
+    continue
+  fi
+  if [ -n "$(git show ":$file" | gofmt -l)" ]; then
+    unformatted+=("$file")
+  fi
+done < <(git diff --cached --name-only --diff-filter=ACMR -z -- '*.go')
+if [ "${#unformatted[@]}" -gt 0 ]; then
+  echo "pre-commit: gofmt needed (run 'gofmt -w'):" >&2
+  printf '  %s\n' "${unformatted[@]}" >&2
+  exit 1
+fi
+
+golangci-lint run
+buf lint
+gitleaks git --pre-commit --staged --redact --no-banner

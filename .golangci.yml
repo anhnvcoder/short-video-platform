@@ -1,0 +1,25 @@
+# golangci-lint v2 configuration.
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - gosec
+    - errorlint
+    - bodyclose
+    - noctx
+    - misspell
+  exclusions:
+    # Skip files carrying the "Code generated ... DO NOT EDIT." header (protobuf, sqlc) and gen/.
+    generated: lax
+    paths:
+      - ^gen/
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - ^gen/

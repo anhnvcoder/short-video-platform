@@ -56,3 +56,4 @@ Chọn ..., vì ...
 | [0004](0004-direct-upload-and-hls.md) | Upload thẳng lên object storage bằng presigned URL, transcode bất đồng bộ ra HLS | Chấp nhận |
 | [0005](0005-feed-fan-out-on-write.md) | Feed dựng sẵn khi ghi (fan-out on write), Redis chỉ cache key nóng | Chấp nhận |
 | [0006](0006-contract-ids-and-event-envelope.md) | Contract nội bộ: ID là UUIDv7, event bọc theo topic của luồng thực thể, proto đặt ở `proto/svp/<domain>/v1` | Chấp nhận |
+| [0007](0007-go-monorepo-toolchain-and-stage1-scope.md) | Một Go module cho cả monorepo, công cụ ghim ở Makefile, cấu hình bằng biến môi trường, phạm vi giai đoạn 1 thu về luồng đồng bộ | Chấp nhận |

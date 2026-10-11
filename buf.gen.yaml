@@ -1,0 +1,15 @@
+# Code generation for Go. Run with `make generate` (needs `make tools` first).
+# The Go package path lives here instead of in the .proto files, so proto/ stays language neutral.
+version: v2
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/anhnvcoder/short-video-platform/gen/go
+plugins:
+  - local: protoc-gen-go
+    out: gen/go
+    opt: paths=source_relative
+  - local: protoc-gen-go-grpc
+    out: gen/go
+    opt: paths=source_relative
