@@ -5,7 +5,7 @@ info:
   title: Short-video platform API
   version: 0.1.0
   description: |
-    Stage 1 API. JSON fields are snake_case and times are RFC 3339 in UTC.
+    JSON fields are snake_case and times are RFC 3339 in UTC.
 
     Every error is an RFC 9457 problem (`application/problem+json`, docs/architecture.md §8.4):
     `code` is the service's reason (for example `VIDEO_NOT_FOUND`) or the gRPC code name, and
@@ -160,8 +160,10 @@ paths:
       operationId: initUpload
       summary: Create a video in UPLOADING
       description: |
-        Not idempotent: each call creates a video. Stage 1 returns only the id; the upload form
-        (presigned POST) and completing the upload arrive with object storage in stage 2.
+        Not idempotent: each call creates a video. The response carries a presigned POST: send a
+        `multipart/form-data` request to `upload_url` with every entry of `form_fields` first and the
+        file as the last field, before `expires_at`, then call `POST /videos/{video_id}/complete`.
+        `upload_url` and `form_fields` are a short-lived credential: do not log or share them.
       tags: [videos]
       security:
         - bearerAuth: []
@@ -201,10 +203,23 @@ paths:
               schema:
                 type: object
                 additionalProperties: false
-                required: [video_id]
+                required: [video_id, upload_url, form_fields, expires_at]
                 properties:
                   video_id:
                     $ref: "#/components/schemas/Id"
+                  upload_url:
+                    description: Absolute URL of the object storage endpoint to POST the form to.
+                    type: string
+                    format: uri
+                  form_fields:
+                    description: Form fields (key, policy, signature, ...) to send before the file field.
+                    type: object
+                    additionalProperties:
+                      type: string
+                  expires_at:
+                    description: When the presigned POST stops being accepted.
+                    type: string
+                    format: date-time
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -245,6 +260,55 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           description: No such video, or hidden from the caller (`VIDEO_NOT_FOUND`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+
+  /videos/{video_id}/complete:
+    post:
+      operationId: completeUpload
+      summary: Confirm the upload and start processing
+      description: |
+        Takes no request body. Checks that the uploaded object exists with the declared size and
+        content type, then moves the video to PROCESSING. Idempotent: calling it again on a video
+        already PROCESSING or READY returns the current video. The answer is always 202 and the
+        state is in the body's `status`; poll `GET /videos/{video_id}` until it is READY.
+      tags: [videos]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: video_id
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/Id"
+      responses:
+        "202":
+          description: The video in its current state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Video"
+        "400":
+          description: |
+            `video_id` is malformed (its reason), or the upload cannot be completed: the object is
+            missing (`UPLOAD_NOT_FOUND`), does not match the declared size or content type
+            (`UPLOAD_MISMATCH`) or the video is already FAILED (`VIDEO_FAILED`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No such video, or it belongs to another user (`VIDEO_NOT_FOUND`).
           content:
             application/problem+json:
               schema:
@@ -353,6 +417,14 @@ components:
           description: When the video became READY; present once READY.
           type: string
           format: date-time
+        playlist_url:
+          description: Absolute URL of the HLS master playlist; present once READY.
+          type: string
+          format: uri
+        thumbnail_url:
+          description: Absolute URL of the thumbnail; present once READY.
+          type: string
+          format: uri
 
     Status:
       type: object

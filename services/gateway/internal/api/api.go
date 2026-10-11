@@ -1,4 +1,4 @@
-// Package api is the gateway's stage 1 REST API (services/gateway/openapi.yaml): it turns JSON
+// Package api is the gateway's REST API (services/gateway/openapi.yaml): it turns JSON
 // requests into gRPC calls to user-service and video-service and their answers back into JSON
 // (snake_case fields, RFC 3339 UTC times).
 package api
@@ -33,6 +33,8 @@ type server struct {
 	users  userv1.UserServiceClient
 	videos videov1.VideoServiceClient
 	deps   []dependency
+	// mediaBaseURL is the public base of media object keys, without a trailing slash.
+	mediaBaseURL string
 }
 
 // dependency is a service /readyz checks.
@@ -44,11 +46,13 @@ type dependency struct {
 // New returns the gateway's HTTP handler: every route on its own mux, behind Trace, Recover and
 // AccessLog, with RequireAuth in front of the routes that need a caller. A request that matches
 // no route gets a problem response too. userConn and videoConn
-// reach user-service and video-service.
-func New(userConn, videoConn grpc.ClientConnInterface, verifier *authtoken.Verifier) http.Handler {
+// reach user-service and video-service. mediaBaseURL is the public base that media object keys
+// are appended to, without a trailing slash.
+func New(userConn, videoConn grpc.ClientConnInterface, verifier *authtoken.Verifier, mediaBaseURL string) http.Handler {
 	s := &server{
-		users:  userv1.NewUserServiceClient(userConn),
-		videos: videov1.NewVideoServiceClient(videoConn),
+		mediaBaseURL: mediaBaseURL,
+		users:        userv1.NewUserServiceClient(userConn),
+		videos:       videov1.NewVideoServiceClient(videoConn),
 		deps: []dependency{
 			{name: "user-service", health: healthpb.NewHealthClient(userConn)},
 			{name: "video-service", health: healthpb.NewHealthClient(videoConn)},
@@ -62,6 +66,7 @@ func New(userConn, videoConn grpc.ClientConnInterface, verifier *authtoken.Verif
 	mux.Handle("PUT /me/following/{user_id}", auth(http.HandlerFunc(s.follow)))
 	mux.Handle("DELETE /me/following/{user_id}", auth(http.HandlerFunc(s.unfollow)))
 	mux.Handle("POST /videos", auth(http.HandlerFunc(s.initUpload)))
+	mux.Handle("POST /videos/{video_id}/complete", auth(http.HandlerFunc(s.completeUpload)))
 	mux.Handle("GET /videos/{video_id}", auth(http.HandlerFunc(s.getVideo)))
 	mux.HandleFunc("GET /healthz", healthz)
 	mux.HandleFunc("GET /readyz", s.readyz)
@@ -163,11 +168,14 @@ type initUploadRequest struct {
 }
 
 type initUploadResponse struct {
-	VideoID string `json:"video_id"`
+	VideoID    string            `json:"video_id"`
+	UploadURL  string            `json:"upload_url"`
+	FormFields map[string]string `json:"form_fields"`
+	ExpiresAt  time.Time         `json:"expires_at"`
 }
 
-// initUpload creates the video. The presigned POST fields of the contract stay out of the
-// response until object storage exists (ADR-0007, section 8).
+// initUpload creates the video and returns the presigned POST. upload_url and form_fields are a
+// short-lived credential: they go to the client only and never to the log (threat model UP-2).
 func (s *server) initUpload(w http.ResponseWriter, r *http.Request) {
 	var req initUploadRequest
 	if !httpx.DecodeJSON(w, r, &req) {
@@ -184,8 +192,17 @@ func (s *server) initUpload(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteGRPCError(w, r, err)
 		return
 	}
+	fields := resp.GetFormFields()
+	if fields == nil {
+		fields = map[string]string{} // openapi: form_fields is a required object, never null
+	}
 	w.Header().Set("Location", "/videos/"+resp.GetVideoId())
-	writeJSON(w, http.StatusCreated, initUploadResponse{VideoID: resp.GetVideoId()})
+	writeJSON(w, http.StatusCreated, initUploadResponse{
+		VideoID:    resp.GetVideoId(),
+		UploadURL:  resp.GetUploadUrl(),
+		FormFields: fields,
+		ExpiresAt:  resp.GetExpiresAt().AsTime(),
+	})
 }
 
 type videoResponse struct {
@@ -196,6 +213,9 @@ type videoResponse struct {
 	CreatedAt   time.Time  `json:"created_at"`
 	DurationMs  *int64     `json:"duration_ms,omitempty"`
 	PublishedAt *time.Time `json:"published_at,omitempty"`
+	// PlaylistURL and ThumbnailURL are set once the video has the keys, which is when it is READY.
+	PlaylistURL  string `json:"playlist_url,omitempty"`
+	ThumbnailURL string `json:"thumbnail_url,omitempty"`
 }
 
 func (s *server) getVideo(w http.ResponseWriter, r *http.Request) {
@@ -206,17 +226,40 @@ func (s *server) getVideo(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteGRPCError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toVideoResponse(resp.GetVideo()))
+	writeJSON(w, http.StatusOK, s.toVideoResponse(resp.GetVideo()))
 }
 
-func toVideoResponse(v *videov1.Video) videoResponse {
+// completeUpload answers 202 with the video in whatever state CompleteUpload returns: the RPC is
+// idempotent and the state is in the body. The service validates video_id.
+func (s *server) completeUpload(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := callContext(r)
+	defer cancel()
+	resp, err := s.videos.CompleteUpload(ctx, &videov1.CompleteUploadRequest{VideoId: r.PathValue("video_id")})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, s.toVideoResponse(resp.GetVideo()))
+}
+
+// mediaURL returns the public URL of an object key, or "" for an empty key.
+func (s *server) mediaURL(key string) string {
+	if key == "" {
+		return ""
+	}
+	return s.mediaBaseURL + "/" + key
+}
+
+func (s *server) toVideoResponse(v *videov1.Video) videoResponse {
 	out := videoResponse{
 		VideoID:  v.GetVideoId(),
 		AuthorID: v.GetAuthorId(),
 		Title:    v.GetTitle(),
 		// VIDEO_STATUS_READY → READY.
-		Status:    strings.TrimPrefix(v.GetStatus().String(), "VIDEO_STATUS_"),
-		CreatedAt: v.GetCreatedAt().AsTime(),
+		Status:       strings.TrimPrefix(v.GetStatus().String(), "VIDEO_STATUS_"),
+		CreatedAt:    v.GetCreatedAt().AsTime(),
+		PlaylistURL:  s.mediaURL(v.GetPlaylistKey()),
+		ThumbnailURL: s.mediaURL(v.GetThumbnailKey()),
 	}
 	if d := v.GetDuration(); d != nil {
 		ms := d.AsDuration().Milliseconds()

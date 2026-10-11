@@ -1,4 +1,5 @@
-// Command video-service serves svp.video.v1.VideoService over gRPC.
+// Command video-service serves svp.video.v1.VideoService over gRPC and consumes the transcode
+// results of media.transcodes.v1.
 //
 // Subcommands (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 7):
 //
@@ -7,13 +8,16 @@
 //	healthcheck  ask the running service for its health; exit 0 when SERVING, 1 otherwise
 //
 // Configuration comes from the environment: LISTEN_ADDR (default 127.0.0.1:9102) and
-// DATABASE_URL (required for serve and migrate).
+// DATABASE_URL (required for serve and migrate); serve also needs KAFKA_BROKERS and the S3_*
+// variables of docs/adr/0008-async-upload-pipeline-stage2a.md, section 11.
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -26,7 +30,10 @@ import (
 	"github.com/anhnvcoder/short-video-platform/internal/dbmigrate"
 	"github.com/anhnvcoder/short-video-platform/internal/envcfg"
 	"github.com/anhnvcoder/short-video-platform/internal/grpcserver"
+	"github.com/anhnvcoder/short-video-platform/internal/kafkax"
 	"github.com/anhnvcoder/short-video-platform/internal/logx"
+	"github.com/anhnvcoder/short-video-platform/internal/objstore"
+	"github.com/anhnvcoder/short-video-platform/internal/outbox"
 	"github.com/anhnvcoder/short-video-platform/services/video-service/internal/server"
 	"github.com/anhnvcoder/short-video-platform/services/video-service/migrations"
 )
@@ -35,6 +42,9 @@ const (
 	serviceName        = "video-service"
 	defaultListenAddr  = "127.0.0.1:9102"
 	healthcheckTimeout = 3 * time.Second
+	// consumerRestartDelay is the wait before a transcode consumer that stopped on an error is
+	// replaced.
+	consumerRestartDelay = 5 * time.Second
 )
 
 func main() {
@@ -72,6 +82,24 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	brokers, err := envcfg.Required("KAFKA_BROKERS")
+	if err != nil {
+		return err
+	}
+	storageCfg, err := storageConfig()
+	if err != nil {
+		return err
+	}
+	storage, err := objstore.New(storageCfg)
+	if err != nil {
+		return err
+	}
+	kafka, err := kafkax.NewClient(brokers, serviceName)
+	if err != nil {
+		return fmt.Errorf("KAFKA_BROKERS: %w", err)
+	}
+	defer kafka.Close()
+
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
 		return fmt.Errorf("open database pool: %w", err)
@@ -82,10 +110,112 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("connect to database: %w", err)
 	}
 
-	srv := server.New(pool, logger)
+	// The relay stops after the server has drained and the consumer has stopped. It does not
+	// flush: rows the last RPCs wrote that it has not sent yet stay in the outbox and go out at
+	// the next start.
+	relayCtx, stopRelay := context.WithCancel(context.WithoutCancel(ctx))
+	relayDone := make(chan struct{})
+	go func() {
+		defer close(relayDone)
+		outbox.NewRelay(pool, kafka, logger).Run(relayCtx)
+	}()
+	defer func() {
+		stopRelay()
+		<-relayDone
+	}()
+
+	srv := server.New(pool, storage, logger)
+	newConsumer := func() (runner, error) { return kafkax.NewConsumer(srv.TranscodeConsumerConfig(brokers)) }
+	// The consumer stops with the server; a consumer that cannot be created stops the server
+	// too. Either way the relay above stops after both.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	consumerErr := make(chan error, 1)
+	go func() {
+		err := runConsumer(ctx, logger, consumerRestartDelay, newConsumer)
+		cancel()
+		consumerErr <- err
+	}()
+
 	register := func(s *grpc.Server) { videov1.RegisterVideoServiceServer(s, srv) }
-	return grpcserver.Run(ctx, envcfg.String("LISTEN_ADDR", defaultListenAddr), logger, register,
+	err = grpcserver.Run(ctx, envcfg.String("LISTEN_ADDR", defaultListenAddr), logger, register,
 		server.CallerInterceptor())
+	cancel()
+	if cerr := <-consumerErr; cerr != nil {
+		err = errors.Join(err, fmt.Errorf("transcode consumer: %w", cerr))
+	}
+	return err
+}
+
+// runner is what runConsumer needs of a kafkax.Consumer.
+type runner interface {
+	Run(ctx context.Context) error
+}
+
+// runConsumer runs consumers made by newConsumer, one after the other, until ctx is canceled.
+// A consumer stops on an error when a record cannot be settled, as when Redpanda restarts
+// during a commit; the record stays uncommitted, so the next consumer gets it again. Replacing
+// the consumer here keeps the gRPC API serving meanwhile. It returns an error only when
+// newConsumer fails.
+func runConsumer(ctx context.Context, logger *slog.Logger, delay time.Duration, newConsumer func() (runner, error)) error {
+	for {
+		c, err := newConsumer()
+		if err != nil {
+			return err
+		}
+		err = c.Run(ctx)
+		if ctx.Err() != nil {
+			return nil
+		}
+		logger.ErrorContext(ctx, "transcode consumer stopped, restarting",
+			slog.Duration("delay", delay), slog.Any("error", err))
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(delay):
+		}
+	}
+}
+
+// storageConfig reads the S3_* variables. Errors name the variable, never its value.
+func storageConfig() (objstore.Config, error) {
+	endpoint, err := envcfg.Required("S3_ENDPOINT")
+	if err != nil {
+		return objstore.Config{}, err
+	}
+	if err := checkEndpoint("S3_ENDPOINT", endpoint); err != nil {
+		return objstore.Config{}, err
+	}
+	public := envcfg.String("S3_PUBLIC_ENDPOINT", endpoint)
+	if err := checkEndpoint("S3_PUBLIC_ENDPOINT", public); err != nil {
+		return objstore.Config{}, err
+	}
+	accessKey, err := envcfg.Required("S3_ACCESS_KEY_ID")
+	if err != nil {
+		return objstore.Config{}, err
+	}
+	secretKey, err := envcfg.Required("S3_SECRET_ACCESS_KEY")
+	if err != nil {
+		return objstore.Config{}, err
+	}
+	return objstore.Config{
+		Endpoint:        endpoint,
+		PublicEndpoint:  public,
+		Region:          envcfg.String("S3_REGION", "us-east-1"),
+		AccessKeyID:     accessKey,
+		SecretAccessKey: secretKey,
+		UploadsBucket:   envcfg.String("S3_UPLOADS_BUCKET", "uploads"),
+		MediaBucket:     envcfg.String("S3_MEDIA_BUCKET", "media"),
+	}, nil
+}
+
+// checkEndpoint requires an absolute http or https URL with a host, such as http://minio:9000.
+func checkEndpoint(name, value string) error {
+	u, err := url.Parse(value)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("%s must be an absolute http or https URL", name)
+	}
+	return nil
 }
 
 func migrate(ctx context.Context) error {

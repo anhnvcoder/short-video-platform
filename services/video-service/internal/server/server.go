@@ -1,6 +1,7 @@
-// Package server implements svp.video.v1.VideoService for stage 1: InitUpload records a new video
-// and GetVideo reads one back. CompleteUpload needs object storage and the outbox, so it stays
-// UNIMPLEMENTED until stage 2 (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 8).
+// Package server implements svp.video.v1.VideoService: InitUpload records a new video and signs
+// its upload form, CompleteUpload checks the uploaded object and emits video.uploaded through the
+// outbox, GetVideo reads a video back (ADR-0004, docs/adr/0008-async-upload-pipeline-stage2a.md).
+// HandleTranscode consumes the transcode results that move the video to READY or FAILED.
 package server
 
 import (
@@ -14,6 +15,7 @@ import (
 	"uuid"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -26,6 +28,8 @@ import (
 	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
 	"github.com/anhnvcoder/short-video-platform/internal/ids"
 	"github.com/anhnvcoder/short-video-platform/internal/logx"
+	"github.com/anhnvcoder/short-video-platform/internal/objstore"
+	"github.com/anhnvcoder/short-video-platform/internal/outbox"
 	"github.com/anhnvcoder/short-video-platform/services/video-service/internal/store"
 )
 
@@ -36,6 +40,11 @@ const (
 	MaxSizeBytes = 500 << 20
 
 	maxMediaTypeLen = len("video/") + 127
+
+	// uploadFormTTL is how long a presigned upload form is accepted (ADR-0004, UP-2).
+	uploadFormTTL = 15 * time.Minute
+	// TopicVideoLifecycle carries svp.video.v1.VideoEvent, keyed by video_id.
+	TopicVideoLifecycle = "video.lifecycle.v1"
 )
 
 // ErrorInfo reasons returned by the service.
@@ -45,6 +54,9 @@ const (
 	ReasonInvalidContentType = "INVALID_CONTENT_TYPE"
 	ReasonInvalidVideoID     = "INVALID_VIDEO_ID"
 	ReasonVideoNotFound      = "VIDEO_NOT_FOUND"
+	ReasonVideoFailed        = "VIDEO_FAILED"
+	ReasonUploadNotFound     = "UPLOAD_NOT_FOUND"
+	ReasonUploadMismatch     = "UPLOAD_MISMATCH"
 )
 
 // Video statuses as stored in the status column.
@@ -55,18 +67,28 @@ const (
 	statusFailed     = "FAILED"
 )
 
+// Storage is the part of the object storage the server uses; *objstore.Store implements it.
+type Storage interface {
+	PresignPost(ctx context.Context, key string, sizeBytes int64, contentType string, ttl time.Duration) (*objstore.PresignedPost, error)
+	Head(ctx context.Context, key string) (objstore.ObjectInfo, error)
+	Delete(ctx context.Context, key string) error
+	DeletePrefix(ctx context.Context, prefix string) error
+}
+
 // Server serves VideoService. Every RPC expects the caller id that callerid.UnaryServerInterceptor
 // puts into the context.
 type Server struct {
 	videov1.UnimplementedVideoServiceServer
 
+	pool    *pgxpool.Pool
 	queries *store.Queries
+	storage Storage
 	logger  *slog.Logger
 }
 
-// New returns a Server reading and writing through db.
-func New(db store.DBTX, logger *slog.Logger) *Server {
-	return &Server{queries: store.New(db), logger: logger}
+// New returns a Server reading and writing through pool and storage.
+func New(pool *pgxpool.Pool, storage Storage, logger *slog.Logger) *Server {
+	return &Server{pool: pool, queries: store.New(pool), storage: storage, logger: logger}
 }
 
 // CallerInterceptor requires the caller's x-user-id on every VideoService RPC. Only the health
@@ -75,8 +97,9 @@ func CallerInterceptor() grpc.UnaryServerInterceptor {
 	return callerid.UnaryServerInterceptor(healthpb.Health_Check_FullMethodName)
 }
 
-// InitUpload creates a video in UPLOADING owned by the caller. Until object storage exists
-// (stage 2) the response carries only video_id.
+// InitUpload creates a video in UPLOADING owned by the caller and returns a form that uploads
+// exactly uploads/<video_id>, of 1 to size_bytes bytes with the normalized content type, for 15
+// minutes (UP-1). The form is a credential: it is never logged (UP-2).
 func (s *Server) InitUpload(ctx context.Context, req *videov1.InitUploadRequest) (*videov1.InitUploadResponse, error) {
 	caller, err := callerID(ctx)
 	if err != nil {
@@ -108,7 +131,125 @@ func (s *Server) InitUpload(ctx context.Context, req *videov1.InitUploadRequest)
 		return nil, s.internal(ctx, "insert video", err)
 	}
 	s.logger.InfoContext(ctx, "video created")
-	return &videov1.InitUploadResponse{VideoId: id}, nil
+
+	// The key comes from the id the server generated, never from the request (UP-4).
+	form, err := s.storage.PresignPost(ctx, objstore.UploadsPrefix+id, req.GetSizeBytes(), contentType, uploadFormTTL)
+	if err != nil {
+		return nil, s.internal(ctx, "presign upload form", err)
+	}
+	return &videov1.InitUploadResponse{
+		VideoId:    id,
+		UploadUrl:  form.URL,
+		FormFields: form.Fields,
+		ExpiresAt:  timestamppb.New(form.ExpiresAt),
+	}, nil
+}
+
+// CompleteUpload checks that uploads/<video_id> holds the declared size and content type, then
+// moves the video from UPLOADING to PROCESSING and writes video.uploaded to the outbox in one
+// transaction. A video already PROCESSING or READY is returned as is, so a retried call emits
+// nothing. A video of another user gets the same error as a missing one (UP-3).
+func (s *Server) CompleteUpload(ctx context.Context, req *videov1.CompleteUploadRequest) (*videov1.CompleteUploadResponse, error) {
+	caller, err := callerID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	videoID, err := ids.Parse(req.GetVideoId())
+	if err != nil {
+		return nil, grpcerr.New(codes.InvalidArgument, ReasonInvalidVideoID, "video_id must be a canonical lowercase UUID")
+	}
+
+	v, err := s.queries.GetVideo(ctx, videoID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, videoNotFound()
+	}
+	if err != nil {
+		return nil, s.internal(ctx, "select video", err)
+	}
+	if v.AuthorID != caller {
+		return nil, videoNotFound()
+	}
+	ctx = logx.With(ctx, slog.String("video_id", v.ID.String()))
+	switch v.Status {
+	case statusProcessing, statusReady:
+		return &videov1.CompleteUploadResponse{Video: toProto(v)}, nil
+	case statusFailed:
+		return nil, grpcerr.New(codes.FailedPrecondition, ReasonVideoFailed, "video has failed")
+	}
+
+	key := objstore.UploadsPrefix + v.ID.String()
+	obj, err := s.storage.Head(ctx, key)
+	if errors.Is(err, objstore.ErrNotFound) {
+		return nil, grpcerr.New(codes.FailedPrecondition, ReasonUploadNotFound, "uploaded file not found")
+	}
+	if err != nil {
+		s.logger.ErrorContext(ctx, "head uploaded file", slog.Any("error", err))
+		return nil, status.Error(codes.Unavailable, "storage unavailable")
+	}
+	// The form limits the size to 1..size_bytes; the video needs exactly what InitUpload declared.
+	// The video stays UPLOADING, so the client can upload again while its form is valid.
+	if obj.Size != v.SizeBytes || obj.ContentType != v.ContentType {
+		s.logger.InfoContext(ctx, "uploaded file does not match",
+			slog.Int64("size_bytes", obj.Size), slog.Int64("declared_size_bytes", v.SizeBytes),
+			slog.String("content_type", obj.ContentType), slog.String("declared_content_type", v.ContentType))
+		return nil, grpcerr.New(codes.FailedPrecondition, ReasonUploadMismatch,
+			"uploaded file does not match the declared size or content type")
+	}
+
+	v, emitted, err := s.markProcessing(ctx, v, key)
+	if err != nil {
+		return nil, s.internal(ctx, "mark video processing", err)
+	}
+	// Another transaction moved the video between the read above and the UPDATE; a video that
+	// failed meanwhile is answered as one that had failed before the call.
+	if v.Status == statusFailed {
+		return nil, grpcerr.New(codes.FailedPrecondition, ReasonVideoFailed, "video has failed")
+	}
+	if emitted {
+		s.logger.InfoContext(ctx, "upload completed")
+	}
+	return &videov1.CompleteUploadResponse{Video: toProto(v)}, nil
+}
+
+// markProcessing moves v to PROCESSING and writes its video.uploaded event in one transaction.
+// The UPDATE locks the row before the outbox insert, as internal/outbox requires for per-key
+// order. When a concurrent call moved the video first, the UPDATE waits for it, matches no row,
+// and markProcessing returns the video as that call left it, with emitted false.
+func (s *Server) markProcessing(ctx context.Context, v store.Video, key string) (_ store.Video, emitted bool, err error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.Video{}, false, err
+	}
+	// After Commit this is a no-op; on ctx cancellation it still reaches the server.
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	q := s.queries.WithTx(tx)
+
+	updated, err := q.MarkVideoProcessing(ctx, v.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		current, err := q.GetVideo(ctx, v.ID)
+		return current, false, err
+	}
+	if err != nil {
+		return store.Video{}, false, err
+	}
+	id := v.ID.String()
+	ev := &videov1.VideoEvent{
+		Meta: outbox.NewMeta(),
+		Event: &videov1.VideoEvent_VideoUploaded{VideoUploaded: &videov1.VideoUploaded{
+			VideoId:     id,
+			AuthorId:    v.AuthorID.String(),
+			SourceKey:   key,
+			ContentType: v.ContentType,
+			SizeBytes:   v.SizeBytes,
+		}},
+	}
+	if err := outbox.Write(ctx, tx, TopicVideoLifecycle, id, ev); err != nil {
+		return store.Video{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return store.Video{}, false, err
+	}
+	return updated, true, nil
 }
 
 // GetVideo returns a video that is READY, or any video of the caller's own. Every other case

@@ -43,11 +43,17 @@ const (
 	// clientTraceparent is a valid traceparent a client might send; it must never be used.
 	clientTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 	fakeAccessToken   = "fake.access.token"
+	mediaBase         = "http://127.0.0.1:9000/media"
+	// uploadSecret stands for a presigned POST credential: it must reach the client, not the log.
+	uploadSecret = "presigned-signature-secret"
+	// noFormFields is a title fakeVideos answers with a nil form_fields map.
+	noFormFields = "no form fields"
 )
 
 var (
 	createdAt   = time.Date(2026, 10, 11, 1, 2, 3, 456000000, time.UTC)
 	publishedAt = time.Date(2026, 10, 11, 1, 5, 0, 0, time.UTC)
+	uploadUntil = time.Date(2026, 10, 11, 1, 17, 3, 0, time.UTC)
 	tokenExpiry = time.Date(2026, 10, 11, 2, 0, 0, 0, time.UTC)
 )
 
@@ -163,8 +169,35 @@ type fakeVideos struct {
 	videov1.UnimplementedVideoServiceServer
 }
 
-func (fakeVideos) InitUpload(context.Context, *videov1.InitUploadRequest) (*videov1.InitUploadResponse, error) {
-	return &videov1.InitUploadResponse{VideoId: videoID}, nil
+// InitUpload answers without form fields when the title is noFormFields.
+func (fakeVideos) InitUpload(_ context.Context, req *videov1.InitUploadRequest) (*videov1.InitUploadResponse, error) {
+	if req.GetTitle() == noFormFields {
+		return &videov1.InitUploadResponse{VideoId: videoID, UploadUrl: "http://127.0.0.1:9000/svp-uploads", ExpiresAt: timestamppb.New(uploadUntil)}, nil
+	}
+	return &videov1.InitUploadResponse{
+		VideoId:    videoID,
+		UploadUrl:  "http://127.0.0.1:9000/svp-uploads",
+		FormFields: map[string]string{"key": "uploads/" + videoID, "x-amz-signature": uploadSecret},
+		ExpiresAt:  timestamppb.New(uploadUntil),
+	}, nil
+}
+
+// CompleteUpload answers PROCESSING for videoID and READY (idempotent repeat) for any other id.
+func (f fakeVideos) CompleteUpload(ctx context.Context, req *videov1.CompleteUploadRequest) (*videov1.CompleteUploadResponse, error) {
+	resp, err := f.GetVideo(ctx, &videov1.GetVideoRequest{VideoId: req.GetVideoId()})
+	if err != nil {
+		return nil, err
+	}
+	v := resp.GetVideo()
+	if req.GetVideoId() == videoID {
+		v.Status = videov1.VideoStatus_VIDEO_STATUS_PROCESSING
+		v.Duration, v.PlaylistKey, v.ThumbnailKey, v.PublishedAt = nil, "", "", nil
+	} else {
+		v.Status = videov1.VideoStatus_VIDEO_STATUS_READY
+		v.PlaylistKey = "media/" + req.GetVideoId() + "/master.m3u8"
+		v.ThumbnailKey = "media/" + req.GetVideoId() + "/thumb.jpg"
+	}
+	return &videov1.CompleteUploadResponse{Video: v}, nil
 }
 
 func (fakeVideos) GetVideo(_ context.Context, req *videov1.GetVideoRequest) (*videov1.GetVideoResponse, error) {
@@ -179,6 +212,7 @@ func (fakeVideos) GetVideo(_ context.Context, req *videov1.GetVideoRequest) (*vi
 		v.Status = videov1.VideoStatus_VIDEO_STATUS_READY
 		v.Duration = durationpb.New(12345 * time.Millisecond)
 		v.PlaylistKey = "media/" + videoID + "/master.m3u8"
+		v.ThumbnailKey = "media/" + videoID + "/thumb.jpg"
 		v.PublishedAt = timestamppb.New(publishedAt)
 	}
 	return &videov1.GetVideoResponse{Video: v}, nil
@@ -201,7 +235,7 @@ func newEnv(t *testing.T) *env {
 	users, userConn := startBackend(t, func(s *grpc.Server) { userv1.RegisterUserServiceServer(s, fakeUsers{}) })
 	videos, videoConn := startBackend(t, func(s *grpc.Server) { videov1.RegisterVideoServiceServer(s, fakeVideos{}) })
 	verifier := authtoken.NewVerifier(map[string]ed25519.PublicKey{testKID: key.Public().(ed25519.PublicKey)})
-	return &env{handler: New(userConn, videoConn, verifier), users: users, videos: videos, key: key}
+	return &env{handler: New(userConn, videoConn, verifier, mediaBase), users: users, videos: videos, key: key}
 }
 
 // token returns a valid access token for userID.
@@ -403,8 +437,17 @@ func TestInitUpload(t *testing.T) {
 	if loc := rec.Header().Get("Location"); loc != "/videos/"+videoID {
 		t.Errorf("Location = %q", loc)
 	}
-	if got := decode[map[string]string](t, rec); got["video_id"] != videoID || len(got) != 1 {
-		t.Errorf("body = %v, want {video_id: %s}", got, videoID)
+	got := decode[struct {
+		VideoID    string            `json:"video_id"`
+		UploadURL  string            `json:"upload_url"`
+		FormFields map[string]string `json:"form_fields"`
+		ExpiresAt  string            `json:"expires_at"`
+	}](t, rec)
+	if got.VideoID != videoID || got.UploadURL != "http://127.0.0.1:9000/svp-uploads" || got.ExpiresAt != "2026-10-11T01:17:03Z" {
+		t.Errorf("body = %+v", got)
+	}
+	if got.FormFields["key"] != "uploads/"+videoID || got.FormFields["x-amz-signature"] != uploadSecret || len(got.FormFields) != 2 {
+		t.Errorf("form_fields = %v", got.FormFields)
 	}
 	c := e.videos.only(t)
 	req := c.req.(*videov1.InitUploadRequest)
@@ -413,6 +456,33 @@ func TestInitUpload(t *testing.T) {
 	}
 	if v := c.md.Get(callerid.MetadataKey); !slices.Equal(v, []string{userA}) {
 		t.Errorf("x-user-id = %v, want [%s]", v, userA)
+	}
+}
+
+func TestInitUploadNilFormFieldsIsEmptyObject(t *testing.T) {
+	e := newEnv(t)
+	rec := e.do(t, http.MethodPost, "/videos", `{"title":"`+noFormFields+`","size_bytes":1048576,"content_type":"video/mp4"}`, e.token(t, userA))
+	wantStatus(t, rec, http.StatusCreated)
+	got := decode[map[string]json.RawMessage](t, rec)
+	if string(got["form_fields"]) != "{}" {
+		t.Errorf("form_fields = %s, want {}", got["form_fields"])
+	}
+}
+
+// TestInitUploadKeepsCredentialOutOfLog is threat model UP-2: the presigned POST goes to the
+// client only.
+func TestInitUploadKeepsCredentialOutOfLog(t *testing.T) {
+	logs := captureLog(t)
+	e := newEnv(t)
+	rec := e.do(t, http.MethodPost, "/videos", `{"title":"first clip","size_bytes":1048576,"content_type":"video/mp4"}`, e.token(t, userA))
+	wantStatus(t, rec, http.StatusCreated)
+	if !strings.Contains(logs.String(), `"route":"POST /videos"`) {
+		t.Errorf("no access log line for the request:\n%s", logs.String())
+	}
+	for _, s := range []string{uploadSecret, "svp-uploads", "x-amz-signature"} {
+		if strings.Contains(logs.String(), s) {
+			t.Errorf("log contains %q:\n%s", s, logs.String())
+		}
 	}
 }
 
@@ -437,13 +507,15 @@ func TestGetVideo(t *testing.T) {
 		wantJSON(t, rec)
 		got := decode[map[string]any](t, rec)
 		want := map[string]any{
-			"video_id":     videoID,
-			"author_id":    userA,
-			"title":        "first clip",
-			"status":       "READY",
-			"created_at":   "2026-10-11T01:02:03.456Z",
-			"duration_ms":  float64(12345),
-			"published_at": "2026-10-11T01:05:00Z",
+			"video_id":      videoID,
+			"author_id":     userA,
+			"title":         "first clip",
+			"status":        "READY",
+			"created_at":    "2026-10-11T01:02:03.456Z",
+			"duration_ms":   float64(12345),
+			"published_at":  "2026-10-11T01:05:00Z",
+			"playlist_url":  mediaBase + "/media/" + videoID + "/master.m3u8",
+			"thumbnail_url": mediaBase + "/media/" + videoID + "/thumb.jpg",
 		}
 		if len(got) != len(want) {
 			t.Errorf("body = %v, want %v", got, want)
@@ -473,6 +545,73 @@ func TestGetVideo(t *testing.T) {
 	calls := e.videos.recorded()
 	if len(calls) != 2 || calls[0].req.(*videov1.GetVideoRequest).GetVideoId() != videoID {
 		t.Errorf("calls = %+v", calls)
+	}
+}
+
+func TestCompleteUpload(t *testing.T) {
+	e := newEnv(t)
+
+	t.Run("processing", func(t *testing.T) {
+		rec := e.do(t, http.MethodPost, "/videos/"+videoID+"/complete", "", e.token(t, userA))
+		wantStatus(t, rec, http.StatusAccepted)
+		wantJSON(t, rec)
+		got := decode[map[string]any](t, rec)
+		if got["status"] != "PROCESSING" || got["video_id"] != videoID {
+			t.Errorf("body = %v", got)
+		}
+		for _, k := range []string{"duration_ms", "published_at", "playlist_url", "thumbnail_url"} {
+			if _, ok := got[k]; ok {
+				t.Errorf("body has %s: %v", k, got)
+			}
+		}
+	})
+
+	t.Run("repeat on a ready video", func(t *testing.T) {
+		const other = "01928c6e-7b3a-7cde-8f01-222222222222"
+		rec := e.do(t, http.MethodPost, "/videos/"+other+"/complete", "", e.token(t, userA))
+		wantStatus(t, rec, http.StatusAccepted)
+		got := decode[map[string]any](t, rec)
+		if got["status"] != "READY" || got["playlist_url"] != mediaBase+"/media/"+other+"/master.m3u8" {
+			t.Errorf("body = %v", got)
+		}
+	})
+
+	calls := e.videos.recorded()
+	if len(calls) != 2 || calls[0].method != videov1.VideoService_CompleteUpload_FullMethodName {
+		t.Fatalf("calls = %+v", calls)
+	}
+	if got := calls[0].req.(*videov1.CompleteUploadRequest).GetVideoId(); got != videoID {
+		t.Errorf("video_id = %q, want %q", got, videoID)
+	}
+	if v := calls[0].md.Get(callerid.MetadataKey); !slices.Equal(v, []string{userA}) {
+		t.Errorf("x-user-id = %v, want [%s]", v, userA)
+	}
+}
+
+func TestCompleteUploadErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		path       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{"not found", "/videos/" + videoID + "/complete", grpcerr.New(codes.NotFound, "VIDEO_NOT_FOUND", "video not found"), http.StatusNotFound, "VIDEO_NOT_FOUND"},
+		{"malformed id", "/videos/NOT-a-uuid/complete", grpcerr.New(codes.InvalidArgument, "INVALID_VIDEO_ID", "video_id must be a canonical lowercase UUID"), http.StatusBadRequest, "INVALID_VIDEO_ID"},
+		{"object missing", "/videos/" + videoID + "/complete", grpcerr.New(codes.FailedPrecondition, "UPLOAD_NOT_FOUND", "uploaded object not found"), http.StatusBadRequest, "UPLOAD_NOT_FOUND"},
+		{"object mismatch", "/videos/" + videoID + "/complete", grpcerr.New(codes.FailedPrecondition, "UPLOAD_MISMATCH", "uploaded object does not match"), http.StatusBadRequest, "UPLOAD_MISMATCH"},
+		{"video failed", "/videos/" + videoID + "/complete", grpcerr.New(codes.FailedPrecondition, "VIDEO_FAILED", "video failed"), http.StatusBadRequest, "VIDEO_FAILED"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.videos.fail(tc.err)
+			rec := e.do(t, http.MethodPost, tc.path, "", e.token(t, userA))
+			wantStatus(t, rec, tc.wantStatus)
+			if p := decodeProblem(t, rec); p.Code != tc.wantCode {
+				t.Errorf("code = %q, want %q", p.Code, tc.wantCode)
+			}
+			e.videos.only(t)
+		})
 	}
 }
 
@@ -532,6 +671,7 @@ func TestAuthenticatedRoutesNeedToken(t *testing.T) {
 		{http.MethodPut, "/me/following/" + userB, ""},
 		{http.MethodDelete, "/me/following/" + userB, ""},
 		{http.MethodPost, "/videos", `{"title":"x","size_bytes":1,"content_type":"video/mp4"}`},
+		{http.MethodPost, "/videos/" + videoID + "/complete", ""},
 		{http.MethodGet, "/videos/" + videoID, ""},
 	}
 	for _, rt := range routes {
@@ -583,6 +723,20 @@ func TestOutgoingMetadataFromTokenOnly(t *testing.T) {
 				t.Errorf("metadata %s carries client value %q", k, v)
 			}
 		}
+	}
+}
+
+// TestCompleteUploadIgnoresClientUserID is threat model IN-1 on the complete route.
+func TestCompleteUploadIgnoresClientUserID(t *testing.T) {
+	e := newEnv(t)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/videos/"+videoID+"/complete", nil)
+	r.Header.Set("Authorization", "Bearer "+e.token(t, userA))
+	r.Header.Set("X-User-Id", userB)
+	rec := httptest.NewRecorder()
+	e.handler.ServeHTTP(rec, r)
+	wantStatus(t, rec, http.StatusAccepted)
+	if v := e.videos.only(t).md.Get(callerid.MetadataKey); !slices.Equal(v, []string{userA}) {
+		t.Errorf("x-user-id = %v, want [%s]", v, userA)
 	}
 }
 

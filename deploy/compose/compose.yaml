@@ -1,10 +1,17 @@
-# Stage 1 core stack: gateway, user-service, video-service and their one-shot migrations
-# (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, sections 4 to 7). Run it through
-# `make up` / `make down` (deploy/compose/compose.mk), which pass --env-file .env.
+# Core stack: gateway, user-service, video-service and their one-shot migrations
+# (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, sections 4 to 7), plus Redpanda and
+# MinIO with their one-shot init containers (docs/adr/0008-async-upload-pipeline-stage2a.md,
+# sections 5, 6, 11 and 12). Run it through `make up` / `make down` (deploy/compose/compose.mk),
+# which pass --env-file .env.
 #
 # Postgres is the native one on the host (127.0.0.1:5432), reached as host.docker.internal.
-# Only the gateway is published, and only on the host's loopback; gRPC ports stay inside the
-# compose network (threat model IN-2).
+# Published ports are on the host's loopback only: the gateway, the MinIO API and console, and
+# Redpanda's host listener. gRPC ports stay inside the compose network (threat model IN-2).
+#
+# Two networks: `default` holds everything but media-worker; `worker` (internal, no route out)
+# holds media-worker, Redpanda and MinIO only, so the worker that runs ffmpeg on uploaded files
+# reaches neither the gateway, the gRPC services, Postgres nor the internet (ADR-0008, section 9;
+# threat model FF-4, FF-5).
 name: svp
 
 x-healthcheck: &healthcheck
@@ -20,7 +27,95 @@ x-host-postgres: &host-postgres
   # Docker Desktop provides host.docker.internal; this line makes it work on Linux too.
   extra_hosts: ["host.docker.internal:host-gateway"]
 
+x-redpanda-image: &redpanda-image redpandadata/redpanda:v26.2.4@sha256:c98c2f04a751e6646012cc701bac5183252cee44c88ba1dfa412e4c7124f2e89
+# Chainguard's free tier only publishes `latest`, so the image is pinned by digest (ADR-0008, section 6).
+x-minio-image: &minio-image cgr.dev/chainguard/minio@sha256:7df55d002b698e4494a131b848dd553361bbe58b7e19f62d9623c29af1ba9ccf
+
 services:
+  redpanda:
+    profiles: [core]
+    image: *redpanda-image
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=1G
+      - --overprovisioned
+      - --node-id=0
+      - --check=false
+      # Two listeners: containers use redpanda:9092, the host (tests, rpk) uses 127.0.0.1:19092.
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://127.0.0.1:19092
+    mem_limit: 1536m
+    cpus: 1
+    networks: [default, worker]
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+      # Sets auto_create_topics_enabled=false when the cluster first forms.
+      - ../redpanda/bootstrap.yaml:/etc/redpanda/.bootstrap.yaml:ro
+    ports:
+      - "127.0.0.1:19092:19092"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -Eq 'Healthy:[[:space:]]+true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+      start_interval: 1s
+
+  redpanda-init:
+    profiles: [core]
+    image: *redpanda-image
+    entrypoint: ["/bin/bash", "/init/create-topics.sh"]
+    environment:
+      RPK_BROKERS: redpanda:9092
+    volumes:
+      - ../redpanda:/init:ro
+    restart: "no"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+
+  minio:
+    profiles: [core]
+    image: *minio-image
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      # The root credential exists only here and in minio-init; services get their own users (UP-5).
+      MINIO_ROOT_USER: svp-admin
+      MINIO_ROOT_PASSWORD: ${SVP_MINIO_ROOT_PASSWORD:?run make env}
+    mem_limit: 512m
+    networks: [default, worker]
+    volumes:
+      # The image's /data is world-writable, so the new volume is writable by its uid 65532.
+      - minio-data:/data
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    healthcheck:
+      # No curl in the image: mc asks the server's unauthenticated readiness endpoint.
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+      start_interval: 1s
+
+  minio-init:
+    profiles: [core]
+    image: *minio-image
+    entrypoint: ["/bin/sh", "/init/init.sh"]
+    environment:
+      MINIO_ROOT_PASSWORD: ${SVP_MINIO_ROOT_PASSWORD:?run make env}
+      SVP_VIDEO_S3_SECRET_KEY: ${SVP_VIDEO_S3_SECRET_KEY:?run make env}
+      SVP_MEDIA_WORKER_S3_SECRET_KEY: ${SVP_MEDIA_WORKER_S3_SECRET_KEY:?run make env}
+    volumes:
+      - ../minio:/init:ro
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+
   user-migrate:
     <<: *host-postgres
     profiles: [core]
@@ -59,6 +154,7 @@ services:
       JWT_SIGNING_KID: ${JWT_SIGNING_KID:?run make env}
       JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:?run make env}
     healthcheck: *healthcheck
+    restart: unless-stopped
     depends_on:
       user-migrate:
         condition: service_completed_successfully
@@ -76,9 +172,24 @@ services:
     environment:
       LISTEN_ADDR: ":9102"
       DATABASE_URL: postgres://svp_video_app:${SVP_VIDEO_APP_DB_PASSWORD:?run make env}@host.docker.internal:5432/svp_video?sslmode=disable
+      KAFKA_BROKERS: redpanda:9092
+      # Service-to-MinIO calls use the compose name; upload URLs handed to clients use the host
+      # address (ADR-0008, section 3).
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: http://127.0.0.1:9000
+      S3_ACCESS_KEY_ID: svp-video-service
+      S3_SECRET_ACCESS_KEY: ${SVP_VIDEO_S3_SECRET_KEY:?run make env}
     healthcheck: *healthcheck
+    # The process exits when it cannot start a Kafka consumer and expects to be started again.
+    restart: unless-stopped
     depends_on:
       video-migrate:
+        condition: service_completed_successfully
+      redpanda:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+      minio-init:
         condition: service_completed_successfully
 
   gateway:
@@ -96,11 +207,68 @@ services:
       VIDEO_SERVICE_ADDR: video-service:9102
       # Public keys only: the gateway verifies tokens, it cannot sign them.
       JWT_VERIFY_KEYS: ${JWT_VERIFY_KEYS:?run make env}
+      MEDIA_PUBLIC_BASE_URL: http://127.0.0.1:9000/media
     ports:
       - "127.0.0.1:8080:8080"
     healthcheck: *healthcheck
+    restart: unless-stopped
     depends_on:
       user-service:
         condition: service_healthy
       video-service:
         condition: service_healthy
+
+  media-worker:
+    profiles: [core]
+    image: svp/media-worker:dev
+    pull_policy: build
+    build:
+      context: ../..
+      dockerfile: deploy/docker/media-worker.Dockerfile
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY_ID: svp-media-worker
+      S3_SECRET_ACCESS_KEY: ${SVP_MEDIA_WORKER_S3_SECRET_KEY:?run make env}
+      WORK_DIR: /work
+    # Exactly one replica: on start the worker deletes every job directory (named by video id)
+    # left in /work, so a second replica sharing this volume would delete the jobs of the first.
+    # Scaling out needs one volume per replica.
+    scale: 1
+    # The image has a shell and apk (ffmpeg needs Alpine), so the container takes them away:
+    # read-only root, no capabilities, no privilege gain, the image's non-root user.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    user: "65532:65532"
+    cpus: 2
+    mem_limit: 2g
+    # ffmpeg and libx264 start a thread per core and per encoder; this caps a runaway, not a job.
+    pids_limit: 256
+    volumes:
+      # Job scratch space on disk: a job needs up to ~1 GB, too much for a RAM-backed tmpfs.
+      - media-worker-work:/work
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    networks: [worker]
+    # Exits when its consumer fails (a commit or DLQ produce while Redpanda restarts) and relies on
+    # being started again; the uncommitted record is delivered again.
+    restart: unless-stopped
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+
+networks:
+  default:
+  worker:
+    internal: true
+
+volumes:
+  redpanda-data:
+  minio-data:
+  # Created owned by 65532:65532 from the image's /work, so the worker can write to it.
+  media-worker-work:

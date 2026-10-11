@@ -10,6 +10,17 @@ import (
 	"uuid"
 )
 
+type Outbox struct {
+	ID          int64
+	EventID     uuid.UUID
+	Topic       string
+	RecordKey   string
+	Payload     []byte
+	Headers     []byte
+	CreatedAt   time.Time
+	PublishedAt *time.Time
+}
+
 type Video struct {
 	ID           uuid.UUID
 	AuthorID     uuid.UUID

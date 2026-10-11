@@ -10,8 +10,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -75,6 +77,15 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("JWT_VERIFY_KEYS: %w", err)
 	}
 
+	mediaBase, err := envcfg.Required("MEDIA_PUBLIC_BASE_URL")
+	if err != nil {
+		return err
+	}
+	mediaBase, err = parseMediaBaseURL(mediaBase)
+	if err != nil {
+		return fmt.Errorf("MEDIA_PUBLIC_BASE_URL: %w", err)
+	}
+
 	userConn, err := dial("USER_SERVICE_ADDR", defaultUserServiceAddr)
 	if err != nil {
 		return err
@@ -86,7 +97,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	}
 	defer func() { _ = videoConn.Close() }()
 
-	srv := httpx.NewServer(addr, api.New(userConn, videoConn, authtoken.NewVerifier(keys)))
+	srv := httpx.NewServer(addr, api.New(userConn, videoConn, authtoken.NewVerifier(keys), mediaBase))
 	var lc net.ListenConfig
 	lis, err := lc.Listen(ctx, "tcp", addr)
 	if err != nil {
@@ -113,6 +124,24 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	}
 	logger.Info("http server stopped")
 	return nil
+}
+
+// parseMediaBaseURL checks that s is an absolute http or https URL and returns it without a
+// trailing slash. Object keys are appended to it, so a query or fragment would break every URL
+// and userinfo would put a credential into every public URL. The error never carries the value.
+func parseMediaBaseURL(s string) (string, error) {
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", errors.New("not a valid URL")
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", errors.New("want an absolute http or https URL")
+	}
+	// "?" and "#" cannot appear in the host, and an empty query or fragment leaves no trace in u.
+	if strings.ContainsAny(s, "?#") || u.User != nil {
+		return "", errors.New("want a URL without query, fragment or userinfo")
+	}
+	return strings.TrimRight(s, "/"), nil
 }
 
 // dial returns a client connection to the gRPC address in the variable name. The connection is

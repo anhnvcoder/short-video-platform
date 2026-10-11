@@ -2,7 +2,8 @@
 
 > Ngày lập: 2026-10-04
 >
-> Trạng thái: giai đoạn 0 và 1 xong (2026-10-11); chặng G hoãn; tiếp theo là giai đoạn 2
+> Trạng thái: giai đoạn 0, 1 và phần A của giai đoạn 2 xong (2026-10-11); chặng G hoãn; tiếp theo là phần còn lại của
+> giai đoạn 2 (engagement, feed, Redis, rate limit, timeout/retry/circuit breaker)
 
 ## Mục tiêu
 
@@ -265,6 +266,32 @@ Tổng ước lượng: khoảng 8–10 tháng làm cuối tuần, đã tính ch
 - [ ] G. Nền tảng Go: hoãn từ 2026-10-11 khi đang ở tuần 1 (giao 2026-10-04, bắt đầu 2026-10-05). Bài giao và nhật ký review ở [`plans/261004-go-foundations/plan.md`](../261004-go-foundations/plan.md).
 - [x] 1. Service lõi (xong 2026-10-11): `gateway`, `user-service`, `video-service` chạy bằng `make up` trên compose profile `core`; `make smoke` qua luồng đăng ký → đăng nhập → tạo video → đọc lại → follow/unfollow. Số đo: `make up` 8 s (image đã cache, gồm bootstrap Postgres và migrate); image `svp/gateway` 21,1 MB, `svp/user-service` 26 MB, `svp/video-service` 25,8 MB; `go test -race -count=1 ./...` 10 s (có integration test trên Postgres). `make check`, `buf breaking` và pre-commit hook sạch. Quyết định ở [ADR-0007](../../docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md): một Go module, công cụ ghim ở Makefile, cấu hình bằng biến môi trường, code sinh ra được commit, phạm vi thu về luồng đồng bộ (Redis, outbox, presigned upload sang giai đoạn 2).
 - [ ] 2. Bất đồng bộ và pattern
+  - [x] Phần A, luồng upload bất đồng bộ (xong 2026-10-11), quyết định ở
+    [ADR-0008](../../docs/adr/0008-async-upload-pipeline-stage2a.md):
+    - Đã làm: Redpanda và MinIO trong compose profile `core` (topic tạo bằng container init, bucket `uploads`/`media`, user
+      và policy theo service); `POST /videos` trả presigned POST, `POST /videos/{video_id}/complete` (`HEAD` rồi
+      `PROCESSING` + outbox trong một transaction); outbox có relay khoá `pg_try_advisory_xact_lock`; consumer commit tay,
+      retry có backoff, DLQ; media-worker (alpine + ffmpeg, ba lớp whitelist, mạng riêng không ra ngoài, chỉ đọc, 2 CPU/2 GB)
+      transcode HLS 360p/720p/1080p + thumbnail; video-service chuyển `READY` + outbox `video.ready`, hoặc `FAILED` và dọn
+      file (bước bù). `make smoke` chạy luồng upload tới `READY` và phát HLS; thêm `make test-stack`, `make clean-data` và ba
+      target diễn tập.
+    - Thời gian `CompleteUpload` → `READY` của video 60 s 1080p (`make measure-ready N=5`): 46,7 / 47,3 / 46,8 / 47,6 /
+      46,7 s, p50 46,8 s, max 47,6 s (với N=5, p95 = max), **đạt** SLO p95 < 2 phút.
+    - Diễn tập kill worker (`make drill-kill-worker`): `SIGKILL` media-worker sau 3 s ffmpeg chạy, video `READY` 91 s sau khi
+      worker khởi động lại (khoảng 45 s chờ session timeout của consumer group rồi transcode lại), đúng một
+      `transcode.completed`, outbox 2 dòng; video không mất, không xử lý trùng.
+    - Diễn tập gửi trùng (`make drill-duplicates`): phát lại `transcode.completed` thì video-service bỏ qua; phát lại
+      `video.uploaded` thì media-worker transcode lại (`transcode.completed` 1 → 2), video-service bỏ qua; trạng thái,
+      `published_at`, outbox không đổi; playlist biến thể giống hệt, `master.m3u8` chỉ lệch BANDWIDTH (tối đa 0,20%).
+    - RAM: lúc nghỉ redpanda 285–302 MiB / 1,5 GiB, minio 192–261 MiB / 512 MiB; media-worker khi transcode đỉnh 734 MiB /
+      2 GiB, CPU đỉnh 208,7% (giới hạn 200%, phần vượt do cửa sổ lấy mẫu của `docker stats`).
+    - Image: `svp/media-worker` 150 MB; `svp/gateway` 21,1 MB, `svp/user-service` 26,1 MB, `svp/video-service` 40,9 MB
+      (từ 25,8 MB, thêm SDK S3 và franz-go). `make up` 10,2 s (image đã cache). `go test -race -count=1 ./...` 78,8 s, phần
+      lớn là `internal/kafkax` 76,6 s (test retry, backoff, handler chạy lâu trên `kfake`). `make check`, `buf breaking`,
+      `make test-stack` (integration test `objstore` chạy trên MinIO thật) sạch.
+  - [ ] Phần còn lại (B, C): `engagement-service` (bộ đếm gom ghi theo lô, kiểm gửi trùng không sai bộ đếm),
+    `feed-service` (CQRS + cache + singleflight, kiểm video mới vào feed đúng hạn), Redis, rate limit ở gateway,
+    timeout/retry/circuit breaker cho mọi lời gọi; job dọn upload bỏ dở và giới hạn số video `UPLOADING` mỗi user (UP-7).
 - [ ] 3. Observability
 - [ ] 4. Kubernetes local
 - [ ] 5. CI/CD và DevSecOps

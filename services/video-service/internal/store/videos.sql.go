@@ -58,3 +58,83 @@ func (q *Queries) GetVideo(ctx context.Context, id uuid.UUID) (Video, error) {
 	)
 	return i, err
 }
+
+const markVideoFailed = `-- name: MarkVideoFailed :execrows
+UPDATE videos SET status = 'FAILED'
+WHERE id = $1 AND status = 'PROCESSING'
+`
+
+// Only a PROCESSING video moves: READY stays READY, and a redelivery finds FAILED already.
+func (q *Queries) MarkVideoFailed(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markVideoFailed, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markVideoProcessing = `-- name: MarkVideoProcessing :one
+UPDATE videos SET status = 'PROCESSING'
+WHERE id = $1 AND status = 'UPLOADING'
+RETURNING id, author_id, title, status, size_bytes, content_type, duration_ms, playlist_key, thumbnail_key, published_at, created_at
+`
+
+// Locks the row; only an UPLOADING video moves, so a concurrent call updates nothing.
+func (q *Queries) MarkVideoProcessing(ctx context.Context, id uuid.UUID) (Video, error) {
+	row := q.db.QueryRow(ctx, markVideoProcessing, id)
+	var i Video
+	err := row.Scan(
+		&i.ID,
+		&i.AuthorID,
+		&i.Title,
+		&i.Status,
+		&i.SizeBytes,
+		&i.ContentType,
+		&i.DurationMs,
+		&i.PlaylistKey,
+		&i.ThumbnailKey,
+		&i.PublishedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const markVideoReady = `-- name: MarkVideoReady :one
+UPDATE videos
+SET status = 'READY', duration_ms = $2, playlist_key = $3, thumbnail_key = $4, published_at = now()
+WHERE id = $1 AND status = 'PROCESSING'
+RETURNING id, author_id, title, status, size_bytes, content_type, duration_ms, playlist_key, thumbnail_key, published_at, created_at
+`
+
+type MarkVideoReadyParams struct {
+	ID           uuid.UUID
+	DurationMs   *int64
+	PlaylistKey  *string
+	ThumbnailKey *string
+}
+
+// Locks the row; only a PROCESSING video moves, so a redelivered transcode.completed, or one for
+// a video that has failed meanwhile, updates nothing.
+func (q *Queries) MarkVideoReady(ctx context.Context, arg MarkVideoReadyParams) (Video, error) {
+	row := q.db.QueryRow(ctx, markVideoReady,
+		arg.ID,
+		arg.DurationMs,
+		arg.PlaylistKey,
+		arg.ThumbnailKey,
+	)
+	var i Video
+	err := row.Scan(
+		&i.ID,
+		&i.AuthorID,
+		&i.Title,
+		&i.Status,
+		&i.SizeBytes,
+		&i.ContentType,
+		&i.DurationMs,
+		&i.PlaylistKey,
+		&i.ThumbnailKey,
+		&i.PublishedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}

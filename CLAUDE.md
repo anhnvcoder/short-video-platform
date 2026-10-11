@@ -94,10 +94,23 @@ liệt kê target):
 - `make generate`: chạy sau khi sửa `proto/` hoặc SQL của `sqlc`; code sinh ra (`gen/go`, code `sqlc`) được commit.
 - `make check`: `gofmt`, `go vet`, `golangci-lint run`, `buf lint` + `buf build`, `go test -race ./...` (có integration
   test trên Postgres native `127.0.0.1:5432`). Thu hẹp bằng `make test PKGS=./services/user-service/...`.
-- `make env`: sinh `.env` local (mode 600, mật khẩu DB ngẫu nhiên, khoá JWT mới); không ghi đè `.env` có sẵn.
-- `make up` / `make smoke` / `make down`: dựng stack compose profile `core` (bootstrap Postgres, migrate, gateway,
-  user-service, video-service), chạy luồng đầu-cuối qua gateway ở `127.0.0.1:8080`, rồi gỡ stack. `make ps` và
-  `make logs SVC=<tên>` để xem.
+- `make env`: sinh `.env` local (mode 600, mật khẩu DB, mật khẩu root MinIO và secret key S3 của từng service ngẫu nhiên,
+  khoá JWT mới). `.env` có sẵn thì chỉ bổ sung biến còn thiếu hoặc đang rỗng, không đổi giá trị đã đặt.
+- `make up` / `make smoke` / `make down`: dựng stack compose profile `core` (bootstrap Postgres, Redpanda + tạo topic, MinIO
+  + bucket/user/policy, migrate, gateway, user-service, video-service, media-worker), chạy luồng đầu-cuối qua gateway ở
+  `127.0.0.1:8080` (gồm upload video bằng presigned POST lên MinIO, chờ `READY`, tải HLS và thumbnail), rồi gỡ stack (giữ
+  volume). Cổng publish chỉ trên `127.0.0.1`: 8080 gateway, 9000 MinIO API, 9001 MinIO console, 19092 Redpanda (Kafka API).
+  `make ps` và `make logs SVC=<tên>` để xem.
+- `make test-stack`: `go test -race` trên stack đang chạy (`make up`), đặt các biến `SVP_TEST_*` cho MinIO và Redpanda, nên
+  integration test của `internal/objstore` chạy thật thay vì SKIP. Chỉ hai secret S3 lấy từ `.env`; endpoint, access key,
+  broker và `SVP_TEST_POSTGRES_URL` cố định trong `deploy/compose/compose.mk`. Thu hẹp bằng `PKGS=` như `make test`.
+- `make clean-data`: gỡ stack và xoá volume của nó (topic Redpanda, bucket MinIO, thư mục tạm của media-worker); Postgres
+  native không bị đụng. Chỉ chạy khi cần làm lại dữ liệu từ đầu.
+- `make drill-kill-worker`, `make drill-duplicates`, `make measure-ready N=5`: diễn tập trên stack đang chạy, script ở
+  `deploy/compose/drills/`. Lần lượt: kill media-worker giữa lúc transcode rồi kiểm video vẫn `READY` đúng một lần; phát
+  lại event bằng `rpk group seek` rồi kiểm không gì đổi; đo `CompleteUpload` → `READY` cho N video 60 s 1080p (p50, p95,
+  max, CPU/RAM của media-worker). Script dừng/khởi động container, chỉ `SELECT` trên `svp_video`, và luôn bật lại mọi
+  service khi kết thúc.
 - `make hooks`: bật git hook ở `.githooks/` một lần cho mỗi clone. `pre-commit` chạy `gofmt` trên file Go đã stage,
   `golangci-lint run`, `buf lint` và `gitleaks` trên thay đổi đã stage.
 
@@ -107,4 +120,11 @@ Quy ước test:
   mỗi test một database), tạo từ `SVP_TEST_POSTGRES_URL`; helper ở `internal/pgtest`
   từ chối tên không khớp `^svp_[a-z0-9_]+_test$`, nên test không chạm được database thật của service.
 - Test gateway gọi service qua `bufconn` (gRPC trong bộ nhớ), không mở cổng.
-- Luồng đầu-cuối (đăng ký, đăng nhập, tạo và đọc video, follow) kiểm bằng `make smoke` trên stack đang chạy.
+- Test Kafka dùng `kfake` (cluster Kafka giả trong bộ nhớ của franz-go), không cần Docker, nên `make check` chạy được khi
+  stack đang tắt.
+- Test cần MinIO hay Redpanda thật đọc `SVP_TEST_S3_ENDPOINT`, `SVP_TEST_S3_VIDEO_ACCESS_KEY` /
+  `SVP_TEST_S3_VIDEO_SECRET_KEY`, `SVP_TEST_S3_WORKER_ACCESS_KEY` / `SVP_TEST_S3_WORKER_SECRET_KEY`,
+  `SVP_TEST_KAFKA_BROKERS`; thiếu biến thì test gọi `t.Skip`. `make test-stack` đặt các biến này; hiện chưa có test nào
+  dùng `SVP_TEST_KAFKA_BROKERS`.
+- Luồng đầu-cuối (đăng ký, đăng nhập, tạo và đọc video, follow, upload tới `READY` và phát HLS) kiểm bằng `make smoke` trên
+  stack đang chạy; độ bền và số đo của luồng upload kiểm bằng ba target diễn tập ở trên.

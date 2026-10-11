@@ -1,8 +1,10 @@
 # Kiến trúc short-video platform
 
-> Trạng thái: giai đoạn 0 và 1 xong (2026-10-11). ADR 0001–0007, contract ở [`proto/`](../proto/) ([§8](#8-contract)),
-> threat model ở [`threat-model.md`](threat-model.md). Giai đoạn 1 chạy luồng đồng bộ (đăng ký, đăng nhập, tạo và đọc
-> video, follow) bằng `make up`; phần còn lại của tài liệu là thiết kế đích.
+> Trạng thái: giai đoạn 0, 1 và phần A của giai đoạn 2 xong (2026-10-11). ADR 0001–0008, contract ở [`proto/`](../proto/)
+> ([§8](#8-contract)), threat model ở [`threat-model.md`](threat-model.md). `make up` chạy luồng đồng bộ (đăng ký, đăng
+> nhập, tạo và đọc video, follow) và luồng upload bất đồng bộ (presigned POST lên MinIO, outbox → Redpanda, media-worker
+> transcode ra HLS, video `READY` hoặc `FAILED`); engagement-service, feed-service, Redis và phần còn lại của tài liệu là
+> thiết kế đích.
 
 Tài liệu này mô tả hệ thống sẽ được xây và lý do. Mỗi quyết định lớn có một ADR trong [`adr/`](adr/); ở đây chỉ tóm tắt
 và trỏ tới.
@@ -59,7 +61,7 @@ Ba số đầu có trong plan; các số còn lại là giả định của bả
 | A5 | Video trung bình 60 s; file gốc quay 1080p khoảng 10 Mbps, tức 75 MB |
 | A6 | HLS 3 bản: 360p 0,8 Mbps + 720p 2,5 Mbps + 1080p 5 Mbps = 8,3 Mbps (62 MB cho video 60 s); người xem nhận trung bình 2,5 Mbps |
 | A7 | 1 triệu tài khoản, mỗi tài khoản follow trung bình 50 người; video upload được fan-out tới trung bình 2.000 follower; tài khoản lớn nhất 200k follower |
-| A8 | Một worker 2 vCPU transcode video 60 s ra 3 bản mất khoảng 60 s (đo lại ở giai đoạn 2) |
+| A8 | Một worker 2 vCPU transcode video 60 s ra 3 bản mất khoảng 60 s. Đo 2026-10-11 (local M2, worker giới hạn 2 CPU, preset `veryfast`, video tổng hợp 60 s 1080p `testsrc2`, `make measure-ready N=5`): `CompleteUpload` → `READY` p50 46,8 s, max 47,6 s, gồm tải file gốc, transcode, ghi HLS và hai chặng event |
 
 P1 dùng để ước lượng dung lượng, băng thông, chi phí; P2 là mục tiêu tải cho k6, không suy ra từ P1 (xem 3.3).
 
@@ -175,7 +177,16 @@ flowchart LR
 ```
 
 Local: Postgres và Redis native trên máy (mỗi service một database, xem [`CLAUDE.md`](../CLAUDE.md)), MinIO thay S3, không có
-CDN (client đọc thẳng MinIO).
+CDN (client đọc thẳng MinIO). Redpanda và MinIO chạy trong compose profile `core`
+([ADR-0008](adr/0008-async-upload-pipeline-stage2a.md)):
+
+- **MinIO:** hai bucket `uploads` (riêng tư) và `media` (ẩn danh chỉ đọc từng object, không liệt kê được); video-service và
+  media-worker mỗi bên một user với policy theo tiền tố key. Client upload và đọc HLS qua `127.0.0.1:9000`.
+- **Redpanda:** một broker; topic và `.dlq` do container init tạo, broker tắt tự tạo topic. Trong compose là
+  `redpanda:9092`, từ máy host là `127.0.0.1:19092`.
+- **Mạng riêng của media-worker:** worker chạy ffmpeg trên file người dùng tải lên, nên chỉ nằm trong mạng compose `worker`
+  (`internal`, không route ra ngoài) cùng Redpanda và MinIO; nó không tới được gateway, các service gRPC, Postgres hay
+  internet. Container chỉ đọc, bỏ mọi capability, giới hạn 2 CPU, 2 GB.
 
 ## 6. Sở hữu dữ liệu và event
 
@@ -399,16 +410,26 @@ Thân lỗi theo RFC 9457 (`Content-Type: application/problem+json`):
 
 REST ở biên được viết tay trong [`services/gateway/openapi.yaml`](../services/gateway/openapi.yaml) (OpenAPI 3.1, lý do ở
 mục 8 của ADR-0007); file đó là nguồn của danh sách route, schema và mã lỗi từng route. JSON dùng `snake_case`, khớp tên
-field trong proto; thời gian theo RFC 3339, UTC. Route giai đoạn 1:
+field trong proto; thời gian theo RFC 3339, UTC. Route đã có (giai đoạn 1 và phần A của giai đoạn 2):
 
 | Route | Xác thực | Việc |
 | --- | --- | --- |
 | `POST /auth/register`, `POST /auth/login` | không | đăng ký; đổi email và mật khẩu lấy access token |
 | `PUT` / `DELETE /me/following/{user_id}` | Bearer JWT | follow, unfollow |
-| `POST /videos`, `GET /videos/{video_id}` | Bearer JWT | tạo video `UPLOADING`; đọc một video |
+| `POST /videos` | Bearer JWT | tạo video `UPLOADING`, trả form presigned POST: `upload_url`, `form_fields`, `expires_at` (15 phút) |
+| `POST /videos/{video_id}/complete` | Bearer JWT | báo upload xong: video-service `HEAD` object, chuyển `PROCESSING`, trả 202; gọi lại khi đã `PROCESSING` hay `READY` thì trả video hiện tại |
+| `GET /videos/{video_id}` | Bearer JWT | đọc một video; có `playlist_url`, `thumbnail_url` khi video đã `READY` |
 | `GET /healthz`, `GET /readyz` | không | liveness, readiness |
 
-`POST /videos` chưa trả URL upload (chưa có object storage); feed, like và view là giai đoạn sau.
+`playlist_url`, `thumbnail_url` là `MEDIA_PUBLIC_BASE_URL` + `/` + object key. Feed, like và view là các phần sau của giai
+đoạn 2.
+
+Chi tiết hiện thực của luồng upload chốt ở [ADR-0008](adr/0008-async-upload-pipeline-stage2a.md):
+
+- object key trong contract là nguyên văn key trong bucket, bucket chọn theo tiền tố `uploads/` hay `media/` (mục 4);
+- storage có hai endpoint: nội bộ cho service gọi API S3, công khai cho URL ký trả client (mục 3);
+- mỗi service chỉ một relay outbox chạy tại một thời điểm, khoá bằng `pg_try_advisory_xact_lock`, để event cùng key giữ
+  thứ tự (mục 7; chỉnh câu `FOR UPDATE SKIP LOCKED` của [ADR-0003](adr/0003-async-events-outbox.md)).
 
 ## 9. Quyết định
 

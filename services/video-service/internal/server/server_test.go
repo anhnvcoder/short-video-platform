@@ -3,12 +3,14 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -29,6 +31,7 @@ import (
 	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
 	"github.com/anhnvcoder/short-video-platform/internal/ids"
 	"github.com/anhnvcoder/short-video-platform/internal/logx"
+	"github.com/anhnvcoder/short-video-platform/internal/objstore"
 	"github.com/anhnvcoder/short-video-platform/internal/pgtest"
 	"github.com/anhnvcoder/short-video-platform/services/video-service/migrations"
 )
@@ -86,6 +89,13 @@ func (b *logBuffer) Write(p []byte) (int, error) {
 	return b.buf.Write(p)
 }
 
+// String returns every log line written so far.
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // records returns the decoded log lines whose msg is msg.
 func (b *logBuffer) records(t *testing.T, msg string) []map[string]any {
 	t.Helper()
@@ -107,12 +117,116 @@ func (b *logBuffer) records(t *testing.T, msg string) []map[string]any {
 	return out
 }
 
+// fakeStorage signs forms for real (signing is local, nothing is sent), answers Head from
+// objects and records deletes instead of calling a storage server.
+type fakeStorage struct {
+	*objstore.Store
+
+	mu      sync.Mutex
+	objects map[string]objstore.ObjectInfo
+	headErr error
+	heads   int
+	// deleted lists the keys and prefixes of the deletes that succeeded, in order.
+	deleted []string
+	// failDeletes is the number of coming Delete or DeletePrefix calls that fail.
+	failDeletes int
+}
+
+// Signing credentials of the fake; the endpoint is never called.
+const (
+	fakeAccessKey      = "test-access-key"
+	fakePublicEndpoint = "http://127.0.0.1:9000"
+)
+
+func newFakeStorage() *fakeStorage {
+	st, err := objstore.New(objstore.Config{
+		Endpoint:        "http://storage.invalid:9000",
+		PublicEndpoint:  fakePublicEndpoint,
+		Region:          "us-east-1",
+		AccessKeyID:     fakeAccessKey,
+		SecretAccessKey: "test-secret-key",
+		UploadsBucket:   "uploads",
+		MediaBucket:     "media",
+	})
+	if err != nil {
+		panic(err)
+	}
+	return &fakeStorage{Store: st, objects: map[string]objstore.ObjectInfo{}}
+}
+
+func (f *fakeStorage) Head(_ context.Context, key string) (objstore.ObjectInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.heads++
+	if f.headErr != nil {
+		return objstore.ObjectInfo{}, f.headErr
+	}
+	obj, ok := f.objects[key]
+	if !ok {
+		return objstore.ObjectInfo{}, fmt.Errorf("head %s: %w", key, objstore.ErrNotFound)
+	}
+	return obj, nil
+}
+
+func (f *fakeStorage) Delete(_ context.Context, key string) error {
+	return f.delete(key)
+}
+
+func (f *fakeStorage) DeletePrefix(_ context.Context, prefix string) error {
+	return f.delete(prefix)
+}
+
+func (f *fakeStorage) delete(key string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failDeletes > 0 {
+		f.failDeletes--
+		return fmt.Errorf("objstore: delete %s: storage unavailable", key)
+	}
+	f.deleted = append(f.deleted, key)
+	return nil
+}
+
+// setFailDeletes makes the next n deletes fail.
+func (f *fakeStorage) setFailDeletes(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failDeletes = n
+}
+
+// deletes returns the keys and prefixes deleted so far.
+func (f *fakeStorage) deletes() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.deleted)
+}
+
+// put stores what Head reports for uploads/<videoID>.
+func (f *fakeStorage) put(videoID string, size int64, contentType string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.objects[objstore.UploadsPrefix+videoID] = objstore.ObjectInfo{Size: size, ContentType: contentType}
+}
+
+func (f *fakeStorage) headCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.heads
+}
+
 // newServer returns a Server on the test database (nil without one: only validation paths work)
 // and the buffer its logs go to.
 func newServer() (*Server, *logBuffer) {
+	s, _, logs := newServerWithStorage()
+	return s, logs
+}
+
+// newServerWithStorage is newServer that also returns the server's fake storage.
+func newServerWithStorage() (*Server, *fakeStorage, *logBuffer) {
 	logs := &logBuffer{}
 	logger := slog.New(logx.NewHandler(slog.NewJSONHandler(logs, nil)))
-	return New(testPool, logger), logs
+	storage := newFakeStorage()
+	return New(testPool, storage, logger), storage, logs
 }
 
 // call runs handler the way the gRPC server does: through the callerid interceptor, with caller
@@ -187,9 +301,6 @@ func TestInitUploadCreatesUploadingVideo(t *testing.T) {
 	if _, err := ids.Parse(resp.GetVideoId()); err != nil {
 		t.Fatalf("video_id %q is not a canonical UUID", resp.GetVideoId())
 	}
-	if resp.GetUploadUrl() != "" || len(resp.GetFormFields()) != 0 || resp.GetExpiresAt() != nil {
-		t.Errorf("response = %v, want only video_id until stage 2", resp)
-	}
 
 	want := storedVideo{authorID: caller, title: "Chuyến đi Đà Lạt", status: "UPLOADING", contentType: "video/mp4", sizeBytes: 12345}
 	if got := readStored(t, resp.GetVideoId()); got != want {
@@ -203,6 +314,97 @@ func TestInitUploadCreatesUploadingVideo(t *testing.T) {
 	for key, val := range map[string]string{"user_id": caller, "video_id": resp.GetVideoId(), "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"} {
 		if recs[0][key] != val {
 			t.Errorf("log %s = %v, want %q", key, recs[0][key], val)
+		}
+	}
+}
+
+// postPolicy is the decoded "policy" form field of a presigned POST.
+type postPolicy struct {
+	Expiration time.Time `json:"expiration"`
+	Conditions []any     `json:"conditions"`
+}
+
+func decodePolicy(t *testing.T, field string) postPolicy {
+	t.Helper()
+	raw, err := base64.StdEncoding.DecodeString(field)
+	if err != nil {
+		t.Fatalf("policy is not base64: %v", err)
+	}
+	var p postPolicy
+	if err := json.Unmarshal(raw, &p); err != nil {
+		t.Fatalf("policy is not JSON: %v", err)
+	}
+	return p
+}
+
+// hasCondition reports whether the policy holds want, compared as JSON.
+func (p postPolicy) hasCondition(t *testing.T, want any) bool {
+	t.Helper()
+	w, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range p.Conditions {
+		if got, _ := json.Marshal(c); string(got) == string(w) {
+			return true
+		}
+	}
+	return false
+}
+
+// The form lets the client write exactly uploads/<video_id>, of 1 to size_bytes bytes with the
+// normalized content type, for 15 minutes (UP-1); it never reaches the logs (UP-2).
+func TestInitUploadReturnsPresignedForm(t *testing.T) {
+	needDB(t)
+	s, logs := newServer()
+	before := time.Now()
+	req := &videov1.InitUploadRequest{Title: "Form", SizeBytes: 12345, ContentType: "Video/MP4; codecs=avc1"}
+	resp, err := initUpload(t, s, ids.New(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now()
+	key := "uploads/" + resp.GetVideoId()
+
+	if want := fakePublicEndpoint + "/uploads"; resp.GetUploadUrl() != want {
+		t.Errorf("upload_url = %q, want %q", resp.GetUploadUrl(), want)
+	}
+	fields := resp.GetFormFields()
+	if fields["key"] != key || fields["Content-Type"] != "video/mp4" {
+		t.Errorf("form key = %q, Content-Type = %q, want %q and video/mp4", fields["key"], fields["Content-Type"], key)
+	}
+	if !strings.Contains(fields["X-Amz-Credential"], fakeAccessKey+"/") || fields["X-Amz-Signature"] == "" {
+		t.Errorf("form fields %v lack the signing fields", fields)
+	}
+
+	expires := resp.GetExpiresAt().AsTime()
+	if expires.Before(before.Add(uploadFormTTL-time.Second)) || expires.After(after.Add(uploadFormTTL+time.Second)) {
+		t.Errorf("expires_at = %s, want about %s", expires, before.Add(uploadFormTTL))
+	}
+	policy := decodePolicy(t, fields["policy"])
+	if !policy.Expiration.Equal(expires) {
+		t.Errorf("policy expiration %s != expires_at %s", policy.Expiration, expires)
+	}
+	for _, want := range []any{
+		map[string]string{"bucket": "uploads"},
+		map[string]string{"key": key},
+		map[string]string{"Content-Type": "video/mp4"},
+		[]any{"content-length-range", 1, 12345},
+	} {
+		if !policy.hasCondition(t, want) {
+			t.Errorf("policy conditions %v lack %v", policy.Conditions, want)
+		}
+	}
+	for _, c := range policy.Conditions {
+		if arr, ok := c.([]any); ok && len(arr) > 0 && arr[0] == "starts-with" {
+			t.Errorf("policy has a prefix condition %v; the key must match exactly", c)
+		}
+	}
+
+	all := logs.String()
+	for _, secret := range []string{fields["policy"], fields["X-Amz-Signature"], resp.GetUploadUrl()} {
+		if strings.Contains(all, secret) {
+			t.Errorf("logs contain the form (%.20q...)", secret)
 		}
 	}
 }
@@ -327,7 +529,8 @@ func TestInitUploadContentType(t *testing.T) {
 	}
 }
 
-// insertVideo stores a video directly, since stage 1 has no RPC that moves a video past UPLOADING.
+// insertVideo stores a video directly, in a status or with timestamps a test cannot reach quickly
+// through the RPCs (READY and FAILED come from transcode events).
 func insertVideo(t *testing.T, id, author, videoStatus string, ready bool, publishedAt, createdAt time.Time) {
 	t.Helper()
 	var durationMs *int64
@@ -453,11 +656,12 @@ func TestDatabaseErrorIsGenericInternal(t *testing.T) {
 	}
 	closed.Close()
 	logs := &logBuffer{}
-	s := New(closed, slog.New(logx.NewHandler(slog.NewJSONHandler(logs, nil))))
+	s := New(closed, newFakeStorage(), slog.New(logx.NewHandler(slog.NewJSONHandler(logs, nil))))
 
 	_, initErr := initUpload(t, s, ids.New(), validRequest())
 	_, getErr := getVideo(t, s, ids.New(), ids.New())
-	for _, err := range []error{initErr, getErr} {
+	_, completeErr := completeUpload(t.Context(), t, s, ids.New(), ids.New())
+	for _, err := range []error{initErr, getErr, completeErr} {
 		if status.Code(err) != codes.Internal || status.Convert(err).Message() != "internal error" {
 			t.Errorf("error = %v, want INTERNAL with message %q", err, "internal error")
 		}
@@ -505,12 +709,11 @@ func TestOverGRPC(t *testing.T) {
 		}
 	})
 
-	t.Run("CompleteUpload is unimplemented", func(t *testing.T) {
+	t.Run("CompleteUpload of a missing video", func(t *testing.T) {
+		needDB(t)
 		ctx := metadata.AppendToOutgoingContext(t.Context(), callerid.MetadataKey, ids.New())
 		_, err := client.CompleteUpload(ctx, &videov1.CompleteUploadRequest{VideoId: ids.New()})
-		if status.Code(err) != codes.Unimplemented {
-			t.Errorf("CompleteUpload = %v, want UNIMPLEMENTED", err)
-		}
+		wantError(t, err, codes.NotFound, ReasonVideoNotFound)
 	})
 
 	t.Run("InitUpload then GetVideo", func(t *testing.T) {
