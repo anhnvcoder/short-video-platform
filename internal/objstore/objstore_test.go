@@ -323,3 +323,48 @@ func TestDeletePrefixRejects(t *testing.T) {
 		}
 	}
 }
+
+// The keys media-worker writes pass; anything a storage or a URL parser could read as another
+// path, or naming another video, does not (FF-6).
+func TestIsMediaKey(t *testing.T) {
+	const id = "0190a6e4-7b2c-7d3e-9f40-123456789abc"
+	const prefix = "media/" + id + "/"
+	tests := []struct {
+		key  string
+		want bool
+	}{
+		{prefix + "master.m3u8", true},
+		{prefix + "thumbnail.jpg", true},
+		{prefix + "720p/index.m3u8", true},
+		{prefix + "720p/seg_007.ts", true},
+		{prefix + "...", true},
+		{prefix, false},
+		{"media/" + id, false},
+		{"media/0190a6e4-7b2c-7d3e-9f40-123456789abd/master.m3u8", false},
+		{"media/" + id + "x/master.m3u8", false},
+		{"media//master.m3u8", false},
+		{"uploads/" + id, false},
+		{"x" + prefix + "master.m3u8", false},
+		{prefix + "..", false},
+		{prefix + "../x", false},
+		{prefix + "./master.m3u8", false},
+		{prefix + "720p//index.m3u8", false},
+		{prefix + "720p/", false},
+		{prefix + "/master.m3u8", false},
+		{prefix + "%2e%2e/x", false},
+		{prefix + ".%2E/x", false},
+		{prefix + `..\x`, false},
+		{prefix + `720p\index.m3u8`, false},
+		{prefix + "master.m3u8?x=1", false},
+		{prefix + "master.m3u8#x", false},
+		{prefix + "a b", false},
+		{prefix + "a\tb", false},
+		{prefix + "a:b", false},
+		{prefix + "mäster.m3u8", false},
+	}
+	for _, tt := range tests {
+		if got := IsMediaKey(tt.key, id); got != tt.want {
+			t.Errorf("IsMediaKey(%q, %q) = %v, want %v", tt.key, id, got, tt.want)
+		}
+	}
+}

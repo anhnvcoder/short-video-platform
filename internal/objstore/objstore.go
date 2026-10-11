@@ -44,6 +44,28 @@ var (
 	ErrTooLarge = errors.New("objstore: object larger than the limit")
 )
 
+// IsMediaKey reports whether key names an object of video videoID in the media bucket:
+// "media/<videoID>/" followed by one or more segments, each made of letters, digits, ".", "_"
+// and "-" only, and not "." or ".." (FF-6). The gateway puts the key into a URL as it is, and a
+// URL parser reads "%2e%2e" as ".." and "\" as "/", so any other character could make a player
+// resolve the URL elsewhere.
+func IsMediaKey(key, videoID string) bool {
+	rest, ok := strings.CutPrefix(key, MediaPrefix+videoID+"/")
+	if !ok || rest == "" {
+		return false
+	}
+	for seg := range strings.SplitSeq(rest, "/") {
+		if seg == "" || seg == "." || seg == ".." || strings.ContainsFunc(seg, notKeyChar) {
+			return false
+		}
+	}
+	return true
+}
+
+func notKeyChar(r rune) bool {
+	return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '.' && r != '_' && r != '-'
+}
+
 // Config holds what New needs; the services fill it from the S3_* variables (ADR-0008
 // section 11).
 type Config struct {

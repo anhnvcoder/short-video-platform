@@ -11,6 +11,7 @@ require (
 	github.com/pressly/goose/v3 v3.28.0
 	github.com/twmb/franz-go v1.22.1
 	github.com/twmb/franz-go/pkg/kfake v0.0.0-20261007040850-d3792b34935a
+	github.com/twmb/franz-go/pkg/kmsg v1.14.0
 	golang.org/x/crypto v0.58.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261005182115-fad411399dd8
 	google.golang.org/grpc v1.84.0
@@ -34,7 +35,6 @@ require (
 	github.com/mfridman/interpolate v0.0.2 // indirect
 	github.com/pierrec/lz4/v4 v4.1.30 // indirect
 	github.com/sethvargo/go-retry v0.4.0 // indirect
-	github.com/twmb/franz-go/pkg/kmsg v1.14.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect

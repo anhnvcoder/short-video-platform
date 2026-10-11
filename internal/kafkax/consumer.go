@@ -35,6 +35,7 @@ const (
 	HeaderDLQTopic     = "dlq-topic"
 	HeaderDLQPartition = "dlq-partition"
 	HeaderDLQOffset    = "dlq-offset"
+	HeaderDLQGroup     = "dlq-group"
 
 	ReasonPermanent        = "permanent"
 	ReasonRetriesExhausted = "retries-exhausted"
@@ -127,6 +128,11 @@ func NewConsumer(cfg ConsumerConfig) (*Consumer, error) {
 	if cfg.MaxAttempts <= 0 {
 		cfg.MaxAttempts = DefaultMaxAttempts
 	}
+	return newConsumer(cfg)
+}
+
+// newConsumer fills in the defaults NewConsumer and NewBatchConsumer share and creates the client.
+func newConsumer(cfg ConsumerConfig) (*Consumer, error) {
 	if cfg.BackoffBase <= 0 {
 		cfg.BackoffBase = DefaultBackoffBase
 	}
@@ -239,7 +245,7 @@ func (c *Consumer) settle(ctx context.Context, r *kgo.Record) error {
 
 // deadLetter writes r, with its key, value and headers, to its dead-letter topic.
 func (c *Consumer) deadLetter(ctx context.Context, r *kgo.Record, reason string, cause error) error {
-	headers := make([]kgo.RecordHeader, 0, len(r.Headers)+5)
+	headers := make([]kgo.RecordHeader, 0, len(r.Headers)+6)
 	headers = append(headers, r.Headers...)
 	headers = append(headers,
 		kgo.RecordHeader{Key: HeaderDLQReason, Value: []byte(reason)},
@@ -247,6 +253,7 @@ func (c *Consumer) deadLetter(ctx context.Context, r *kgo.Record, reason string,
 		kgo.RecordHeader{Key: HeaderDLQTopic, Value: []byte(r.Topic)},
 		kgo.RecordHeader{Key: HeaderDLQPartition, Value: []byte(strconv.Itoa(int(r.Partition)))},
 		kgo.RecordHeader{Key: HeaderDLQOffset, Value: []byte(strconv.FormatInt(r.Offset, 10))},
+		kgo.RecordHeader{Key: HeaderDLQGroup, Value: []byte(c.cfg.Group)},
 	)
 	dlq := &kgo.Record{Topic: r.Topic + DLQSuffix, Key: r.Key, Value: r.Value, Headers: headers}
 	if err := c.cl.ProduceSync(ctx, dlq).FirstErr(); err != nil {

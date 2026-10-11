@@ -483,8 +483,8 @@ func TestPermanentGoesToDLQAtOnce(t *testing.T) {
 	if len(dlq) != 1 {
 		t.Fatalf("dead-letter topic has %d records, want 1", len(dlq))
 	}
-	if h := headerMap(dlq[0]); h["dlq-reason"] != "permanent" || h["dlq-error"] != "decode: missing video_id" {
-		t.Errorf("dead-letter headers = %v, want reason permanent and the error", h)
+	if h := headerMap(dlq[0]); h["dlq-reason"] != "permanent" || h["dlq-error"] != "decode: missing video_id" || h["dlq-group"] != "g" {
+		t.Errorf("dead-letter headers = %v, want reason permanent, the error and group g", h)
 	}
 	if n := calls.Load(); n != 1 {
 		t.Errorf("handler calls = %d, want 1", n)
@@ -758,6 +758,9 @@ func TestRebalanceWaitsForBlockedHandler(t *testing.T) {
 
 	var joinsB joinCounter
 	assignedB := make(chan struct{})
+	// The callback runs again each time member b gains partitions (for example when member a
+	// leaves), so close the channel only once.
+	var assignedBOnce sync.Once
 	b := start(t, ConsumerConfig{Brokers: brokers, ClientID: "member-b", Group: "g", Topics: []string{"in"},
 		MaxPollRecords: 1, BlockRebalance: true, Handler: handler("b", nil, nil),
 		opts: []kgo.Opt{
@@ -766,7 +769,7 @@ func TestRebalanceWaitsForBlockedHandler(t *testing.T) {
 			kgo.OnPartitionsAssigned(func(_ context.Context, _ *kgo.Client, assigned map[string][]int32) {
 				if len(assigned["in"]) > 0 {
 					note("b assigned")
-					close(assignedB)
+					assignedBOnce.Do(func() { close(assignedB) })
 				}
 			}),
 		}})
