@@ -19,6 +19,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/anhnvcoder/short-video-platform/internal/logx"
+	"github.com/anhnvcoder/short-video-platform/internal/traceparent"
 )
 
 // lockedBuffer collects log output written from server goroutines.
@@ -276,6 +277,40 @@ func TestServiceInterceptorsRunInsideBuiltins(t *testing.T) {
 	}
 	if recs := h.logs.records(t, "rpc"); len(recs) != 1 || recs[0]["code"] != "PermissionDenied" {
 		t.Errorf("rpc log = %v, want one line with code PermissionDenied", recs)
+	}
+}
+
+func TestTraceparentInContext(t *testing.T) {
+	const valid = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	tests := []struct {
+		name        string
+		traceparent string
+		want        string
+	}{
+		{name: "valid", traceparent: valid, want: valid},
+		{name: "malformed", traceparent: "00-zzzz-00f067aa0ba902b7-01"},
+		{name: "missing"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got string
+			var has bool
+			probe := func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+				got, has = traceparent.FromContext(ctx)
+				return handler(ctx, req)
+			}
+			h := start(t, probe)
+			ctx := timeout(t)
+			if tt.traceparent != "" {
+				ctx = metadata.AppendToOutgoingContext(ctx, "traceparent", tt.traceparent)
+			}
+			if err := h.invoke(ctx, "Echo"); err != nil {
+				t.Fatalf("Echo = %v, want nil", err)
+			}
+			if has != (tt.want != "") || got != tt.want {
+				t.Errorf("traceparent.FromContext = (%q, %v), want %q", got, has, tt.want)
+			}
+		})
 	}
 }
 

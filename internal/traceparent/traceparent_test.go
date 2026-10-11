@@ -57,3 +57,13 @@ func TestTraceID(t *testing.T) {
 		})
 	}
 }
+
+func TestContext(t *testing.T) {
+	if v, ok := FromContext(t.Context()); ok || v != "" {
+		t.Errorf("FromContext(empty) = (%q, %v), want (\"\", false)", v, ok)
+	}
+	const tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	if v, ok := FromContext(NewContext(t.Context(), tp)); !ok || v != tp {
+		t.Errorf("FromContext(NewContext(v)) = (%q, %v), want (%q, true)", v, ok, tp)
+	}
+}

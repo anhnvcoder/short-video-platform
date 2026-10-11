@@ -84,12 +84,14 @@ func serve(ctx context.Context, lis net.Listener, logger *slog.Logger, register 
 }
 
 // traceInterceptor puts the trace-id of a valid traceparent metadata value into the log
-// context. A missing or malformed value is ignored: the RPC runs without a trace_id.
+// context, and the raw value into the context (traceparent.NewContext) for events the handler
+// writes. A missing or malformed value is ignored: the RPC runs without a trace_id.
 func traceInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
 		if vals := md.Get(traceparent.MetadataKey); len(vals) > 0 {
 			if id, ok := traceparent.TraceID(vals[0]); ok {
 				ctx = logx.With(ctx, slog.String("trace_id", id))
+				ctx = traceparent.NewContext(ctx, vals[0])
 			}
 		}
 	}

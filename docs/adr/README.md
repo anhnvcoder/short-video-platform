@@ -52,8 +52,9 @@ Chọn ..., vì ...
 | --- | --- | --- |
 | [0001](0001-service-boundaries-and-data-ownership.md) | 6 service theo ranh giới nghiệp vụ, mỗi service một database | Chấp nhận |
 | [0002](0002-sync-rest-edge-grpc-internal.md) | REST/JSON ở biên, gRPC bên trong, contract quản lý bằng `buf` | Chấp nhận; đường dẫn `.proto` chỉnh bởi [0006](0006-contract-ids-and-event-envelope.md) |
-| [0003](0003-async-events-outbox.md) | Event qua Redpanda, transactional outbox, at-least-once + consumer idempotent + DLQ | Chấp nhận |
+| [0003](0003-async-events-outbox.md) | Event qua Redpanda, transactional outbox, at-least-once + consumer idempotent + DLQ | Chấp nhận; cách khoá relay chỉnh bởi [0008](0008-async-upload-pipeline-stage2a.md) |
 | [0004](0004-direct-upload-and-hls.md) | Upload thẳng lên object storage bằng presigned URL, transcode bất đồng bộ ra HLS | Chấp nhận |
 | [0005](0005-feed-fan-out-on-write.md) | Feed dựng sẵn khi ghi (fan-out on write), Redis chỉ cache key nóng | Chấp nhận |
 | [0006](0006-contract-ids-and-event-envelope.md) | Contract nội bộ: ID là UUIDv7, event bọc theo topic của luồng thực thể, proto đặt ở `proto/svp/<domain>/v1` | Chấp nhận |
 | [0007](0007-go-monorepo-toolchain-and-stage1-scope.md) | Một Go module cho cả monorepo, công cụ ghim ở Makefile, cấu hình bằng biến môi trường, phạm vi giai đoạn 1 thu về luồng đồng bộ | Chấp nhận |
+| [0008](0008-async-upload-pipeline-stage2a.md) | Luồng upload bất đồng bộ giai đoạn 2 phần A: franz-go, aws-sdk-go-v2 (presigned POST, hai endpoint), MinIO image Chainguard ghim digest, Redpanda tạo topic bằng `rpk`, outbox một relay nhờ advisory lock, consumer commit tay + DLQ, media-worker alpine + ffmpeg có whitelist | Chấp nhận |
