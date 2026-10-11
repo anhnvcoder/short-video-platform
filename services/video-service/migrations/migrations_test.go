@@ -23,11 +23,28 @@ func tables(t *testing.T, pool *pgxpool.Pool) (videos, outbox bool) {
 	return videos, outbox
 }
 
+// uploadingIndexes returns how many of the partial indexes of 00003 exist.
+func uploadingIndexes(t *testing.T, pool *pgxpool.Pool) int {
+	t.Helper()
+	var n int
+	err := pool.QueryRow(t.Context(),
+		`SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'videos'
+		   AND indexname IN ('videos_uploading_author_idx', 'videos_uploading_created_idx')`,
+	).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
 // Every migration goes down and up again cleanly after pgtest applied them.
 func TestMigrationsDownAndUp(t *testing.T) {
 	pool := pgtest.New(t, "svp_video_migrations_test", migrations.FS)
 	if videos, outbox := tables(t, pool); !videos || !outbox {
 		t.Fatalf("after up: videos %v, outbox %v, want both", videos, outbox)
+	}
+	if n := uploadingIndexes(t, pool); n != 2 {
+		t.Fatalf("after up: %d UPLOADING indexes, want 2", n)
 	}
 
 	db := stdlib.OpenDBFromPool(pool)
@@ -42,10 +59,19 @@ func TestMigrationsDownAndUp(t *testing.T) {
 	}
 
 	if _, err := provider.Down(t.Context()); err != nil {
+		t.Fatalf("down 00003: %v", err)
+	}
+	if videos, outbox := tables(t, pool); !videos || !outbox {
+		t.Fatalf("after down 00003: videos %v, outbox %v, want both", videos, outbox)
+	}
+	if n := uploadingIndexes(t, pool); n != 0 {
+		t.Fatalf("after down 00003: %d UPLOADING indexes, want 0", n)
+	}
+	if _, err := provider.Down(t.Context()); err != nil {
 		t.Fatalf("down 00002: %v", err)
 	}
 	if videos, outbox := tables(t, pool); !videos || outbox {
-		t.Fatalf("after one down: videos %v, outbox %v, want only videos", videos, outbox)
+		t.Fatalf("after down 00002: videos %v, outbox %v, want only videos", videos, outbox)
 	}
 	if _, err := provider.DownTo(t.Context(), 0); err != nil {
 		t.Fatalf("down to 0: %v", err)
@@ -58,5 +84,8 @@ func TestMigrationsDownAndUp(t *testing.T) {
 	}
 	if videos, outbox := tables(t, pool); !videos || !outbox {
 		t.Fatalf("after up again: videos %v, outbox %v, want both", videos, outbox)
+	}
+	if n := uploadingIndexes(t, pool); n != 2 {
+		t.Fatalf("after up again: %d UPLOADING indexes, want 2", n)
 	}
 }

@@ -169,3 +169,44 @@ func TestRunConsumerReturnsCreateError(t *testing.T) {
 		t.Fatalf("runConsumer() = %v, want %v", err, want)
 	}
 }
+
+func TestPositiveDuration(t *testing.T) {
+	const name = "UPLOAD_SWEEP_INTERVAL"
+	t.Setenv(name, "")
+	if got, err := positiveDuration(name, defaultSweepInterval); err != nil || got != 5*time.Minute {
+		t.Errorf("unset: positiveDuration() = (%s, %v), want 5m", got, err)
+	}
+	t.Setenv(name, "90s")
+	if got, err := positiveDuration(name, defaultSweepInterval); err != nil || got != 90*time.Second {
+		t.Errorf("90s: positiveDuration() = (%s, %v), want 1m30s", got, err)
+	}
+	for _, value := range []string{"0", "0s", "-5m", "5", "abc", "1 h"} {
+		t.Setenv(name, value)
+		_, err := positiveDuration(name, defaultSweepInterval)
+		if err == nil || !strings.Contains(err.Error(), name) {
+			t.Errorf("%s=%q: positiveDuration() error = %v, want an error naming %s", name, value, err, name)
+		}
+	}
+}
+
+func TestServeRejectsInvalidSweepSettings(t *testing.T) {
+	setStorageEnv(t, map[string]string{
+		"S3_ENDPOINT":          "http://minio:9000",
+		"S3_ACCESS_KEY_ID":     "svp-video-service",
+		"S3_SECRET_ACCESS_KEY": "secret-value",
+	})
+	// Both settings are checked before Kafka or the database is reached.
+	t.Setenv("DATABASE_URL", "postgres://unused@127.0.0.1:1/unused")
+	t.Setenv("KAFKA_BROKERS", "127.0.0.1:1")
+	for _, name := range []string{"UPLOAD_ABANDON_AFTER", "UPLOAD_SWEEP_INTERVAL"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("UPLOAD_ABANDON_AFTER", "")
+			t.Setenv("UPLOAD_SWEEP_INTERVAL", "")
+			t.Setenv(name, "-1m")
+			err := serve(t.Context(), slog.New(slog.DiscardHandler))
+			if err == nil || !strings.Contains(err.Error(), name) {
+				t.Errorf("serve() = %v, want an error naming %s", err, name)
+			}
+		})
+	}
+}

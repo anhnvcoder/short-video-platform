@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Drill: deliver the stage 2B events twice and check the counters and the feed read model do not
 # change (ADR-0009 sections 4 and 7). With fresh users A and B, B following A and A's video READY
-# in B's feed, liked by B and viewed 5 times:
+# in B's feed, liked by B and viewed 5 times by B (counted once: the gateway forwards one view per
+# user and video every 60 s, RL-3):
 #   1. stop engagement-service, move group engagement-service on engagement.views.v1 back to the
-#      run's first view.recorded, start it, wait for lag 0: view_count is still 5 and the like
-#      count is unchanged (offsets kept in svp_engagement filter the replay);
+#      run's view.recorded, start it, wait for lag 0: view_count is still 1 and the like count is
+#      unchanged (offsets kept in svp_engagement filter the replay);
 #   2. stop feed-service, move group feed-service on user.follows.v1 back to B's user.followed
 #      and on video.lifecycle.v1 back to the video's video.ready, start it, wait for lag 0: B's
 #      follows, B's timeline and the video's row in svp_feed are the same, row for row;
@@ -22,8 +23,10 @@ base=${1:-http://127.0.0.1:8080}
 # shellcheck source=deploy/compose/drills/common.sh
 source "$(dirname "$0")/common.sh"
 
-# Views B records; the drill waits until the counter shows all of them before the replay.
+# Views B records, and how many of them are counted: the gateway forwards only the first within
+# 60 s (RL-3). The drill waits until the counter shows them before the replay.
 views=5
+counted=1
 
 # select_rows DB: runs the SELECT on stdin against DB with the psql variables a, b and v (user A,
 # user B, the video); prints one space-separated line per row.
@@ -127,8 +130,8 @@ while :; do
   # would wait out the deadline and then blame the counter.
   count=$(select_rows svp_engagement <<<"SELECT view_count FROM view_counts WHERE video_id = :'v';") ||
     fail "read view_count of video $clip_id from svp_engagement"
-  [[ $count != "$views" ]] || break
-  ((SECONDS < deadline)) || fail "view_count of the video reaches $views within 60 s (still '$count')"
+  [[ $count != "$counted" ]] || break
+  ((SECONDS < deadline)) || fail "view_count of the video reaches $counted within 60 s (still '$count')"
   sleep 1
 done
 wait_caught_up 60 engagement-service feed-service
@@ -137,12 +140,12 @@ feed_state "$work/feed.before"
 [[ $(rows "$work/engagement.before" like_counts) == 1 && $(rows "$work/feed.before" follows) == 1 &&
   $(rows "$work/feed.before" timeline) == 1 && $(rows "$work/feed.before" videos) == 1 ]] ||
   fail "snapshot holds the counters, B's follow, B's timeline row and the video"
-ok "view_count $views, like_count 1; svp_feed: 1 follow, 1 timeline row, 1 video for this run"
+ok "view_count $counted after $views views (RL-3), like_count 1; svp_feed: 1 follow, 1 timeline row, 1 video for this run"
 
 # 1. Replay view.recorded to engagement-service.
 first_record engagement.views.v1 "$clip_id" 12 "the video's first view.recorded"
 replayed=$(count_lines "$records")
-[[ $replayed == "$views" ]] || fail "engagement.views.v1 holds $views view.recorded of the video (got $replayed)"
+[[ $replayed == "$counted" ]] || fail "engagement.views.v1 holds $counted view.recorded of the video (got $replayed)"
 ok "first view.recorded of the video is engagement.views.v1 partition $part offset $offset ($replayed of the video)"
 stop_consumer engagement-service engagement-service
 seek_group engagement-service engagement.views.v1 "$part" "$offset"
@@ -152,7 +155,7 @@ sleep "$settle_seconds"
 ok "engagement-service consumed the replay (lag 0)"
 engagement_state "$work/engagement.after"
 same_state "replayed view.recorded" "$work/engagement.before" "$work/engagement.after" \
-  "view_count $views, like_count and likes of the video"
+  "view_count $counted, like_count and likes of the video"
 
 # 2. Replay user.followed and video.ready to feed-service.
 replay_feed "replayed follow"

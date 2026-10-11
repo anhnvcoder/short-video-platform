@@ -666,8 +666,9 @@ func TestDatabaseErrorIsGenericInternal(t *testing.T) {
 			t.Errorf("error = %v, want INTERNAL with message %q", err, "internal error")
 		}
 	}
-	if recs := logs.records(t, "insert video"); len(recs) != 1 || recs[0]["error"] == nil || recs[0]["video_id"] == nil {
-		t.Errorf("insert failure log = %v, want one line with error and video_id", recs)
+	// The video was never stored, so the log names no video_id an operator would look up in vain.
+	if recs := logs.records(t, "insert video"); len(recs) != 1 || recs[0]["error"] == nil || recs[0]["video_id"] != nil {
+		t.Errorf("insert failure log = %v, want one line with error and without video_id", recs)
 	}
 }
 

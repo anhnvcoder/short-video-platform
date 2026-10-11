@@ -1,19 +1,27 @@
 // Package server implements svp.feed.v1.FeedService: the caller's following feed from their own
 // timeline and the explore feed of every READY video, both newest first with keyset pagination
-// (docs/adr/0009-engagement-feed-stage2b.md, section 8; docs/architecture.md §8.3).
+// (docs/adr/0009-engagement-feed-stage2b.md, section 8; docs/architecture.md §8.3). The first
+// explore page, which every new user reads, is cached in Redis
+// (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 3).
 package server
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"strconv"
+	"sync/atomic"
 	"time"
 	"uuid"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -30,6 +38,20 @@ const (
 	MaxPageSize     = 50
 )
 
+// Explore cache (ADR-0010, section 3).
+const (
+	// ExploreCacheTTL is how long a cached first explore page is served; nothing deletes it
+	// earlier, so a new video reaches the explore feed at most this late.
+	ExploreCacheTTL = 5 * time.Second
+	// cacheTimeout bounds one Redis command; past it the page is read from Postgres.
+	cacheTimeout = 50 * time.Millisecond
+	// exploreLoadTimeout bounds the shared Postgres read of a first explore page.
+	exploreLoadTimeout = 2 * time.Second
+	// cacheWarnInterval is the least time between two warnings about a failing cache, so a
+	// Redis outage does not log on every request.
+	cacheWarnInterval = time.Minute
+)
+
 // ErrorInfo reasons returned by the service.
 const (
 	ReasonInvalidPageSize  = "INVALID_PAGE_SIZE"
@@ -43,11 +65,24 @@ type Server struct {
 
 	queries *store.Queries
 	logger  *slog.Logger
+
+	cache       *redis.Client
+	cachePrefix string
+	// exploreRows reads explore rows; tests wrap it to count or slow down reads.
+	exploreRows func(context.Context, store.GetExploreFeedParams) ([]store.GetExploreFeedRow, error)
+	// firstPages makes concurrent cache misses of one first explore page share a single read.
+	firstPages singleflight.Group
+	// lastCacheWarn is when the last cache warning was logged, in Unix nanoseconds.
+	lastCacheWarn atomic.Int64
 }
 
-// New returns a Server reading through pool.
-func New(pool *pgxpool.Pool, logger *slog.Logger) *Server {
-	return &Server{queries: store.New(pool), logger: logger}
+// New returns a Server reading through pool, which caches the first explore page in cache under
+// keys starting with cachePrefix. The cache is optional to serving: when Redis fails or is
+// slow, the page is read from Postgres.
+func New(pool *pgxpool.Pool, cache *redis.Client, cachePrefix string, logger *slog.Logger) *Server {
+	s := &Server{queries: store.New(pool), logger: logger, cache: cache, cachePrefix: cachePrefix}
+	s.exploreRows = s.queries.GetExploreFeed
+	return s
 }
 
 // CallerInterceptor requires the caller's x-user-id on every FeedService RPC. Only the health
@@ -84,7 +119,8 @@ func (s *Server) GetFollowingFeed(ctx context.Context, req *feedv1.GetFollowingF
 	return &feedv1.GetFollowingFeedResponse{Items: items, NextPageToken: next}, nil
 }
 
-// GetExploreFeed returns a page of every READY video, the same for every caller.
+// GetExploreFeed returns a page of every READY video, the same for every caller. The first page
+// goes through the cache; later pages are read from Postgres.
 func (s *Server) GetExploreFeed(ctx context.Context, req *feedv1.GetExploreFeedRequest) (*feedv1.GetExploreFeedResponse, error) {
 	if _, err := callerID(ctx); err != nil {
 		return nil, err
@@ -93,11 +129,111 @@ func (s *Server) GetExploreFeed(ctx context.Context, req *feedv1.GetExploreFeedR
 	if err != nil {
 		return nil, err
 	}
-	params := store.GetExploreFeedParams{RowLimit: p.size + 1}
-	params.BeforePublishedAt, params.BeforeVideoID = p.cursorArgs()
-	rows, err := s.queries.GetExploreFeed(ctx, params)
+	if p.before == nil {
+		return s.firstExplorePage(ctx, p)
+	}
+	resp, err := s.explorePage(ctx, p)
 	if err != nil {
 		return nil, s.internal(ctx, "select explore feed", err)
+	}
+	return resp, nil
+}
+
+// firstExplorePage serves the first explore page of p.size items from the cache. On a miss,
+// concurrent requests for the same page share one Postgres read, which then fills the cache.
+// That read is detached from the request that started it, so a caller giving up does not fail
+// the others; each caller still waits only as long as its own context allows.
+func (s *Server) firstExplorePage(ctx context.Context, p page) (*feedv1.GetExploreFeedResponse, error) {
+	key := s.cachePrefix + "explore:v1:first:" + strconv.Itoa(int(p.size))
+	if resp, _, ok := s.cachedExplorePage(ctx, key); ok {
+		return resp, nil
+	}
+	loaded := s.firstPages.DoChan(key, func() (any, error) {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), exploreLoadTimeout)
+		defer cancel()
+		// A request that missed the cache just before an earlier read filled it gets here once
+		// that read has ended: look again rather than read Postgres a second time.
+		if _, b, ok := s.cachedExplorePage(ctx, key); ok {
+			return b, nil
+		}
+		resp, err := s.explorePage(ctx, p)
+		if err != nil {
+			return nil, err
+		}
+		s.logger.InfoContext(ctx, "explore page loaded from database", slog.Int("page_size", int(p.size)))
+		b, err := proto.Marshal(resp)
+		if err != nil {
+			return nil, err
+		}
+		s.cacheExplorePage(ctx, key, b)
+		return b, nil
+	})
+	var r singleflight.Result
+	select {
+	case <-ctx.Done():
+		return nil, status.FromContextError(ctx.Err()).Err()
+	case r = <-loaded:
+	}
+	if r.Err != nil {
+		return nil, s.internal(ctx, "select explore feed", r.Err)
+	}
+	// Every caller gets its own copy of the shared page.
+	resp := new(feedv1.GetExploreFeedResponse)
+	if err := proto.Unmarshal(r.Val.([]byte), resp); err != nil {
+		return nil, s.internal(ctx, "decode explore feed", err)
+	}
+	return resp, nil
+}
+
+// cachedExplorePage returns the page cached under key, decoded and as stored. A miss, a Redis
+// error or timeout, and bytes that do not decode all report false: the caller reads Postgres
+// instead. A read that fails because the request of ctx was cancelled or ran out of time is not
+// a cache failure and is not logged.
+func (s *Server) cachedExplorePage(ctx context.Context, key string) (*feedv1.GetExploreFeedResponse, []byte, bool) {
+	getCtx, cancel := context.WithTimeout(ctx, cacheTimeout)
+	defer cancel()
+	b, err := s.cache.Get(getCtx, key).Bytes()
+	if err != nil {
+		if !errors.Is(err, redis.Nil) && ctx.Err() == nil {
+			s.warnCache(ctx, "read explore cache", err)
+		}
+		return nil, nil, false
+	}
+	resp := new(feedv1.GetExploreFeedResponse)
+	if err := proto.Unmarshal(b, resp); err != nil {
+		s.warnCache(ctx, "decode explore cache", err)
+		return nil, nil, false
+	}
+	return resp, b, true
+}
+
+// cacheExplorePage stores page b under key for ExploreCacheTTL. A failure is only logged: the
+// next request reads Postgres again.
+func (s *Server) cacheExplorePage(ctx context.Context, key string, b []byte) {
+	ctx, cancel := context.WithTimeout(ctx, cacheTimeout)
+	defer cancel()
+	if err := s.cache.Set(ctx, key, b, ExploreCacheTTL).Err(); err != nil {
+		s.warnCache(ctx, "write explore cache", err)
+	}
+}
+
+// warnCache logs a cache failure at most once per cacheWarnInterval.
+func (s *Server) warnCache(ctx context.Context, what string, err error) {
+	now := time.Now().UnixNano()
+	last := s.lastCacheWarn.Load()
+	if now-last < int64(cacheWarnInterval) || !s.lastCacheWarn.CompareAndSwap(last, now) {
+		return
+	}
+	s.logger.WarnContext(ctx, what, slog.Any("error", err))
+}
+
+// explorePage reads the explore page p from Postgres.
+func (s *Server) explorePage(ctx context.Context, p page) (*feedv1.GetExploreFeedResponse, error) {
+	params := store.GetExploreFeedParams{RowLimit: p.size + 1}
+	params.BeforePublishedAt, params.BeforeVideoID = p.cursorArgs()
+	rows, err := s.exploreRows(ctx, params)
+	if err != nil {
+		return nil, err
 	}
 	following := make([]store.GetFollowingFeedRow, len(rows))
 	for i, r := range rows {

@@ -2,8 +2,7 @@
 
 > Ngày lập: 2026-10-04
 >
-> Trạng thái: giai đoạn 0, 1 và phần A, B của giai đoạn 2 xong (2026-10-11); chặng G hoãn; tiếp theo là phần C của giai
-> đoạn 2 (Redis, cache feed, rate limit, timeout/retry/circuit breaker, job dọn upload bỏ dở)
+> Trạng thái: giai đoạn 0, 1 và 2 xong (2026-10-11); chặng G hoãn; tiếp theo là giai đoạn 3 (observability)
 
 ## Mục tiêu
 
@@ -265,7 +264,7 @@ Tổng ước lượng: khoảng 8–10 tháng làm cuối tuần, đã tính ch
   - Hoàn tất ngày 2026-10-11: contract ở `proto/` (`buf lint` sạch) cùng [ADR-0006](../../docs/adr/0006-contract-ids-and-event-envelope.md) chốt ID là UUIDv7, event bọc theo topic của luồng thực thể, bố cục `proto/svp/<domain>/v1`, danh tính người gọi qua metadata `x-user-id`; threat model STRIDE ở [`docs/threat-model.md`](../../docs/threat-model.md); NFR "Độ tươi" và "Nhất quán" đã chốt.
 - [ ] G. Nền tảng Go: hoãn từ 2026-10-11 khi đang ở tuần 1 (giao 2026-10-04, bắt đầu 2026-10-05). Bài giao và nhật ký review ở [`plans/261004-go-foundations/plan.md`](../261004-go-foundations/plan.md).
 - [x] 1. Service lõi (xong 2026-10-11): `gateway`, `user-service`, `video-service` chạy bằng `make up` trên compose profile `core`; `make smoke` qua luồng đăng ký → đăng nhập → tạo video → đọc lại → follow/unfollow. Số đo: `make up` 8 s (image đã cache, gồm bootstrap Postgres và migrate); image `svp/gateway` 21,1 MB, `svp/user-service` 26 MB, `svp/video-service` 25,8 MB; `go test -race -count=1 ./...` 10 s (có integration test trên Postgres). `make check`, `buf breaking` và pre-commit hook sạch. Quyết định ở [ADR-0007](../../docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md): một Go module, công cụ ghim ở Makefile, cấu hình bằng biến môi trường, code sinh ra được commit, phạm vi thu về luồng đồng bộ (Redis, outbox, presigned upload sang giai đoạn 2).
-- [ ] 2. Bất đồng bộ và pattern
+- [x] 2. Bất đồng bộ và pattern (xong 2026-10-11)
   - [x] Phần A, luồng upload bất đồng bộ (xong 2026-10-11), quyết định ở
     [ADR-0008](../../docs/adr/0008-async-upload-pipeline-stage2a.md):
     - Đã làm: Redpanda và MinIO trong compose profile `core` (topic tạo bằng container init, bucket `uploads`/`media`, user
@@ -323,8 +322,63 @@ Tổng ước lượng: khoảng 8–10 tháng làm cuối tuần, đã tính ch
       franz-go cho relay outbox); `svp/gateway` 21,2 MB, `svp/video-service` 40,9 MB, `svp/media-worker` 150 MB.
       `go test -race -count=1 ./...` 78,1 s, phần lớn vẫn là `internal/kafkax` 76,8 s. `make check`, `buf breaking`
       (`proto/` không đổi), `make smoke` (8,3 s), `make test-stack` sạch.
-  - [ ] Phần C: Redis; cache feed khám phá + singleflight; rate limit ở gateway (gồm RL-3, RL-6); timeout/retry/circuit
-    breaker giữa service; job dọn upload bỏ dở và giới hạn số video `UPLOADING` mỗi user (UP-7).
+  - [x] Phần C, Redis, cache, rate limit, retry/circuit breaker, job dọn upload (xong 2026-10-11), quyết định ở
+    [ADR-0010](../../docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md):
+    - Đã làm: Redis native (gateway db 10 tiền tố `svp:gw:`, feed-service db 14 tiền tố `svp:feed:`, test db 15 qua
+      `internal/redistest`, mọi khoá có TTL, không thêm container) bằng `go-redis` v9.23.0, gói `internal/redisx` (dial
+      100 ms, đọc/ghi 50 ms); rate limit GCRA bằng một Lua script ở gateway, 7 lớp (`register`, `login-ip`, `login-email`,
+      `upload`, `write`, `read`, `view-once` cho RL-3), 429 `RATE_LIMITED` + `Retry-After`, Redis lỗi thì login,
+      register, upload đóng mềm bằng bộ đếm trong bộ nhớ, route ghi và đọc mở; cache trang đầu feed khám phá ở
+      feed-service (TTL 5 s, singleflight); retry `UNAVAILABLE` cho method idempotent qua service config của grpc-go và
+      circuit breaker `gobreaker` v2.4.0 cho mỗi service đích ở gateway, lỗi phụ thuộc (`DEPENDENCY_UNAVAILABLE`) không
+      mở breaker; UP-7 (tối đa 3 video `UPLOADING` có form còn hạn mỗi user, 429 `TOO_MANY_UPLOADS`, migration `00003`
+      hai index một phần); job dọn upload bỏ dở trong video-service (5 phút một lượt, quá 1 giờ thì xoá object và chuyển
+      `FAILED`, advisory lock); feed-service lưu `title` đã trim. Thêm ba target `drill-rate-limit`,
+      `measure-explore-cache`, `drill-upload-cleanup`; `drill-engagement-down` kiểm breaker; smoke và mọi diễn tập xoá
+      khoá `register` ở db 10 trước khi chạy (chỉ lab local).
+    - Rate limit (`make drill-rate-limit`): Redis tốt thì 5 lần login sai 401, lần 6 là 429 `RATE_LIMITED`, `Retry-After`
+      360 s; 3 lần `POST /videos` 201, lần 4 là 429 `TOO_MANY_UPLOADS`. Redis không tới được (gateway trỏ tên miền
+      `.invalid`): feed 200, like/unlike 204, lượt xem 202; 3 lần login sai 401 rồi 429, `Retry-After` 720 s (bộ đếm dự
+      phòng, nửa ngưỡng); một dòng WARN `rate limit store unavailable, using fallback`. Dựng lại với Redis thật thì khoá
+      quay lại db 10.
+    - Cache khám phá (`make measure-explore-cache N=100`): 100 request đồng thời lúc cache trống đọc Postgres **1** lần
+      (trước thay đổi là 100 theo cấu tạo), p50 191,2 / p95 206,2 / max 226,3 ms; 100 request tiếp theo trong TTL không
+      đọc lần nào, p50 78,8 / p95 87,1 / max 88,0 ms.
+    - Breaker (`make drill-engagement-down`): tắt engagement-service thì breaker mở sau 6 like (3,4 s); 10 lần like với
+      breaker mở trả 503, chậm nhất 8,9 ms (tiêu chí < 100 ms; phần B là 504 sau 3,05 s); feed following 200 trong
+      0,014 s, khám phá 0,024 s, không `stats`; `/readyz` 200; bật lại thì like 204 sau 1,1 s, breaker tự đóng.
+    - Dọn upload (`make drill-upload-cleanup`, hạn 20 s, chu kỳ 5 s chỉ cho diễn tập): video bỏ dở `FAILED` 23 s sau khi
+      tạo, object `uploads/<id>` đã xoá, một dòng log `upload abandoned`; video đã `CompleteUpload` cùng lúc vẫn `READY`.
+    - Các diễn tập phần A, B chạy lại trên cùng một lần `make up` với code cuối, đều xanh: `drill-kill-worker` (video
+      `READY` 91 s sau khi worker khởi động lại, một `transcode.completed`, outbox 2 dòng), `drill-duplicates` (playlist
+      biến thể giống hệt, `master.m3u8` lệch BANDWIDTH tối đa 0,60%), `measure-ready N=5` (47,2 / 47,3 / 46,6 / 47,2 /
+      47,3 s, p50 47,2 s, p95 = max 47,3 s; media-worker đỉnh 728 MiB, CPU 207,6%), `drill-duplicates-feed` (5 lượt xem
+      thì `view_count` 1 theo RL-3, phát lại vẫn 1; follow, unfollow, `video.ready` phát lại không đổi dòng nào),
+      `measure-freshness FOLLOWERS=10000 N=10` (0,338 / 0,331 / 0,163 / 0,296 / 0,267 / 0,232 / 0,264 / 0,352 / 0,195 /
+      0,277 s, p50 0,267 s, p95 = max 0,352 s; relay 0,032–0,201 s, fan-out 0,117–0,151 s; nạp 10.000 follow 13,1 s, dọn
+      15,4 s, sau đó `svp_feed` còn 0 follow của tác giả giả). `make smoke` xanh (lượt xem thứ hai trong 60 s không được
+      đếm). Cả chuỗi đăng ký 14 tài khoản từ một IP, dưới burst 20.
+    - RAM lúc nghỉ (sau mọi diễn tập): gateway 27,8 MiB, feed-service 25,0 MiB / 256 MiB, engagement-service 13,2 MiB,
+      video-service 10,2 MiB, user-service 53,1 MiB, media-worker 11,1 MiB, redpanda 478,6 MiB / 1,5 GiB, minio
+      277,4 MiB / 512 MiB; cả stack ~896 MiB. Redis native (gồm dữ liệu dự án khác) 6,9 MB, đỉnh 10,7 MB; db 10 còn 15
+      khoá (11 `login-email`, 4 `upload`, trung bình 96 B, khoá nào cũng có TTL), db 14 và db 15 trống.
+    - Image: `svp/gateway` 31,7 MB (từ 21,2 MB, thêm `go-redis` và `gobreaker`), `svp/feed-service` 43,5 MB (từ 33,1 MB,
+      thêm `go-redis`), `svp/video-service` 40,9 MB (không đổi). `make up` 21,2 s (gồm build lại image đã đổi).
+      `GOFLAGS=-count=1 make check` sạch (40 gói test, `internal/kafkax` 76,9 s, vẫn là gói lâu nhất), `buf breaking`
+      sạch (`proto/` chỉ thêm comment), `make test-stack` sạch (test `objstore` chạy trên MinIO thật, không SKIP).
+  - Đối chiếu "Xong khi" của giai đoạn 2:
+    - Kill worker giữa chừng, video không mất và không xử lý trùng: **đạt**, `drill-kill-worker` (`SIGKILL` sau 3 s
+      ffmpeg, `READY` 91 s sau khi worker khởi động lại, đúng một `transcode.completed`, outbox 2 dòng).
+    - Video mới vào feed trong thời gian đã định: **đạt**, `measure-freshness` p95 0,352 s với 10.000 follower, dưới NFR
+      10 s; trang đầu khám phá trễ thêm tối đa 5 s vì cache (khám phá không có NFR độ tươi riêng).
+    - Gửi trùng event không làm sai bộ đếm: **đạt**, `drill-duplicates-feed` (`view_count`, `like_counts`, `likes`,
+      `follows`, `timeline`, `videos` không đổi) và `drill-duplicates` (trạng thái, `published_at`, outbox không đổi).
+    - Mục "Làm": Redis cho rate limit và cache feed, Redpanda, upload presigned và media-worker, outbox, consumer
+      idempotent + DLQ, saga upload (bước bù `transcode.failed` → `FAILED` + dọn file, phần A), engagement-service gom
+      lô, feed-service CQRS + cache + singleflight, rate limit ở gateway: đã làm và đo ở phần A, B, C. "Timeout/retry/
+      circuit breaker cho mọi lời gọi" theo ADR-0010 mục 4 giới hạn ở **lời gọi gRPC** (chỉ gateway gọi gRPC, mọi lời gọi
+      có deadline, có retry và breaker); hạn riêng cho lời gọi ngoài gRPC (Postgres trong relay, consumer, projector, dọn
+      timeline; client Kafka và S3) để giai đoạn 3, cùng metric lag và cảnh báo.
 - [ ] 3. Observability
 - [ ] 4. Kubernetes local
 - [ ] 5. CI/CD và DevSecOps

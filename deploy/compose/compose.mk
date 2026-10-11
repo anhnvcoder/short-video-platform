@@ -14,7 +14,7 @@ S3_SECRET_VARS := SVP_MINIO_ROOT_PASSWORD SVP_VIDEO_S3_SECRET_KEY SVP_MEDIA_WORK
 JWT_VARS := JWT_SIGNING_KID JWT_SIGNING_KEY JWT_VERIFY_KEYS
 
 .PHONY: env env-required db-bootstrap up down clean-data ps logs smoke test-stack drill-kill-worker drill-duplicates measure-ready \
-	drill-duplicates-feed drill-engagement-down measure-freshness
+	drill-duplicates-feed drill-engagement-down measure-freshness drill-rate-limit measure-explore-cache drill-upload-cleanup
 
 env: ## Create .env (mode 600) with random secrets and a new JWT key, or fill in the ones it lacks or has empty; never changes a set value
 	@set -e; umask 077; \
@@ -73,7 +73,11 @@ smoke: ## Through the gateway at SMOKE_URL: register, log in, follow, upload to 
 # containers through $(COMPOSE), run rpk inside the Redpanda container and only SELECT from
 # svp_video, svp_engagement and svp_feed; every service runs again when a drill ends, passed or not.
 # measure-freshness also produces fake follow events to Redpanda (tools/fakefollows) and removes
-# them with unfollow events when it ends.
+# them with unfollow events when it ends. drill-rate-limit and drill-upload-cleanup recreate the
+# gateway or video-service with drill-only settings and put the defaults back when they end.
+# Every script (smoke too) deletes the per-IP register rate limit keys in Redis db 10 first: lab
+# only, since every run registers from the one Docker bridge address (ADR-0010, section 7).
+# N defaults to 5, but to 100 for measure-explore-cache.
 N ?= 5
 FOLLOWERS ?= 10000
 
@@ -86,13 +90,22 @@ drill-duplicates: env-required ## Replay transcode.completed and video.uploaded 
 drill-duplicates-feed: env-required ## Replay view.recorded, user.followed and video.ready; check counters and feed rows do not change
 	COMPOSE='$(COMPOSE)' deploy/compose/drills/duplicate-feed-events.sh $(SMOKE_URL)
 
-drill-engagement-down: env-required ## Stop engagement-service; check the feed still answers fast without stats, likes get 504 after the 3 s gateway timeout
+drill-engagement-down: env-required ## Stop engagement-service; check the breaker opens (likes 503 in < 100 ms), the feed answers without stats, the breaker closes on restart
 	COMPOSE='$(COMPOSE)' deploy/compose/drills/engagement-down.sh $(SMOKE_URL)
+
+drill-rate-limit: env-required ## Rate limits: 429 RATE_LIMITED with Retry-After, UP-7 TOO_MANY_UPLOADS; with Redis unreachable the fallback still limits logins
+	COMPOSE='$(COMPOSE)' deploy/compose/drills/rate-limit.sh $(SMOKE_URL)
+
+measure-explore-cache: env-required ## N (default 100, max 150) concurrent explore requests on an empty cache read Postgres once, a second wave never
+	COMPOSE='$(COMPOSE)' N='$(if $(filter file,$(origin N)),100,$(N))' deploy/compose/drills/measure-explore-cache.sh $(SMOKE_URL)
+
+drill-upload-cleanup: env-required ## Abandon an upload with a 20 s limit; check it goes FAILED and its object is deleted, a completed one is untouched
+	COMPOSE='$(COMPOSE)' deploy/compose/drills/upload-cleanup.sh $(SMOKE_URL)
 
 measure-ready: env-required ## Time CompleteUpload to READY for N (default 5) 60 s 1080p videos; p50, max, worker CPU/RAM
 	COMPOSE='$(COMPOSE)' N='$(N)' deploy/compose/drills/measure-ready.sh $(SMOKE_URL)
 
-measure-freshness: env-required ## Time video.ready to the last timeline row for N videos to FOLLOWERS (default 10000) fake followers
+measure-freshness: env-required ## Time video.ready to the last timeline row for N (at most 10) videos to FOLLOWERS (default 10000) fake followers
 	COMPOSE='$(COMPOSE)' N='$(N)' FOLLOWERS='$(FOLLOWERS)' deploy/compose/drills/measure-freshness.sh $(SMOKE_URL)
 
 # test-stack reads the S3 secret keys from .env the way deploy/postgres/bootstrap.sh does: no
@@ -105,7 +118,7 @@ test-stack: env-required ## go test -race against the running stack (make up): M
 	SVP_TEST_S3_VIDEO_SECRET_KEY=$$(value SVP_VIDEO_S3_SECRET_KEY); \
 	SVP_TEST_S3_WORKER_SECRET_KEY=$$(value SVP_MEDIA_WORKER_S3_SECRET_KEY); \
 	export SVP_TEST_S3_VIDEO_SECRET_KEY SVP_TEST_S3_WORKER_SECRET_KEY; \
-	export SVP_TEST_POSTGRES_URL='$(SVP_TEST_POSTGRES_URL)'; \
+	export SVP_TEST_POSTGRES_URL='$(SVP_TEST_POSTGRES_URL)' SVP_TEST_REDIS_URL='$(SVP_TEST_REDIS_URL)'; \
 	export SVP_TEST_S3_ENDPOINT=http://127.0.0.1:9000; \
 	export SVP_TEST_S3_VIDEO_ACCESS_KEY=svp-video-service SVP_TEST_S3_WORKER_ACCESS_KEY=svp-media-worker; \
 	export SVP_TEST_KAFKA_BROKERS=127.0.0.1:19092; \

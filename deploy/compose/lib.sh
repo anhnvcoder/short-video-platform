@@ -8,6 +8,10 @@
 # removed on exit. Rules every helper keeps: passwords, tokens and presigned form fields are never
 # printed and never on a command line (jq and curl read them from the environment or from files
 # in $work); every work file is private (umask 077); every request has a --max-time.
+#
+# LOCAL LAB ONLY: sourcing it deletes the gateway's per-IP register rate limit keys in Redis
+# (reset_register_limit below), so that smoke and drill runs within one hour do not use up the
+# register burst. Never point these scripts at a shared or production stack.
 
 # Seconds an API request may take: a server that accepts the connection and never answers must
 # not hang the script.
@@ -24,6 +28,25 @@ fail() {
   echo "FAIL  $1" >&2
   exit 1
 }
+
+# reset_register_limit: LOCAL LAB ONLY. Every request of these scripts reaches the gateway from the
+# one Docker bridge address, and every script registers fresh users, so runs within an hour would
+# use up the per-IP register burst of 20 (ADR-0010, sections 2 and 7). Deletes the register
+# buckets (svp:gw:rl:register:*) in the gateway's Redis db 10 on 127.0.0.1:6379 with SCAN + DEL,
+# and no other key; the limit itself is not raised.
+reset_register_limit() {
+  local key n=0
+  command -v redis-cli >/dev/null || fail "redis-cli not found (brew install redis)"
+  redis-cli -h 127.0.0.1 -p 6379 -n 10 --scan --pattern 'svp:gw:rl:register:*' >"$work/register-keys" ||
+    fail "scan the register rate limit keys in Redis db 10"
+  while IFS= read -r key; do
+    [[ -n $key ]] || continue
+    redis-cli -h 127.0.0.1 -p 6379 -n 10 DEL "$key" >/dev/null || fail "delete a register rate limit key in Redis db 10"
+    n=$((n + 1))
+  done <"$work/register-keys"
+  ok "register rate limit reset for this lab run ($n keys deleted in Redis db 10)"
+}
+reset_register_limit
 
 # request METHOD PATH [AUTH_FILE] [BODY_FILE]: sends the request to the gateway, leaves the body
 # in $work/body and the content type in $work/type, and prints the HTTP status.

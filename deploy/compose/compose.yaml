@@ -5,7 +5,8 @@
 # (docs/adr/0009-engagement-feed-stage2b.md, sections 9, 11 and 12). Run it through `make up` /
 # `make down` (deploy/compose/compose.mk), which pass --env-file .env.
 #
-# Postgres is the native one on the host (127.0.0.1:5432), reached as host.docker.internal.
+# Postgres and Redis are the native ones on the host (127.0.0.1:5432, 127.0.0.1:6379), reached
+# as host.docker.internal; each service has its own Redis db (CLAUDE.md, ADR-0010, section 1).
 # Published ports are on the host's loopback only: the gateway, the MinIO API and console, and
 # Redpanda's host listener. gRPC ports stay inside the compose network (threat model IN-2).
 #
@@ -24,8 +25,9 @@ x-healthcheck: &healthcheck
   start_period: 20s
   start_interval: 1s
 
-x-host-postgres: &host-postgres
-  # Docker Desktop provides host.docker.internal; this line makes it work on Linux too.
+x-host-services: &host-services
+  # Reaches Postgres and Redis on the host. Docker Desktop provides host.docker.internal; this
+  # line makes it work on Linux too.
   extra_hosts: ["host.docker.internal:host-gateway"]
 
 x-redpanda-image: &redpanda-image redpandadata/redpanda:v26.2.4@sha256:c98c2f04a751e6646012cc701bac5183252cee44c88ba1dfa412e4c7124f2e89
@@ -118,7 +120,7 @@ services:
         condition: service_healthy
 
   user-migrate:
-    <<: *host-postgres
+    <<: *host-services
     profiles: [core]
     image: svp/user-service:dev
     # Built by user-service; never pull a public image with this name.
@@ -129,7 +131,7 @@ services:
     restart: "no"
 
   video-migrate:
-    <<: *host-postgres
+    <<: *host-services
     profiles: [core]
     image: svp/video-service:dev
     pull_policy: never
@@ -139,7 +141,7 @@ services:
     restart: "no"
 
   engagement-migrate:
-    <<: *host-postgres
+    <<: *host-services
     profiles: [core]
     image: svp/engagement-service:dev
     pull_policy: never
@@ -149,7 +151,7 @@ services:
     restart: "no"
 
   feed-migrate:
-    <<: *host-postgres
+    <<: *host-services
     profiles: [core]
     image: svp/feed-service:dev
     pull_policy: never
@@ -159,7 +161,7 @@ services:
     restart: "no"
 
   user-service:
-    <<: *host-postgres
+    <<: *host-services
     profiles: [core]
     image: svp/user-service:dev
     pull_policy: build
@@ -187,7 +189,7 @@ services:
         condition: service_completed_successfully
 
   video-service:
-    <<: *host-postgres
+    <<: *host-services
     profiles: [core]
     image: svp/video-service:dev
     pull_policy: build
@@ -206,6 +208,10 @@ services:
       S3_PUBLIC_ENDPOINT: http://127.0.0.1:9000
       S3_ACCESS_KEY_ID: svp-video-service
       S3_SECRET_ACCESS_KEY: ${SVP_VIDEO_S3_SECRET_KEY:?run make env}
+      # Cleanup of abandoned uploads (ADR-0010, section 5). Only the upload-cleanup drill sets
+      # SVP_UPLOAD_* short; a value under the 15 minutes of an upload form is for drills only.
+      UPLOAD_ABANDON_AFTER: ${SVP_UPLOAD_ABANDON_AFTER:-1h}
+      UPLOAD_SWEEP_INTERVAL: ${SVP_UPLOAD_SWEEP_INTERVAL:-5m}
     healthcheck: *healthcheck
     # The process exits when it cannot start a Kafka consumer and expects to be started again.
     restart: unless-stopped
@@ -220,7 +226,7 @@ services:
         condition: service_completed_successfully
 
   engagement-service:
-    <<: *host-postgres
+    <<: *host-services
     profiles: [core]
     image: svp/engagement-service:dev
     pull_policy: build
@@ -247,7 +253,7 @@ services:
         condition: service_completed_successfully
 
   feed-service:
-    <<: *host-postgres
+    <<: *host-services
     profiles: [core]
     image: svp/feed-service:dev
     pull_policy: build
@@ -261,6 +267,8 @@ services:
       DATABASE_URL: postgres://svp_feed_app:${SVP_FEED_APP_DB_PASSWORD:?run make env}@host.docker.internal:5432/svp_feed?sslmode=disable
       # Consumes user.follows.v1 and video.lifecycle.v1 (ADR-0009, sections 7 and 11).
       KAFKA_BROKERS: redpanda:9092
+      # Explore feed cache (ADR-0010, section 3).
+      REDIS_URL: redis://host.docker.internal:6379/14
     mem_limit: 256m
     healthcheck: *healthcheck
     # The process exits when it cannot start a Kafka consumer and expects to be started again.
@@ -274,6 +282,7 @@ services:
         condition: service_completed_successfully
 
   gateway:
+    <<: *host-services
     profiles: [core]
     image: svp/gateway:dev
     pull_policy: build
@@ -291,6 +300,9 @@ services:
       # Public keys only: the gateway verifies tokens, it cannot sign them.
       JWT_VERIFY_KEYS: ${JWT_VERIFY_KEYS:?run make env}
       MEDIA_PUBLIC_BASE_URL: http://127.0.0.1:9000/media
+      # Rate limits (ADR-0010, section 2). SVP_GATEWAY_REDIS_URL exists only for the Redis-down
+      # drill, which points it at an unresolvable .invalid host (ADR-0010, section 7).
+      REDIS_URL: ${SVP_GATEWAY_REDIS_URL:-redis://host.docker.internal:6379/10}
     ports:
       - "127.0.0.1:8080:8080"
     healthcheck: *healthcheck

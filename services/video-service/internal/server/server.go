@@ -43,6 +43,9 @@ const (
 
 	// uploadFormTTL is how long a presigned upload form is accepted (ADR-0004, UP-2).
 	uploadFormTTL = 15 * time.Minute
+	// MaxOpenUploads is how many videos one author may have UPLOADING with a form still valid
+	// (UP-7, docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 5).
+	MaxOpenUploads = 3
 	// TopicVideoLifecycle carries svp.video.v1.VideoEvent, keyed by video_id.
 	TopicVideoLifecycle = "video.lifecycle.v1"
 )
@@ -57,6 +60,10 @@ const (
 	ReasonVideoFailed        = "VIDEO_FAILED"
 	ReasonUploadNotFound     = "UPLOAD_NOT_FOUND"
 	ReasonUploadMismatch     = "UPLOAD_MISMATCH"
+	ReasonTooManyUploads     = "TOO_MANY_UPLOADS"
+	// ReasonDependencyUnavailable goes with UNAVAILABLE when a dependency of the service (object
+	// storage) is down while the service itself runs: the gateway's breaker does not count it.
+	ReasonDependencyUnavailable = "DEPENDENCY_UNAVAILABLE"
 )
 
 // Video statuses as stored in the status column.
@@ -99,7 +106,9 @@ func CallerInterceptor() grpc.UnaryServerInterceptor {
 
 // InitUpload creates a video in UPLOADING owned by the caller and returns a form that uploads
 // exactly uploads/<video_id>, of 1 to size_bytes bytes with the normalized content type, for 15
-// minutes (UP-1). The form is a credential: it is never logged (UP-2).
+// minutes (UP-1). The form is a credential: it is never logged (UP-2). A caller who already has
+// MaxOpenUploads videos UPLOADING created within the form's lifetime gets RESOURCE_EXHAUSTED
+// (UP-7).
 func (s *Server) InitUpload(ctx context.Context, req *videov1.InitUploadRequest) (*videov1.InitUploadResponse, error) {
 	caller, err := callerID(ctx)
 	if err != nil {
@@ -118,18 +127,23 @@ func (s *Server) InitUpload(ctx context.Context, req *videov1.InitUploadRequest)
 	}
 
 	id := ids.New()
-	// user_id and trace_id are already in the context; video_id joins them on every later log (UP-8).
-	ctx = logx.With(ctx, slog.String("video_id", id))
-	err = s.queries.CreateVideo(ctx, store.CreateVideoParams{
+	err = s.createVideo(ctx, store.CreateVideoParams{
 		ID:          uuid.MustParse(id),
 		AuthorID:    caller,
 		Title:       title,
 		SizeBytes:   req.GetSizeBytes(),
 		ContentType: contentType,
 	})
+	if errors.Is(err, errTooManyUploads) {
+		s.logger.InfoContext(ctx, "too many uploads in progress")
+		return nil, grpcerr.New(codes.ResourceExhausted, ReasonTooManyUploads, "too many uploads in progress")
+	}
 	if err != nil {
 		return nil, s.internal(ctx, "insert video", err)
 	}
+	// user_id and trace_id are already in the context; video_id joins them on every later log
+	// (UP-8), only now that the video is stored, so no log names a video that does not exist.
+	ctx = logx.With(ctx, slog.String("video_id", id))
 	s.logger.InfoContext(ctx, "video created")
 
 	// The key comes from the id the server generated, never from the request (UP-4).
@@ -143,6 +157,42 @@ func (s *Server) InitUpload(ctx context.Context, req *videov1.InitUploadRequest)
 		FormFields: form.Fields,
 		ExpiresAt:  timestamppb.New(form.ExpiresAt),
 	}, nil
+}
+
+// errTooManyUploads is returned by createVideo when the author has MaxOpenUploads open uploads.
+var errTooManyUploads = errors.New("too many uploads in progress")
+
+// createVideo inserts the video unless its author already has MaxOpenUploads videos UPLOADING
+// created within uploadFormTTL. The count and the insert run in one transaction under a lock per
+// author, so concurrent calls of one author are counted one after the other.
+func (s *Server) createVideo(ctx context.Context, p store.CreateVideoParams) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// After Commit this is a no-op; on ctx cancellation it still reaches the server.
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	q := s.queries.WithTx(tx)
+
+	if err := q.LockAuthorUploads(ctx, p.AuthorID); err != nil {
+		return err
+	}
+	// The cutoff uses this clock, like the form's expiry: a video created before it has an
+	// expired form.
+	open, err := q.CountOpenUploads(ctx, store.CountOpenUploadsParams{
+		AuthorID:     p.AuthorID,
+		CreatedAfter: time.Now().Add(-uploadFormTTL),
+	})
+	if err != nil {
+		return err
+	}
+	if open >= MaxOpenUploads {
+		return errTooManyUploads
+	}
+	if err := q.CreateVideo(ctx, p); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // CompleteUpload checks that uploads/<video_id> holds the declared size and content type, then
@@ -184,7 +234,7 @@ func (s *Server) CompleteUpload(ctx context.Context, req *videov1.CompleteUpload
 	}
 	if err != nil {
 		s.logger.ErrorContext(ctx, "head uploaded file", slog.Any("error", err))
-		return nil, status.Error(codes.Unavailable, "storage unavailable")
+		return nil, grpcerr.New(codes.Unavailable, ReasonDependencyUnavailable, "storage unavailable")
 	}
 	// The form limits the size to 1..size_bytes; the video needs exactly what InitUpload declared.
 	// The video stays UPLOADING, so the client can upload again while its form is valid.

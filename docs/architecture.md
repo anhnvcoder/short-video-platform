@@ -1,11 +1,12 @@
 # Kiến trúc short-video platform
 
-> Trạng thái: giai đoạn 0, 1 và phần A, B của giai đoạn 2 xong (2026-10-11). ADR 0001–0009, contract ở
-> [`proto/`](../proto/) ([§8](#8-contract)), threat model ở [`threat-model.md`](threat-model.md). `make up` chạy luồng
-> đồng bộ (đăng ký, đăng nhập, tạo và đọc video, follow), luồng upload bất đồng bộ (presigned POST lên MinIO, outbox →
-> Redpanda, media-worker transcode ra HLS, video `READY` hoặc `FAILED`) và luồng feed (follow qua outbox, feed-service
-> fan-out on write, feed following và khám phá, like, lượt xem gom theo lô ở engagement-service); Redis, cache, rate
-> limit, timeout/retry/circuit breaker giữa service (phần C) và phần còn lại của tài liệu là thiết kế đích.
+> Trạng thái: giai đoạn 0, 1 và 2 xong (2026-10-11). ADR 0001–0010, contract ở [`proto/`](../proto/)
+> ([§8](#8-contract)), threat model ở [`threat-model.md`](threat-model.md). `make up` chạy luồng đồng bộ (đăng ký, đăng
+> nhập, tạo và đọc video, follow), luồng upload bất đồng bộ (presigned POST lên MinIO, outbox → Redpanda, media-worker
+> transcode ra HLS, video `READY` hoặc `FAILED`, job dọn upload bỏ dở), luồng feed (follow qua outbox, feed-service
+> fan-out on write, feed following và khám phá có cache trang đầu trong Redis, like, lượt xem gom theo lô ở
+> engagement-service), rate limit ở gateway bằng Redis, retry và circuit breaker cho lời gọi gRPC của gateway. Phần còn
+> lại của tài liệu (CDN, observability, k8s, cloud) là thiết kế đích.
 
 Tài liệu này mô tả hệ thống sẽ được xây và lý do. Mỗi quyết định lớn có một ADR trong [`adr/`](adr/); ở đây chỉ tóm tắt
 và trỏ tới.
@@ -189,6 +190,14 @@ CDN (client đọc thẳng MinIO). Redpanda và MinIO chạy trong compose profi
   `:9104` chỉ trong mạng compose, không publish ra máy (gateway gọi `engagement-service:9103`, `feed-service:9104`); mỗi
   service `mem_limit` 256 MB, database riêng `svp_engagement`, `svp_feed`. Đo 2026-10-11: lúc nghỉ 9–23 MiB mỗi service;
   feed-service đỉnh 82 MiB khi nạp 200.000 follow.
+- **Redis** ([ADR-0010](adr/0010-redis-ratelimit-cache-resilience-stage2c.md) mục 1): bản native `127.0.0.1:6379` dùng
+  chung với dự án khác, không có container; compose trỏ `REDIS_URL` tới `host.docker.internal:6379/<db>`. Gateway dùng
+  db 10, tiền tố khoá `svp:gw:` (rate limit, `svp:gw:rl:<lớp>:<định danh>`); feed-service db 14, tiền tố `svp:feed:`
+  (cache trang đầu feed khám phá); test db 15, mỗi test một tiền tố `svp:test:<hex>:`. Mọi khoá có TTL (Redis local
+  `maxmemory 0`, `noeviction`). Client có timeout ngắn (dial 100 ms, đọc/ghi 50 ms); service khởi động và vẫn ready khi
+  Redis lỗi, vì mọi chỗ dùng Redis đều có đường lui ([§7.2](#72-đọc-feed), [§8.5](#85-rest-ở-gateway)). Đo 2026-10-11 sau
+  mọi diễn tập: Redis native dùng 6,9 MB (gồm cả dữ liệu dự án khác), db 10 còn 15 khoá (trung bình 96 B), db 14
+  trống.
 - **Mạng riêng của media-worker:** worker chạy ffmpeg trên file người dùng tải lên, nên chỉ nằm trong mạng compose `worker`
   (`internal`, không route ra ngoài) cùng Redpanda và MinIO; nó không tới được gateway, các service gRPC, Postgres hay
   internet. Container chỉ đọc, bỏ mọi capability, giới hạn 2 CPU, 2 GB.
@@ -277,8 +286,9 @@ sequenceDiagram
     participant ES as engagement-service
 
     C->>GW: GET /feed/following hoặc /feed/explore?cursor=...&page_size=...
-    GW->>GW: kiểm JWT (rate limit bằng Redis ở phần C)
+    GW->>GW: kiểm JWT, rate limit lớp read theo user_id (Redis db 10)
     GW->>FS: GetFollowingFeed / GetExploreFeed(page_size, page_token), metadata x-user-id
+    FS->>FS: trang đầu feed khám phá: đọc cache Redis db 14, trống thì singleflight đọc Postgres rồi ghi cache 5 s
     FS-->>GW: 10 video kèm metadata và object key, next_page_token
     GW->>GW: ghép URL HLS từ object key
     GW->>ES: GetStats(video_ids), metadata x-user-id, timeout 100 ms, không retry
@@ -287,10 +297,28 @@ sequenceDiagram
 ```
 
 Gateway ghép dữ liệu từ hai service (vai trò BFF). Số đếm là phần phụ: engagement-service chậm thì feed vẫn trả về, chỉ
-thiếu số. Đây là graceful degradation, giữ SLO của feed không phụ thuộc vào service kém quan trọng hơn. Diễn tập
-`make drill-engagement-down` (2026-10-11): tắt engagement-service thì feed following và khám phá vẫn trả 200 trong
-0,11 s, không item nào có `stats`; `/readyz` vẫn 200 vì nó không kiểm engagement-service
-([ADR-0009](adr/0009-engagement-feed-stage2b.md) mục 9).
+thiếu số. Đây là graceful degradation, giữ SLO của feed không phụ thuộc vào service kém quan trọng hơn.
+
+Phần chống quá tải và lỗi lan ([ADR-0010](adr/0010-redis-ratelimit-cache-resilience-stage2c.md) mục 2–4):
+
+- **Rate limit:** lớp `read` 600/phút, burst 200 mỗi `user_id`; Redis lỗi thì route đọc **mở** (cho qua).
+- **Cache feed khám phá:** chỉ trang đầu (`page_token` rỗng), khoá `svp:feed:explore:v1:first:<page_size>`, giá trị là
+  bytes protobuf của câu trả lời, TTL 5 s, không xoá chủ động khi có video mới (video mới vào khám phá chậm tối đa 5 s).
+  Cache trống thì các request đồng thời của một instance chung một lần đọc Postgres (singleflight, hạn riêng 2 s). Redis
+  lỗi hay quá 50 ms thì đọc Postgres, không báo lỗi cho client. `make measure-explore-cache N=100` (2026-10-11): 100
+  request đồng thời lúc cache trống thì đọc Postgres **1** lần, p50 191 ms, p95 206 ms; 100 request tiếp theo trong TTL
+  không đọc lần nào, p50 79 ms, p95 87 ms.
+- **Retry và circuit breaker** ở gateway, một breaker cho mỗi service đích: lời gọi idempotent (gồm `GetFollowingFeed`,
+  `GetExploreFeed`) được gọi tối đa 3 lần khi gặp `UNAVAILABLE`, trong cùng hạn 3 s; `GetStats` không retry. Breaker mở
+  khi 5 lỗi liên tiếp, hoặc ≥ 20 lời gọi với ≥ 50% lỗi trong 10 s; mở 5 s rồi cho một lời gọi thử. Lỗi là `UNAVAILABLE`
+  mức kết nối và `DEADLINE_EXCEEDED` (riêng `GetStats` không tính `DEADLINE_EXCEEDED`); mã nghiệp vụ và lỗi phụ thuộc
+  của service (`DEPENDENCY_UNAVAILABLE`) không mở breaker. Breaker mở thì lời gọi lỗi ngay, không gọi mạng: feed trả
+  trang không `stats` mà không chờ 100 ms, like trả 503.
+
+Diễn tập `make drill-engagement-down` (2026-10-11): tắt engagement-service thì breaker mở sau 6 like (3,4 s); với breaker
+mở, 10 lần like trả 503, chậm nhất 8,9 ms; feed following trả 200 trong 0,014 s, khám phá 0,024 s, không item nào có
+`stats`; `/readyz` vẫn 200 vì nó không kiểm engagement-service ([ADR-0009](adr/0009-engagement-feed-stage2b.md) mục 9).
+Bật lại thì breaker tự đóng, like trả 204 sau 1,1 s và `stats` quay lại.
 
 ### 7.3 Ghi lượt xem
 
@@ -420,6 +448,14 @@ Thân lỗi theo RFC 9457 (`Content-Type: application/problem+json`):
 - Với mã 5xx, gateway **không** trả message gốc và lý do của service (tránh lộ chi tiết nội bộ): `detail` bỏ trống, `code`
   là tên mã gRPC, chỉ `trace_id` để tra.
 - Lỗi do chính gateway sinh (JWT sai hoặc hết hạn: 401; vượt rate limit: 429) dùng cùng định dạng.
+- Vượt rate limit ([ADR-0010](adr/0010-redis-ratelimit-cache-resilience-stage2c.md) mục 2): 429, `code` `RATE_LIMITED`,
+  `detail` `"too many requests"`, header `Retry-After` tính bằng giây (làm tròn lên, tối thiểu 1). Khác với 429 do service
+  trả qua `RESOURCE_EXHAUSTED` (`TOO_MANY_UPLOADS` của `POST /videos`, `SERVER_BUSY` của login): những lỗi đó không có
+  `Retry-After`.
+- Circuit breaker của service đích đang mở ([§7.2](#72-đọc-feed)): gateway không gọi mạng mà trả ngay `UNAVAILABLE`, tức
+  503 với `code` `UNAVAILABLE`, `detail` rỗng, như mọi 5xx. Service báo phụ thuộc của nó chết (`UNAVAILABLE` kèm reason
+  `DEPENDENCY_UNAVAILABLE`, ví dụ `RecordView` khi Redpanda chết, `CompleteUpload` khi MinIO chết) cũng là 503 không lộ
+  reason.
 - Lỗi từ engagement-service khi ghép feed **không** đi qua bảng này: gateway nuốt lỗi và trả feed không kèm số đếm
   (graceful degradation, [§7.2](#72-đọc-feed)).
 
@@ -427,7 +463,7 @@ Thân lỗi theo RFC 9457 (`Content-Type: application/problem+json`):
 
 REST ở biên được viết tay trong [`services/gateway/openapi.yaml`](../services/gateway/openapi.yaml) (OpenAPI 3.1, lý do ở
 mục 8 của ADR-0007); file đó là nguồn của danh sách route, schema và mã lỗi từng route. JSON dùng `snake_case`, khớp tên
-field trong proto; thời gian theo RFC 3339, UTC. Route đã có (giai đoạn 1, phần A và B của giai đoạn 2):
+field trong proto; thời gian theo RFC 3339, UTC. Route đã có (giai đoạn 1 và 2):
 
 | Route | Xác thực | Việc |
 | --- | --- | --- |
@@ -461,6 +497,26 @@ Chi tiết hiện thực của luồng feed, like và lượt xem chốt ở [AD
   timeline; job mỗi giờ dọn dòng quá 30 ngày (mục 6, 7);
 - gateway ghép `stats` bằng một `GetStats` cho cả trang, timeout 100 ms, không retry (mục 9).
 
+Rate limit, cache, timeout/retry/circuit breaker và job dọn upload chốt ở
+[ADR-0010](adr/0010-redis-ratelimit-cache-resilience-stage2c.md):
+
+- mọi route trừ `/healthz`, `/readyz` có rate limit GCRA bằng một Lua script trong Redis db 10 (mục 2): `register` theo
+  IP 60/giờ, burst 20; `login` theo IP 60/phút, burst 30, và theo cặp (IP, email) 10/giờ, burst 5 (khoá chứa SHA-256 của
+  email, không có email thô); `POST /videos` 30/giờ, burst 10; route ghi 120/phút, burst 60; route đọc 600/phút, burst
+  200, ba lớp sau theo `user_id`. Mọi lần gọi đều được đếm. IP lấy từ địa chỉ kết nối, bỏ qua `X-Forwarded-For` (RL-1;
+  đọc header của proxy tin cậy là việc của giai đoạn 4);
+- Redis lỗi hay quá 50 ms thì `register`, `login`, `POST /videos` **đóng mềm** (bộ đếm trong bộ nhớ của từng instance,
+  ngưỡng bằng nửa), route ghi và đọc **mở**; gateway log WARN `rate limit store unavailable, using fallback` tối đa một
+  dòng mỗi 10 s (RL-2);
+- lượt xem thứ hai của cùng cặp (`user_id`, `video_id`) trong 60 s vẫn nhận 202 nhưng không được đếm (RL-3, khoá
+  `SET NX PX 60000`); chuyển tiếp `RecordView` lỗi thì xoá khoá đó để lần thử lại được đếm;
+- mỗi user tối đa 3 video `UPLOADING` có form còn hạn (tạo trong 15 phút gần nhất); quá thì 429 `TOO_MANY_UPLOADS`
+  (UP-7, đếm ở video-service dưới advisory lock theo tác giả, mục 5);
+- video-service chạy job dọn upload bỏ dở mỗi 5 phút, một instance một lúc nhờ `pg_try_advisory_xact_lock`: video
+  `UPLOADING` quá 1 giờ bị xoá object `uploads/<video_id>` rồi chuyển `FAILED`, lô 100 video, hạn 30 s mỗi lô (mục 5);
+- mọi lời gọi gRPC của gateway có deadline (3 s, `GetStats` 100 ms); timeout ngoài gRPC (Postgres trong vòng nền, client
+  Kafka và S3) để giai đoạn 3 (mục 4).
+
 ## 9. Quyết định
 
 Danh sách ADR và trạng thái: [`adr/README.md`](adr/README.md).
@@ -469,3 +525,7 @@ Danh sách ADR và trạng thái: [`adr/README.md`](adr/README.md).
 
 - **Giữ file gốc bao lâu** (50 hay ~25 TB/năm): chốt ở giai đoạn 7 (lifecycle S3) và mô hình chi phí ở giai đoạn 9.
 - **Trên cloud dùng chung một instance Postgres cho mọi service hay tách:** chốt ở giai đoạn 7.
+- **Số hop proxy tin cậy khi đọc `X-Forwarded-For`** (RL-1): gateway hiện lấy IP từ địa chỉ kết nối, chỉ đúng ở compose;
+  chốt ở giai đoạn 4 (Envoy Gateway) trước khi đưa gateway ra sau proxy, xem lại theo môi trường ở giai đoạn 7.
+- **Hạn cho lời gọi ngoài gRPC** (Postgres trong relay, consumer, projector, dọn timeline; client Kafka và S3): chốt ở
+  giai đoạn 3, cùng metric lag và cảnh báo.

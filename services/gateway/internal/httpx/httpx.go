@@ -67,6 +67,12 @@ func OutgoingContext(ctx context.Context) context.Context {
 	return metadata.NewOutgoingContext(ctx, md)
 }
 
+// UserID returns the user id RequireAuth put into ctx, or "" outside RequireAuth.
+func UserID(ctx context.Context) string {
+	id, _ := ctx.Value(userIDKey).(string)
+	return id
+}
+
 // traceID returns the trace-id of the request's traceparent, or "" outside Trace.
 func traceID(ctx context.Context) string {
 	tp, _ := ctx.Value(traceparentKey).(string)

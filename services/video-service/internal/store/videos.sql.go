@@ -7,9 +7,28 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"uuid"
 )
+
+const countOpenUploads = `-- name: CountOpenUploads :one
+SELECT count(*) FROM videos
+WHERE author_id = $1 AND status = 'UPLOADING' AND created_at > $2
+`
+
+type CountOpenUploadsParams struct {
+	AuthorID     uuid.UUID
+	CreatedAfter time.Time
+}
+
+// Videos of the author still UPLOADING whose upload form may still be valid.
+func (q *Queries) CountOpenUploads(ctx context.Context, arg CountOpenUploadsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countOpenUploads, arg.AuthorID, arg.CreatedAfter)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
 
 const createVideo = `-- name: CreateVideo :exec
 INSERT INTO videos (id, author_id, title, status, size_bytes, content_type)
@@ -57,6 +76,88 @@ func (q *Queries) GetVideo(ctx context.Context, id uuid.UUID) (Video, error) {
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const listAbandonedUploads = `-- name: ListAbandonedUploads :many
+SELECT id, author_id FROM videos
+WHERE status = 'UPLOADING' AND created_at < $1
+ORDER BY created_at
+LIMIT $2
+FOR UPDATE
+`
+
+type ListAbandonedUploadsParams struct {
+	CreatedBefore time.Time
+	MaxVideos     int32
+}
+
+type ListAbandonedUploadsRow struct {
+	ID       uuid.UUID
+	AuthorID uuid.UUID
+}
+
+// Locks the oldest videos still UPLOADING created before created_before. A row that a concurrent
+// CompleteUpload moves first is re-checked after its lock is released, and skipped.
+func (q *Queries) ListAbandonedUploads(ctx context.Context, arg ListAbandonedUploadsParams) ([]ListAbandonedUploadsRow, error) {
+	rows, err := q.db.Query(ctx, listAbandonedUploads, arg.CreatedBefore, arg.MaxVideos)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAbandonedUploadsRow
+	for rows.Next() {
+		var i ListAbandonedUploadsRow
+		if err := rows.Scan(&i.ID, &i.AuthorID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockAuthorUploads = `-- name: LockAuthorUploads :exec
+SELECT pg_advisory_xact_lock(hashtextextended('video-upload-author:' || $1::uuid::text, 0))
+`
+
+// Serializes the InitUpload calls of one author until the transaction ends, so two concurrent
+// calls cannot both pass the open upload count (UP-7). Other authors do not wait.
+func (q *Queries) LockAuthorUploads(ctx context.Context, authorID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, lockAuthorUploads, authorID)
+	return err
+}
+
+const markUploadsFailed = `-- name: MarkUploadsFailed :many
+UPDATE videos SET status = 'FAILED'
+WHERE id = ANY($1::uuid[]) AND status = 'UPLOADING'
+RETURNING id, author_id
+`
+
+type MarkUploadsFailedRow struct {
+	ID       uuid.UUID
+	AuthorID uuid.UUID
+}
+
+func (q *Queries) MarkUploadsFailed(ctx context.Context, ids []uuid.UUID) ([]MarkUploadsFailedRow, error) {
+	rows, err := q.db.Query(ctx, markUploadsFailed, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []MarkUploadsFailedRow
+	for rows.Next() {
+		var i MarkUploadsFailedRow
+		if err := rows.Scan(&i.ID, &i.AuthorID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const markVideoFailed = `-- name: MarkVideoFailed :execrows
@@ -137,4 +238,17 @@ func (q *Queries) MarkVideoReady(ctx context.Context, arg MarkVideoReadyParams) 
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const tryLockUploadSweep = `-- name: TryLockUploadSweep :one
+SELECT pg_try_advisory_xact_lock($1::bigint)::boolean AS locked
+`
+
+// Taken by the abandoned upload sweep for the rest of the transaction; false when another
+// instance holds it.
+func (q *Queries) TryLockUploadSweep(ctx context.Context, lockID int64) (bool, error) {
+	row := q.db.QueryRow(ctx, tryLockUploadSweep, lockID)
+	var locked bool
+	err := row.Scan(&locked)
+	return locked, err
 }

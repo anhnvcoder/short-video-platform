@@ -15,6 +15,12 @@ info:
     `NOT_FOUND` for an unknown path, `METHOD_NOT_ALLOWED` (with an `Allow` header) and
     `INVALID_UTF8`, a 400 for any request whose path or query string, once percent-decoded, is
     not valid UTF-8.
+
+    Every route but `/healthz` and `/readyz` is rate limited (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md,
+    section 2): `/auth/register` and `/auth/login` by the client's address, `/auth/login` also by
+    the address and email together, the other routes by the authenticated user. Every call counts,
+    successful or not. Over the limit the answer is a 429 with code `RATE_LIMITED` and a
+    `Retry-After` header in seconds.
 servers:
   - url: http://127.0.0.1:8080
 security: []
@@ -130,6 +136,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -150,6 +158,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -228,6 +238,18 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          description: |
+            Over the rate limit (`RATE_LIMITED`, with `Retry-After`), or the caller already has 3
+            videos in UPLOADING whose upload form has not expired (`TOO_MANY_UPLOADS`, no
+            `Retry-After`): complete one of them, or wait until its form expires (15 minutes).
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -266,6 +288,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -315,6 +339,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -346,6 +372,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -366,6 +394,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -378,9 +408,11 @@ paths:
       operationId: recordView
       summary: Count one view of a video
       description: |
-        Takes no request body. Not idempotent: every call is one view. The view is queued and
-        `view_count` catches up within about a minute. On 503 the view was not recorded and the
-        client may retry.
+        Takes no request body. Not idempotent: every call is one view, but a caller's views of
+        one video count at most once a minute: a repeat within 60 seconds of the counted view
+        still gets 202 and is not counted. The view is queued and `view_count` catches up within
+        about a minute. On 503 or 504 the view was not recorded and the client may retry; the
+        retry counts.
       tags: [engagement]
       security:
         - bearerAuth: []
@@ -398,6 +430,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -429,6 +463,8 @@ paths:
           $ref: "#/components/responses/FeedBadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -460,6 +496,8 @@ paths:
           $ref: "#/components/responses/FeedBadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -504,6 +542,13 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: The access token from /auth/login, only in the Authorization header.
+
+  headers:
+    RetryAfter:
+      description: Seconds to wait before the request would be allowed; at least 1.
+      schema:
+        type: integer
+        minimum: 1
 
   parameters:
     PageSize:
@@ -742,7 +787,21 @@ components:
           schema:
             $ref: "#/components/schemas/Problem"
     TooManyRequests:
-      description: The service is busy hashing passwords (`SERVER_BUSY`); retry later.
+      description: |
+        Over the rate limit (`RATE_LIMITED`, with `Retry-After`), or the service is busy hashing
+        passwords (`SERVER_BUSY`, no `Retry-After`); retry later.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    RateLimited:
+      description: Over the rate limit (`RATE_LIMITED`); retry after `Retry-After` seconds.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
       content:
         application/problem+json:
           schema:

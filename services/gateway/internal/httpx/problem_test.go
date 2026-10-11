@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -124,5 +125,44 @@ func TestWriteProblem(t *testing.T) {
 	want := problem{"about:blank", "Unauthorized", 401, "missing or invalid access token", "INVALID_TOKEN", traceID}
 	if p != want {
 		t.Errorf("problem = %+v, want %+v", p, want)
+	}
+}
+
+func TestWriteRateLimited(t *testing.T) {
+	for _, tt := range []struct {
+		retryAfter time.Duration
+		want       string
+	}{
+		{0, "1"},
+		{time.Nanosecond, "1"},
+		{time.Second, "1"},
+		{1500 * time.Millisecond, "2"},
+		{time.Minute, "60"},
+	} {
+		t.Run(tt.retryAfter.String(), func(t *testing.T) {
+			r, id := requestWithTrace(t)
+			rec := httptest.NewRecorder()
+			WriteRateLimited(rec, r, "login-ip", tt.retryAfter)
+			if got := rec.Header().Get("Retry-After"); got != tt.want {
+				t.Errorf("Retry-After = %q, want %q", got, tt.want)
+			}
+			p := decodeProblem(t, rec)
+			want := problem{Type: "about:blank", Title: "Too Many Requests", Status: 429, Detail: "too many requests", Code: "RATE_LIMITED", TraceID: id}
+			if p != want {
+				t.Errorf("problem = %+v, want %+v", p, want)
+			}
+		})
+	}
+}
+
+func TestAccessLogNamesRateLimit(t *testing.T) {
+	logs := captureLog(t)
+	h := Trace(AccessLog(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		WriteRateLimited(w, r, "register", time.Minute)
+	})))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/auth/register", nil))
+	lines := logRecords(t, logs, "http request")
+	if len(lines) != 1 || lines[0]["status"] != 429.0 || lines[0]["rate_limit"] != "register" {
+		t.Errorf("access log = %v, want one line with status 429 and rate_limit register", lines)
 	}
 }

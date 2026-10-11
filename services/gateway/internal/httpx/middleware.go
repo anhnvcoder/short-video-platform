@@ -82,10 +82,12 @@ func validURL(u *url.URL) bool {
 // chain, writes the user id here because it cannot change the context AccessLog holds.
 type logState struct {
 	userID string
+	// rateLimit is the class that refused the request, set by WriteRateLimited.
+	rateLimit string
 }
 
 // AccessLog writes one line per request: method, route pattern, status, duration, response
-// size, trace_id and user_id when authenticated. Headers, query string and bodies are never
+// size, trace_id, user_id when authenticated and rate_limit when a rate limit refused it. Headers, query string and bodies are never
 // logged, since they carry tokens and passwords (threat model JWT-8).
 func AccessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -113,6 +115,9 @@ func AccessLog(next http.Handler) http.Handler {
 			}
 			if state.userID != "" {
 				attrs = append(attrs, slog.String("user_id", state.userID))
+			}
+			if state.rateLimit != "" {
+				attrs = append(attrs, slog.String("rate_limit", state.rateLimit))
 			}
 			slog.LogAttrs(r.Context(), slog.LevelInfo, "http request", attrs...)
 		}()

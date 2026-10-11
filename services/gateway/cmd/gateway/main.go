@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -20,11 +21,18 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	engagementv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/engagement/v1"
+	feedv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/feed/v1"
+	userv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1"
+	videov1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/video/v1"
 	"github.com/anhnvcoder/short-video-platform/internal/authtoken"
 	"github.com/anhnvcoder/short-video-platform/internal/envcfg"
 	"github.com/anhnvcoder/short-video-platform/internal/logx"
+	"github.com/anhnvcoder/short-video-platform/internal/redisx"
 	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/api"
+	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/breaker"
 	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/httpx"
+	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/ratelimit"
 )
 
 const (
@@ -34,11 +42,95 @@ const (
 	defaultVideoServiceAddr = "127.0.0.1:9102"
 	defaultEngagementAddr   = "127.0.0.1:9103"
 	defaultFeedServiceAddr  = "127.0.0.1:9104"
+	// defaultRedisURL is the gateway's Redis db (CLAUDE.md); it holds the rate limits.
+	defaultRedisURL = "redis://127.0.0.1:6379/10"
+	// redisKeyPrefix starts every key the gateway writes (ADR-0010 section 1).
+	redisKeyPrefix = "svp:gw:"
 	// shutdownTimeout bounds the wait for in-flight requests after SIGINT or SIGTERM.
 	shutdownTimeout = 10 * time.Second
 	// healthcheckTimeout bounds the healthcheck subcommand, which a container runtime calls often.
 	healthcheckTimeout = 3 * time.Second
 )
+
+// backend is a gRPC service the gateway calls.
+type backend struct {
+	// name names the service's circuit breaker in the log.
+	name          string
+	addrVar, addr string
+	// retry are the full names of the idempotent methods retried on UNAVAILABLE (ADR-0010
+	// section 4); no other method is retried.
+	retry []string
+	// ignoreDeadline are the methods whose DEADLINE_EXCEEDED the breaker does not count.
+	ignoreDeadline []string
+}
+
+var (
+	userBackend = backend{
+		name: "user-service", addrVar: "USER_SERVICE_ADDR", addr: defaultUserServiceAddr,
+		retry: []string{userv1.UserService_Follow_FullMethodName, userv1.UserService_Unfollow_FullMethodName},
+	}
+	videoBackend = backend{
+		name: "video-service", addrVar: "VIDEO_SERVICE_ADDR", addr: defaultVideoServiceAddr,
+		retry: []string{videov1.VideoService_GetVideo_FullMethodName, videov1.VideoService_CompleteUpload_FullMethodName},
+	}
+	feedBackend = backend{
+		name: "feed-service", addrVar: "FEED_SERVICE_ADDR", addr: defaultFeedServiceAddr,
+		retry: []string{feedv1.FeedService_GetFollowingFeed_FullMethodName, feedv1.FeedService_GetExploreFeed_FullMethodName},
+	}
+	engagementBackend = backend{
+		name: "engagement-service", addrVar: "ENGAGEMENT_SERVICE_ADDR", addr: defaultEngagementAddr,
+		retry: []string{engagementv1.EngagementService_Like_FullMethodName, engagementv1.EngagementService_Unlike_FullMethodName},
+		// GetStats has a 100 ms budget: a slow but live engagement-service must not open the
+		// breaker and fail every like and view (ADR-0010 section 4).
+		ignoreDeadline: []string{engagementv1.EngagementService_GetStats_FullMethodName},
+	}
+)
+
+// retryConfig is the service config of every connection (ADR-0010 section 4), with %s the
+// methods it retries. Every attempt runs within the call's one deadline.
+const retryConfig = `{
+  "methodConfig": [{
+    "name": %s,
+    "retryPolicy": {
+      "maxAttempts": 3,
+      "initialBackoff": "0.05s",
+      "maxBackoff": "0.2s",
+      "backoffMultiplier": 2,
+      "retryableStatusCodes": ["UNAVAILABLE"]
+    }
+  }],
+  "retryThrottling": {"maxTokens": 10, "tokenRatio": 0.1}
+}`
+
+// serviceConfig returns b's service config: retryConfig naming the methods in b.retry.
+func (b backend) serviceConfig() string {
+	type name struct {
+		Service string `json:"service"`
+		Method  string `json:"method"`
+	}
+	names := make([]name, len(b.retry))
+	for i, m := range b.retry {
+		names[i].Service, names[i].Method, _ = strings.Cut(strings.TrimPrefix(m, "/"), "/")
+	}
+	list, err := json.Marshal(names)
+	if err != nil {
+		// A slice of string pairs always marshals.
+		panic(err)
+	}
+	return fmt.Sprintf(retryConfig, list)
+}
+
+// dialOptions are the options of every connection to b: plain text until mTLS arrives in stage
+// 6, b's own circuit breaker, and b's service config. A service config from the resolver (a DNS
+// TXT record) is ignored, so the retry policy is always this one.
+func (b backend) dialOptions() []grpc.DialOption {
+	return []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithUnaryInterceptor(breaker.New(b.name, b.ignoreDeadline...)),
+		grpc.WithDisableServiceConfig(),
+		grpc.WithDefaultServiceConfig(b.serviceConfig()),
+	}
+}
 
 func main() {
 	logger := logx.New(serviceName)
@@ -88,17 +180,17 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("MEDIA_PUBLIC_BASE_URL: %w", err)
 	}
 
-	userConn, err := dial("USER_SERVICE_ADDR", defaultUserServiceAddr)
+	userConn, err := dial(userBackend)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = userConn.Close() }()
-	videoConn, err := dial("VIDEO_SERVICE_ADDR", defaultVideoServiceAddr)
+	videoConn, err := dial(videoBackend)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = videoConn.Close() }()
-	feedConn, err := dial("FEED_SERVICE_ADDR", defaultFeedServiceAddr)
+	feedConn, err := dial(feedBackend)
 	if err != nil {
 		return err
 	}
@@ -109,14 +201,23 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// background. An idle timeout of 0 stops grpc-go from closing it after 30 minutes without
 	// calls. When an open connection breaks (engagement-service restarts), grpc-go reconnects on
 	// the next call, so that one feed page may come back without stats.
-	engagementConn, err := dial("ENGAGEMENT_SERVICE_ADDR", defaultEngagementAddr, grpc.WithIdleTimeout(0))
+	engagementConn, err := dial(engagementBackend, grpc.WithIdleTimeout(0))
 	if err != nil {
 		return err
 	}
 	defer func() { _ = engagementConn.Close() }()
 	engagementConn.Connect()
 
-	srv := httpx.NewServer(addr, api.New(userConn, videoConn, feedConn, engagementConn, authtoken.NewVerifier(keys), mediaBase))
+	// The client does not connect until the first command, so the gateway starts while Redis is
+	// down; rate limits then use their fallback (ADR-0010 section 2).
+	redisClient, err := redisx.New(envcfg.String("REDIS_URL", defaultRedisURL))
+	if err != nil {
+		return fmt.Errorf("REDIS_URL: %w", err)
+	}
+	defer func() { _ = redisClient.Close() }()
+	limits := ratelimit.New(redisClient, redisKeyPrefix)
+
+	srv := httpx.NewServer(addr, api.New(userConn, videoConn, feedConn, engagementConn, authtoken.NewVerifier(keys), mediaBase, limits))
 	var lc net.ListenConfig
 	lis, err := lc.Listen(ctx, "tcp", addr)
 	if err != nil {
@@ -163,14 +264,12 @@ func parseMediaBaseURL(s string) (string, error) {
 	return strings.TrimRight(s, "/"), nil
 }
 
-// dial returns a client connection to the gRPC address in the variable name, with opts added.
-// The connection is plain text until mTLS arrives in stage 6, and connects lazily on the first
-// call.
-func dial(name, def string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
-	opts = append([]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}, opts...)
-	conn, err := grpc.NewClient(envcfg.String(name, def), opts...)
+// dial returns a client connection to b at the gRPC address in its variable, with b's dial
+// options and opts. The connection connects lazily on the first call.
+func dial(b backend, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
+	conn, err := grpc.NewClient(envcfg.String(b.addrVar, b.addr), append(b.dialOptions(), opts...)...)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", name, err)
+		return nil, fmt.Errorf("%s: %w", b.addrVar, err)
 	}
 	return conn, nil
 }

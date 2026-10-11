@@ -53,8 +53,9 @@ hoãn lại; học lại sau, dùng chính code của project làm tài liệu.
   | `engagement-service` | `svp_engagement` | db 13 |
   | `feed-service` | `svp_feed` | db 14 |
   | `media-worker` | — | — |
+  | test (`make test`) | `svp_<...>_test` | db 15 |
 
-  Redis db 0 và db 5 đang chứa dữ liệu của dự án khác: không dùng, không `FLUSHDB` ở đó. Lệnh luôn ghi
+  Redis db 0, db 5 và db 7 đang chứa dữ liệu của dự án khác: không dùng, không `FLUSHDB` ở đó. Lệnh luôn ghi
   rõ port (`psql -h 127.0.0.1 -p 5432`, `redis-cli -p 6379 -n 14`).
 - **Docker, compose, k3d chỉ chạy qua `Makefile`.** Mọi target gọi `env -u DOCKER_DEFAULT_PLATFORM docker ...`:
   shell global đặt `DOCKER_DEFAULT_PLATFORM=linux/amd64` cho dự án khác, nếu không bỏ biến này thì
@@ -93,18 +94,25 @@ liệt kê target):
   `gitleaks`); `buf` cài bằng Homebrew.
 - `make generate`: chạy sau khi sửa `proto/` hoặc SQL của `sqlc`; code sinh ra (`gen/go`, code `sqlc`) được commit.
 - `make check`: `gofmt`, `go vet`, `golangci-lint run`, `buf lint` + `buf build`, `go test -race ./...` (có integration
-  test trên Postgres native `127.0.0.1:5432`). Thu hẹp bằng `make test PKGS=./services/user-service/...`.
+  test trên Postgres native `127.0.0.1:5432` qua `SVP_TEST_POSTGRES_URL` và Redis native db 15 qua `SVP_TEST_REDIS_URL`,
+  mặc định `redis://127.0.0.1:6379/15` trong `Makefile`). Thu hẹp bằng `make test PKGS=./services/user-service/...`.
 - `make env`: sinh `.env` local (mode 600, mật khẩu DB, mật khẩu root MinIO và secret key S3 của từng service ngẫu nhiên,
   khoá JWT mới). `.env` có sẵn thì chỉ bổ sung biến còn thiếu hoặc đang rỗng, không đổi giá trị đã đặt.
 - `make up` / `make smoke` / `make down`: dựng stack compose profile `core` (bootstrap Postgres, Redpanda + tạo topic,
   MinIO + bucket/user/policy, migrate, gateway, user-service, video-service, media-worker, engagement-service,
   feed-service), chạy luồng đầu-cuối qua gateway ở `127.0.0.1:8080` (gồm follow, upload video bằng presigned POST lên
   MinIO, chờ `READY`, tải HLS và thumbnail, video vào feed following và explore, like/unlike, lượt xem, unfollow), rồi
-  gỡ stack (giữ volume). Cổng publish chỉ trên `127.0.0.1`: 8080 gateway, 9000 MinIO API, 9001 MinIO console, 19092
-  Redpanda (Kafka API). `make ps` và `make logs SVC=<tên>` để xem.
-- `make test-stack`: `go test -race` trên stack đang chạy (`make up`), đặt các biến `SVP_TEST_*` cho MinIO và Redpanda, nên
-  integration test của `internal/objstore` chạy thật thay vì SKIP. Chỉ hai secret S3 lấy từ `.env`; endpoint, access key,
-  broker và `SVP_TEST_POSTGRES_URL` cố định trong `deploy/compose/compose.mk`. Thu hẹp bằng `PKGS=` như `make test`.
+  gỡ stack (giữ volume). Gateway dùng Redis native db 10 (rate limit), feed-service db 14 (cache feed khám phá), qua
+  `host.docker.internal:6379`. Cổng publish chỉ trên `127.0.0.1`: 8080 gateway, 9000 MinIO API, 9001 MinIO console,
+  19092 Redpanda (Kafka API). `make ps` và `make logs SVC=<tên>` để xem. `make smoke` và mọi script diễn tập cần
+  `redis-cli` trên máy và Redis native đang chạy: trước khi chạy, script xoá khoá rate limit đăng ký theo IP
+  `svp:gw:rl:register:*` ở db 10 (`SCAN` + `DEL`, không `FLUSHDB`), vì mọi request đi ra từ một IP bridge của Docker và
+  vài lần chạy trong một giờ sẽ cạn burst 20. Việc xoá này **chỉ dùng ở lab local**, không trỏ script vào stack dùng
+  chung.
+- `make test-stack`: `go test -race` trên stack đang chạy (`make up`), đặt các biến `SVP_TEST_*` cho MinIO và Redpanda,
+  nên integration test của `internal/objstore` chạy thật thay vì SKIP. Chỉ hai secret S3 lấy từ `.env`; endpoint,
+  access key, broker, `SVP_TEST_POSTGRES_URL` và `SVP_TEST_REDIS_URL` cố định trong `deploy/compose/compose.mk` và
+  `Makefile`. Thu hẹp bằng `PKGS=` như `make test`.
 - `make clean-data`: gỡ stack và xoá volume của nó (topic Redpanda, bucket MinIO, thư mục tạm của media-worker); Postgres
   native không bị đụng. Chỉ chạy khi cần làm lại dữ liệu từ đầu.
 - `make drill-kill-worker`, `make drill-duplicates`, `make measure-ready N=5`: diễn tập trên stack đang chạy, script ở
@@ -113,12 +121,23 @@ liệt kê target):
   max, CPU/RAM của media-worker).
 - `make drill-duplicates-feed`, `make drill-engagement-down`, `make measure-freshness FOLLOWERS=10000 N=10`: diễn tập
   phần feed, cùng chỗ. Lần lượt: phát lại `view.recorded`, `user.followed`/`user.unfollowed` và `video.ready` bằng
-  `rpk group seek` rồi kiểm bộ đếm và dòng feed không đổi; tắt engagement-service rồi kiểm feed vẫn trả nhanh, không có
-  `stats`, like không treo mà nhận 504 sau timeout 3 s của gateway (fail nhanh thật sự cần circuit breaker ở phần C); đo
-  độ tươi `video.ready` → dòng timeline cuối cho N video tới FOLLOWERS follower giả (`tools/fakefollows` phát
-  `user.followed` vào Redpanda, dọn bằng `user.unfollowed` khi kết thúc).
+  `rpk group seek` rồi kiểm bộ đếm và dòng feed không đổi; tắt engagement-service rồi kiểm circuit breaker của gateway mở
+  (like trả 503 trong < 100 ms), feed vẫn 200 không có `stats`, bật lại thì breaker tự đóng và like trả 204; đo độ tươi
+  `video.ready` → dòng timeline cuối cho N video (tối đa 10: một tác giả, burst upload 10) tới FOLLOWERS follower giả
+  (`tools/fakefollows` phát `user.followed` vào Redpanda, dọn bằng `user.unfollowed` khi kết thúc).
+- `make drill-rate-limit`, `make measure-explore-cache N=100`, `make drill-upload-cleanup`: diễn tập phần Redis, cache và
+  job dọn, cùng chỗ. Lần lượt: vượt ngưỡng thì 429 `RATE_LIMITED` có `Retry-After`, mở quá 3 form upload thì 429
+  `TOO_MANY_UPLOADS`, Redis không tới được (gateway dựng lại với `REDIS_URL` trỏ tên miền `.invalid`, Redis native không
+  bị tắt) thì login vẫn bị giới hạn bằng bộ đếm dự phòng còn feed, like, lượt xem vẫn chạy; N request đồng thời (mặc định
+  100, tối đa 150) lúc cache trống chỉ đọc Postgres một lần, script xoá khoá `svp:feed:explore:*` ở db 14 trước khi đo;
+  video bỏ dở quá hạn chuyển `FAILED` và object `uploads/<id>` bị xoá (mọi video khác nằm `UPLOADING` quá 20 s cũng bị
+  dọn).
 - Script diễn tập dừng/khởi động container, chỉ `SELECT` trên `svp_video`, `svp_engagement`, `svp_feed`, và luôn bật lại
-  mọi service khi kết thúc.
+  mọi service khi kết thúc. Trên Redis, ngoài hai thao tác xoá ở trên (`svp:gw:rl:register:*` ở db 10,
+  `svp:feed:explore:*` ở db 14) script chỉ đọc. `drill-rate-limit` và `drill-upload-cleanup` dựng lại gateway hay
+  video-service với cấu hình diễn tập qua `SVP_GATEWAY_REDIS_URL`, `SVP_UPLOAD_ABANDON_AFTER`, `SVP_UPLOAD_SWEEP_INTERVAL`
+  rồi trả về mặc định; ba biến này **chỉ dùng cho diễn tập**, không đặt trong `.env` (hạn dọn upload dưới 15 phút ngắn
+  hơn hạn form upload).
 - `make hooks`: bật git hook ở `.githooks/` một lần cho mỗi clone. `pre-commit` chạy `gofmt` trên file Go đã stage,
   `golangci-lint run`, `buf lint` và `gitleaks` trên thay đổi đã stage.
 
@@ -135,6 +154,9 @@ Quy ước test:
   `SVP_TEST_S3_VIDEO_SECRET_KEY`, `SVP_TEST_S3_WORKER_ACCESS_KEY` / `SVP_TEST_S3_WORKER_SECRET_KEY`,
   `SVP_TEST_KAFKA_BROKERS`; thiếu biến thì test gọi `t.Skip`. `make test-stack` đặt các biến này; hiện chưa có test nào
   dùng `SVP_TEST_KAFKA_BROKERS`.
+- Test Redis dùng db 15 qua `SVP_TEST_REDIS_URL`; helper `internal/redistest` từ chối URL nào khác `127.0.0.1:6379` /
+  `localhost:6379` db 15, cho mỗi test một tiền tố khoá ngẫu nhiên `svp:test:<hex>:` và khi xong chỉ xoá khoá của tiền tố
+  đó. Không `FLUSHDB`/`FLUSHALL`, kể cả ở db 15. Thiếu biến thì test gọi `t.Skip`.
 - Luồng đầu-cuối (đăng ký, đăng nhập, tạo và đọc video, follow, upload tới `READY` và phát HLS, feed, like/view,
   unfollow) kiểm bằng `make smoke` trên stack đang chạy; độ bền và số đo của luồng upload và luồng feed kiểm bằng các
   target diễn tập ở trên.

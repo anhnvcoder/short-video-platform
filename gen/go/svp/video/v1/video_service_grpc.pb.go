@@ -49,6 +49,9 @@ type VideoServiceClient interface {
 	// Errors:
 	// - INVALID_ARGUMENT: empty title, size_bytes not in (0, 500 MB], or
 	//   content_type not a `video/*` type.
+	// - RESOURCE_EXHAUSTED: the caller already has 3 videos in UPLOADING
+	//   created within the last 15 minutes, while their upload forms may still
+	//   be valid (`TOO_MANY_UPLOADS`).
 	InitUpload(ctx context.Context, in *InitUploadRequest, opts ...grpc.CallOption) (*InitUploadResponse, error)
 	// CompleteUpload checks that the uploaded object exists with the declared
 	// size and content type, then moves the video to PROCESSING and emits
@@ -139,6 +142,9 @@ type VideoServiceServer interface {
 	// Errors:
 	// - INVALID_ARGUMENT: empty title, size_bytes not in (0, 500 MB], or
 	//   content_type not a `video/*` type.
+	// - RESOURCE_EXHAUSTED: the caller already has 3 videos in UPLOADING
+	//   created within the last 15 minutes, while their upload forms may still
+	//   be valid (`TOO_MANY_UPLOADS`).
 	InitUpload(context.Context, *InitUploadRequest) (*InitUploadResponse, error)
 	// CompleteUpload checks that the uploaded object exists with the declared
 	// size and content type, then moves the video to PROCESSING and emits

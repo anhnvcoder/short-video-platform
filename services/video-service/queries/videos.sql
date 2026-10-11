@@ -24,3 +24,32 @@ RETURNING *;
 -- Only a PROCESSING video moves: READY stays READY, and a redelivery finds FAILED already.
 UPDATE videos SET status = 'FAILED'
 WHERE id = $1 AND status = 'PROCESSING';
+
+-- name: LockAuthorUploads :exec
+-- Serializes the InitUpload calls of one author until the transaction ends, so two concurrent
+-- calls cannot both pass the open upload count (UP-7). Other authors do not wait.
+SELECT pg_advisory_xact_lock(hashtextextended('video-upload-author:' || sqlc.arg(author_id)::uuid::text, 0));
+
+-- name: CountOpenUploads :one
+-- Videos of the author still UPLOADING whose upload form may still be valid.
+SELECT count(*) FROM videos
+WHERE author_id = sqlc.arg(author_id) AND status = 'UPLOADING' AND created_at > sqlc.arg(created_after);
+
+-- name: TryLockUploadSweep :one
+-- Taken by the abandoned upload sweep for the rest of the transaction; false when another
+-- instance holds it.
+SELECT pg_try_advisory_xact_lock(sqlc.arg(lock_id)::bigint)::boolean AS locked;
+
+-- name: ListAbandonedUploads :many
+-- Locks the oldest videos still UPLOADING created before created_before. A row that a concurrent
+-- CompleteUpload moves first is re-checked after its lock is released, and skipped.
+SELECT id, author_id FROM videos
+WHERE status = 'UPLOADING' AND created_at < sqlc.arg(created_before)
+ORDER BY created_at
+LIMIT sqlc.arg(max_videos)
+FOR UPDATE;
+
+-- name: MarkUploadsFailed :many
+UPDATE videos SET status = 'FAILED'
+WHERE id = ANY(sqlc.arg(ids)::uuid[]) AND status = 'UPLOADING'
+RETURNING id, author_id;

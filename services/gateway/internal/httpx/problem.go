@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -49,6 +51,19 @@ func WriteProblem(w http.ResponseWriter, r *http.Request, status int, code, deta
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+// WriteRateLimited writes the 429 problem of a request the rate limit class refused (code
+// RATE_LIMITED, docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md section 2), with a
+// Retry-After header of retryAfter in whole seconds, rounded up and at least 1. The access log
+// line of the request names class.
+func WriteRateLimited(w http.ResponseWriter, r *http.Request, class string, retryAfter time.Duration) {
+	if state, ok := r.Context().Value(logStateKey).(*logState); ok {
+		state.rateLimit = class
+	}
+	secs := max(int64((retryAfter+time.Second-1)/time.Second), 1)
+	w.Header().Set("Retry-After", strconv.FormatInt(secs, 10))
+	WriteProblem(w, r, http.StatusTooManyRequests, "RATE_LIMITED", "too many requests")
 }
 
 // Routes serves mux, answering a request that matches no route with a problem response instead

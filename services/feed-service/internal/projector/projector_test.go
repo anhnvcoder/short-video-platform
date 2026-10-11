@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -638,6 +639,31 @@ func TestValidTitle(t *testing.T) {
 		if got := validTitle(title); got != want {
 			t.Errorf("validTitle(%q) = %v, want %v", title, got, want)
 		}
+	}
+}
+
+// The stored title is the trimmed one validTitle checked, so the feed keeps the 200-character
+// limit whatever surrounds the title in the event.
+func TestVideoReadyStoresTrimmedTitle(t *testing.T) {
+	needDB(t)
+	p := newProjector()
+	for _, tc := range []struct{ name, title, want string }{
+		{"900000 spaces", strings.Repeat(" ", 900_000) + "a", "a"},
+		{"200 characters inside spaces", "  " + strings.Repeat("x", 200) + "\t", strings.Repeat("x", 200)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			video := ids.New()
+			e := readyEvent(video, ids.New(), now())
+			e.Title = tc.title
+			handle(t, p, videoRecord(t, e))
+			var stored string
+			if err := testPool.QueryRow(t.Context(), "SELECT title FROM videos WHERE video_id = $1", video).Scan(&stored); err != nil {
+				t.Fatal(err)
+			}
+			if stored != tc.want {
+				t.Errorf("stored title has %d characters, want %q", utf8.RuneCountInString(stored), tc.want)
+			}
+		})
 	}
 }
 

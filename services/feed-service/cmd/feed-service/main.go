@@ -13,7 +13,9 @@
 //
 // Configuration comes from the environment: LISTEN_ADDR (default 127.0.0.1:9104) and
 // DATABASE_URL (required for serve and migrate); serve also needs KAFKA_BROKERS
-// (docs/adr/0009-engagement-feed-stage2b.md, section 12).
+// (docs/adr/0009-engagement-feed-stage2b.md, section 12) and reads REDIS_URL (default
+// redis://127.0.0.1:6379/14) for the explore cache. Redis is not needed to start or to serve
+// (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 1).
 package main
 
 import (
@@ -35,14 +37,18 @@ import (
 	"github.com/anhnvcoder/short-video-platform/internal/grpcserver"
 	"github.com/anhnvcoder/short-video-platform/internal/kafkax"
 	"github.com/anhnvcoder/short-video-platform/internal/logx"
+	"github.com/anhnvcoder/short-video-platform/internal/redisx"
 	"github.com/anhnvcoder/short-video-platform/services/feed-service/internal/projector"
 	"github.com/anhnvcoder/short-video-platform/services/feed-service/internal/server"
 	"github.com/anhnvcoder/short-video-platform/services/feed-service/migrations"
 )
 
 const (
-	serviceName        = "feed-service"
-	defaultListenAddr  = "127.0.0.1:9104"
+	serviceName       = "feed-service"
+	defaultListenAddr = "127.0.0.1:9104"
+	defaultRedisURL   = "redis://127.0.0.1:6379/14"
+	// cacheKeyPrefix starts every Redis key of the service (ADR-0010, section 1).
+	cacheKeyPrefix     = "svp:feed:"
 	healthcheckTimeout = 3 * time.Second
 	// consumerRestartDelay is the wait before a consumer that stopped on an error is replaced.
 	consumerRestartDelay = 5 * time.Second
@@ -97,6 +103,13 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("KAFKA_BROKERS: %w", err)
 	}
 	probe.Close()
+	// redisx.New does not connect, so the service starts while Redis is down; only a malformed
+	// URL stops it.
+	cache, err := redisx.New(envcfg.String("REDIS_URL", defaultRedisURL))
+	if err != nil {
+		return fmt.Errorf("REDIS_URL: %w", err)
+	}
+	defer func() { _ = cache.Close() }()
 
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
@@ -126,7 +139,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		runPrune(ctx, logger, pruneInterval, proj.PruneTimeline)
 	}()
 
-	srv := server.New(pool, logger)
+	srv := server.New(pool, cache, cacheKeyPrefix, logger)
 	register := func(s *grpc.Server) { feedv1.RegisterFeedServiceServer(s, srv) }
 	err = grpcserver.Run(ctx, envcfg.String("LISTEN_ADDR", defaultListenAddr), logger, register,
 		server.CallerInterceptor())

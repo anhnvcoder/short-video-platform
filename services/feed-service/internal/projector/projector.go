@@ -232,7 +232,7 @@ func checkVideoReady(e *videov1.VideoReady) (store.InsertVideoParams, error) {
 	return store.InsertVideoParams{
 		VideoID:      videoID,
 		AuthorID:     authorID,
-		Title:        e.GetTitle(),
+		Title:        strings.TrimSpace(e.GetTitle()),
 		DurationMs:   d.AsDuration().Milliseconds(),
 		PlaylistKey:  e.GetPlaylistKey(),
 		ThumbnailKey: e.GetThumbnailKey(),
@@ -241,8 +241,8 @@ func checkVideoReady(e *videov1.VideoReady) (store.InsertVideoParams, error) {
 }
 
 // validTitle applies video-service's checkTitle rule: after trimming, 1 to maxTitleRunes
-// characters of valid UTF-8 without NUL (Postgres text cannot hold NUL). The title is stored as
-// given; video-service has already trimmed it.
+// characters of valid UTF-8 without NUL (Postgres text cannot hold NUL). The title is stored
+// trimmed, so the stored value is the one checked here.
 func validTitle(title string) bool {
 	title = strings.TrimSpace(title)
 	if !utf8.ValidString(title) || strings.ContainsRune(title, 0) {

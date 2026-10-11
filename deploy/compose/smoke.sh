@@ -4,9 +4,11 @@
 # follows A; then upload a real video through its presigned form, complete it, wait for the
 # asynchronous transcode to make it READY, play its HLS anonymously, and check that the storage
 # refuses a file larger than declared (UP-1); then find the video in B's following feed and in
-# explore, like and unlike it, count views, and check that unfollowing removes it from B's
-# following feed (ADR-0009). Prints one ok/FAIL line per step and exits non-zero on the first
-# failure. Needs curl, jq, openssl and ffmpeg on the host.
+# explore, like and unlike it, count views (a repeated view within 60 s is accepted but not
+# counted, RL-3), and check that unfollowing removes it from B's following feed (ADR-0009,
+# ADR-0010). Prints one ok/FAIL line per step and exits non-zero on the first
+# failure. Needs curl, jq, openssl, ffmpeg and redis-cli on the host, and the native Redis on
+# 127.0.0.1:6379 (lib.sh resets the register rate limit there).
 #
 # Usage: deploy/compose/smoke.sh [base-url]   (default http://127.0.0.1:8080)
 set -euo pipefail
@@ -160,14 +162,20 @@ wait_feed_item explore "$work/b.auth" "$clip_id" 15 '.stats.like_count == 0 and 
   "like_count 0 after unlike"
 ok "B unlikes the video: like_count 0"
 
-# 13. Views are counted asynchronously (engagement.views.v1, batched by engagement-service).
+# 13. Views are counted asynchronously (engagement.views.v1, batched by engagement-service). The
+# gateway counts one view per user and video every 60 s (RL-3): B's repeated views are still
+# accepted with 202, but only the first is counted; A's view is counted too.
 for i in 1 2 3; do
   status=$(request POST "/videos/$clip_id/views" "$work/b.auth")
   [[ $status == 202 ]] || fail "B records view $i (status $status, $(problem_summary))"
 done
 ok "B records 3 views: 202"
-wait_feed_item explore "$work/b.auth" "$clip_id" 30 '.stats.view_count == 3' "view_count 3"
-ok "view_count 3"
+wait_feed_item explore "$work/b.auth" "$clip_id" 30 '.stats.view_count == 1' "view_count 1 after B's 3 views (RL-3)"
+ok "view_count 1 after B's 3 views (RL-3)"
+status=$(request POST "/videos/$clip_id/views" "$work/a.auth")
+[[ $status == 202 ]] || fail "A records a view (status $status, $(problem_summary))"
+wait_feed_item explore "$work/b.auth" "$clip_id" 30 '.stats.view_count == 2' "view_count 2 after A's view"
+ok "A records a view: 202, view_count 2"
 
 # 14. A cursor that cannot be decoded is refused.
 status=$(request GET "/feed/following?cursor=abc" "$work/b.auth")

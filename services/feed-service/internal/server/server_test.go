@@ -13,6 +13,7 @@ import (
 	"uuid"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -23,6 +24,7 @@ import (
 	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
 	"github.com/anhnvcoder/short-video-platform/internal/ids"
 	"github.com/anhnvcoder/short-video-platform/internal/pgtest"
+	"github.com/anhnvcoder/short-video-platform/internal/redisx"
 	"github.com/anhnvcoder/short-video-platform/services/feed-service/internal/pagetoken"
 	"github.com/anhnvcoder/short-video-platform/services/feed-service/migrations"
 )
@@ -68,9 +70,21 @@ func needDB(t *testing.T) {
 	}
 }
 
-// newServer returns a Server on the test database (nil without one: only validation paths work).
+// newServer returns a Server on the test database (nil without one: only validation paths work)
+// whose Redis client is closed, so every first explore page is read from Postgres.
 func newServer() *Server {
-	return New(testPool, slog.New(slog.DiscardHandler))
+	return New(testPool, closedRedis(), "svp:test:closed:", slog.New(slog.DiscardHandler))
+}
+
+// closedRedis returns a closed client to the test Redis: every command fails at once, as when
+// Redis is down. It never connects.
+func closedRedis() *redis.Client {
+	c, err := redisx.New("redis://127.0.0.1:6379/15")
+	if err != nil {
+		panic(err)
+	}
+	_ = c.Close()
+	return c
 }
 
 // call runs handler the way the gRPC server does: through the callerid interceptor, with caller

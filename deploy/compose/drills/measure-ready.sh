@@ -4,8 +4,9 @@
 # same generated 60 s 1080p video; times from the moment POST /videos/{id}/complete returns until
 # GET /videos/{id} shows READY, polling every 0.5 s. Prints every run, p50, p95 (nearest rank: the
 # max for N < 20) and max against the SLO, and the peak CPU and RAM of media-worker sampled with
-# docker compose stats during the runs against its limits (2 CPUs, 2 GiB). Prints one ok/FAIL line
-# per check and exits non-zero when one fails.
+# docker compose stats during the runs against its limits (2 CPUs, 2 GiB). A new author uploads
+# every 10 runs, since the upload limit allows a user a burst of 10 POST /videos (ADR-0010,
+# section 2). Prints one ok/FAIL line per check and exits non-zero when one fails.
 #
 # Usage (from the repo root, stack up): make measure-ready N=5
 set -euo pipefail
@@ -35,6 +36,7 @@ sampler_pid=$!
 
 : >"$work/times"
 for i in $(seq 1 "$runs"); do
+  if ((i > 1 && (i - 1) % 10 == 0)); then new_user a; fi
   upload_video "run$i" "$work/a.auth" "$work/clip.mp4"
   start=$(now)
   id_var="run${i}_id"

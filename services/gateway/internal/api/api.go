@@ -23,7 +23,9 @@ import (
 	userv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1"
 	videov1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/video/v1"
 	"github.com/anhnvcoder/short-video-platform/internal/authtoken"
+	"github.com/anhnvcoder/short-video-platform/internal/ids"
 	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/httpx"
+	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/ratelimit"
 )
 
 const (
@@ -41,6 +43,7 @@ type server struct {
 	videos     videov1.VideoServiceClient
 	feeds      feedv1.FeedServiceClient
 	engagement engagementv1.EngagementServiceClient
+	limits     *ratelimit.Limiter
 	deps       []dependency
 	// mediaBaseURL is the public base of media object keys, without a trailing slash.
 	mediaBaseURL string
@@ -53,13 +56,16 @@ type dependency struct {
 }
 
 // New returns the gateway's HTTP handler: every route on its own mux, behind Trace, Recover,
-// AccessLog and ValidUTF8, with RequireAuth in front of the routes that need a caller. A request
+// AccessLog and ValidUTF8, with RequireAuth in front of the routes that need a caller. Every
+// route but healthz and readyz is rate limited by limits (ADR-0010 section 2): register and
+// login by client IP, the others by the authenticated user, after RequireAuth. A request
 // that matches no route gets a problem response too. userConn, videoConn, feedConn and engagementConn reach
 // user-service, video-service, feed-service and engagement-service. mediaBaseURL is the public
 // base that media object keys are appended to, without a trailing slash.
-func New(userConn, videoConn, feedConn, engagementConn grpc.ClientConnInterface, verifier *authtoken.Verifier, mediaBaseURL string) http.Handler {
+func New(userConn, videoConn, feedConn, engagementConn grpc.ClientConnInterface, verifier *authtoken.Verifier, mediaBaseURL string, limits *ratelimit.Limiter) http.Handler {
 	s := &server{
 		mediaBaseURL: mediaBaseURL,
+		limits:       limits,
 		users:        userv1.NewUserServiceClient(userConn),
 		videos:       videov1.NewVideoServiceClient(videoConn),
 		feeds:        feedv1.NewFeedServiceClient(feedConn),
@@ -73,23 +79,41 @@ func New(userConn, videoConn, feedConn, engagementConn grpc.ClientConnInterface,
 		},
 	}
 	auth := httpx.RequireAuth(verifier)
+	// authed puts RequireAuth, then the rate limit of class c on the caller's user id, in front of h.
+	authed := func(c ratelimit.Class, h http.HandlerFunc) http.Handler {
+		return auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if s.allow(w, r, c, httpx.UserID(r.Context())) {
+				h(w, r)
+			}
+		}))
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /auth/register", s.register)
 	mux.HandleFunc("POST /auth/login", s.login)
-	mux.Handle("PUT /me/following/{user_id}", auth(http.HandlerFunc(s.follow)))
-	mux.Handle("DELETE /me/following/{user_id}", auth(http.HandlerFunc(s.unfollow)))
-	mux.Handle("POST /videos", auth(http.HandlerFunc(s.initUpload)))
-	mux.Handle("POST /videos/{video_id}/complete", auth(http.HandlerFunc(s.completeUpload)))
-	mux.Handle("GET /videos/{video_id}", auth(http.HandlerFunc(s.getVideo)))
-	mux.Handle("PUT /videos/{video_id}/like", auth(http.HandlerFunc(s.like)))
-	mux.Handle("DELETE /videos/{video_id}/like", auth(http.HandlerFunc(s.unlike)))
-	mux.Handle("POST /videos/{video_id}/views", auth(http.HandlerFunc(s.recordView)))
-	mux.Handle("GET /feed/following", auth(http.HandlerFunc(s.followingFeed)))
-	mux.Handle("GET /feed/explore", auth(http.HandlerFunc(s.exploreFeed)))
+	mux.Handle("PUT /me/following/{user_id}", authed(ratelimit.Write, s.follow))
+	mux.Handle("DELETE /me/following/{user_id}", authed(ratelimit.Write, s.unfollow))
+	mux.Handle("POST /videos", authed(ratelimit.Upload, s.initUpload))
+	mux.Handle("POST /videos/{video_id}/complete", authed(ratelimit.Write, s.completeUpload))
+	mux.Handle("GET /videos/{video_id}", authed(ratelimit.Read, s.getVideo))
+	mux.Handle("PUT /videos/{video_id}/like", authed(ratelimit.Write, s.like))
+	mux.Handle("DELETE /videos/{video_id}/like", authed(ratelimit.Write, s.unlike))
+	mux.Handle("POST /videos/{video_id}/views", authed(ratelimit.Write, s.recordView))
+	mux.Handle("GET /feed/following", authed(ratelimit.Read, s.followingFeed))
+	mux.Handle("GET /feed/explore", authed(ratelimit.Read, s.exploreFeed))
 	mux.HandleFunc("GET /healthz", healthz)
 	mux.HandleFunc("GET /readyz", s.readyz)
 	return httpx.Trace(httpx.Recover(httpx.AccessLog(httpx.ValidUTF8(httpx.Routes(mux)))))
+}
+
+// allow counts the request in class c under id and, when the class refuses it, writes the 429
+// and returns false; the handler then returns.
+func (s *server) allow(w http.ResponseWriter, r *http.Request, c ratelimit.Class, id string) bool {
+	ok, retryAfter := s.limits.Allow(r.Context(), c, id)
+	if !ok {
+		httpx.WriteRateLimited(w, r, c.Name, retryAfter)
+	}
+	return ok
 }
 
 // callContext returns the context of a gRPC call made for r: metadata built from scratch by
@@ -120,6 +144,9 @@ type registerResponse struct {
 }
 
 func (s *server) register(w http.ResponseWriter, r *http.Request) {
+	if !s.allow(w, r, ratelimit.Register, ratelimit.ClientIP(r)) {
+		return
+	}
 	var req credentials
 	if !httpx.DecodeJSON(w, r, &req) {
 		return
@@ -140,9 +167,18 @@ type loginResponse struct {
 	ExpiresAt   time.Time `json:"expires_at"`
 }
 
+// login checks the client IP before reading the body, and the (IP, email) pair once the body
+// decodes (threat model JWT-4).
 func (s *server) login(w http.ResponseWriter, r *http.Request) {
+	ip := ratelimit.ClientIP(r)
+	if !s.allow(w, r, ratelimit.LoginIP, ip) {
+		return
+	}
 	var req credentials
 	if !httpx.DecodeJSON(w, r, &req) {
+		return
+	}
+	if !s.allow(w, r, ratelimit.LoginEmail, ratelimit.LoginEmailID(ip, req.Email)) {
 		return
 	}
 	ctx, cancel := callContext(r)
@@ -313,10 +349,28 @@ func (s *server) unlike(w http.ResponseWriter, r *http.Request) {
 }
 
 // recordView answers 202 without a body: the view is queued, and view_count catches up later.
+// A user's view of a video counts once a minute (threat model RL-3): a repeat gets the same 202
+// without reaching engagement-service, so the client learns nothing and has nothing to retry.
+// Only a canonical video id gets a key; any other goes on as before and engagement-service
+// rejects it. When the call fails the key is dropped in the background, without holding the
+// answer, so the client's retry is counted.
 func (s *server) recordView(w http.ResponseWriter, r *http.Request) {
+	videoID := r.PathValue("video_id")
+	userID := httpx.UserID(r.Context())
+	claim := ratelimit.ViewUnchecked
+	if _, err := ids.Parse(videoID); err == nil {
+		claim = s.limits.ClaimView(r.Context(), userID, videoID)
+	}
+	if claim == ratelimit.ViewRepeated {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
 	ctx, cancel := callContext(r)
 	defer cancel()
-	if _, err := s.engagement.RecordView(ctx, &engagementv1.RecordViewRequest{VideoId: r.PathValue("video_id")}); err != nil {
+	if _, err := s.engagement.RecordView(ctx, &engagementv1.RecordViewRequest{VideoId: videoID}); err != nil {
+		if claim == ratelimit.ViewClaimed {
+			go s.limits.ReleaseView(context.WithoutCancel(r.Context()), userID, videoID)
+		}
 		httpx.WriteGRPCError(w, r, err)
 		return
 	}
@@ -407,7 +461,8 @@ func (s *server) serveFeed(w http.ResponseWriter, r *http.Request, fetch func(ct
 // retry (ADR-0009 section 9). Stats are matched by video_id, so their order and count do not
 // matter; an item without a match keeps no stats. Any error leaves every item without stats and
 // is only logged: a slow or failing engagement-service must not fail the feed (architecture
-// §7.2), so the error does not go through the §8.4 table.
+// §7.2), so the error does not go through the §8.4 table. While engagement-service's circuit
+// breaker is open the call fails at once, without waiting for statsTimeout (ADR-0010 section 4).
 func (s *server) addStats(r *http.Request, items []feedItem) {
 	if len(items) == 0 {
 		return

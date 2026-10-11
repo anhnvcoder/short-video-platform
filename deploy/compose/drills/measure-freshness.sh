@@ -18,7 +18,9 @@
 #      then checks that the author has no follow and its videos no timeline row in svp_feed. When
 #      that cleanup fails, the ids file is kept and the command to finish it is printed.
 # A p95 over 10 s is reported, not failed: at 200,000 followers it is a data point (ADR-0009
-# section 7, "Xem lại khi"). The script fails when a measurement cannot be taken.
+# section 7, "Xem lại khi"). The script fails when a measurement cannot be taken. N is at most 10:
+# every video has the one followed author, whose upload limit is a burst of 10 POST /videos
+# (ADR-0010, section 2).
 #
 # Reads svp_feed and svp_video with SELECT only; produces only to the stack's Redpanda.
 #
@@ -32,7 +34,8 @@ source "$(dirname "$0")/common.sh"
 followers=${FOLLOWERS:-10000}
 runs=${N:-10}
 [[ $followers =~ ^[1-9][0-9]*$ ]] || fail "FOLLOWERS is a positive integer (got '$followers')"
-[[ $runs =~ ^[1-9][0-9]*$ ]] || fail "N is a positive integer (got '$runs')"
+[[ $runs =~ ^[1-9][0-9]*$ ]] && ((runs <= 10)) ||
+  fail "N is between 1 and 10 (got '$runs'): the upload limit allows the one author a burst of 10 videos"
 brokers=127.0.0.1:19092
 nfr_seconds=10
 # Seconds to wait for svp_feed to take in (or drop) all follows: generous at 100 follows/s.

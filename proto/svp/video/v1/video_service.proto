@@ -26,6 +26,9 @@ service VideoService {
   // Errors:
   // - INVALID_ARGUMENT: empty title, size_bytes not in (0, 500 MB], or
   //   content_type not a `video/*` type.
+  // - RESOURCE_EXHAUSTED: the caller already has 3 videos in UPLOADING
+  //   created within the last 15 minutes, while their upload forms may still
+  //   be valid (`TOO_MANY_UPLOADS`).
   rpc InitUpload(InitUploadRequest) returns (InitUploadResponse);
 
   // CompleteUpload checks that the uploaded object exists with the declared

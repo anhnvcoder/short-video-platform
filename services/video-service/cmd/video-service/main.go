@@ -9,7 +9,9 @@
 //
 // Configuration comes from the environment: LISTEN_ADDR (default 127.0.0.1:9102) and
 // DATABASE_URL (required for serve and migrate); serve also needs KAFKA_BROKERS and the S3_*
-// variables of docs/adr/0008-async-upload-pipeline-stage2a.md, section 11.
+// variables of docs/adr/0008-async-upload-pipeline-stage2a.md, section 11. UPLOAD_ABANDON_AFTER
+// (default 1h) and UPLOAD_SWEEP_INTERVAL (default 5m) set when an upload counts as abandoned and
+// how often they are swept (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 5).
 package main
 
 import (
@@ -45,6 +47,8 @@ const (
 	// consumerRestartDelay is the wait before a transcode consumer that stopped on an error is
 	// replaced.
 	consumerRestartDelay = 5 * time.Second
+	defaultAbandonAfter  = "1h"
+	defaultSweepInterval = "5m"
 )
 
 func main() {
@@ -87,6 +91,14 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return err
 	}
 	storageCfg, err := storageConfig()
+	if err != nil {
+		return err
+	}
+	abandonAfter, err := positiveDuration("UPLOAD_ABANDON_AFTER", defaultAbandonAfter)
+	if err != nil {
+		return err
+	}
+	sweepInterval, err := positiveDuration("UPLOAD_SWEEP_INTERVAL", defaultSweepInterval)
 	if err != nil {
 		return err
 	}
@@ -136,11 +148,18 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		cancel()
 		consumerErr <- err
 	}()
+	// The sweep of abandoned uploads stops with the server, before the pool closes.
+	sweepDone := make(chan struct{})
+	go func() {
+		defer close(sweepDone)
+		srv.NewUploadSweeper(abandonAfter, sweepInterval).Run(ctx)
+	}()
 
 	register := func(s *grpc.Server) { videov1.RegisterVideoServiceServer(s, srv) }
 	err = grpcserver.Run(ctx, envcfg.String("LISTEN_ADDR", defaultListenAddr), logger, register,
 		server.CallerInterceptor())
 	cancel()
+	<-sweepDone
 	if cerr := <-consumerErr; cerr != nil {
 		err = errors.Join(err, fmt.Errorf("transcode consumer: %w", cerr))
 	}
@@ -207,6 +226,16 @@ func storageConfig() (objstore.Config, error) {
 		UploadsBucket:   envcfg.String("S3_UPLOADS_BUCKET", "uploads"),
 		MediaBucket:     envcfg.String("S3_MEDIA_BUCKET", "media"),
 	}, nil
+}
+
+// positiveDuration reads the variable name as a time.Duration such as 90s or 1h, def when it is
+// unset or empty. Errors name the variable.
+func positiveDuration(name, def string) (time.Duration, error) {
+	d, err := time.ParseDuration(envcfg.String(name, def))
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration such as 5m or 1h", name)
+	}
+	return d, nil
 }
 
 // checkEndpoint requires an absolute http or https URL with a host, such as http://minio:9000.

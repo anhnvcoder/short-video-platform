@@ -11,19 +11,22 @@ import (
 )
 
 func TestServeRequiresItsVariables(t *testing.T) {
-	for _, tc := range []struct{ databaseURL, brokers, want string }{
-		{"", "redpanda:9092", "DATABASE_URL"},
-		{"postgres://unused@127.0.0.1:1/unused", "", "KAFKA_BROKERS"},
-		// The broker list is checked before the database is opened, so this URL is never dialled.
-		{"postgres://unused@127.0.0.1:1/unused", " , ", "KAFKA_BROKERS"},
-		{"postgres://unused@127.0.0.1:1/unused", "redpanda:notaport", "KAFKA_BROKERS"},
+	for _, tc := range []struct{ databaseURL, brokers, redisURL, want string }{
+		{"", "redpanda:9092", "", "DATABASE_URL"},
+		{"postgres://unused@127.0.0.1:1/unused", "", "", "KAFKA_BROKERS"},
+		// The broker list and the Redis URL are checked before the database is opened, so this
+		// URL is never dialled.
+		{"postgres://unused@127.0.0.1:1/unused", " , ", "", "KAFKA_BROKERS"},
+		{"postgres://unused@127.0.0.1:1/unused", "redpanda:notaport", "", "KAFKA_BROKERS"},
+		{"postgres://unused@127.0.0.1:1/unused", "redpanda:9092", "not a url", "REDIS_URL"},
 	} {
 		t.Setenv("DATABASE_URL", tc.databaseURL)
 		t.Setenv("KAFKA_BROKERS", tc.brokers)
+		t.Setenv("REDIS_URL", tc.redisURL)
 		err := serve(t.Context(), slog.New(slog.DiscardHandler))
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
-			t.Errorf("DATABASE_URL=%q KAFKA_BROKERS=%q: serve() = %v, want an error naming %s",
-				tc.databaseURL, tc.brokers, err, tc.want)
+			t.Errorf("DATABASE_URL=%q KAFKA_BROKERS=%q REDIS_URL=%q: serve() = %v, want an error naming %s",
+				tc.databaseURL, tc.brokers, tc.redisURL, err, tc.want)
 		}
 	}
 }

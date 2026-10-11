@@ -45,6 +45,9 @@ const (
 const (
 	ReasonInvalidVideoID  = "INVALID_VIDEO_ID"
 	ReasonTooManyVideoIDs = "TOO_MANY_VIDEO_IDS"
+	// ReasonDependencyUnavailable goes with UNAVAILABLE when a dependency of the service (the
+	// broker) is down while the service itself runs: the gateway's breaker does not count it.
+	ReasonDependencyUnavailable = "DEPENDENCY_UNAVAILABLE"
 )
 
 const (
@@ -208,7 +211,7 @@ func (s *Server) RecordView(ctx context.Context, req *engagementv1.RecordViewReq
 	err = kafkax.Produce(produceCtx, s.producer, &kgo.Record{Topic: TopicViews, Key: []byte(id), Value: value})
 	if err != nil {
 		s.logger.ErrorContext(logx.With(ctx, slog.String("video_id", id)), "produce view.recorded", slog.Any("error", err))
-		return nil, status.Error(codes.Unavailable, "view could not be recorded, retry later")
+		return nil, grpcerr.New(codes.Unavailable, ReasonDependencyUnavailable, "view could not be recorded, retry later")
 	}
 	return &engagementv1.RecordViewResponse{}, nil
 }

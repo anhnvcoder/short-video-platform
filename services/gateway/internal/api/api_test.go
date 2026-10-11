@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -35,6 +36,7 @@ import (
 	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
 	"github.com/anhnvcoder/short-video-platform/internal/logx"
 	"github.com/anhnvcoder/short-video-platform/internal/traceparent"
+	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/ratelimit"
 )
 
 const (
@@ -129,8 +131,8 @@ func (b *backend) only(t *testing.T) call {
 }
 
 // startBackend serves register on a new bufconn listener and returns the fake and a client
-// connection to it.
-func startBackend(t *testing.T, register func(*grpc.Server)) (*backend, *grpc.ClientConn) {
+// connection to it, dialed with opts added.
+func startBackend(t *testing.T, register func(*grpc.Server), opts ...grpc.DialOption) (*backend, *grpc.ClientConn) {
 	t.Helper()
 	b := &backend{health: health.NewServer()}
 	lis := bufconn.Listen(1 << 20)
@@ -141,10 +143,10 @@ func startBackend(t *testing.T, register func(*grpc.Server)) (*backend, *grpc.Cl
 	b.stop = srv.Stop
 	t.Cleanup(srv.Stop)
 
-	conn, err := grpc.NewClient("passthrough:///bufnet",
+	conn, err := grpc.NewClient("passthrough:///bufnet", append([]grpc.DialOption{
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	}, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +339,26 @@ type env struct {
 	key        ed25519.PrivateKey
 }
 
+// newEnv returns an env whose rate limits run as when Redis is down (see downLimits).
 func newEnv(t *testing.T) *env {
+	t.Helper()
+	return newEnvWithLimits(t, downLimits(t))
+}
+
+// downLimits returns a Limiter whose Redis client is closed, so every call fails at once:
+// soft-closed classes use their in-memory fallback and open classes let everything through.
+func downLimits(t *testing.T) *ratelimit.Limiter {
+	t.Helper()
+	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return ratelimit.New(client, "svp:test:down:")
+}
+
+// newEnvWithLimits returns an env with limits, whose connection to engagement-service is
+// dialed with engagementOpts added.
+func newEnvWithLimits(t *testing.T, limits *ratelimit.Limiter, engagementOpts ...grpc.DialOption) *env {
 	t.Helper()
 	key, err := authtoken.GenerateKey()
 	if err != nil {
@@ -347,10 +368,10 @@ func newEnv(t *testing.T) *env {
 	videos, videoConn := startBackend(t, func(s *grpc.Server) { videov1.RegisterVideoServiceServer(s, fakeVideos{}) })
 	feeds, feedConn := startBackend(t, func(s *grpc.Server) { feedv1.RegisterFeedServiceServer(s, fakeFeed{}) })
 	stats := &fakeEngagement{}
-	engagement, engagementConn := startBackend(t, func(s *grpc.Server) { engagementv1.RegisterEngagementServiceServer(s, stats) })
+	engagement, engagementConn := startBackend(t, func(s *grpc.Server) { engagementv1.RegisterEngagementServiceServer(s, stats) }, engagementOpts...)
 	verifier := authtoken.NewVerifier(map[string]ed25519.PublicKey{testKID: key.Public().(ed25519.PublicKey)})
 	return &env{
-		handler:    New(userConn, videoConn, feedConn, engagementConn, verifier, mediaBase),
+		handler:    New(userConn, videoConn, feedConn, engagementConn, verifier, mediaBase, limits),
 		users:      users,
 		videos:     videos,
 		feeds:      feeds,

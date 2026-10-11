@@ -290,8 +290,9 @@ func TestCompleteUploadStorageErrorIsUnavailable(t *testing.T) {
 			storage.headErr = headErr
 
 			_, err := completeUpload(t.Context(), t, s, author, id)
-			if status.Code(err) != codes.Unavailable || status.Convert(err).Message() != "storage unavailable" {
-				t.Errorf("error = %v, want UNAVAILABLE with message %q", err, "storage unavailable")
+			if status.Code(err) != codes.Unavailable || status.Convert(err).Message() != "storage unavailable" ||
+				grpcerr.Reason(err) != ReasonDependencyUnavailable {
+				t.Errorf("error = %v, want UNAVAILABLE %s with message %q", err, ReasonDependencyUnavailable, "storage unavailable")
 			}
 			wantUnchanged(t, id, "UPLOADING")
 			if recs := logs.records(t, "head uploaded file"); len(recs) != 1 || recs[0]["error"] == nil || recs[0]["video_id"] != id {

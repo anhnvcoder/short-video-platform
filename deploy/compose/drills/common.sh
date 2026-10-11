@@ -1,9 +1,10 @@
 # shellcheck shell=bash
 # Helpers shared by the failure drills (kill-worker.sh, duplicate-events.sh, measure-ready.sh,
-# duplicate-feed-events.sh, engagement-down.sh, measure-freshness.sh): docker compose through the
-# command `make` passes in $COMPOSE, rpk inside the Redpanda container, record lookups by key,
-# consumer group lag and seeks, read-only outbox queries on svp_video, HLS downloads, and putting
-# the stack back on exit.
+# duplicate-feed-events.sh, engagement-down.sh, measure-freshness.sh, rate-limit.sh,
+# measure-explore-cache.sh, upload-cleanup.sh): docker compose through the command `make` passes in
+# $COMPOSE, recreating a service with drill-only settings, rpk inside the Redpanda container, record
+# lookups by key, consumer group lag and seeks, read-only outbox queries on svp_video, HLS
+# downloads, timed requests, and putting the stack back on exit.
 # Written for bash 3.2 (the macOS /bin/bash).
 #
 # Source it after setting `base` (the gateway URL); it sources ../lib.sh, whose rules it keeps.
@@ -26,7 +27,10 @@ compose() { "${compose_cmd[@]}" "$@"; }
 rpk() { compose exec -T redpanda rpk "$@"; }
 
 # drill_exit: the EXIT trap. Stops the stats sampler, starts every stack service that is not
-# running, removes $work, and keeps the script's exit status (1 when the stack cannot be restored).
+# running and recreates every one whose settings differ from compose.yaml (a service a drill
+# recreated with drill-only settings goes back to the defaults, since those variables are never
+# exported), removes $work, and keeps the script's exit status (1 when the stack cannot be
+# restored).
 drill_exit() {
   local rc=$?
   trap - EXIT
@@ -204,3 +208,20 @@ log_count() {
 }
 
 utc_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# recreate_service SERVICE [VAR=VALUE...]: recreates SERVICE alone with the compose variables given
+# (none: the defaults of compose.yaml) and waits until it is healthy. The variables reach this one
+# compose call only.
+recreate_service() {
+  local service=$1
+  shift
+  env "$@" "${compose_cmd[@]}" up -d --no-deps --wait "$service" >"$work/recreate.log" 2>&1 ||
+    fail "recreate $service${1:+ with $*}: $(tail -n 1 "$work/recreate.log") (see make logs SVC=$service)"
+}
+
+# timed_request METHOD PATH AUTH_FILE: like `request`, but prints "STATUS SECONDS" (curl's
+# %{time_total}); leaves the body in $work/body.
+timed_request() {
+  : >"$work/body"
+  curl -sS --max-time "$max_time" -o "$work/body" -w '%{http_code} %{time_total}' -X "$1" -H "@$3" "$base$2" || true
+}

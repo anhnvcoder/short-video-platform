@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	engagementv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/engagement/v1"
+	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
 	"github.com/anhnvcoder/short-video-platform/internal/ids"
 	"github.com/anhnvcoder/short-video-platform/internal/kafkax"
 	"github.com/anhnvcoder/short-video-platform/internal/traceparent"
@@ -116,6 +117,10 @@ func TestRecordViewWithoutBrokerIsUnavailable(t *testing.T) {
 
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("code = %s (err %v), want Unavailable", status.Code(err), err)
+	}
+	// The reason tells the gateway's breaker the service itself is up.
+	if got := grpcerr.Reason(err); got != ReasonDependencyUnavailable {
+		t.Errorf("reason = %q, want %q", got, ReasonDependencyUnavailable)
 	}
 	if elapsed < produceTimeout-100*time.Millisecond || elapsed > produceTimeout+time.Second {
 		t.Errorf("RecordView returned after %v, want about %v", elapsed, produceTimeout)
