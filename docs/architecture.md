@@ -1,7 +1,8 @@
 # Kiến trúc short-video platform
 
-> Trạng thái: giai đoạn 0 xong (2026-10-11). ADR 0001–0006, contract ở [`proto/`](../proto/) ([§8](#8-contract)), threat
-> model ở [`threat-model.md`](threat-model.md).
+> Trạng thái: giai đoạn 0 và 1 xong (2026-10-11). ADR 0001–0007, contract ở [`proto/`](../proto/) ([§8](#8-contract)),
+> threat model ở [`threat-model.md`](threat-model.md). Giai đoạn 1 chạy luồng đồng bộ (đăng ký, đăng nhập, tạo và đọc
+> video, follow) bằng `make up`; phần còn lại của tài liệu là thiết kế đích.
 
 Tài liệu này mô tả hệ thống sẽ được xây và lý do. Mỗi quyết định lớn có một ADR trong [`adr/`](adr/); ở đây chỉ tóm tắt
 và trỏ tới.
@@ -306,7 +307,8 @@ proto/svp/
 ```
 
 - Kiểm từ gốc repo: `buf lint` (sạch, không output) và `buf build`. `buf breaking` (luật `FILE`) so với nhánh `main` ở CI.
-  Chưa sinh code Go; `buf.gen.yaml` và `go_package` chốt ở giai đoạn 1.
+  Sinh code Go theo [ADR-0007](adr/0007-go-monorepo-toolchain-and-stage1-scope.md): managed mode trong `buf.gen.yaml` (không
+  ghi tay `go_package`), code ra ở `gen/go`, và code sinh ra được commit (`make generate`).
 - ID là UUIDv7, trong proto là `string` 36 ký tự chữ thường, trong Postgres là `uuid`, sinh ở code Go.
 - Người gọi không nằm trong request: gateway đặt `user_id` đã xác thực vào gRPC metadata `x-user-id` ([§7.4](#74-xác-thực)).
 - API và event mang object key (`uploads/<video_id>`, `media/<video_id>/master.m3u8`), không mang URL; gateway ghép URL
@@ -392,6 +394,21 @@ Thân lỗi theo RFC 9457 (`Content-Type: application/problem+json`):
 - Lỗi do chính gateway sinh (JWT sai hoặc hết hạn: 401; vượt rate limit: 429) dùng cùng định dạng.
 - Lỗi từ engagement-service khi ghép feed **không** đi qua bảng này: gateway nuốt lỗi và trả feed không kèm số đếm
   (graceful degradation, [§7.2](#72-đọc-feed)).
+
+### 8.5 REST ở gateway
+
+REST ở biên được viết tay trong [`services/gateway/openapi.yaml`](../services/gateway/openapi.yaml) (OpenAPI 3.1, lý do ở
+mục 8 của ADR-0007); file đó là nguồn của danh sách route, schema và mã lỗi từng route. JSON dùng `snake_case`, khớp tên
+field trong proto; thời gian theo RFC 3339, UTC. Route giai đoạn 1:
+
+| Route | Xác thực | Việc |
+| --- | --- | --- |
+| `POST /auth/register`, `POST /auth/login` | không | đăng ký; đổi email và mật khẩu lấy access token |
+| `PUT` / `DELETE /me/following/{user_id}` | Bearer JWT | follow, unfollow |
+| `POST /videos`, `GET /videos/{video_id}` | Bearer JWT | tạo video `UPLOADING`; đọc một video |
+| `GET /healthz`, `GET /readyz` | không | liveness, readiness |
+
+`POST /videos` chưa trả URL upload (chưa có object storage); feed, like và view là giai đoạn sau.
 
 ## 9. Quyết định
 

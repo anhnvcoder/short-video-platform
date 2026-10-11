@@ -1,0 +1,106 @@
+# Stage 1 core stack: gateway, user-service, video-service and their one-shot migrations
+# (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, sections 4 to 7). Run it through
+# `make up` / `make down` (deploy/compose/compose.mk), which pass --env-file .env.
+#
+# Postgres is the native one on the host (127.0.0.1:5432), reached as host.docker.internal.
+# Only the gateway is published, and only on the host's loopback; gRPC ports stay inside the
+# compose network (threat model IN-2).
+name: svp
+
+x-healthcheck: &healthcheck
+  # Distroless has no shell or curl: the binary checks itself.
+  test: ["CMD", "/app", "healthcheck"]
+  interval: 10s
+  timeout: 5s
+  retries: 3
+  start_period: 20s
+  start_interval: 1s
+
+x-host-postgres: &host-postgres
+  # Docker Desktop provides host.docker.internal; this line makes it work on Linux too.
+  extra_hosts: ["host.docker.internal:host-gateway"]
+
+services:
+  user-migrate:
+    <<: *host-postgres
+    profiles: [core]
+    image: svp/user-service:dev
+    # Built by user-service; never pull a public image with this name.
+    pull_policy: never
+    command: ["migrate"]
+    environment:
+      DATABASE_URL: postgres://svp_user_migrator:${SVP_USER_MIGRATOR_DB_PASSWORD:?run make env}@host.docker.internal:5432/svp_user?sslmode=disable
+    restart: "no"
+
+  video-migrate:
+    <<: *host-postgres
+    profiles: [core]
+    image: svp/video-service:dev
+    pull_policy: never
+    command: ["migrate"]
+    environment:
+      DATABASE_URL: postgres://svp_video_migrator:${SVP_VIDEO_MIGRATOR_DB_PASSWORD:?run make env}@host.docker.internal:5432/svp_video?sslmode=disable
+    restart: "no"
+
+  user-service:
+    <<: *host-postgres
+    profiles: [core]
+    image: svp/user-service:dev
+    pull_policy: build
+    build:
+      context: ../..
+      dockerfile: deploy/docker/service.Dockerfile
+      args:
+        SERVICE: user-service
+    environment:
+      LISTEN_ADDR: ":9101"
+      DATABASE_URL: postgres://svp_user_app:${SVP_USER_APP_DB_PASSWORD:?run make env}@host.docker.internal:5432/svp_user?sslmode=disable
+      # Only user-service holds the signing key (threat model JWT-10).
+      JWT_SIGNING_KID: ${JWT_SIGNING_KID:?run make env}
+      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:?run make env}
+    healthcheck: *healthcheck
+    depends_on:
+      user-migrate:
+        condition: service_completed_successfully
+
+  video-service:
+    <<: *host-postgres
+    profiles: [core]
+    image: svp/video-service:dev
+    pull_policy: build
+    build:
+      context: ../..
+      dockerfile: deploy/docker/service.Dockerfile
+      args:
+        SERVICE: video-service
+    environment:
+      LISTEN_ADDR: ":9102"
+      DATABASE_URL: postgres://svp_video_app:${SVP_VIDEO_APP_DB_PASSWORD:?run make env}@host.docker.internal:5432/svp_video?sslmode=disable
+    healthcheck: *healthcheck
+    depends_on:
+      video-migrate:
+        condition: service_completed_successfully
+
+  gateway:
+    profiles: [core]
+    image: svp/gateway:dev
+    pull_policy: build
+    build:
+      context: ../..
+      dockerfile: deploy/docker/service.Dockerfile
+      args:
+        SERVICE: gateway
+    environment:
+      LISTEN_ADDR: ":8080"
+      USER_SERVICE_ADDR: user-service:9101
+      VIDEO_SERVICE_ADDR: video-service:9102
+      # Public keys only: the gateway verifies tokens, it cannot sign them.
+      JWT_VERIFY_KEYS: ${JWT_VERIFY_KEYS:?run make env}
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck: *healthcheck
+    depends_on:
+      user-service:
+        condition: service_healthy
+      video-service:
+        condition: service_healthy

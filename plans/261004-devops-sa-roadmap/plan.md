@@ -2,7 +2,7 @@
 
 > Ngày lập: 2026-10-04
 >
-> Trạng thái: giai đoạn 0 xong (2026-10-11); đang làm chặng G
+> Trạng thái: giai đoạn 0 và 1 xong (2026-10-11); chặng G hoãn; tiếp theo là giai đoạn 2
 
 ## Mục tiêu
 
@@ -51,7 +51,7 @@ Một hệ thống thật, làm xuyên suốt từ thiết kế, code, hạ tầ
 | --- | --- | --- | --- |
 | Backend | Go: `net/http`, gRPC, `pgx` + `sqlc`, `log/slog`, test với `-race`, `pprof` | — | 1 |
 | API contract | Protobuf + `buf` (lint, breaking check), OpenAPI ở gateway | — | 0–1 |
-| Dữ liệu | Postgres (migration bằng `goose`), Redis | — | 1 |
+| Dữ liệu | Postgres (migration bằng `goose`) ở giai đoạn 1; Redis từ giai đoạn 2 | — | 1, 2 |
 | Messaging | Redpanda (Kafka API) | SQS/SNS (AWS), Pub/Sub (GCP) | 2, 7, 8 |
 | Pattern | Outbox, saga dạng choreography, CQRS, idempotent consumer + DLQ, cache-aside + singleflight, rate limit, timeout/retry/circuit breaker/bulkhead, API gateway/BFF, backpressure | — | 2 |
 | Container | Docker multi-stage, image distroless, docker compose | — | 1 |
@@ -99,6 +99,8 @@ Thời gian là ước lượng thô theo số cuối tuần, vừa học vừa 
 
 ### G. Nền tảng Go — 4 tuần, chạy song song với giai đoạn 0
 
+> Hoãn từ 2026-10-11: người học chọn tập trung DevOps + SA trước. AI viết code Go từ giai đoạn 1; chặng G học lại sau, dùng code của project làm tài liệu.
+
 Người học chưa biết Go, đã quen TypeScript/NestJS. Giai đoạn 0 không cần Go (trừ file `.proto`), nên học Go song song.
 
 | Tuần | Học | Tài liệu | Bài tập |
@@ -124,8 +126,8 @@ Khác biệt cần chú ý khi chuyển từ TypeScript:
 - **Làm:**
   - cài Go, khung monorepo;
   - `gateway` + `user-service` + `video-service` (metadata);
-  - mỗi service một database, có migration; Redis;
-  - unit test và integration test trên Postgres/Redis native;
+  - mỗi service một database, có migration; Redis chuyển sang giai đoạn 2 theo [ADR-0007](../../docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md) (giai đoạn 1 chưa có chỗ nào dùng nó);
+  - unit test và integration test trên Postgres native;
   - golangci-lint + git hook;
   - Docker multi-stage, docker compose.
 - **Xong khi:** `make up` chạy được luồng đăng ký → tạo video → đọc lại; `go test -race ./...` xanh.
@@ -133,6 +135,7 @@ Khác biệt cần chú ý khi chuyển từ TypeScript:
 ### 2. Bất đồng bộ và pattern — 3 cuối tuần
 
 - **Làm:**
+  - Redis (chuyển từ giai đoạn 1, ADR-0007): rate limit ở gateway, cache feed;
   - Redpanda;
   - upload presigned lên MinIO; `media-worker` transcode bằng ffmpeg;
   - outbox; consumer idempotent + DLQ;
@@ -259,8 +262,8 @@ Tổng ước lượng: khoảng 8–10 tháng làm cuối tuần, đã tính ch
     - `video.ready` do video-service phát qua outbox, media-worker chỉ phát `transcode.completed` / `transcode.failed`;
     - chưa tạo `video.failed`, `like.toggled` vì chưa có service nhận; thêm sau là message proto mới, không phá contract.
   - Hoàn tất ngày 2026-10-11: contract ở `proto/` (`buf lint` sạch) cùng [ADR-0006](../../docs/adr/0006-contract-ids-and-event-envelope.md) chốt ID là UUIDv7, event bọc theo topic của luồng thực thể, bố cục `proto/svp/<domain>/v1`, danh tính người gọi qua metadata `x-user-id`; threat model STRIDE ở [`docs/threat-model.md`](../../docs/threat-model.md); NFR "Độ tươi" và "Nhất quán" đã chốt.
-- [ ] G. Nền tảng Go (song song với 0): tuần 1 đang làm (giao 2026-10-04, bắt đầu 2026-10-05). Bài giao và nhật ký review ở [`plans/261004-go-foundations/plan.md`](../261004-go-foundations/plan.md).
-- [ ] 1. Service lõi
+- [ ] G. Nền tảng Go: hoãn từ 2026-10-11 khi đang ở tuần 1 (giao 2026-10-04, bắt đầu 2026-10-05). Bài giao và nhật ký review ở [`plans/261004-go-foundations/plan.md`](../261004-go-foundations/plan.md).
+- [x] 1. Service lõi (xong 2026-10-11): `gateway`, `user-service`, `video-service` chạy bằng `make up` trên compose profile `core`; `make smoke` qua luồng đăng ký → đăng nhập → tạo video → đọc lại → follow/unfollow. Số đo: `make up` 8 s (image đã cache, gồm bootstrap Postgres và migrate); image `svp/gateway` 21,1 MB, `svp/user-service` 26 MB, `svp/video-service` 25,8 MB; `go test -race -count=1 ./...` 10 s (có integration test trên Postgres). `make check`, `buf breaking` và pre-commit hook sạch. Quyết định ở [ADR-0007](../../docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md): một Go module, công cụ ghim ở Makefile, cấu hình bằng biến môi trường, code sinh ra được commit, phạm vi thu về luồng đồng bộ (Redis, outbox, presigned upload sang giai đoạn 2).
 - [ ] 2. Bất đồng bộ và pattern
 - [ ] 3. Observability
 - [ ] 4. Kubernetes local
@@ -273,7 +276,7 @@ Tổng ước lượng: khoảng 8–10 tháng làm cuối tuần, đã tính ch
 ## Quyết định đã chốt
 
 - Domain: nền tảng video ngắn mini.
-- Ngôn ngữ: Go; ML chỉ ở mức tối thiểu, nếu cần thì dùng Python riêng. Người học bắt đầu Go từ con số 0 (đã quen TypeScript/NestJS), học qua chặng G với AI làm mentor.
+- Ngôn ngữ: Go; ML chỉ ở mức tối thiểu, nếu cần thì dùng Python riêng. Người học bắt đầu Go từ con số 0 (đã quen TypeScript/NestJS), học qua chặng G với AI làm mentor. Từ 2026-10-11: AI viết code Go, người học tập trung DevOps + SA, chặng G hoãn.
 - Monorepo, mỗi service một database.
 - Cloud: AWS EKS trước, GCP sau.
 - Repo: `anhnvcoder/short-video-platform` trên GitHub, private, quản lý bằng `gh`.

@@ -1,0 +1,449 @@
+# REST API of the gateway, written by hand (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md,
+# section 8). Keep it in step with services/gateway/internal/api.
+openapi: 3.1.0
+info:
+  title: Short-video platform API
+  version: 0.1.0
+  description: |
+    Stage 1 API. JSON fields are snake_case and times are RFC 3339 in UTC.
+
+    Every error is an RFC 9457 problem (`application/problem+json`, docs/architecture.md §8.4):
+    `code` is the service's reason (for example `VIDEO_NOT_FOUND`) or the gRPC code name, and
+    `detail` is the service's message. 5xx responses never carry the service's message: `detail`
+    is empty, `code` is the gRPC code name, and `trace_id` points to the logs.
+    Errors the gateway raises itself carry its own `code`: for example `INVALID_TOKEN`,
+    `NOT_FOUND` for an unknown path and `METHOD_NOT_ALLOWED` (with an `Allow` header).
+servers:
+  - url: http://127.0.0.1:8080
+security: []
+
+paths:
+  /auth/register:
+    post:
+      operationId: register
+      summary: Create an account
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Credentials"
+      responses:
+        "201":
+          description: Account created.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [user_id]
+                properties:
+                  user_id:
+                    $ref: "#/components/schemas/Id"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: The email is already registered (`EMAIL_ALREADY_REGISTERED`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+
+  /auth/login:
+    post:
+      operationId: login
+      summary: Exchange email and password for an access token
+      description: |
+        There is no refresh token: log in again after `expires_at`. An unknown email and a wrong
+        password get the same 401 with code `INVALID_CREDENTIALS`.
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Credentials"
+      responses:
+        "200":
+          description: Logged in.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessToken"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Unknown email or wrong password (`INVALID_CREDENTIALS`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+
+  /me/following/{user_id}:
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        description: The user to follow or unfollow. user-service validates it.
+        schema:
+          $ref: "#/components/schemas/Id"
+    put:
+      operationId: follow
+      summary: Follow a user
+      description: Idempotent. Following yourself is a 400 (`CANNOT_FOLLOW_SELF`).
+      tags: [users]
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: The caller follows the user.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No such user (`USER_NOT_FOUND`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+    delete:
+      operationId: unfollow
+      summary: Unfollow a user
+      description: Idempotent; unfollowing a user not followed also succeeds.
+      tags: [users]
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: The caller does not follow the user.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+
+  /videos:
+    post:
+      operationId: initUpload
+      summary: Create a video in UPLOADING
+      description: |
+        Not idempotent: each call creates a video. Stage 1 returns only the id; the upload form
+        (presigned POST) and completing the upload arrive with object storage in stage 2.
+      tags: [videos]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [title, size_bytes, content_type]
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                size_bytes:
+                  description: Exact size of the file to upload, at most 500 MiB.
+                  type: integer
+                  format: int64
+                  minimum: 1
+                  maximum: 524288000
+                content_type:
+                  description: A concrete video media type (`video/<subtype>`, no wildcard), for example `video/mp4`.
+                  type: string
+                  examples: [video/mp4]
+      responses:
+        "201":
+          description: Video created.
+          headers:
+            Location:
+              description: "`/videos/{video_id}` of the new video."
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [video_id]
+                properties:
+                  video_id:
+                    $ref: "#/components/schemas/Id"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+
+  /videos/{video_id}:
+    get:
+      operationId: getVideo
+      summary: Get one video
+      description: A video that is not READY is visible only to its author; to anyone else it is a 404.
+      tags: [videos]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: video_id
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/Id"
+      responses:
+        "200":
+          description: The video.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Video"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No such video, or hidden from the caller (`VIDEO_NOT_FOUND`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness
+      description: 200 while the process serves HTTP; checks no dependency.
+      tags: [ops]
+      responses:
+        "200":
+          $ref: "#/components/responses/StatusOK"
+
+  /readyz:
+    get:
+      operationId: readyz
+      summary: Readiness
+      description: |
+        Asks the gRPC health service of user-service and video-service, within 1 second. Any of
+        them not SERVING or not reachable is a 503 with code `NOT_READY`.
+      tags: [ops]
+      responses:
+        "200":
+          $ref: "#/components/responses/StatusOK"
+        "503":
+          description: A dependency is not ready (`NOT_READY`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: The access token from /auth/login, only in the Authorization header.
+
+  schemas:
+    Id:
+      description: UUIDv7 in canonical lowercase form.
+      type: string
+      format: uuid
+      examples: [01928c6e-7b3a-7cde-8f01-23456789abcd]
+
+    Credentials:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+
+    AccessToken:
+      type: object
+      additionalProperties: false
+      required: [access_token, token_type, expires_at]
+      properties:
+        access_token:
+          description: JWT signed with Ed25519 (EdDSA), valid for 1 hour.
+          type: string
+        token_type:
+          type: string
+          const: Bearer
+        expires_at:
+          type: string
+          format: date-time
+
+    Video:
+      type: object
+      additionalProperties: false
+      required: [video_id, author_id, title, status, created_at]
+      properties:
+        video_id:
+          $ref: "#/components/schemas/Id"
+        author_id:
+          $ref: "#/components/schemas/Id"
+        title:
+          type: string
+        status:
+          type: string
+          enum: [UPLOADING, PROCESSING, READY, FAILED]
+        created_at:
+          type: string
+          format: date-time
+        duration_ms:
+          description: Length of the transcoded video; present once READY.
+          type: integer
+          format: int64
+        published_at:
+          description: When the video became READY; present once READY.
+          type: string
+          format: date-time
+
+    Status:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: ok
+
+    Problem:
+      description: RFC 9457 problem details (docs/architecture.md §8.4).
+      type: object
+      additionalProperties: false
+      required: [type, title, status, detail, code, trace_id]
+      properties:
+        type:
+          type: string
+          const: about:blank
+        title:
+          description: Standard name of the HTTP status.
+          type: string
+        status:
+          type: integer
+        detail:
+          description: The service's message; empty for 5xx.
+          type: string
+        code:
+          description: Machine-readable reason in UPPER_SNAKE_CASE, or the gRPC code name.
+          type: string
+          examples: [VIDEO_NOT_FOUND]
+        trace_id:
+          description: Trace id of the request, for looking up logs.
+          type: string
+          examples: [4bf92f3577b34da6a3ce929d0e0e4736]
+
+  responses:
+    StatusOK:
+      description: OK.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Status"
+    BadRequest:
+      description: |
+        Invalid request: a body that is not one JSON object with known fields (`INVALID_JSON`), or
+        an argument the service rejects (its reason, for example `INVALID_TITLE`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Unauthorized:
+      description: |
+        Missing, malformed, expired or otherwise invalid access token (`INVALID_TOKEN`), with a
+        `WWW-Authenticate: Bearer` header.
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+            const: Bearer
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    PayloadTooLarge:
+      description: Request body larger than 64 KiB (`BODY_TOO_LARGE`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    TooManyRequests:
+      description: The service is busy hashing passwords (`SERVER_BUSY`); retry later.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    InternalError:
+      description: Internal error; `detail` is empty.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    ServiceUnavailable:
+      description: The service is unavailable (`UNAVAILABLE`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    GatewayTimeout:
+      description: The service did not answer within 3 seconds (`DEADLINE_EXCEEDED`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"

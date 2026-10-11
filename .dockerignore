@@ -1,0 +1,12 @@
+# Build context for deploy/docker/service.Dockerfile: allow only what the Go build needs, so
+# secrets (.env, keys), git history, plans and docs never reach the builder or the image.
+*
+!go.mod
+!go.sum
+!gen/
+!internal/
+!services/
+
+# Belt and braces: no dotenv file from inside the allowed trees either.
+**/.env
+**/.env.*

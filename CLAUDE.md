@@ -23,18 +23,16 @@ có số đo và có ADR cho các quyết định.
 
 ## Chế độ mentor
 
-Người học bắt đầu Go từ con số 0, đã quen TypeScript/NestJS.
+Người học chưa biết Go (đã quen TypeScript/NestJS) và ưu tiên học DevOps + SA. Từ 2026-10-11 chặng học Go
+hoãn lại; học lại sau, dùng chính code của project làm tài liệu.
 
-- **Code Go** (service, bài tập, lab): người học tự viết. AI giải thích, gợi ý hướng, review; chỉ viết
-  thay khi được nhờ. Gợi ý thì chỉ ra chỗ cần sửa, vì sao, đọc gì thêm; ví dụ ngắn để minh hoạ khái niệm
-  thì được, nhưng không đưa lời giải của bài.
-- **Giải thích Go** luôn kèm cách viết tương đương trong TypeScript và chỗ hai bên khác nhau.
-- **Review** theo thứ tự: chạy được và đúng chưa (test, `go vet`, `-race` khi có goroutine) → chỗ còn
-  thói quen TypeScript → idiom Go. Xếp theo mức độ, kết thúc bằng một điều nên học tiếp.
+- **Code Go** (service, lab): AI viết, kèm test và chạy đủ lệnh ở mục Kiểm tra. Mỗi lần giao code, tóm tắt
+  cấu trúc và các chỗ Go đáng chú ý, kèm cách viết tương đương trong TypeScript và chỗ hai bên khác nhau,
+  để người học đọc hiểu được.
 - **Thiết kế** (`docs/`, ADR, `.proto`) **và hạ tầng** (compose, Makefile, Helm, Terraform, CI): AI soạn
   và giải thích lý do từng quyết định; người học duyệt.
-- Bài được giao, kết quả review và tiến độ chặng học Go ghi ở
-  [`plans/261004-go-foundations/plan.md`](plans/261004-go-foundations/plan.md).
+- Khi học lại Go: bài tập và lab học Go thì người học tự viết, AI gợi ý và review. Bài giao và nhật ký
+  review ở [`plans/261004-go-foundations/plan.md`](plans/261004-go-foundations/plan.md).
 
 ## Quy ước
 
@@ -88,4 +86,25 @@ Từ gốc repo, cho `proto/`:
 - `buf breaking --against '.git#branch=main'` khi sửa `proto/`. **Chỉ dùng được sau khi `proto/` đã có trong một commit
   trên `main`**; trước đó buf báo "Module had no .proto files".
 
-Từ giai đoạn 1, cho `services/`: `gofmt`, `go vet`, `golangci-lint run`, `go test -race ./...`.
+Từ giai đoạn 1, cho code Go (`services/`, `internal/`, `tools/`), mọi lệnh chạy từ gốc repo qua `Makefile` (`make help`
+liệt kê target):
+
+- `make tools`: cài một lần các công cụ ghim version (`protoc-gen-go`, `protoc-gen-go-grpc`, `sqlc`, `golangci-lint`,
+  `gitleaks`); `buf` cài bằng Homebrew.
+- `make generate`: chạy sau khi sửa `proto/` hoặc SQL của `sqlc`; code sinh ra (`gen/go`, code `sqlc`) được commit.
+- `make check`: `gofmt`, `go vet`, `golangci-lint run`, `buf lint` + `buf build`, `go test -race ./...` (có integration
+  test trên Postgres native `127.0.0.1:5432`). Thu hẹp bằng `make test PKGS=./services/user-service/...`.
+- `make env`: sinh `.env` local (mode 600, mật khẩu DB ngẫu nhiên, khoá JWT mới); không ghi đè `.env` có sẵn.
+- `make up` / `make smoke` / `make down`: dựng stack compose profile `core` (bootstrap Postgres, migrate, gateway,
+  user-service, video-service), chạy luồng đầu-cuối qua gateway ở `127.0.0.1:8080`, rồi gỡ stack. `make ps` và
+  `make logs SVC=<tên>` để xem.
+- `make hooks`: bật git hook ở `.githooks/` một lần cho mỗi clone. `pre-commit` chạy `gofmt` trên file Go đã stage,
+  `golangci-lint run`, `buf lint` và `gitleaks` trên thay đổi đã stage.
+
+Quy ước test:
+
+- Test dùng database riêng tên `svp_<...>_test` (service: `svp_<svc>_<pkg>_test`; gói dùng chung như `internal/dbmigrate`:
+  mỗi test một database), tạo từ `SVP_TEST_POSTGRES_URL`; helper ở `internal/pgtest`
+  từ chối tên không khớp `^svp_[a-z0-9_]+_test$`, nên test không chạm được database thật của service.
+- Test gateway gọi service qua `bufconn` (gRPC trong bộ nhớ), không mở cổng.
+- Luồng đầu-cuối (đăng ký, đăng nhập, tạo và đọc video, follow) kiểm bằng `make smoke` trên stack đang chạy.
