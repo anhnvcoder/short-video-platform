@@ -16,6 +16,8 @@ PKGS ?= ./...
 
 # Local dev Postgres superuser DSN, published in CLAUDE.md; integration tests create their own databases from it.
 SVP_TEST_POSTGRES_URL ?= postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+# Local Redis, db 15: the project's test database (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 1).
+SVP_TEST_REDIS_URL ?= redis://127.0.0.1:6379/15
 
 .DEFAULT_GOAL := help
 
@@ -51,8 +53,8 @@ buf-lint: ## buf lint and buf build
 	buf lint
 	buf build -o /dev/null
 
-test: ## go test -race (SVP_TEST_POSTGRES_URL defaults to the local Postgres)
-	SVP_TEST_POSTGRES_URL='$(SVP_TEST_POSTGRES_URL)' go test -race $(PKGS)
+test: ## go test -race (SVP_TEST_POSTGRES_URL and SVP_TEST_REDIS_URL default to the local Postgres and Redis db 15)
+	SVP_TEST_POSTGRES_URL='$(SVP_TEST_POSTGRES_URL)' SVP_TEST_REDIS_URL='$(SVP_TEST_REDIS_URL)' go test -race $(PKGS)
 
 check: fmt-check vet lint buf-lint test ## Run every check
 
