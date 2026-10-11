@@ -1,6 +1,6 @@
-// Package server implements svp.user.v1.UserService for stage 1: accounts, login and the follow
-// graph. Events (user.followed, user.unfollowed) and the outbox come in stage 2
-// (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 8).
+// Package server implements svp.user.v1.UserService: accounts, login and the follow graph. A
+// change to the follow graph writes user.followed or user.unfollowed to the outbox in the same
+// transaction (docs/adr/0009-engagement-feed-stage2b.md, section 1).
 package server
 
 import (
@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc/codes"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
@@ -24,6 +25,7 @@ import (
 	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
 	"github.com/anhnvcoder/short-video-platform/internal/ids"
 	"github.com/anhnvcoder/short-video-platform/internal/logx"
+	"github.com/anhnvcoder/short-video-platform/internal/outbox"
 	"github.com/anhnvcoder/short-video-platform/internal/secret"
 	"github.com/anhnvcoder/short-video-platform/services/user-service/internal/password"
 	"github.com/anhnvcoder/short-video-platform/services/user-service/internal/store"
@@ -40,6 +42,9 @@ var PublicMethods = []string{
 
 // MaxEmailBytes is the longest email accepted (the SMTP limit on a forward path, RFC 5321).
 const MaxEmailBytes = 254
+
+// TopicUserFollows carries svp.user.v1.FollowEvent, keyed by follower_id.
+const TopicUserFollows = "user.follows.v1"
 
 // ErrorInfo reasons returned by the service.
 const (
@@ -73,16 +78,17 @@ type Hasher interface {
 type Server struct {
 	userv1.UnimplementedUserServiceServer
 
+	pool    *pgxpool.Pool
 	queries *store.Queries
 	hasher  Hasher
 	issuer  *authtoken.Issuer
 	logger  *slog.Logger
 }
 
-// New returns a Server reading and writing through db, hashing with hasher and signing tokens
+// New returns a Server reading and writing through pool, hashing with hasher and signing tokens
 // with issuer. logger should come from logx so context attributes reach the log.
-func New(db store.DBTX, hasher Hasher, issuer *authtoken.Issuer, logger *slog.Logger) *Server {
-	return &Server{queries: store.New(db), hasher: hasher, issuer: issuer, logger: logger}
+func New(pool *pgxpool.Pool, hasher Hasher, issuer *authtoken.Issuer, logger *slog.Logger) *Server {
+	return &Server{pool: pool, queries: store.New(pool), hasher: hasher, issuer: issuer, logger: logger}
 }
 
 // Register creates an account for a new email.
@@ -175,7 +181,8 @@ func (s *Server) rehash(ctx context.Context, userID uuid.UUID, pw secret.String)
 	s.logger.InfoContext(ctx, "password rehashed")
 }
 
-// Follow makes the caller follow followee_id. Following again succeeds without change.
+// Follow makes the caller follow followee_id. Following again succeeds without change and
+// without an event.
 func (s *Server) Follow(ctx context.Context, req *userv1.FollowRequest) (*userv1.FollowResponse, error) {
 	caller, err := callerID(ctx)
 	if err != nil {
@@ -189,7 +196,7 @@ func (s *Server) Follow(ctx context.Context, req *userv1.FollowRequest) (*userv1
 		return nil, grpcerr.New(codes.InvalidArgument, ReasonCannotFollowSelf, "cannot follow yourself")
 	}
 
-	err = s.queries.CreateFollow(ctx, store.CreateFollowParams{FollowerID: caller, FolloweeID: followee})
+	err = s.changeFollow(ctx, caller, followee, true)
 	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok {
 		switch pgErr.ConstraintName {
 		case constraintFolloweeFKey:
@@ -206,7 +213,8 @@ func (s *Server) Follow(ctx context.Context, req *userv1.FollowRequest) (*userv1
 	return &userv1.FollowResponse{}, nil
 }
 
-// Unfollow removes the caller's edge to followee_id. Removing a missing edge succeeds.
+// Unfollow removes the caller's edge to followee_id. Removing a missing edge succeeds without an
+// event.
 func (s *Server) Unfollow(ctx context.Context, req *userv1.UnfollowRequest) (*userv1.UnfollowResponse, error) {
 	caller, err := callerID(ctx)
 	if err != nil {
@@ -216,11 +224,48 @@ func (s *Server) Unfollow(ctx context.Context, req *userv1.UnfollowRequest) (*us
 	if err != nil {
 		return nil, err
 	}
-	if err := s.queries.DeleteFollow(ctx, store.DeleteFollowParams{FollowerID: caller, FolloweeID: followee}); err != nil {
+	if err := s.changeFollow(ctx, caller, followee, false); err != nil {
 		return nil, s.internal(ctx, "delete follow", err)
 	}
 	s.logger.InfoContext(ctx, "user unfollowed", slog.String("followee_id", followee.String()))
 	return &userv1.UnfollowResponse{}, nil
+}
+
+// changeFollow inserts (follow true) or deletes the edge follower -> followee and, when a row
+// changed, writes the matching FollowEvent to the outbox in the same transaction. The INSERT or
+// DELETE locks the edge's row before the outbox insert, as internal/outbox requires for per-key
+// order: a second call on the same edge waits for the first to commit, then changes no row and
+// writes no event.
+func (s *Server) changeFollow(ctx context.Context, follower, followee uuid.UUID, follow bool) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// After Commit this is a no-op; on ctx cancellation it still reaches the server.
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	q := s.queries.WithTx(tx)
+
+	var n int64
+	ev := &userv1.FollowEvent{}
+	if follow {
+		n, err = q.CreateFollow(ctx, store.CreateFollowParams{FollowerID: follower, FolloweeID: followee})
+		ev.Event = &userv1.FollowEvent_UserFollowed{UserFollowed: &userv1.UserFollowed{
+			FollowerId: follower.String(), FolloweeId: followee.String(),
+		}}
+	} else {
+		n, err = q.DeleteFollow(ctx, store.DeleteFollowParams{FollowerID: follower, FolloweeID: followee})
+		ev.Event = &userv1.FollowEvent_UserUnfollowed{UserUnfollowed: &userv1.UserUnfollowed{
+			FollowerId: follower.String(), FolloweeId: followee.String(),
+		}}
+	}
+	if err != nil || n == 0 {
+		return err
+	}
+	ev.Meta = outbox.NewMeta()
+	if err := outbox.Write(ctx, tx, TopicUserFollows, follower.String(), ev); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // normalizeEmail trims and lower-cases email and reports whether the result is a bare address

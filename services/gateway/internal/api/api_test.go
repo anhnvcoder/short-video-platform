@@ -26,6 +26,8 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	engagementv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/engagement/v1"
+	feedv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/feed/v1"
 	userv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1"
 	videov1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/video/v1"
 	"github.com/anhnvcoder/short-video-platform/internal/authtoken"
@@ -40,6 +42,8 @@ const (
 	userA   = "01928c6e-7b3a-7cde-8f01-23456789abcd"
 	userB   = "01928c6e-7b3a-7cde-8f01-000000000000"
 	videoID = "01928c6e-7b3a-7cde-8f01-111111111111"
+	// videoID2 is the second item of every feed page fakeFeed answers.
+	videoID2 = "01928c6e-7b3a-7cde-8f01-333333333333"
 	// clientTraceparent is a valid traceparent a client might send; it must never be used.
 	clientTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 	fakeAccessToken   = "fake.access.token"
@@ -48,6 +52,10 @@ const (
 	uploadSecret = "presigned-signature-secret"
 	// noFormFields is a title fakeVideos answers with a nil form_fields map.
 	noFormFields = "no form fields"
+	// nextCursor is the next_page_token of every non-empty following page fakeFeed answers.
+	nextCursor = "next-page-token"
+	// emptyCursor is a page_token fakeFeed answers with an empty last page.
+	emptyCursor = "empty"
 )
 
 var (
@@ -218,12 +226,115 @@ func (fakeVideos) GetVideo(_ context.Context, req *videov1.GetVideoRequest) (*vi
 	return &videov1.GetVideoResponse{Video: v}, nil
 }
 
-// env is the gateway handler in front of fake user and video services.
+// fakeFeed answers both feeds with the page of fakeFeedPage.
+type fakeFeed struct {
+	feedv1.UnimplementedFeedServiceServer
+}
+
+// fakeFeedPage returns two items and nextCursor, or an empty page for emptyCursor. Like
+// feed-service, it rejects a negative page_size and a page_token longer than 64 characters.
+func fakeFeedPage(size int32, token string) ([]*feedv1.FeedItem, string, error) {
+	switch {
+	case size < 0:
+		return nil, "", grpcerr.New(codes.InvalidArgument, "INVALID_PAGE_SIZE", "page_size must not be negative")
+	case len(token) > 64:
+		return nil, "", grpcerr.New(codes.InvalidArgument, "INVALID_PAGE_TOKEN", "page_token is invalid")
+	case token == emptyCursor:
+		return nil, "", nil
+	}
+	items := []*feedv1.FeedItem{
+		{
+			VideoId:      videoID,
+			AuthorId:     userB,
+			Title:        "first clip",
+			Duration:     durationpb.New(12345 * time.Millisecond),
+			PlaylistKey:  "media/" + videoID + "/master.m3u8",
+			ThumbnailKey: "media/" + videoID + "/thumb.jpg",
+			PublishedAt:  timestamppb.New(publishedAt),
+		},
+		{
+			VideoId:      videoID2,
+			AuthorId:     userB,
+			Title:        "second clip",
+			Duration:     durationpb.New(2 * time.Second),
+			PlaylistKey:  "media/" + videoID2 + "/master.m3u8",
+			ThumbnailKey: "media/" + videoID2 + "/thumb.jpg",
+			PublishedAt:  timestamppb.New(createdAt),
+		},
+	}
+	return items, nextCursor, nil
+}
+
+func (fakeFeed) GetFollowingFeed(_ context.Context, req *feedv1.GetFollowingFeedRequest) (*feedv1.GetFollowingFeedResponse, error) {
+	items, next, err := fakeFeedPage(req.GetPageSize(), req.GetPageToken())
+	if err != nil {
+		return nil, err
+	}
+	return &feedv1.GetFollowingFeedResponse{Items: items, NextPageToken: next}, nil
+}
+
+func (fakeFeed) GetExploreFeed(_ context.Context, req *feedv1.GetExploreFeedRequest) (*feedv1.GetExploreFeedResponse, error) {
+	items, _, err := fakeFeedPage(req.GetPageSize(), req.GetPageToken())
+	if err != nil {
+		return nil, err
+	}
+	return &feedv1.GetExploreFeedResponse{Items: items}, nil
+}
+
+// fakeEngagement answers GetStats with one stats per id in request order: view_count 100*(i+1),
+// like_count i+1 and liked_by_me for the first. setStats replaces that answer.
+type fakeEngagement struct {
+	engagementv1.UnimplementedEngagementServiceServer
+
+	mu    sync.Mutex
+	stats []*engagementv1.VideoStats
+}
+
+func (f *fakeEngagement) setStats(stats []*engagementv1.VideoStats) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stats = stats
+}
+
+func (*fakeEngagement) Like(context.Context, *engagementv1.LikeRequest) (*engagementv1.LikeResponse, error) {
+	return &engagementv1.LikeResponse{}, nil
+}
+
+func (*fakeEngagement) Unlike(context.Context, *engagementv1.UnlikeRequest) (*engagementv1.UnlikeResponse, error) {
+	return &engagementv1.UnlikeResponse{}, nil
+}
+
+func (*fakeEngagement) RecordView(context.Context, *engagementv1.RecordViewRequest) (*engagementv1.RecordViewResponse, error) {
+	return &engagementv1.RecordViewResponse{}, nil
+}
+
+func (f *fakeEngagement) GetStats(_ context.Context, req *engagementv1.GetStatsRequest) (*engagementv1.GetStatsResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.stats != nil {
+		return &engagementv1.GetStatsResponse{Stats: f.stats}, nil
+	}
+	var stats []*engagementv1.VideoStats
+	for i, id := range req.GetVideoIds() {
+		stats = append(stats, &engagementv1.VideoStats{
+			VideoId:   id,
+			ViewCount: int64(100 * (i + 1)),
+			LikeCount: int64(i + 1),
+			LikedByMe: i == 0,
+		})
+	}
+	return &engagementv1.GetStatsResponse{Stats: stats}, nil
+}
+
+// env is the gateway handler in front of fake user, video, feed and engagement services.
 type env struct {
-	handler http.Handler
-	users   *backend
-	videos  *backend
-	key     ed25519.PrivateKey
+	handler    http.Handler
+	users      *backend
+	videos     *backend
+	feeds      *backend
+	engagement *backend
+	stats      *fakeEngagement
+	key        ed25519.PrivateKey
 }
 
 func newEnv(t *testing.T) *env {
@@ -234,8 +345,24 @@ func newEnv(t *testing.T) *env {
 	}
 	users, userConn := startBackend(t, func(s *grpc.Server) { userv1.RegisterUserServiceServer(s, fakeUsers{}) })
 	videos, videoConn := startBackend(t, func(s *grpc.Server) { videov1.RegisterVideoServiceServer(s, fakeVideos{}) })
+	feeds, feedConn := startBackend(t, func(s *grpc.Server) { feedv1.RegisterFeedServiceServer(s, fakeFeed{}) })
+	stats := &fakeEngagement{}
+	engagement, engagementConn := startBackend(t, func(s *grpc.Server) { engagementv1.RegisterEngagementServiceServer(s, stats) })
 	verifier := authtoken.NewVerifier(map[string]ed25519.PublicKey{testKID: key.Public().(ed25519.PublicKey)})
-	return &env{handler: New(userConn, videoConn, verifier, mediaBase), users: users, videos: videos, key: key}
+	return &env{
+		handler:    New(userConn, videoConn, feedConn, engagementConn, verifier, mediaBase),
+		users:      users,
+		videos:     videos,
+		feeds:      feeds,
+		engagement: engagement,
+		stats:      stats,
+		key:        key,
+	}
+}
+
+// callCount is the number of RPCs every fake service received.
+func (e *env) callCount() int {
+	return len(e.users.recorded()) + len(e.videos.recorded()) + len(e.feeds.recorded()) + len(e.engagement.recorded())
 }
 
 // token returns a valid access token for userID.
@@ -644,6 +771,10 @@ func TestReadyzNotReady(t *testing.T) {
 			e.videos.health.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
 		}},
 		{"video-service unreachable", func(e *env) { e.videos.stop() }},
+		{"feed-service not serving", func(e *env) {
+			e.feeds.health.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+		}},
+		{"feed-service unreachable", func(e *env) { e.feeds.stop() }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			logs := captureLog(t)
@@ -673,6 +804,11 @@ func TestAuthenticatedRoutesNeedToken(t *testing.T) {
 		{http.MethodPost, "/videos", `{"title":"x","size_bytes":1,"content_type":"video/mp4"}`},
 		{http.MethodPost, "/videos/" + videoID + "/complete", ""},
 		{http.MethodGet, "/videos/" + videoID, ""},
+		{http.MethodPut, "/videos/" + videoID + "/like", ""},
+		{http.MethodDelete, "/videos/" + videoID + "/like", ""},
+		{http.MethodPost, "/videos/" + videoID + "/views", ""},
+		{http.MethodGet, "/feed/following", ""},
+		{http.MethodGet, "/feed/explore", ""},
 	}
 	for _, rt := range routes {
 		for _, token := range []string{"", "not-a-jwt"} {
@@ -683,7 +819,7 @@ func TestAuthenticatedRoutesNeedToken(t *testing.T) {
 				if p := decodeProblem(t, rec); p.Code != "INVALID_TOKEN" {
 					t.Errorf("code = %q, want INVALID_TOKEN", p.Code)
 				}
-				if n := len(e.users.recorded()) + len(e.videos.recorded()); n != 0 {
+				if n := e.callCount(); n != 0 {
 					t.Errorf("services got %d calls, want 0", n)
 				}
 			})
@@ -871,5 +1007,425 @@ func TestUnmatchedRouteIsProblem(t *testing.T) {
 	}
 	if allow := rec.Header().Get("Allow"); allow != "GET, HEAD" {
 		t.Errorf("Allow = %q, want %q", allow, "GET, HEAD")
+	}
+}
+
+// wantFeedItem checks the fields of item shared by every fakeFeed page; stats are checked apart.
+func wantFeedItem(t *testing.T, item map[string]any, want map[string]any) {
+	t.Helper()
+	for k, v := range want {
+		if item[k] != v {
+			t.Errorf("%s = %v, want %v", k, item[k], v)
+		}
+	}
+}
+
+func TestFeed(t *testing.T) {
+	for _, tc := range []struct {
+		path, rpc, wantNext string
+	}{
+		{"/feed/following", feedv1.FeedService_GetFollowingFeed_FullMethodName, nextCursor},
+		{"/feed/explore", feedv1.FeedService_GetExploreFeed_FullMethodName, ""},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			e := newEnv(t)
+			rec := e.do(t, http.MethodGet, tc.path+"?page_size=5&cursor=abc", "", e.token(t, userA))
+			wantStatus(t, rec, http.StatusOK)
+			wantJSON(t, rec)
+			got := decode[struct {
+				Items      []map[string]any `json:"items"`
+				NextCursor *string          `json:"next_cursor"`
+			}](t, rec)
+			if got.NextCursor == nil || *got.NextCursor != tc.wantNext {
+				t.Errorf("next_cursor = %v, want %q", got.NextCursor, tc.wantNext)
+			}
+			if len(got.Items) != 2 {
+				t.Fatalf("items = %v, want 2", got.Items)
+			}
+			first := got.Items[0]
+			if len(first) != 8 {
+				t.Errorf("item has %d fields, want 8: %v", len(first), first)
+			}
+			wantFeedItem(t, first, map[string]any{
+				"video_id":      videoID,
+				"author_id":     userB,
+				"title":         "first clip",
+				"duration_ms":   float64(12345),
+				"published_at":  "2026-10-11T01:05:00Z",
+				"playlist_url":  mediaBase + "/media/" + videoID + "/master.m3u8",
+				"thumbnail_url": mediaBase + "/media/" + videoID + "/thumb.jpg",
+			})
+			wantStats := map[string]any{"view_count": float64(100), "like_count": float64(1), "liked_by_me": true}
+			if st, _ := first["stats"].(map[string]any); len(st) != len(wantStats) {
+				t.Errorf("stats = %v, want %v", first["stats"], wantStats)
+			} else {
+				wantFeedItem(t, st, wantStats)
+			}
+			second := got.Items[1]
+			wantFeedItem(t, second, map[string]any{"video_id": videoID2, "duration_ms": float64(2000), "published_at": "2026-10-11T01:02:03.456Z"})
+			if st, _ := second["stats"].(map[string]any); st["view_count"] != float64(200) || st["liked_by_me"] != false {
+				t.Errorf("second stats = %v", second["stats"])
+			}
+
+			c := e.feeds.only(t)
+			if c.method != tc.rpc {
+				t.Errorf("method = %s, want %s", c.method, tc.rpc)
+			}
+			req := c.req.(interface {
+				GetPageSize() int32
+				GetPageToken() string
+			})
+			if req.GetPageSize() != 5 || req.GetPageToken() != "abc" {
+				t.Errorf("page_size, page_token = %d, %q; want 5, abc", req.GetPageSize(), req.GetPageToken())
+			}
+			if v := c.md.Get(callerid.MetadataKey); !slices.Equal(v, []string{userA}) {
+				t.Errorf("feed x-user-id = %v, want [%s]", v, userA)
+			}
+			s := e.engagement.only(t)
+			if s.method != engagementv1.EngagementService_GetStats_FullMethodName {
+				t.Errorf("engagement method = %s", s.method)
+			}
+			if ids := s.req.(*engagementv1.GetStatsRequest).GetVideoIds(); !slices.Equal(ids, []string{videoID, videoID2}) {
+				t.Errorf("GetStats video_ids = %v", ids)
+			}
+			if v := s.md.Get(callerid.MetadataKey); !slices.Equal(v, []string{userA}) {
+				t.Errorf("engagement x-user-id = %v, want [%s]", v, userA)
+			}
+		})
+	}
+}
+
+func TestFeedWithoutQuery(t *testing.T) {
+	e := newEnv(t)
+	rec := e.do(t, http.MethodGet, "/feed/following", "", e.token(t, userA))
+	wantStatus(t, rec, http.StatusOK)
+	req := e.feeds.only(t).req.(*feedv1.GetFollowingFeedRequest)
+	if req.GetPageSize() != 0 || req.GetPageToken() != "" {
+		t.Errorf("request = %v, want page_size 0 and no page_token", req)
+	}
+}
+
+func TestFeedEmptyPage(t *testing.T) {
+	e := newEnv(t)
+	rec := e.do(t, http.MethodGet, "/feed/following?cursor="+emptyCursor, "", e.token(t, userA))
+	wantStatus(t, rec, http.StatusOK)
+	got := decode[map[string]json.RawMessage](t, rec)
+	if string(got["items"]) != "[]" || string(got["next_cursor"]) != `""` {
+		t.Errorf("body = %s, want items [] and next_cursor \"\"", rec.Body.String())
+	}
+	if n := len(e.engagement.recorded()); n != 0 {
+		t.Errorf("engagement-service got %d calls for an empty page, want 0", n)
+	}
+}
+
+// TestFeedStatsMatchedByVideoID gives GetStats an answer in another order, missing one item and
+// with an id not on the page.
+func TestFeedStatsMatchedByVideoID(t *testing.T) {
+	e := newEnv(t)
+	e.stats.setStats([]*engagementv1.VideoStats{
+		{VideoId: "01928c6e-7b3a-7cde-8f01-999999999999", ViewCount: 9},
+		{VideoId: videoID2, ViewCount: 42, LikeCount: 3, LikedByMe: true},
+	})
+	rec := e.do(t, http.MethodGet, "/feed/explore", "", e.token(t, userA))
+	wantStatus(t, rec, http.StatusOK)
+	got := decode[struct {
+		Items []map[string]any `json:"items"`
+	}](t, rec)
+	if len(got.Items) != 2 {
+		t.Fatalf("items = %v", got.Items)
+	}
+	if st, ok := got.Items[0]["stats"]; ok {
+		t.Errorf("item %s has stats %v, want none", videoID, st)
+	}
+	st, _ := got.Items[1]["stats"].(map[string]any)
+	if st["view_count"] != float64(42) || st["like_count"] != float64(3) || st["liked_by_me"] != true {
+		t.Errorf("item %s stats = %v", videoID2, got.Items[1]["stats"])
+	}
+}
+
+// TestFeedWithoutStatsWhenEngagementFails is graceful degradation (architecture §7.2): the feed
+// answers 200 without stats, about statsTimeout at most, and the error is only logged.
+func TestFeedWithoutStatsWhenEngagementFails(t *testing.T) {
+	const internalMessage = "dial tcp 10.0.0.9:5432: connection refused"
+	for _, tc := range []struct {
+		name  string
+		setup func(e *env, seen chan<- time.Duration)
+	}{
+		{"error", func(e *env, _ chan<- time.Duration) {
+			e.engagement.fail(status.Error(codes.Internal, internalMessage))
+		}},
+		{"slower than the timeout", func(e *env, seen chan<- time.Duration) {
+			e.engagement.setHook(func(ctx context.Context, _ string) error {
+				d, _ := ctx.Deadline()
+				seen <- time.Until(d)
+				// The server-side deadline can fire just before the gateway's own timer. Answering
+				// with success then lets stats reach the gateway in time on a busy machine, so the
+				// fake fails like a real handler cut off by its deadline.
+				select {
+				case <-time.After(300 * time.Millisecond):
+				case <-ctx.Done():
+				}
+				return ctx.Err()
+			})
+		}},
+		{"unreachable", func(e *env, _ chan<- time.Duration) { e.engagement.stop() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := captureLog(t)
+			e := newEnv(t)
+			seen := make(chan time.Duration, 1)
+			tc.setup(e, seen)
+			token := e.token(t, userA)
+			start := time.Now()
+			rec := e.do(t, http.MethodGet, "/feed/following", "", token)
+			elapsed := time.Since(start)
+			wantStatus(t, rec, http.StatusOK)
+			got := decode[struct {
+				Items      []map[string]any `json:"items"`
+				NextCursor string           `json:"next_cursor"`
+			}](t, rec)
+			if len(got.Items) != 2 || got.NextCursor != nextCursor {
+				t.Fatalf("body = %s", rec.Body.String())
+			}
+			for _, item := range got.Items {
+				if st, ok := item["stats"]; ok {
+					t.Errorf("item %v has stats %v, want none", item["video_id"], st)
+				}
+			}
+			// The feed fake answers at once, so the request costs about the stats timeout at most.
+			if elapsed > statsTimeout+150*time.Millisecond {
+				t.Errorf("request took %v, want about %v at most", elapsed, statsTimeout)
+			}
+			select {
+			case d := <-seen:
+				if d > statsTimeout || d <= 0 {
+					t.Errorf("engagement-service saw a deadline %v away, want at most %v", d, statsTimeout)
+				}
+			default:
+			}
+			if strings.Contains(rec.Body.String(), "10.0.0.9") {
+				t.Errorf("body leaks the internal error: %s", rec.Body.String())
+			}
+			if !strings.Contains(logs.String(), `"level":"WARN","msg":"feed served without stats"`) {
+				t.Errorf("no WARN about the missing stats:\n%s", logs.String())
+			}
+			if strings.Contains(logs.String(), token) {
+				t.Errorf("log contains the access token:\n%s", logs.String())
+			}
+		})
+	}
+}
+
+func TestFeedInvalidPageSize(t *testing.T) {
+	for _, size := range []string{"abc", "1.5", "99999999999"} {
+		t.Run(size, func(t *testing.T) {
+			e := newEnv(t)
+			rec := e.do(t, http.MethodGet, "/feed/following?page_size="+size, "", e.token(t, userA))
+			wantStatus(t, rec, http.StatusBadRequest)
+			if p := decodeProblem(t, rec); p.Code != "INVALID_PAGE_SIZE" {
+				t.Errorf("code = %q, want INVALID_PAGE_SIZE", p.Code)
+			}
+			if n := e.callCount(); n != 0 {
+				t.Errorf("services got %d calls, want 0", n)
+			}
+		})
+	}
+
+	t.Run("negative goes to feed-service", func(t *testing.T) {
+		e := newEnv(t)
+		rec := e.do(t, http.MethodGet, "/feed/explore?page_size=-1", "", e.token(t, userA))
+		wantStatus(t, rec, http.StatusBadRequest)
+		if p := decodeProblem(t, rec); p.Code != "INVALID_PAGE_SIZE" {
+			t.Errorf("code = %q, want INVALID_PAGE_SIZE", p.Code)
+		}
+		if got := e.feeds.only(t).req.(*feedv1.GetExploreFeedRequest).GetPageSize(); got != -1 {
+			t.Errorf("page_size = %d, want -1", got)
+		}
+		if n := len(e.engagement.recorded()); n != 0 {
+			t.Errorf("engagement-service got %d calls, want 0", n)
+		}
+	})
+}
+
+// TestFeedLongCursorPassedThrough checks the gateway never reads the cursor: feed-service gets
+// it unchanged and rejects it.
+func TestFeedLongCursorPassedThrough(t *testing.T) {
+	e := newEnv(t)
+	cursor := strings.Repeat("A", 500)
+	rec := e.do(t, http.MethodGet, "/feed/following?cursor="+cursor, "", e.token(t, userA))
+	wantStatus(t, rec, http.StatusBadRequest)
+	if p := decodeProblem(t, rec); p.Code != "INVALID_PAGE_TOKEN" {
+		t.Errorf("code = %q, want INVALID_PAGE_TOKEN", p.Code)
+	}
+	if got := e.feeds.only(t).req.(*feedv1.GetFollowingFeedRequest).GetPageToken(); got != cursor {
+		t.Errorf("page_token has %d characters, want the %d of the cursor", len(got), len(cursor))
+	}
+}
+
+// TestFeedServiceErrorIsMapped: unlike engagement-service, a feed-service error fails the request
+// through the §8.4 table.
+func TestFeedServiceErrorIsMapped(t *testing.T) {
+	e := newEnv(t)
+	e.feeds.fail(grpcerr.New(codes.Unavailable, "DB_DOWN", "dial tcp 10.0.0.5:5432: connection refused"))
+	rec := e.do(t, http.MethodGet, "/feed/following", "", e.token(t, userA))
+	wantStatus(t, rec, http.StatusServiceUnavailable)
+	if p := decodeProblem(t, rec); p.Code != "UNAVAILABLE" || p.Detail != "" {
+		t.Errorf("problem = %+v", p)
+	}
+	if strings.Contains(rec.Body.String(), "10.0.0.5") || strings.Contains(rec.Body.String(), "DB_DOWN") {
+		t.Errorf("body leaks the internal error: %s", rec.Body.String())
+	}
+	if n := len(e.engagement.recorded()); n != 0 {
+		t.Errorf("engagement-service got %d calls, want 0", n)
+	}
+}
+
+// TestLikeUnlikeAndView also checks threat model IN-1 on these routes: a client X-User-Id header
+// never reaches engagement-service.
+func TestLikeUnlikeAndView(t *testing.T) {
+	for _, tc := range []struct {
+		method, path, rpc string
+		wantStatus        int
+	}{
+		{http.MethodPut, "/videos/" + videoID + "/like", engagementv1.EngagementService_Like_FullMethodName, http.StatusNoContent},
+		{http.MethodDelete, "/videos/" + videoID + "/like", engagementv1.EngagementService_Unlike_FullMethodName, http.StatusNoContent},
+		{http.MethodPost, "/videos/" + videoID + "/views", engagementv1.EngagementService_RecordView_FullMethodName, http.StatusAccepted},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			e := newEnv(t)
+			r := httptest.NewRequestWithContext(t.Context(), tc.method, tc.path, nil)
+			r.Header.Set("Authorization", "Bearer "+e.token(t, userA))
+			r.Header.Set("X-User-Id", userB)
+			rec := httptest.NewRecorder()
+			e.handler.ServeHTTP(rec, r)
+			wantStatus(t, rec, tc.wantStatus)
+			if rec.Body.Len() != 0 {
+				t.Errorf("body = %q, want empty", rec.Body.String())
+			}
+			c := e.engagement.only(t)
+			if c.method != tc.rpc {
+				t.Errorf("method = %s, want %s", c.method, tc.rpc)
+			}
+			if got := c.req.(interface{ GetVideoId() string }).GetVideoId(); got != videoID {
+				t.Errorf("video_id = %q, want %q", got, videoID)
+			}
+			if v := c.md.Get(callerid.MetadataKey); !slices.Equal(v, []string{userA}) {
+				t.Errorf("x-user-id = %v, want [%s]", v, userA)
+			}
+		})
+	}
+}
+
+func TestEngagementErrors(t *testing.T) {
+	invalidID := grpcerr.New(codes.InvalidArgument, "INVALID_VIDEO_ID", "video_id must be a canonical lowercase UUID")
+	for _, tc := range []struct {
+		name         string
+		method, path string
+		err          error
+		wantStatus   int
+		wantCode     string
+		wantDetail   string
+	}{
+		{"like malformed id", http.MethodPut, "/videos/NOT-a-uuid/like", invalidID, http.StatusBadRequest, "INVALID_VIDEO_ID", "video_id must be a canonical lowercase UUID"},
+		{"unlike malformed id", http.MethodDelete, "/videos/NOT-a-uuid/like", invalidID, http.StatusBadRequest, "INVALID_VIDEO_ID", "video_id must be a canonical lowercase UUID"},
+		{"view malformed id", http.MethodPost, "/videos/NOT-a-uuid/views", invalidID, http.StatusBadRequest, "INVALID_VIDEO_ID", "video_id must be a canonical lowercase UUID"},
+		{
+			"view broker down", http.MethodPost, "/videos/" + videoID + "/views",
+			grpcerr.New(codes.Unavailable, "BROKER_DOWN", "produce to redpanda:9092 failed"),
+			http.StatusServiceUnavailable, "UNAVAILABLE", "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.engagement.fail(tc.err)
+			rec := e.do(t, tc.method, tc.path, "", e.token(t, userA))
+			wantStatus(t, rec, tc.wantStatus)
+			p := decodeProblem(t, rec)
+			if p.Code != tc.wantCode || p.Detail != tc.wantDetail {
+				t.Errorf("code, detail = %q, %q; want %q, %q", p.Code, p.Detail, tc.wantCode, tc.wantDetail)
+			}
+			if strings.Contains(rec.Body.String(), "redpanda") || strings.Contains(rec.Body.String(), "BROKER_DOWN") {
+				t.Errorf("body leaks the internal error: %s", rec.Body.String())
+			}
+			want := videoID
+			if strings.Contains(tc.path, "NOT-a-uuid") {
+				want = "NOT-a-uuid"
+			}
+			if got := e.engagement.only(t).req.(interface{ GetVideoId() string }).GetVideoId(); got != want {
+				t.Errorf("video_id = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestFeedIgnoresClientUserID is threat model IN-1 on the feed: both services get the user id
+// of the token and no client header.
+func TestFeedIgnoresClientUserID(t *testing.T) {
+	e := newEnv(t)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/feed/following", nil)
+	r.Header.Set("Authorization", "Bearer "+e.token(t, userA))
+	r.Header.Set("X-User-Id", userB)
+	r.Header.Set("Traceparent", clientTraceparent)
+	rec := httptest.NewRecorder()
+	e.handler.ServeHTTP(rec, r)
+	wantStatus(t, rec, http.StatusOK)
+	for _, c := range []call{e.feeds.only(t), e.engagement.only(t)} {
+		if v := c.md.Get(callerid.MetadataKey); !slices.Equal(v, []string{userA}) {
+			t.Errorf("%s x-user-id = %v, want [%s]", c.method, v, userA)
+		}
+		if tp := c.md.Get(traceparent.MetadataKey); len(tp) != 1 || tp[0] == clientTraceparent {
+			t.Errorf("%s traceparent = %v, want one value made by the gateway", c.method, tp)
+		}
+	}
+}
+
+// TestReadyzIgnoresEngagement: engagement-service down only takes the stats off the feed, so the
+// gateway stays ready.
+func TestReadyzIgnoresEngagement(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(e *env)
+	}{
+		{"not serving", func(e *env) {
+			e.engagement.health.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+		}},
+		{"unreachable", func(e *env) { e.engagement.stop() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			tc.setup(e)
+			rec := e.do(t, http.MethodGet, "/readyz", "", "")
+			wantStatus(t, rec, http.StatusOK)
+		})
+	}
+}
+
+// TestInvalidUTF8IsBadRequest: a path or query that is not valid UTF-8 cannot go into a proto3
+// string field (grpc-go refuses to marshal it and the call fails as INTERNAL), so the gateway
+// answers 400 itself and calls no service.
+func TestInvalidUTF8IsBadRequest(t *testing.T) {
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/feed/following?cursor=%FF"},
+		{http.MethodGet, "/feed/explore?cursor=%C3%28"},
+		{http.MethodGet, "/feed/following?%FF=1"},
+		{http.MethodPut, "/videos/%FF/like"},
+		{http.MethodDelete, "/videos/%FF/like"},
+		{http.MethodPost, "/videos/%FF/views"},
+		{http.MethodGet, "/videos/%FF"},
+		{http.MethodPost, "/videos/%FF/complete"},
+		{http.MethodPut, "/me/following/%FF"},
+		{http.MethodDelete, "/me/following/%FF"},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			e := newEnv(t)
+			rec := e.do(t, tc.method, tc.path, "", e.token(t, userA))
+			wantStatus(t, rec, http.StatusBadRequest)
+			if p := decodeProblem(t, rec); p.Code != "INVALID_UTF8" {
+				t.Errorf("code = %q, want INVALID_UTF8", p.Code)
+			}
+			if n := e.callCount(); n != 0 {
+				t.Errorf("services got %d calls, want 0", n)
+			}
+		})
 	}
 }

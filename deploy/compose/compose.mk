@@ -5,14 +5,16 @@
 COMPOSE   := env -u DOCKER_DEFAULT_PLATFORM docker compose --env-file .env -f deploy/compose/compose.yaml --profile core
 SMOKE_URL ?= http://127.0.0.1:8080
 # Roles whose passwords `make env` generates (deploy/postgres/bootstrap.sql).
-DB_PASSWORD_VARS := SVP_USER_MIGRATOR_DB_PASSWORD SVP_USER_APP_DB_PASSWORD SVP_VIDEO_MIGRATOR_DB_PASSWORD SVP_VIDEO_APP_DB_PASSWORD
+DB_PASSWORD_VARS := SVP_USER_MIGRATOR_DB_PASSWORD SVP_USER_APP_DB_PASSWORD SVP_VIDEO_MIGRATOR_DB_PASSWORD SVP_VIDEO_APP_DB_PASSWORD \
+	SVP_ENGAGEMENT_MIGRATOR_DB_PASSWORD SVP_ENGAGEMENT_APP_DB_PASSWORD SVP_FEED_MIGRATOR_DB_PASSWORD SVP_FEED_APP_DB_PASSWORD
 # MinIO root password and per-service secret keys (deploy/minio/init.sh). MinIO caps secret keys at
 # 40 characters, hence 20 random bytes in hex.
 S3_SECRET_VARS := SVP_MINIO_ROOT_PASSWORD SVP_VIDEO_S3_SECRET_KEY SVP_MEDIA_WORKER_S3_SECRET_KEY
 # Written together by tools/jwtkey: one key pair, so they are generated all or none.
 JWT_VARS := JWT_SIGNING_KID JWT_SIGNING_KEY JWT_VERIFY_KEYS
 
-.PHONY: env env-required db-bootstrap up down clean-data ps logs smoke test-stack drill-kill-worker drill-duplicates measure-ready
+.PHONY: env env-required db-bootstrap up down clean-data ps logs smoke test-stack drill-kill-worker drill-duplicates measure-ready \
+	drill-duplicates-feed drill-engagement-down measure-freshness
 
 env: ## Create .env (mode 600) with random secrets and a new JWT key, or fill in the ones it lacks or has empty; never changes a set value
 	@set -e; umask 077; \
@@ -64,13 +66,16 @@ ps: ## Show the core stack's containers
 logs: ## Show recent logs; narrow with SVC=<service>
 	$(COMPOSE) logs --tail=200 $(SVC)
 
-smoke: ## Register, log in, upload a video and wait for READY, play its HLS, follow, through the gateway at SMOKE_URL
+smoke: ## Through the gateway at SMOKE_URL: register, log in, follow, upload to READY, play HLS, feed, like and view, unfollow
 	deploy/compose/smoke.sh $(SMOKE_URL)
 
 # Failure drills on the running stack (deploy/compose/drills/). They stop, kill and start
 # containers through $(COMPOSE), run rpk inside the Redpanda container and only SELECT from
-# svp_video; every service runs again when a drill ends, passed or not.
+# svp_video, svp_engagement and svp_feed; every service runs again when a drill ends, passed or not.
+# measure-freshness also produces fake follow events to Redpanda (tools/fakefollows) and removes
+# them with unfollow events when it ends.
 N ?= 5
+FOLLOWERS ?= 10000
 
 drill-kill-worker: env-required ## Kill media-worker mid-transcode, restart it; check the video still goes READY, once
 	COMPOSE='$(COMPOSE)' deploy/compose/drills/kill-worker.sh $(SMOKE_URL)
@@ -78,8 +83,17 @@ drill-kill-worker: env-required ## Kill media-worker mid-transcode, restart it; 
 drill-duplicates: env-required ## Replay transcode.completed and video.uploaded with rpk group seek; check nothing changes
 	COMPOSE='$(COMPOSE)' deploy/compose/drills/duplicate-events.sh $(SMOKE_URL)
 
+drill-duplicates-feed: env-required ## Replay view.recorded, user.followed and video.ready; check counters and feed rows do not change
+	COMPOSE='$(COMPOSE)' deploy/compose/drills/duplicate-feed-events.sh $(SMOKE_URL)
+
+drill-engagement-down: env-required ## Stop engagement-service; check the feed still answers fast without stats, likes get 504 after the 3 s gateway timeout
+	COMPOSE='$(COMPOSE)' deploy/compose/drills/engagement-down.sh $(SMOKE_URL)
+
 measure-ready: env-required ## Time CompleteUpload to READY for N (default 5) 60 s 1080p videos; p50, max, worker CPU/RAM
 	COMPOSE='$(COMPOSE)' N='$(N)' deploy/compose/drills/measure-ready.sh $(SMOKE_URL)
+
+measure-freshness: env-required ## Time video.ready to the last timeline row for N videos to FOLLOWERS (default 10000) fake followers
+	COMPOSE='$(COMPOSE)' N='$(N)' FOLLOWERS='$(FOLLOWERS)' deploy/compose/drills/measure-freshness.sh $(SMOKE_URL)
 
 # test-stack reads the S3 secret keys from .env the way deploy/postgres/bootstrap.sh does: no
 # sourcing, no echo, and they reach go test through the environment, not its command line.

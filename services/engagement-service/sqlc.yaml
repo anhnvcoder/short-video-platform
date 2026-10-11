@@ -1,0 +1,20 @@
+version: "2"
+sql:
+  - engine: postgresql
+    schema: migrations
+    queries: queries
+    gen:
+      go:
+        package: store
+        out: internal/store
+        sql_package: pgx/v5
+        overrides:
+          # Ids use the standard library uuid package, as internal/ids does (ADR-0007, section 3).
+          - db_type: uuid
+            go_type:
+              import: uuid
+              type: UUID
+          - db_type: timestamptz
+            go_type:
+              import: time
+              type: Time

@@ -522,48 +522,6 @@ func TestTranscodeInvalidEventsGoToDeadLetter(t *testing.T) {
 	}
 }
 
-// The keys media-worker writes pass; anything a storage or a URL parser could read as another
-// path does not (FF-6).
-func TestIsKeyUnder(t *testing.T) {
-	const prefix = "media/0190a6e4-7b2c-7d3e-9f40-123456789abc/"
-	for _, key := range []string{
-		"master.m3u8",
-		"thumbnail.jpg",
-		"720p/index.m3u8",
-		"720p/seg_007.ts",
-		"...",
-	} {
-		if !isKeyUnder(prefix+key, prefix) {
-			t.Errorf("isKeyUnder(%q) = false, want true", prefix+key)
-		}
-	}
-	for _, key := range []string{
-		prefix,
-		"media/0190a6e4-7b2c-7d3e-9f40-123456789abd/master.m3u8",
-		"uploads/0190a6e4-7b2c-7d3e-9f40-123456789abc",
-		"x" + prefix + "master.m3u8",
-		prefix + "..",
-		prefix + "../x",
-		prefix + "./master.m3u8",
-		prefix + "720p//index.m3u8",
-		prefix + "720p/",
-		prefix + "/master.m3u8",
-		prefix + "%2e%2e/x",
-		prefix + ".%2E/x",
-		prefix + `..\x`,
-		prefix + "master.m3u8?x=1",
-		prefix + "master.m3u8#x",
-		prefix + "a b",
-		prefix + "a\tb",
-		prefix + "a:b",
-		prefix + "mäster.m3u8",
-	} {
-		if isKeyUnder(key, prefix) {
-			t.Errorf("isKeyUnder(%q) = true, want false", key)
-		}
-	}
-}
-
 func mustMarshal(t *testing.T, m proto.Message) []byte {
 	t.Helper()
 	b, err := proto.Marshal(m)

@@ -1,6 +1,8 @@
 // Command user-service runs the user service (serve, the default), applies its database
 // migrations (migrate) or checks a running instance's health (healthcheck). Configuration comes
-// from environment variables (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 4).
+// from environment variables (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 4);
+// serve also needs KAFKA_BROKERS for the outbox relay (docs/adr/0009-engagement-feed-stage2b.md,
+// section 1).
 package main
 
 import (
@@ -22,7 +24,9 @@ import (
 	"github.com/anhnvcoder/short-video-platform/internal/dbmigrate"
 	"github.com/anhnvcoder/short-video-platform/internal/envcfg"
 	"github.com/anhnvcoder/short-video-platform/internal/grpcserver"
+	"github.com/anhnvcoder/short-video-platform/internal/kafkax"
 	"github.com/anhnvcoder/short-video-platform/internal/logx"
+	"github.com/anhnvcoder/short-video-platform/internal/outbox"
 	"github.com/anhnvcoder/short-video-platform/services/user-service/internal/password"
 	"github.com/anhnvcoder/short-video-platform/services/user-service/internal/server"
 	"github.com/anhnvcoder/short-video-platform/services/user-service/migrations"
@@ -83,6 +87,15 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("JWT_SIGNING_KID or JWT_SIGNING_KEY: %w", err)
 	}
+	brokers, err := envcfg.Required("KAFKA_BROKERS")
+	if err != nil {
+		return err
+	}
+	kafka, err := kafkax.NewClient(brokers, serviceName)
+	if err != nil {
+		return fmt.Errorf("KAFKA_BROKERS: %w", err)
+	}
+	defer kafka.Close()
 
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
@@ -93,6 +106,19 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err := pool.Ping(ctx); err != nil {
 		return fmt.Errorf("connect to database: %w", err)
 	}
+
+	// The relay stops after the server has drained. It does not flush: rows the last RPCs wrote
+	// that it has not sent yet stay in the outbox and go out at the next start.
+	relayCtx, stopRelay := context.WithCancel(context.WithoutCancel(ctx))
+	relayDone := make(chan struct{})
+	go func() {
+		defer close(relayDone)
+		outbox.NewRelay(pool, kafka, logger).Run(relayCtx)
+	}()
+	defer func() {
+		stopRelay()
+		<-relayDone
+	}()
 
 	srv := server.New(pool, password.NewHasher(), authtoken.NewIssuer(kid, key), logger)
 	return grpcserver.Run(ctx, addr, logger,

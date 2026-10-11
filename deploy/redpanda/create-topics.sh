@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Creates the stage 2 topics and their dead-letter topics on the compose Redpanda
-# (docs/adr/0008-async-upload-pipeline-stage2a.md, section 5). Run by the one-shot redpanda-init
+# (docs/adr/0008-async-upload-pipeline-stage2a.md, section 5;
+# docs/adr/0009-engagement-feed-stage2b.md, section 11). Run by the one-shot redpanda-init
 # container; the broker comes from RPK_BROKERS. Idempotent: a topic that already exists is left
 # as it is.
 set -euo pipefail
@@ -22,5 +23,9 @@ create() {
 
 create video.lifecycle.v1 3 "$week_ms"
 create media.transcodes.v1 3 "$week_ms"
+create user.follows.v1 3 "$week_ms"
+create engagement.views.v1 3 "$week_ms"
 create video.lifecycle.v1.dlq 1 "$two_weeks_ms"
 create media.transcodes.v1.dlq 1 "$two_weeks_ms"
+create user.follows.v1.dlq 1 "$two_weeks_ms"
+create engagement.views.v1.dlq 1 "$two_weeks_ms"

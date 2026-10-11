@@ -1,10 +1,11 @@
 # Kiến trúc short-video platform
 
-> Trạng thái: giai đoạn 0, 1 và phần A của giai đoạn 2 xong (2026-10-11). ADR 0001–0008, contract ở [`proto/`](../proto/)
-> ([§8](#8-contract)), threat model ở [`threat-model.md`](threat-model.md). `make up` chạy luồng đồng bộ (đăng ký, đăng
-> nhập, tạo và đọc video, follow) và luồng upload bất đồng bộ (presigned POST lên MinIO, outbox → Redpanda, media-worker
-> transcode ra HLS, video `READY` hoặc `FAILED`); engagement-service, feed-service, Redis và phần còn lại của tài liệu là
-> thiết kế đích.
+> Trạng thái: giai đoạn 0, 1 và phần A, B của giai đoạn 2 xong (2026-10-11). ADR 0001–0009, contract ở
+> [`proto/`](../proto/) ([§8](#8-contract)), threat model ở [`threat-model.md`](threat-model.md). `make up` chạy luồng
+> đồng bộ (đăng ký, đăng nhập, tạo và đọc video, follow), luồng upload bất đồng bộ (presigned POST lên MinIO, outbox →
+> Redpanda, media-worker transcode ra HLS, video `READY` hoặc `FAILED`) và luồng feed (follow qua outbox, feed-service
+> fan-out on write, feed following và khám phá, like, lượt xem gom theo lô ở engagement-service); Redis, cache, rate
+> limit, timeout/retry/circuit breaker giữa service (phần C) và phần còn lại của tài liệu là thiết kế đích.
 
 Tài liệu này mô tả hệ thống sẽ được xây và lý do. Mỗi quyết định lớn có một ADR trong [`adr/`](adr/); ở đây chỉ tóm tắt
 và trỏ tới.
@@ -184,6 +185,10 @@ CDN (client đọc thẳng MinIO). Redpanda và MinIO chạy trong compose profi
   media-worker mỗi bên một user với policy theo tiền tố key. Client upload và đọc HLS qua `127.0.0.1:9000`.
 - **Redpanda:** một broker; topic và `.dlq` do container init tạo, broker tắt tự tạo topic. Trong compose là
   `redpanda:9092`, từ máy host là `127.0.0.1:19092`.
+- **engagement-service và feed-service** ([ADR-0009](adr/0009-engagement-feed-stage2b.md) mục 12): gRPC ở `:9103` và
+  `:9104` chỉ trong mạng compose, không publish ra máy (gateway gọi `engagement-service:9103`, `feed-service:9104`); mỗi
+  service `mem_limit` 256 MB, database riêng `svp_engagement`, `svp_feed`. Đo 2026-10-11: lúc nghỉ 9–23 MiB mỗi service;
+  feed-service đỉnh 82 MiB khi nạp 200.000 follow.
 - **Mạng riêng của media-worker:** worker chạy ffmpeg trên file người dùng tải lên, nên chỉ nằm trong mạng compose `worker`
   (`internal`, không route ra ngoài) cùng Redpanda và MinIO; nó không tới được gateway, các service gRPC, Postgres hay
   internet. Container chỉ đọc, bỏ mọi capability, giới hạn 2 CPU, 2 GB.
@@ -271,24 +276,33 @@ sequenceDiagram
     participant FS as feed-service
     participant ES as engagement-service
 
-    C->>GW: GET /feed?cursor=...
-    GW->>GW: kiểm JWT, rate limit (Redis)
+    C->>GW: GET /feed/following hoặc /feed/explore?cursor=...&page_size=...
+    GW->>GW: kiểm JWT (rate limit bằng Redis ở phần C)
     GW->>FS: GetFollowingFeed / GetExploreFeed(page_size, page_token), metadata x-user-id
     FS-->>GW: 10 video kèm metadata và object key, next_page_token
     GW->>GW: ghép URL HLS từ object key
-    GW->>ES: GetStats(video_ids), metadata x-user-id, timeout ngắn
+    GW->>ES: GetStats(video_ids), metadata x-user-id, timeout 100 ms, không retry
     ES-->>GW: lượt xem, số like, đã like chưa
-    GW-->>C: JSON, nếu ES lỗi hoặc quá hạn thì trả video không kèm số đếm
+    GW-->>C: JSON, nếu ES lỗi hoặc quá hạn thì trả video không có field stats
 ```
 
 Gateway ghép dữ liệu từ hai service (vai trò BFF). Số đếm là phần phụ: engagement-service chậm thì feed vẫn trả về, chỉ
-thiếu số. Đây là graceful degradation, giữ SLO của feed không phụ thuộc vào service kém quan trọng hơn.
+thiếu số. Đây là graceful degradation, giữ SLO của feed không phụ thuộc vào service kém quan trọng hơn. Diễn tập
+`make drill-engagement-down` (2026-10-11): tắt engagement-service thì feed following và khám phá vẫn trả 200 trong
+0,11 s, không item nào có `stats`; `/readyz` vẫn 200 vì nó không kiểm engagement-service
+([ADR-0009](adr/0009-engagement-feed-stage2b.md) mục 9).
 
 ### 7.3 Ghi lượt xem
 
-Client gọi `POST /videos/{id}/views`; engagement-service phát `view.recorded` lên Redpanda rồi trả 202 ngay, không chạm
-database. Consumer của chính nó đọc theo lô, cộng dồn theo `video_id` trong bộ nhớ, rồi mỗi lô chỉ ghi một câu `UPDATE` cho
-mỗi video. Redpanda vừa là hàng đệm chống dồn tải, vừa giữ lượt xem nếu consumer chết giữa chừng.
+Client gọi `POST /videos/{id}/views`; engagement-service phát `view.recorded` lên Redpanda (`acks=all`, hạn 2 s, lỗi thì
+503) rồi trả 202, không chạm database. Consumer của chính nó gom lô **tối đa 5.000 record hoặc 1 s** kể từ record đầu,
+cộng dồn theo `video_id` trong bộ nhớ, rồi ghi cả lô bằng **một câu** `INSERT ... ON CONFLICT DO UPDATE` (mảng
+`video_id` sắp tăng dần) vào `view_counts`. Chống đếm trùng bằng offset lưu trong Postgres: bảng `consumer_offsets` giữ
+`next_offset` của từng partition, khoá `FOR UPDATE` và cập nhật trong **cùng transaction** với bộ đếm, nên lô giao lại
+chỉ cộng phần chưa cộng; commit offset Kafka chỉ còn để đỡ đọc lại. Record hỏng vào `engagement.views.v1.dlq`; lỗi tạm
+thời thì thử lại cả lô không giới hạn. Redpanda vừa là hàng đệm chống dồn tải, vừa giữ lượt xem nếu consumer chết giữa
+chừng. Like đi đường khác: bảng `likes` và bộ đếm `like_counts` đổi trong cùng transaction, nên like của chính mình thấy
+ngay. Chi tiết và lý do ở [ADR-0009](adr/0009-engagement-feed-stage2b.md) mục 2–5.
 
 ### 7.4 Xác thực
 
@@ -350,11 +364,14 @@ Field theo Google AIP-158: request có `page_size`, `page_token`; response có `
 - `page_size` 0 thì dùng mặc định 10; lớn hơn 50 thì hạ về 50; số âm thì `INVALID_ARGUMENT`.
 - `next_page_token` rỗng nghĩa là hết trang.
 - `page_token` **mờ** với client và gateway: gateway chuyển nguyên giá trị (query `?cursor=`), không đọc, không tự tạo.
-- Bên trong, token là base64url không padding của bytes protobuf một message nội bộ của feed-service, gồm
-  (`published_at`, `video_id`) của item cuối trang, đúng cursor keyset của [ADR-0005](adr/0005-feed-fan-out-on-write.md).
-  Message này **không** nằm trong `proto/` vì không phải contract công khai; feed-service tự định nghĩa ở giai đoạn 1 và
-  đổi được bất cứ lúc nào (token cũ không giải mã được thì client tải lại từ trang đầu).
-- Token hỏng (không phải base64url, không giải mã được) thì `INVALID_ARGUMENT`.
+- Bên trong, token là base64url không padding của bytes protobuf gồm (`published_at`, `video_id`) của item cuối trang,
+  đúng cursor keyset của [ADR-0005](adr/0005-feed-fan-out-on-write.md): field 1 `published_at` varint int64 micro giây
+  Unix, field 2 `video_id` 16 byte, khoảng 36 ký tự. feed-service mã hoá tay bằng gói `protowire`, không có file
+  `.proto` ([ADR-0009](adr/0009-engagement-feed-stage2b.md) mục 8); token **không** nằm trong `proto/` vì không phải
+  contract công khai, và đổi được bất cứ lúc nào (token cũ không giải mã được thì client tải lại từ trang đầu).
+- Token dài quá **64 ký tự** bị từ chối trước khi giải mã. Token hỏng (không phải base64url, giải mã lỗi, thiếu field,
+  sai kiểu wire, `video_id` không đủ 16 byte) thì `INVALID_ARGUMENT`, reason `INVALID_PAGE_TOKEN`; field lạ bỏ qua.
+  `page_size` âm thì reason `INVALID_PAGE_SIZE`.
 - **Không ký HMAC.** Token chỉ lọc trong timeline của chính người gọi (`user_id` lấy từ metadata, không từ token), hoặc
   trong feed khám phá vốn công khai; sửa token chỉ đổi vị trí đọc trong dữ liệu mình vốn được xem. Lựa chọn khác: ký HMAC
   để phát hiện sửa (thêm quản lý khoá, không chặn được gì thêm); dùng `OFFSET` (bị lệch trang khi có video mới, ADR-0005).
@@ -410,7 +427,7 @@ Thân lỗi theo RFC 9457 (`Content-Type: application/problem+json`):
 
 REST ở biên được viết tay trong [`services/gateway/openapi.yaml`](../services/gateway/openapi.yaml) (OpenAPI 3.1, lý do ở
 mục 8 của ADR-0007); file đó là nguồn của danh sách route, schema và mã lỗi từng route. JSON dùng `snake_case`, khớp tên
-field trong proto; thời gian theo RFC 3339, UTC. Route đã có (giai đoạn 1 và phần A của giai đoạn 2):
+field trong proto; thời gian theo RFC 3339, UTC. Route đã có (giai đoạn 1, phần A và B của giai đoạn 2):
 
 | Route | Xác thực | Việc |
 | --- | --- | --- |
@@ -419,10 +436,14 @@ field trong proto; thời gian theo RFC 3339, UTC. Route đã có (giai đoạn 
 | `POST /videos` | Bearer JWT | tạo video `UPLOADING`, trả form presigned POST: `upload_url`, `form_fields`, `expires_at` (15 phút) |
 | `POST /videos/{video_id}/complete` | Bearer JWT | báo upload xong: video-service `HEAD` object, chuyển `PROCESSING`, trả 202; gọi lại khi đã `PROCESSING` hay `READY` thì trả video hiện tại |
 | `GET /videos/{video_id}` | Bearer JWT | đọc một video; có `playlist_url`, `thumbnail_url` khi video đã `READY` |
+| `GET /feed/following` | Bearer JWT | feed đang theo dõi (30 ngày); query `cursor`, `page_size`; trả `items` (kèm `stats` nếu engagement-service trả kịp 100 ms) và `next_cursor` |
+| `GET /feed/explore` | Bearer JWT | feed khám phá, mọi video `READY`; cùng query và dạng trả như feed following |
+| `PUT` / `DELETE /videos/{video_id}/like` | Bearer JWT | like, unlike; idempotent, trả 204 |
+| `POST /videos/{video_id}/views` | Bearer JWT | ghi một lượt xem, trả 202; số lượt xem cập nhật sau vài giây |
 | `GET /healthz`, `GET /readyz` | không | liveness, readiness |
 
-`playlist_url`, `thumbnail_url` là `MEDIA_PUBLIC_BASE_URL` + `/` + object key. Feed, like và view là các phần sau của giai
-đoạn 2.
+`playlist_url`, `thumbnail_url` là `MEDIA_PUBLIC_BASE_URL` + `/` + object key, ở cả item của feed. Path hay query không
+phải UTF-8 hợp lệ thì gateway trả 400 `INVALID_UTF8` ở mọi route, không gọi service.
 
 Chi tiết hiện thực của luồng upload chốt ở [ADR-0008](adr/0008-async-upload-pipeline-stage2a.md):
 
@@ -430,6 +451,15 @@ Chi tiết hiện thực của luồng upload chốt ở [ADR-0008](adr/0008-asy
 - storage có hai endpoint: nội bộ cho service gọi API S3, công khai cho URL ký trả client (mục 3);
 - mỗi service chỉ một relay outbox chạy tại một thời điểm, khoá bằng `pg_try_advisory_xact_lock`, để event cùng key giữ
   thứ tự (mục 7; chỉnh câu `FOR UPDATE SKIP LOCKED` của [ADR-0003](adr/0003-async-events-outbox.md)).
+
+Chi tiết hiện thực của luồng feed, like và lượt xem chốt ở [ADR-0009](adr/0009-engagement-feed-stage2b.md):
+
+- follow, unfollow phát `user.followed` / `user.unfollowed` qua outbox của user-service, chỉ khi cạnh thật sự đổi
+  (mục 1);
+- feed-service giữ bản sao `follows`, `videos` và `timeline`; mọi thao tác của một tác giả khoá `pg_advisory_xact_lock`
+  theo tác giả; `video.ready` fan-out bằng một câu `INSERT ... SELECT`; follow mới đưa tối đa 20 video trong 30 ngày vào
+  timeline; job mỗi giờ dọn dòng quá 30 ngày (mục 6, 7);
+- gateway ghép `stats` bằng một `GetStats` cho cả trang, timeout 100 ms, không retry (mục 9).
 
 ## 9. Quyết định
 

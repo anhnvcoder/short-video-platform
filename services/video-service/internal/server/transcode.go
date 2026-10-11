@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 	"uuid"
 
@@ -98,7 +97,7 @@ func transcodeContext(ctx context.Context, ev *mediav1.TranscodeEvent, id uuid.U
 func (s *Server) transcodeCompleted(ctx context.Context, id uuid.UUID, c *mediav1.TranscodeCompleted) error {
 	prefix := mediaPrefix(id)
 	for _, key := range []string{c.GetPlaylistKey(), c.GetThumbnailKey()} {
-		if !isKeyUnder(key, prefix) {
+		if !objstore.IsMediaKey(key, id.String()) {
 			return kafkax.Permanent(fmt.Errorf("transcode.completed key %q is not under %s", key, prefix))
 		}
 	}
@@ -225,25 +224,4 @@ func (s *Server) deleteFiles(ctx context.Context, id uuid.UUID) error {
 // lives.
 func mediaPrefix(id uuid.UUID) string {
 	return objstore.MediaPrefix + id.String() + "/"
-}
-
-// isKeyUnder reports whether key names an object below prefix, which ends with "/". Every
-// segment after prefix is made of letters, digits, ".", "_" and "-" only, and is not "." or
-// "..". The gateway puts the key into a URL as it is, and a URL parser reads "%2e%2e" as ".."
-// and "\" as "/", so any other character could make a player resolve the URL elsewhere.
-func isKeyUnder(key, prefix string) bool {
-	rest, ok := strings.CutPrefix(key, prefix)
-	if !ok || rest == "" {
-		return false
-	}
-	for seg := range strings.SplitSeq(rest, "/") {
-		if seg == "" || seg == "." || seg == ".." || strings.ContainsFunc(seg, notKeyChar) {
-			return false
-		}
-	}
-	return true
-}
-
-func notKeyChar(r rune) bool {
-	return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '.' && r != '_' && r != '-'
 }

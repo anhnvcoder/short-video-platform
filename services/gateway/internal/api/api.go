@@ -1,6 +1,6 @@
 // Package api is the gateway's REST API (services/gateway/openapi.yaml): it turns JSON
-// requests into gRPC calls to user-service and video-service and their answers back into JSON
-// (snake_case fields, RFC 3339 UTC times).
+// requests into gRPC calls to user-service, video-service, feed-service and engagement-service
+// and their answers back into JSON (snake_case fields, RFC 3339 UTC times).
 package api
 
 import (
@@ -9,13 +9,17 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"google.golang.org/grpc"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
 
+	engagementv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/engagement/v1"
+	feedv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/feed/v1"
 	userv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1"
 	videov1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/video/v1"
 	"github.com/anhnvcoder/short-video-platform/internal/authtoken"
@@ -27,12 +31,17 @@ const (
 	callTimeout = 3 * time.Second
 	// readyTimeout bounds the health checks of /readyz.
 	readyTimeout = 1 * time.Second
+	// statsTimeout bounds the one GetStats call a feed page makes (ADR-0009 section 9): the feed
+	// answers within its 150 ms p99 budget even when engagement-service is slow.
+	statsTimeout = 100 * time.Millisecond
 )
 
 type server struct {
-	users  userv1.UserServiceClient
-	videos videov1.VideoServiceClient
-	deps   []dependency
+	users      userv1.UserServiceClient
+	videos     videov1.VideoServiceClient
+	feeds      feedv1.FeedServiceClient
+	engagement engagementv1.EngagementServiceClient
+	deps       []dependency
 	// mediaBaseURL is the public base of media object keys, without a trailing slash.
 	mediaBaseURL string
 }
@@ -43,19 +52,24 @@ type dependency struct {
 	health healthpb.HealthClient
 }
 
-// New returns the gateway's HTTP handler: every route on its own mux, behind Trace, Recover and
-// AccessLog, with RequireAuth in front of the routes that need a caller. A request that matches
-// no route gets a problem response too. userConn and videoConn
-// reach user-service and video-service. mediaBaseURL is the public base that media object keys
-// are appended to, without a trailing slash.
-func New(userConn, videoConn grpc.ClientConnInterface, verifier *authtoken.Verifier, mediaBaseURL string) http.Handler {
+// New returns the gateway's HTTP handler: every route on its own mux, behind Trace, Recover,
+// AccessLog and ValidUTF8, with RequireAuth in front of the routes that need a caller. A request
+// that matches no route gets a problem response too. userConn, videoConn, feedConn and engagementConn reach
+// user-service, video-service, feed-service and engagement-service. mediaBaseURL is the public
+// base that media object keys are appended to, without a trailing slash.
+func New(userConn, videoConn, feedConn, engagementConn grpc.ClientConnInterface, verifier *authtoken.Verifier, mediaBaseURL string) http.Handler {
 	s := &server{
 		mediaBaseURL: mediaBaseURL,
 		users:        userv1.NewUserServiceClient(userConn),
 		videos:       videov1.NewVideoServiceClient(videoConn),
+		feeds:        feedv1.NewFeedServiceClient(feedConn),
+		engagement:   engagementv1.NewEngagementServiceClient(engagementConn),
+		// engagement-service is left out on purpose: the feed degrades to items without stats
+		// when it is down (architecture §7.2), so the gateway stays ready and keeps serving.
 		deps: []dependency{
 			{name: "user-service", health: healthpb.NewHealthClient(userConn)},
 			{name: "video-service", health: healthpb.NewHealthClient(videoConn)},
+			{name: "feed-service", health: healthpb.NewHealthClient(feedConn)},
 		},
 	}
 	auth := httpx.RequireAuth(verifier)
@@ -68,9 +82,14 @@ func New(userConn, videoConn grpc.ClientConnInterface, verifier *authtoken.Verif
 	mux.Handle("POST /videos", auth(http.HandlerFunc(s.initUpload)))
 	mux.Handle("POST /videos/{video_id}/complete", auth(http.HandlerFunc(s.completeUpload)))
 	mux.Handle("GET /videos/{video_id}", auth(http.HandlerFunc(s.getVideo)))
+	mux.Handle("PUT /videos/{video_id}/like", auth(http.HandlerFunc(s.like)))
+	mux.Handle("DELETE /videos/{video_id}/like", auth(http.HandlerFunc(s.unlike)))
+	mux.Handle("POST /videos/{video_id}/views", auth(http.HandlerFunc(s.recordView)))
+	mux.Handle("GET /feed/following", auth(http.HandlerFunc(s.followingFeed)))
+	mux.Handle("GET /feed/explore", auth(http.HandlerFunc(s.exploreFeed)))
 	mux.HandleFunc("GET /healthz", healthz)
 	mux.HandleFunc("GET /readyz", s.readyz)
-	return httpx.Trace(httpx.Recover(httpx.AccessLog(httpx.Routes(mux))))
+	return httpx.Trace(httpx.Recover(httpx.AccessLog(httpx.ValidUTF8(httpx.Routes(mux)))))
 }
 
 // callContext returns the context of a gRPC call made for r: metadata built from scratch by
@@ -270,6 +289,154 @@ func (s *server) toVideoResponse(v *videov1.Video) videoResponse {
 		out.PublishedAt = &t
 	}
 	return out
+}
+
+// like, unlike and recordView pass video_id on as it is: engagement-service validates it.
+func (s *server) like(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := callContext(r)
+	defer cancel()
+	if _, err := s.engagement.Like(ctx, &engagementv1.LikeRequest{VideoId: r.PathValue("video_id")}); err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) unlike(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := callContext(r)
+	defer cancel()
+	if _, err := s.engagement.Unlike(ctx, &engagementv1.UnlikeRequest{VideoId: r.PathValue("video_id")}); err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// recordView answers 202 without a body: the view is queued, and view_count catches up later.
+func (s *server) recordView(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := callContext(r)
+	defer cancel()
+	if _, err := s.engagement.RecordView(ctx, &engagementv1.RecordViewRequest{VideoId: r.PathValue("video_id")}); err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+type feedResponse struct {
+	Items      []feedItem `json:"items"`
+	NextCursor string     `json:"next_cursor"`
+}
+
+type feedItem struct {
+	VideoID      string    `json:"video_id"`
+	AuthorID     string    `json:"author_id"`
+	Title        string    `json:"title"`
+	DurationMs   int64     `json:"duration_ms"`
+	PlaylistURL  string    `json:"playlist_url"`
+	ThumbnailURL string    `json:"thumbnail_url"`
+	PublishedAt  time.Time `json:"published_at"`
+	// Stats is nil, and the field absent, when engagement-service did not answer in time.
+	Stats *videoStats `json:"stats,omitempty"`
+}
+
+type videoStats struct {
+	ViewCount int64 `json:"view_count"`
+	LikeCount int64 `json:"like_count"`
+	LikedByMe bool  `json:"liked_by_me"`
+}
+
+// feedPage is what both feed RPCs answer.
+type feedPage interface {
+	GetItems() []*feedv1.FeedItem
+	GetNextPageToken() string
+}
+
+func (s *server) followingFeed(w http.ResponseWriter, r *http.Request) {
+	s.serveFeed(w, r, func(ctx context.Context, size int32, token string) (feedPage, error) {
+		return s.feeds.GetFollowingFeed(ctx, &feedv1.GetFollowingFeedRequest{PageSize: size, PageToken: token})
+	})
+}
+
+func (s *server) exploreFeed(w http.ResponseWriter, r *http.Request) {
+	s.serveFeed(w, r, func(ctx context.Context, size int32, token string) (feedPage, error) {
+		return s.feeds.GetExploreFeed(ctx, &feedv1.GetExploreFeedRequest{PageSize: size, PageToken: token})
+	})
+}
+
+// serveFeed reads one feed page with fetch and adds the stats of its videos. The query's cursor
+// goes on unread as page_token (architecture §8.3) and page_size must be an integer; their
+// values are feed-service's to check. A feed-service error is mapped like any other; a stats
+// failure is not (see addStats).
+func (s *server) serveFeed(w http.ResponseWriter, r *http.Request, fetch func(ctx context.Context, size int32, token string) (feedPage, error)) {
+	q := r.URL.Query()
+	var size int32
+	if v := q.Get("page_size"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 32)
+		if err != nil {
+			httpx.WriteProblem(w, r, http.StatusBadRequest, "INVALID_PAGE_SIZE", "page_size must be an integer")
+			return
+		}
+		size = int32(n)
+	}
+	ctx, cancel := callContext(r)
+	defer cancel()
+	page, err := fetch(ctx, size, q.Get("cursor"))
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+
+	items := make([]feedItem, 0, len(page.GetItems())) // an empty page is [], never null
+	for _, it := range page.GetItems() {
+		items = append(items, feedItem{
+			VideoID:      it.GetVideoId(),
+			AuthorID:     it.GetAuthorId(),
+			Title:        it.GetTitle(),
+			DurationMs:   it.GetDuration().AsDuration().Milliseconds(),
+			PlaylistURL:  s.mediaURL(it.GetPlaylistKey()),
+			ThumbnailURL: s.mediaURL(it.GetThumbnailKey()),
+			PublishedAt:  it.GetPublishedAt().AsTime(),
+		})
+	}
+	s.addStats(r, items)
+	writeJSON(w, http.StatusOK, feedResponse{Items: items, NextCursor: page.GetNextPageToken()})
+}
+
+// addStats sets the stats of items from one GetStats call, within statsTimeout and without
+// retry (ADR-0009 section 9). Stats are matched by video_id, so their order and count do not
+// matter; an item without a match keeps no stats. Any error leaves every item without stats and
+// is only logged: a slow or failing engagement-service must not fail the feed (architecture
+// §7.2), so the error does not go through the §8.4 table.
+func (s *server) addStats(r *http.Request, items []feedItem) {
+	if len(items) == 0 {
+		return
+	}
+	ids := make([]string, len(items))
+	for i, it := range items {
+		ids[i] = it.VideoID
+	}
+	ctx, cancel := context.WithTimeout(httpx.OutgoingContext(r.Context()), statsTimeout)
+	defer cancel()
+	resp, err := s.engagement.GetStats(ctx, &engagementv1.GetStatsRequest{VideoIds: ids})
+	if err != nil {
+		slog.WarnContext(r.Context(), "feed served without stats",
+			slog.String("grpc_code", status.Code(err).String()),
+			slog.String("error", err.Error()),
+		)
+		return
+	}
+	byID := make(map[string]*videoStats, len(resp.GetStats()))
+	for _, st := range resp.GetStats() {
+		byID[st.GetVideoId()] = &videoStats{
+			ViewCount: st.GetViewCount(),
+			LikeCount: st.GetLikeCount(),
+			LikedByMe: st.GetLikedByMe(),
+		}
+	}
+	for i := range items {
+		items[i].Stats = byID[items[i].VideoID]
+	}
 }
 
 type statusResponse struct {

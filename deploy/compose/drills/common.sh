@@ -1,8 +1,10 @@
 # shellcheck shell=bash
-# Helpers shared by the failure drills (kill-worker.sh, duplicate-events.sh, measure-ready.sh):
-# docker compose through the command `make` passes in $COMPOSE, rpk inside the Redpanda container,
-# record lookups by key, consumer group lag and seeks, read-only outbox queries on svp_video, HLS
-# downloads, and putting the stack back on exit. Written for bash 3.2 (the macOS /bin/bash).
+# Helpers shared by the failure drills (kill-worker.sh, duplicate-events.sh, measure-ready.sh,
+# duplicate-feed-events.sh, engagement-down.sh, measure-freshness.sh): docker compose through the
+# command `make` passes in $COMPOSE, rpk inside the Redpanda container, record lookups by key,
+# consumer group lag and seeks, read-only outbox queries on svp_video, HLS downloads, and putting
+# the stack back on exit.
+# Written for bash 3.2 (the macOS /bin/bash).
 #
 # Source it after setting `base` (the gateway URL); it sources ../lib.sh, whose rules it keeps.
 # The database is read with SELECT only, as the local superuser on 127.0.0.1:5432.
@@ -14,7 +16,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 read -r -a compose_cmd <<<"$COMPOSE"
 
 # Every service a drill may stop or kill; on exit they are all started again.
-stack_services=(redpanda minio user-service video-service gateway media-worker)
+stack_services=(redpanda minio user-service video-service engagement-service feed-service gateway media-worker)
 # Seconds to wait after the consumer groups caught up, so the relay (200 ms poll) and a late
 # redelivery would have shown up.
 settle_seconds=${settle_seconds:-5}

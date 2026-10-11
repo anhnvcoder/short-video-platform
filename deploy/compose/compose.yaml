@@ -1,8 +1,9 @@
 # Core stack: gateway, user-service, video-service and their one-shot migrations
 # (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, sections 4 to 7), plus Redpanda and
 # MinIO with their one-shot init containers (docs/adr/0008-async-upload-pipeline-stage2a.md,
-# sections 5, 6, 11 and 12). Run it through `make up` / `make down` (deploy/compose/compose.mk),
-# which pass --env-file .env.
+# sections 5, 6, 11 and 12), plus engagement-service and feed-service with their migrations
+# (docs/adr/0009-engagement-feed-stage2b.md, sections 9, 11 and 12). Run it through `make up` /
+# `make down` (deploy/compose/compose.mk), which pass --env-file .env.
 #
 # Postgres is the native one on the host (127.0.0.1:5432), reached as host.docker.internal.
 # Published ports are on the host's loopback only: the gateway, the MinIO API and console, and
@@ -137,6 +138,26 @@ services:
       DATABASE_URL: postgres://svp_video_migrator:${SVP_VIDEO_MIGRATOR_DB_PASSWORD:?run make env}@host.docker.internal:5432/svp_video?sslmode=disable
     restart: "no"
 
+  engagement-migrate:
+    <<: *host-postgres
+    profiles: [core]
+    image: svp/engagement-service:dev
+    pull_policy: never
+    command: ["migrate"]
+    environment:
+      DATABASE_URL: postgres://svp_engagement_migrator:${SVP_ENGAGEMENT_MIGRATOR_DB_PASSWORD:?run make env}@host.docker.internal:5432/svp_engagement?sslmode=disable
+    restart: "no"
+
+  feed-migrate:
+    <<: *host-postgres
+    profiles: [core]
+    image: svp/feed-service:dev
+    pull_policy: never
+    command: ["migrate"]
+    environment:
+      DATABASE_URL: postgres://svp_feed_migrator:${SVP_FEED_MIGRATOR_DB_PASSWORD:?run make env}@host.docker.internal:5432/svp_feed?sslmode=disable
+    restart: "no"
+
   user-service:
     <<: *host-postgres
     profiles: [core]
@@ -153,10 +174,16 @@ services:
       # Only user-service holds the signing key (threat model JWT-10).
       JWT_SIGNING_KID: ${JWT_SIGNING_KID:?run make env}
       JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:?run make env}
+      # The outbox relay publishes follow events to user.follows.v1 (ADR-0009, section 1).
+      KAFKA_BROKERS: redpanda:9092
     healthcheck: *healthcheck
     restart: unless-stopped
     depends_on:
       user-migrate:
+        condition: service_completed_successfully
+      redpanda:
+        condition: service_healthy
+      redpanda-init:
         condition: service_completed_successfully
 
   video-service:
@@ -192,6 +219,60 @@ services:
       minio-init:
         condition: service_completed_successfully
 
+  engagement-service:
+    <<: *host-postgres
+    profiles: [core]
+    image: svp/engagement-service:dev
+    pull_policy: build
+    build:
+      context: ../..
+      dockerfile: deploy/docker/service.Dockerfile
+      args:
+        SERVICE: engagement-service
+    environment:
+      LISTEN_ADDR: ":9103"
+      DATABASE_URL: postgres://svp_engagement_app:${SVP_ENGAGEMENT_APP_DB_PASSWORD:?run make env}@host.docker.internal:5432/svp_engagement?sslmode=disable
+      # Produces to and consumes engagement.views.v1 (ADR-0009, sections 3, 4 and 11).
+      KAFKA_BROKERS: redpanda:9092
+    mem_limit: 256m
+    healthcheck: *healthcheck
+    # The process exits when it cannot start a Kafka consumer and expects to be started again.
+    restart: unless-stopped
+    depends_on:
+      engagement-migrate:
+        condition: service_completed_successfully
+      redpanda:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+
+  feed-service:
+    <<: *host-postgres
+    profiles: [core]
+    image: svp/feed-service:dev
+    pull_policy: build
+    build:
+      context: ../..
+      dockerfile: deploy/docker/service.Dockerfile
+      args:
+        SERVICE: feed-service
+    environment:
+      LISTEN_ADDR: ":9104"
+      DATABASE_URL: postgres://svp_feed_app:${SVP_FEED_APP_DB_PASSWORD:?run make env}@host.docker.internal:5432/svp_feed?sslmode=disable
+      # Consumes user.follows.v1 and video.lifecycle.v1 (ADR-0009, sections 7 and 11).
+      KAFKA_BROKERS: redpanda:9092
+    mem_limit: 256m
+    healthcheck: *healthcheck
+    # The process exits when it cannot start a Kafka consumer and expects to be started again.
+    restart: unless-stopped
+    depends_on:
+      feed-migrate:
+        condition: service_completed_successfully
+      redpanda:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+
   gateway:
     profiles: [core]
     image: svp/gateway:dev
@@ -205,6 +286,8 @@ services:
       LISTEN_ADDR: ":8080"
       USER_SERVICE_ADDR: user-service:9101
       VIDEO_SERVICE_ADDR: video-service:9102
+      FEED_SERVICE_ADDR: feed-service:9104
+      ENGAGEMENT_SERVICE_ADDR: engagement-service:9103
       # Public keys only: the gateway verifies tokens, it cannot sign them.
       JWT_VERIFY_KEYS: ${JWT_VERIFY_KEYS:?run make env}
       MEDIA_PUBLIC_BASE_URL: http://127.0.0.1:9000/media
@@ -217,6 +300,12 @@ services:
         condition: service_healthy
       video-service:
         condition: service_healthy
+      feed-service:
+        condition: service_healthy
+      # Only started, not healthy: the feed is served without stats when engagement-service is
+      # down, so the gateway must start without it too (ADR-0009, section 9).
+      engagement-service:
+        condition: service_started
 
   media-worker:
     profiles: [core]

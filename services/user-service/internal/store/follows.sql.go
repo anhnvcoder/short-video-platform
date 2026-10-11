@@ -11,7 +11,7 @@ import (
 	"uuid"
 )
 
-const createFollow = `-- name: CreateFollow :exec
+const createFollow = `-- name: CreateFollow :execrows
 INSERT INTO follows (follower_id, followee_id)
 VALUES ($1, $2)
 ON CONFLICT (follower_id, followee_id) DO NOTHING
@@ -22,12 +22,15 @@ type CreateFollowParams struct {
 	FolloweeID uuid.UUID
 }
 
-func (q *Queries) CreateFollow(ctx context.Context, arg CreateFollowParams) error {
-	_, err := q.db.Exec(ctx, createFollow, arg.FollowerID, arg.FolloweeID)
-	return err
+func (q *Queries) CreateFollow(ctx context.Context, arg CreateFollowParams) (int64, error) {
+	result, err := q.db.Exec(ctx, createFollow, arg.FollowerID, arg.FolloweeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
-const deleteFollow = `-- name: DeleteFollow :exec
+const deleteFollow = `-- name: DeleteFollow :execrows
 DELETE FROM follows
 WHERE follower_id = $1 AND followee_id = $2
 `
@@ -37,7 +40,10 @@ type DeleteFollowParams struct {
 	FolloweeID uuid.UUID
 }
 
-func (q *Queries) DeleteFollow(ctx context.Context, arg DeleteFollowParams) error {
-	_, err := q.db.Exec(ctx, deleteFollow, arg.FollowerID, arg.FolloweeID)
-	return err
+func (q *Queries) DeleteFollow(ctx context.Context, arg DeleteFollowParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteFollow, arg.FollowerID, arg.FolloweeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

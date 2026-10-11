@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/argon2"
 	"google.golang.org/grpc"
@@ -27,6 +28,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/proto"
 
 	userv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1"
 	"github.com/anhnvcoder/short-video-platform/internal/authtoken"
@@ -477,6 +479,186 @@ func TestUnfollow(t *testing.T) {
 	for _, bad := range []string{"", "not-a-uuid", strings.ToUpper(bob)} {
 		_, err := e.client.Unfollow(ctx, &userv1.UnfollowRequest{FolloweeId: bad})
 		wantError(t, err, codes.InvalidArgument, ReasonInvalidFolloweeID)
+	}
+}
+
+// followEvents returns the decoded outbox events keyed by follower, oldest id first, and fails
+// unless every one is on TopicUserFollows.
+func followEvents(t *testing.T, follower string) []*userv1.FollowEvent {
+	t.Helper()
+	rows, err := testPool.Query(t.Context(),
+		"SELECT topic, payload FROM outbox WHERE record_key = $1 ORDER BY id", follower)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (*userv1.FollowEvent, error) {
+		var topic string
+		var payload []byte
+		if err := r.Scan(&topic, &payload); err != nil {
+			return nil, err
+		}
+		if topic != TopicUserFollows {
+			t.Errorf("outbox topic = %q, want %q", topic, TopicUserFollows)
+		}
+		ev := &userv1.FollowEvent{}
+		return ev, proto.Unmarshal(payload, ev)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// wantNoEvents fails unless the outbox holds no event keyed by follower.
+func wantNoEvents(t *testing.T, follower string) {
+	t.Helper()
+	if evs := followEvents(t, follower); len(evs) != 0 {
+		t.Errorf("got %d outbox events for %s, want none: %v", len(evs), follower, evs)
+	}
+}
+
+// Only a call that changes the edge writes an event, in the order of the changes.
+func TestFollowEventsFollowEdgeChanges(t *testing.T) {
+	e := newEnv(t, password.NewHasher())
+	alice := e.register(t, newEmail())
+	bob := e.register(t, newEmail())
+	ctx := asCaller(t.Context(), alice)
+
+	steps := []struct {
+		follow bool
+		events int
+	}{
+		{follow: true, events: 1},
+		{follow: true, events: 1},
+		{follow: false, events: 2},
+		{follow: false, events: 2},
+		{follow: true, events: 3},
+	}
+	for i, st := range steps {
+		var err error
+		if st.follow {
+			_, err = e.client.Follow(ctx, &userv1.FollowRequest{FolloweeId: bob})
+		} else {
+			_, err = e.client.Unfollow(ctx, &userv1.UnfollowRequest{FolloweeId: bob})
+		}
+		if err != nil {
+			t.Fatalf("step %d: %v", i+1, err)
+		}
+		if n := len(followEvents(t, alice)); n != st.events {
+			t.Fatalf("step %d: %d outbox events, want %d", i+1, n, st.events)
+		}
+	}
+
+	seen := map[string]bool{}
+	for i, ev := range followEvents(t, alice) {
+		meta := ev.GetMeta()
+		id, err := ids.Parse(meta.GetEventId())
+		if err != nil || id[6]>>4 != 7 {
+			t.Errorf("event %d: event_id %q is not a UUIDv7", i, meta.GetEventId())
+		}
+		if seen[meta.GetEventId()] {
+			t.Errorf("event %d: event_id %s repeats", i, meta.GetEventId())
+		}
+		seen[meta.GetEventId()] = true
+		if meta.GetOccurredAt() == nil {
+			t.Errorf("event %d: no occurred_at", i)
+		}
+		var follower, followee string
+		if i == 1 {
+			u := ev.GetUserUnfollowed()
+			if u == nil {
+				t.Fatalf("event %d = %v, want user_unfollowed", i, ev)
+			}
+			follower, followee = u.GetFollowerId(), u.GetFolloweeId()
+		} else {
+			f := ev.GetUserFollowed()
+			if f == nil {
+				t.Fatalf("event %d = %v, want user_followed", i, ev)
+			}
+			follower, followee = f.GetFollowerId(), f.GetFolloweeId()
+		}
+		if follower != alice || followee != bob {
+			t.Errorf("event %d: follower %s, followee %s, want %s, %s", i, follower, followee, alice, bob)
+		}
+	}
+}
+
+func TestUnfollowMissingEdgeWritesNoEvent(t *testing.T) {
+	e := newEnv(t, password.NewHasher())
+	alice := e.register(t, newEmail())
+	bob := e.register(t, newEmail())
+
+	if _, err := e.client.Unfollow(asCaller(t.Context(), alice), &userv1.UnfollowRequest{FolloweeId: bob}); err != nil {
+		t.Fatalf("Unfollow: %v", err)
+	}
+	wantNoEvents(t, alice)
+}
+
+func TestRejectedFollowWritesNoEvent(t *testing.T) {
+	e := newEnv(t, password.NewHasher())
+	alice := e.register(t, newEmail())
+	bob := e.register(t, newEmail())
+
+	_, err := e.client.Follow(asCaller(t.Context(), alice), &userv1.FollowRequest{FolloweeId: ids.New()})
+	wantError(t, err, codes.NotFound, ReasonUserNotFound)
+	_, err = e.client.Follow(asCaller(t.Context(), alice), &userv1.FollowRequest{FolloweeId: alice})
+	wantError(t, err, codes.InvalidArgument, ReasonCannotFollowSelf)
+	wantNoEvents(t, alice)
+
+	ghost := ids.New()
+	_, err = e.client.Follow(asCaller(t.Context(), ghost), &userv1.FollowRequest{FolloweeId: bob})
+	wantError(t, err, codes.Unauthenticated, callerid.ReasonUnauthenticatedCaller)
+	wantNoEvents(t, ghost)
+}
+
+// A failed outbox insert rolls the follow or unfollow back.
+func TestFollowOutboxFailureRollsBack(t *testing.T) {
+	e := newEnv(t, password.NewHasher())
+	alice := e.register(t, newEmail())
+	bob := e.register(t, newEmail())
+	carol := e.register(t, newEmail())
+	ctx := asCaller(t.Context(), alice)
+	if _, err := e.client.Follow(ctx, &userv1.FollowRequest{FolloweeId: carol}); err != nil {
+		t.Fatalf("Follow: %v", err)
+	}
+
+	// Refuse outbox rows keyed by alice only; alice is a server-generated UUID.
+	_, err := testPool.Exec(t.Context(), `
+		CREATE FUNCTION refuse_test_outbox() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			IF NEW.record_key = '`+alice+`' THEN
+				RAISE EXCEPTION 'outbox insert refused by test';
+			END IF;
+			RETURN NEW;
+		END $$;
+		CREATE TRIGGER refuse_test_outbox BEFORE INSERT ON outbox
+			FOR EACH ROW EXECUTE FUNCTION refuse_test_outbox();`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, err := testPool.Exec(context.Background(),
+			"DROP TRIGGER refuse_test_outbox ON outbox; DROP FUNCTION refuse_test_outbox()")
+		if err != nil {
+			t.Error(err)
+		}
+	})
+
+	_, followErr := e.client.Follow(ctx, &userv1.FollowRequest{FolloweeId: bob})
+	_, unfollowErr := e.client.Unfollow(ctx, &userv1.UnfollowRequest{FolloweeId: carol})
+	for _, err := range []error{followErr, unfollowErr} {
+		if status.Code(err) != codes.Internal || status.Convert(err).Message() != "internal error" {
+			t.Errorf("error = %v, want INTERNAL with message %q", err, "internal error")
+		}
+	}
+	if n := followCount(t, alice, bob); n != 0 {
+		t.Errorf("follow rows alice -> bob = %d, want 0", n)
+	}
+	if n := followCount(t, alice, carol); n != 1 {
+		t.Errorf("follow rows alice -> carol = %d, want 1", n)
+	}
+	if evs := followEvents(t, alice); len(evs) != 1 {
+		t.Errorf("got %d outbox events for alice, want only the first follow's", len(evs))
 	}
 }
 

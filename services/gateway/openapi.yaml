@@ -12,7 +12,9 @@ info:
     `detail` is the service's message. 5xx responses never carry the service's message: `detail`
     is empty, `code` is the gRPC code name, and `trace_id` points to the logs.
     Errors the gateway raises itself carry its own `code`: for example `INVALID_TOKEN`,
-    `NOT_FOUND` for an unknown path and `METHOD_NOT_ALLOWED` (with an `Allow` header).
+    `NOT_FOUND` for an unknown path, `METHOD_NOT_ALLOWED` (with an `Allow` header) and
+    `INVALID_UTF8`, a 400 for any request whose path or query string, once percent-decoded, is
+    not valid UTF-8.
 servers:
   - url: http://127.0.0.1:8080
 security: []
@@ -320,6 +322,151 @@ paths:
         "504":
           $ref: "#/components/responses/GatewayTimeout"
 
+  /videos/{video_id}/like:
+    parameters:
+      - name: video_id
+        in: path
+        required: true
+        description: The video to like or unlike. engagement-service validates it but does not check that it exists.
+        schema:
+          $ref: "#/components/schemas/Id"
+    put:
+      operationId: like
+      summary: Like a video
+      description: |
+        Idempotent: liking a video already liked succeeds and does not change `like_count`. The
+        caller sees their own like at once in the feed's `stats`.
+      tags: [engagement]
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: The caller likes the video.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+    delete:
+      operationId: unlike
+      summary: Remove the caller's like of a video
+      description: Idempotent; unliking a video not liked also succeeds.
+      tags: [engagement]
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: The caller does not like the video.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+
+  /videos/{video_id}/views:
+    post:
+      operationId: recordView
+      summary: Count one view of a video
+      description: |
+        Takes no request body. Not idempotent: every call is one view. The view is queued and
+        `view_count` catches up within about a minute. On 503 the view was not recorded and the
+        client may retry.
+      tags: [engagement]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: video_id
+          in: path
+          required: true
+          description: engagement-service validates it but does not check that the video exists.
+          schema:
+            $ref: "#/components/schemas/Id"
+      responses:
+        "202":
+          description: The view is queued; no body.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+
+  /feed/following:
+    get:
+      operationId: getFollowingFeed
+      summary: Newest videos of the users the caller follows
+      description: |
+        READY videos of followed users from the last 30 days, newest first. See `FeedPage` for
+        paging and for when `stats` is missing.
+      tags: [feed]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of the feed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedPage"
+        "400":
+          $ref: "#/components/responses/FeedBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+
+  /feed/explore:
+    get:
+      operationId: getExploreFeed
+      summary: Newest videos across the platform
+      description: |
+        Every READY video, newest first, the same list for every caller. See `FeedPage` for paging
+        and for when `stats` is missing.
+      tags: [feed]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of the feed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedPage"
+        "400":
+          $ref: "#/components/responses/FeedBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+
   /healthz:
     get:
       operationId: healthz
@@ -335,8 +482,10 @@ paths:
       operationId: readyz
       summary: Readiness
       description: |
-        Asks the gRPC health service of user-service and video-service, within 1 second. Any of
-        them not SERVING or not reachable is a 503 with code `NOT_READY`.
+        Asks the gRPC health service of user-service, video-service and feed-service, within 1
+        second. Any of them not SERVING or not reachable is a 503 with code `NOT_READY`.
+        engagement-service is not checked: when it is down the feed is still served, without
+        `stats`.
       tags: [ops]
       responses:
         "200":
@@ -355,6 +504,28 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: The access token from /auth/login, only in the Authorization header.
+
+  parameters:
+    PageSize:
+      name: page_size
+      in: query
+      required: false
+      description: Items per page; absent or 0 means 10, above 50 means 50, negative is a 400.
+      schema:
+        type: integer
+        format: int32
+        minimum: 0
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: |
+        `next_cursor` of the previous page, passed back unchanged; absent for the first page. It is
+        opaque: the gateway does not read it, and a cursor that cannot be decoded is a 400
+        (`INVALID_PAGE_TOKEN`).
+      schema:
+        type: string
+        maxLength: 64
 
   schemas:
     Id:
@@ -426,6 +597,72 @@ components:
           type: string
           format: uri
 
+    FeedPage:
+      description: |
+        One page of a feed. Items are newest first by (`published_at`, `video_id`), so videos
+        published while paging never shift later pages.
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          description: Empty (never null) when there is nothing more.
+          type: array
+          items:
+            $ref: "#/components/schemas/FeedItem"
+        next_cursor:
+          description: Pass it as `cursor` to get the next page; empty on the last page.
+          type: string
+
+    FeedItem:
+      description: A READY video in a feed; field names and types match `Video`.
+      type: object
+      additionalProperties: false
+      required: [video_id, author_id, title, duration_ms, playlist_url, thumbnail_url, published_at]
+      properties:
+        video_id:
+          $ref: "#/components/schemas/Id"
+        author_id:
+          $ref: "#/components/schemas/Id"
+        title:
+          type: string
+        duration_ms:
+          type: integer
+          format: int64
+        playlist_url:
+          description: Absolute URL of the HLS master playlist.
+          type: string
+          format: uri
+        thumbnail_url:
+          description: Absolute URL of the thumbnail.
+          type: string
+          format: uri
+        published_at:
+          description: When the video became READY.
+          type: string
+          format: date-time
+        stats:
+          $ref: "#/components/schemas/VideoStats"
+
+    VideoStats:
+      description: |
+        Counters of a video and whether the caller likes it. Absent (not zero) from every item of
+        a page when engagement-service does not answer within 100 ms; the feed is served anyway.
+      type: object
+      additionalProperties: false
+      required: [view_count, like_count, liked_by_me]
+      properties:
+        view_count:
+          description: Total views; lags by up to about a minute.
+          type: integer
+          format: int64
+        like_count:
+          type: integer
+          format: int64
+        liked_by_me:
+          description: Whether the caller likes the video; reflects their own like at once.
+          type: boolean
+
     Status:
       type: object
       additionalProperties: false
@@ -470,8 +707,17 @@ components:
             $ref: "#/components/schemas/Status"
     BadRequest:
       description: |
-        Invalid request: a body that is not one JSON object with known fields (`INVALID_JSON`), or
-        an argument the service rejects (its reason, for example `INVALID_TITLE`).
+        Invalid request: a body that is not one JSON object with known fields (`INVALID_JSON`), a
+        path or query that is not valid UTF-8 (`INVALID_UTF8`), or an argument the service rejects
+        (its reason, for example `INVALID_TITLE`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    FeedBadRequest:
+      description: |
+        `page_size` is not an integer or is negative (`INVALID_PAGE_SIZE`), the query is not valid
+        UTF-8 (`INVALID_UTF8`), or `cursor` cannot be decoded (`INVALID_PAGE_TOKEN`).
       content:
         application/problem+json:
           schema:

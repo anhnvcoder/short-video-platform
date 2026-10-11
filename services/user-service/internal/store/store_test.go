@@ -33,6 +33,10 @@ func TestSchemaConstraints(t *testing.T) {
 		t.Fatalf("GetUserByEmail = %+v, want id %s and hash-a", got, alice)
 	}
 
+	createFollow := func(arg CreateFollowParams) error {
+		_, err := q.CreateFollow(ctx, arg)
+		return err
+	}
 	cases := []struct {
 		name       string
 		err        error
@@ -41,11 +45,11 @@ func TestSchemaConstraints(t *testing.T) {
 	}{
 		{"duplicate email", q.CreateUser(ctx, CreateUserParams{ID: uuid.NewV7(), Email: "alice@example.io", PasswordHash: "x"}),
 			"23505", "users_email_key"},
-		{"self follow", q.CreateFollow(ctx, CreateFollowParams{FollowerID: alice, FolloweeID: alice}),
+		{"self follow", createFollow(CreateFollowParams{FollowerID: alice, FolloweeID: alice}),
 			"23514", "follows_no_self_follow"},
-		{"unknown followee", q.CreateFollow(ctx, CreateFollowParams{FollowerID: alice, FolloweeID: uuid.NewV7()}),
+		{"unknown followee", createFollow(CreateFollowParams{FollowerID: alice, FolloweeID: uuid.NewV7()}),
 			"23503", "follows_followee_id_fkey"},
-		{"unknown follower and followee", q.CreateFollow(ctx, CreateFollowParams{FollowerID: uuid.NewV7(), FolloweeID: uuid.NewV7()}),
+		{"unknown follower and followee", createFollow(CreateFollowParams{FollowerID: uuid.NewV7(), FolloweeID: uuid.NewV7()}),
 			"23503", "follows_follower_id_fkey"},
 	}
 	for _, c := range cases {
@@ -55,9 +59,17 @@ func TestSchemaConstraints(t *testing.T) {
 		}
 	}
 
-	for range 2 {
-		if err := q.CreateFollow(ctx, CreateFollowParams{FollowerID: alice, FolloweeID: bob}); err != nil {
-			t.Fatalf("CreateFollow: %v", err)
+	// The server writes an event only when a row changed, so the counts must be exact.
+	edge := CreateFollowParams{FollowerID: alice, FolloweeID: bob}
+	for i, want := range []int64{1, 0} {
+		if n, err := q.CreateFollow(ctx, edge); err != nil || n != want {
+			t.Fatalf("CreateFollow call %d = %d, %v, want %d rows", i+1, n, err, want)
+		}
+	}
+	for i, want := range []int64{1, 0} {
+		n, err := q.DeleteFollow(ctx, DeleteFollowParams{FollowerID: alice, FolloweeID: bob})
+		if err != nil || n != want {
+			t.Fatalf("DeleteFollow call %d = %d, %v, want %d rows", i+1, n, err, want)
 		}
 	}
 }

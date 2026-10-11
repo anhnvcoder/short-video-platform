@@ -5,9 +5,11 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"runtime/debug"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/anhnvcoder/short-video-platform/internal/authtoken"
 	"github.com/anhnvcoder/short-video-platform/internal/logx"
@@ -41,6 +43,39 @@ func Recover(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(w, r)
 	})
+}
+
+// ValidUTF8 answers 400 INVALID_UTF8 when the decoded path, or a key or value of the query, is
+// not valid UTF-8. Path values and query values go into proto3 string fields, which grpc-go
+// refuses to marshal when they are not UTF-8: the call would fail as INTERNAL, a 500 the client
+// caused. JSON bodies need no check, since encoding/json turns invalid UTF-8 into U+FFFD.
+func ValidUTF8(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !validURL(r.URL) {
+			WriteProblem(w, r, http.StatusBadRequest, "INVALID_UTF8", "path and query must be valid UTF-8")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// validURL reports whether the decoded path and every query key and value of u are valid UTF-8.
+// ServeMux decodes path values from the same path, and handlers read the same parsed query.
+func validURL(u *url.URL) bool {
+	if !utf8.ValidString(u.Path) {
+		return false
+	}
+	for k, vs := range u.Query() {
+		if !utf8.ValidString(k) {
+			return false
+		}
+		for _, v := range vs {
+			if !utf8.ValidString(v) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // logState carries what the access log learns only after next ran: RequireAuth, deeper in the

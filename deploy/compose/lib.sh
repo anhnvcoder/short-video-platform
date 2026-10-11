@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # Helpers shared by the scripts that drive the core stack through the gateway (smoke.sh, later
 # drills): API requests, test users, generated test videos, the presigned upload, completion,
-# waiting for READY and anonymous HLS downloads. Written for bash 3.2 (the macOS /bin/bash).
+# waiting for READY, anonymous HLS downloads and looking a video up in a feed. Written for bash 3.2
+# (the macOS /bin/bash).
 #
 # Source it after setting `base` (the gateway URL). It creates the private work directory $work,
 # removed on exit. Rules every helper keeps: passwords, tokens and presigned form fields are never
@@ -168,4 +169,46 @@ resolve() {
     http://* | https://*) printf '%s' "$2" ;;
     *) printf '%s/%s' "${1%/*}" "$2" ;;
   esac
+}
+
+# Pages of feed_page_size items a feed lookup reads before it calls a video absent: explore holds
+# every READY video, older smoke runs included, so the video looked for may not be on the first page.
+feed_pages=${feed_pages:-5}
+feed_page_size=${feed_page_size:-50}
+
+# feed_item FEED AUTH_FILE VIDEO_ID: looks for VIDEO_ID in GET /feed/FEED (following or explore),
+# following next_cursor for at most feed_pages pages; writes the item, or null when it is not
+# there, to $work/item and prints the HTTP status of the last page read.
+feed_item() {
+  local cursor="" page status
+  echo null >"$work/item"
+  for ((page = 0; page < feed_pages; page++)); do
+    status=$(request GET "/feed/$1?page_size=$feed_page_size${cursor:+&cursor=$cursor}" "$2")
+    if [[ $status != 200 ]]; then
+      printf '%s' "$status"
+      return
+    fi
+    jq --arg id "$3" 'first(.items[] | select(.video_id == $id)) // null' "$work/body" >"$work/item"
+    cursor=$(jq -r '.next_cursor | @uri' "$work/body")
+    [[ $(<"$work/item") == null && -n $cursor ]] || break
+  done
+  printf '%s' "$status"
+}
+
+# item_summary: whether the last feed item was found and its stats, for a FAIL line.
+item_summary() { jq -c 'if . == null then "video absent" else {stats} end' "$work/item"; }
+
+# wait_feed_item FEED AUTH_FILE VIDEO_ID TIMEOUT FILTER STEP: polls feed_item once a second until
+# the jq FILTER, run on the item (null when the video is absent), is true; fails naming STEP on a
+# non-200 page or after TIMEOUT seconds, with the last state of the item. Leaves the item in
+# $work/item.
+wait_feed_item() {
+  local start=$SECONDS status
+  while :; do
+    status=$(feed_item "$1" "$2" "$3")
+    [[ $status == 200 ]] || fail "$6: GET /feed/$1 (status $status, $(problem_summary))"
+    [[ $(jq -r "$5" "$work/item") == true ]] && return
+    ((SECONDS - start < $4)) || fail "$6 within $4 s (last: $(item_summary))"
+    sleep 1
+  done
 }

@@ -257,3 +257,37 @@ func TestRecover(t *testing.T) {
 		t.Errorf("access log = %v, want one line with status 500 and route GET /panic", access)
 	}
 }
+
+func TestValidUTF8(t *testing.T) {
+	ran := false
+	h := ValidUTF8(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { ran = true }))
+
+	for _, target := range []string{"/videos/abc?cursor=xyz", "/videos/%C3%A9t%C3%A9?q=%E2%82%AC&%E2%82%AC=1", "/feed?cursor=%ZZ"} {
+		ran = false
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, nil))
+		if rec.Code != http.StatusOK || !ran {
+			t.Errorf("%s: status %d, handler ran %v; want 200 from the handler", target, rec.Code, ran)
+		}
+	}
+
+	for _, target := range []string{
+		"/videos/%FF",
+		"/videos/\xff",
+		"/videos/%C3%28/like",
+		"/feed?cursor=%FF",
+		"/feed?cursor=ok&cursor=%C3%28",
+		"/feed?%FF=1",
+	} {
+		ran = false
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, nil))
+		if rec.Code != http.StatusBadRequest || ran {
+			t.Errorf("%q: status %d, handler ran %v; want 400 without the handler", target, rec.Code, ran)
+			continue
+		}
+		if p := decodeProblem(t, rec); p.Code != "INVALID_UTF8" || p.Detail == "" {
+			t.Errorf("%q: problem = %+v, want code INVALID_UTF8 with a detail", target, p)
+		}
+	}
+}

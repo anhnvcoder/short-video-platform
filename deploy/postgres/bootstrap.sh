@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Creates or updates the Postgres roles and databases of user-service and video-service on the
-# local Postgres (127.0.0.1:5432) as the superuser, by running bootstrap.sql once per service.
+# Creates or updates the Postgres roles and databases of user-service, video-service,
+# engagement-service and feed-service on the local Postgres (127.0.0.1:5432) as the superuser, by
+# running bootstrap.sql once per service.
 # Idempotent. Reads only the role passwords from the env file, without sourcing it, and never
 # prints them.
 #
@@ -23,7 +24,7 @@ value() {
   printf '%s' "$v"
 }
 
-for svc in user video; do
+for svc in user video engagement feed; do
   upper=$(printf '%s' "$svc" | tr '[:lower:]' '[:upper:]')
   migrator_password=$(value "SVP_${upper}_MIGRATOR_DB_PASSWORD")
   app_password=$(value "SVP_${upper}_APP_DB_PASSWORD")

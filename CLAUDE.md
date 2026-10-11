@@ -96,11 +96,12 @@ liệt kê target):
   test trên Postgres native `127.0.0.1:5432`). Thu hẹp bằng `make test PKGS=./services/user-service/...`.
 - `make env`: sinh `.env` local (mode 600, mật khẩu DB, mật khẩu root MinIO và secret key S3 của từng service ngẫu nhiên,
   khoá JWT mới). `.env` có sẵn thì chỉ bổ sung biến còn thiếu hoặc đang rỗng, không đổi giá trị đã đặt.
-- `make up` / `make smoke` / `make down`: dựng stack compose profile `core` (bootstrap Postgres, Redpanda + tạo topic, MinIO
-  + bucket/user/policy, migrate, gateway, user-service, video-service, media-worker), chạy luồng đầu-cuối qua gateway ở
-  `127.0.0.1:8080` (gồm upload video bằng presigned POST lên MinIO, chờ `READY`, tải HLS và thumbnail), rồi gỡ stack (giữ
-  volume). Cổng publish chỉ trên `127.0.0.1`: 8080 gateway, 9000 MinIO API, 9001 MinIO console, 19092 Redpanda (Kafka API).
-  `make ps` và `make logs SVC=<tên>` để xem.
+- `make up` / `make smoke` / `make down`: dựng stack compose profile `core` (bootstrap Postgres, Redpanda + tạo topic,
+  MinIO + bucket/user/policy, migrate, gateway, user-service, video-service, media-worker, engagement-service,
+  feed-service), chạy luồng đầu-cuối qua gateway ở `127.0.0.1:8080` (gồm follow, upload video bằng presigned POST lên
+  MinIO, chờ `READY`, tải HLS và thumbnail, video vào feed following và explore, like/unlike, lượt xem, unfollow), rồi
+  gỡ stack (giữ volume). Cổng publish chỉ trên `127.0.0.1`: 8080 gateway, 9000 MinIO API, 9001 MinIO console, 19092
+  Redpanda (Kafka API). `make ps` và `make logs SVC=<tên>` để xem.
 - `make test-stack`: `go test -race` trên stack đang chạy (`make up`), đặt các biến `SVP_TEST_*` cho MinIO và Redpanda, nên
   integration test của `internal/objstore` chạy thật thay vì SKIP. Chỉ hai secret S3 lấy từ `.env`; endpoint, access key,
   broker và `SVP_TEST_POSTGRES_URL` cố định trong `deploy/compose/compose.mk`. Thu hẹp bằng `PKGS=` như `make test`.
@@ -109,16 +110,24 @@ liệt kê target):
 - `make drill-kill-worker`, `make drill-duplicates`, `make measure-ready N=5`: diễn tập trên stack đang chạy, script ở
   `deploy/compose/drills/`. Lần lượt: kill media-worker giữa lúc transcode rồi kiểm video vẫn `READY` đúng một lần; phát
   lại event bằng `rpk group seek` rồi kiểm không gì đổi; đo `CompleteUpload` → `READY` cho N video 60 s 1080p (p50, p95,
-  max, CPU/RAM của media-worker). Script dừng/khởi động container, chỉ `SELECT` trên `svp_video`, và luôn bật lại mọi
-  service khi kết thúc.
+  max, CPU/RAM của media-worker).
+- `make drill-duplicates-feed`, `make drill-engagement-down`, `make measure-freshness FOLLOWERS=10000 N=10`: diễn tập
+  phần feed, cùng chỗ. Lần lượt: phát lại `view.recorded`, `user.followed`/`user.unfollowed` và `video.ready` bằng
+  `rpk group seek` rồi kiểm bộ đếm và dòng feed không đổi; tắt engagement-service rồi kiểm feed vẫn trả nhanh, không có
+  `stats`, like không treo mà nhận 504 sau timeout 3 s của gateway (fail nhanh thật sự cần circuit breaker ở phần C); đo
+  độ tươi `video.ready` → dòng timeline cuối cho N video tới FOLLOWERS follower giả (`tools/fakefollows` phát
+  `user.followed` vào Redpanda, dọn bằng `user.unfollowed` khi kết thúc).
+- Script diễn tập dừng/khởi động container, chỉ `SELECT` trên `svp_video`, `svp_engagement`, `svp_feed`, và luôn bật lại
+  mọi service khi kết thúc.
 - `make hooks`: bật git hook ở `.githooks/` một lần cho mỗi clone. `pre-commit` chạy `gofmt` trên file Go đã stage,
   `golangci-lint run`, `buf lint` và `gitleaks` trên thay đổi đã stage.
 
 Quy ước test:
 
-- Test dùng database riêng tên `svp_<...>_test` (service: `svp_<svc>_<pkg>_test`; gói dùng chung như `internal/dbmigrate`:
-  mỗi test một database), tạo từ `SVP_TEST_POSTGRES_URL`; helper ở `internal/pgtest`
-  từ chối tên không khớp `^svp_[a-z0-9_]+_test$`, nên test không chạm được database thật của service.
+- Test dùng database riêng tên `svp_<...>_test` (service: `svp_<svc>_<pkg>_test`, ví dụ `svp_engagement_server_test`,
+  `svp_feed_projector_test`; gói dùng chung như `internal/dbmigrate` và test lượt xem của engagement-service
+  `svp_engagement_views_<x>_test`: mỗi test một database), tạo từ `SVP_TEST_POSTGRES_URL`; helper ở `internal/pgtest` từ
+  chối tên không khớp `^svp_[a-z0-9_]+_test$`, nên test không chạm được database thật của service.
 - Test gateway gọi service qua `bufconn` (gRPC trong bộ nhớ), không mở cổng.
 - Test Kafka dùng `kfake` (cluster Kafka giả trong bộ nhớ của franz-go), không cần Docker, nên `make check` chạy được khi
   stack đang tắt.
@@ -126,5 +135,6 @@ Quy ước test:
   `SVP_TEST_S3_VIDEO_SECRET_KEY`, `SVP_TEST_S3_WORKER_ACCESS_KEY` / `SVP_TEST_S3_WORKER_SECRET_KEY`,
   `SVP_TEST_KAFKA_BROKERS`; thiếu biến thì test gọi `t.Skip`. `make test-stack` đặt các biến này; hiện chưa có test nào
   dùng `SVP_TEST_KAFKA_BROKERS`.
-- Luồng đầu-cuối (đăng ký, đăng nhập, tạo và đọc video, follow, upload tới `READY` và phát HLS) kiểm bằng `make smoke` trên
-  stack đang chạy; độ bền và số đo của luồng upload kiểm bằng ba target diễn tập ở trên.
+- Luồng đầu-cuối (đăng ký, đăng nhập, tạo và đọc video, follow, upload tới `READY` và phát HLS, feed, like/view,
+  unfollow) kiểm bằng `make smoke` trên stack đang chạy; độ bền và số đo của luồng upload và luồng feed kiểm bằng các
+  target diễn tập ở trên.

@@ -32,6 +32,8 @@ const (
 	defaultListenAddr       = "127.0.0.1:8080"
 	defaultUserServiceAddr  = "127.0.0.1:9101"
 	defaultVideoServiceAddr = "127.0.0.1:9102"
+	defaultEngagementAddr   = "127.0.0.1:9103"
+	defaultFeedServiceAddr  = "127.0.0.1:9104"
 	// shutdownTimeout bounds the wait for in-flight requests after SIGINT or SIGTERM.
 	shutdownTimeout = 10 * time.Second
 	// healthcheckTimeout bounds the healthcheck subcommand, which a container runtime calls often.
@@ -96,8 +98,25 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return err
 	}
 	defer func() { _ = videoConn.Close() }()
+	feedConn, err := dial("FEED_SERVICE_ADDR", defaultFeedServiceAddr)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = feedConn.Close() }()
+	// A GetStats call that first has to set up DNS, TCP and HTTP/2 may miss its 100 ms budget, so
+	// this connection is opened at start and kept open. Connect does not wait: the gateway starts
+	// even when engagement-service is not up yet, and the connection keeps retrying in the
+	// background. An idle timeout of 0 stops grpc-go from closing it after 30 minutes without
+	// calls. When an open connection breaks (engagement-service restarts), grpc-go reconnects on
+	// the next call, so that one feed page may come back without stats.
+	engagementConn, err := dial("ENGAGEMENT_SERVICE_ADDR", defaultEngagementAddr, grpc.WithIdleTimeout(0))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = engagementConn.Close() }()
+	engagementConn.Connect()
 
-	srv := httpx.NewServer(addr, api.New(userConn, videoConn, authtoken.NewVerifier(keys), mediaBase))
+	srv := httpx.NewServer(addr, api.New(userConn, videoConn, feedConn, engagementConn, authtoken.NewVerifier(keys), mediaBase))
 	var lc net.ListenConfig
 	lis, err := lc.Listen(ctx, "tcp", addr)
 	if err != nil {
@@ -144,10 +163,12 @@ func parseMediaBaseURL(s string) (string, error) {
 	return strings.TrimRight(s, "/"), nil
 }
 
-// dial returns a client connection to the gRPC address in the variable name. The connection is
-// plain text until mTLS arrives in stage 6, and connects lazily on the first call.
-func dial(name, def string) (*grpc.ClientConn, error) {
-	conn, err := grpc.NewClient(envcfg.String(name, def), grpc.WithTransportCredentials(insecure.NewCredentials()))
+// dial returns a client connection to the gRPC address in the variable name, with opts added.
+// The connection is plain text until mTLS arrives in stage 6, and connects lazily on the first
+// call.
+func dial(name, def string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
+	opts = append([]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}, opts...)
+	conn, err := grpc.NewClient(envcfg.String(name, def), opts...)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}

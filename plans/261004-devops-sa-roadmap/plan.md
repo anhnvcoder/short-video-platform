@@ -2,8 +2,8 @@
 
 > Ngày lập: 2026-10-04
 >
-> Trạng thái: giai đoạn 0, 1 và phần A của giai đoạn 2 xong (2026-10-11); chặng G hoãn; tiếp theo là phần còn lại của
-> giai đoạn 2 (engagement, feed, Redis, rate limit, timeout/retry/circuit breaker)
+> Trạng thái: giai đoạn 0, 1 và phần A, B của giai đoạn 2 xong (2026-10-11); chặng G hoãn; tiếp theo là phần C của giai
+> đoạn 2 (Redis, cache feed, rate limit, timeout/retry/circuit breaker, job dọn upload bỏ dở)
 
 ## Mục tiêu
 
@@ -289,9 +289,42 @@ Tổng ước lượng: khoảng 8–10 tháng làm cuối tuần, đã tính ch
       (từ 25,8 MB, thêm SDK S3 và franz-go). `make up` 10,2 s (image đã cache). `go test -race -count=1 ./...` 78,8 s, phần
       lớn là `internal/kafkax` 76,6 s (test retry, backoff, handler chạy lâu trên `kfake`). `make check`, `buf breaking`,
       `make test-stack` (integration test `objstore` chạy trên MinIO thật) sạch.
-  - [ ] Phần còn lại (B, C): `engagement-service` (bộ đếm gom ghi theo lô, kiểm gửi trùng không sai bộ đếm),
-    `feed-service` (CQRS + cache + singleflight, kiểm video mới vào feed đúng hạn), Redis, rate limit ở gateway,
-    timeout/retry/circuit breaker cho mọi lời gọi; job dọn upload bỏ dở và giới hạn số video `UPLOADING` mỗi user (UP-7).
+  - [x] Phần B, luồng follow → feed → like/xem (xong 2026-10-11), quyết định ở
+    [ADR-0009](../../docs/adr/0009-engagement-feed-stage2b.md):
+    - Đã làm: user-service phát `user.followed` / `user.unfollowed` qua outbox, chỉ khi cạnh đổi; engagement-service
+      (like và `like_counts` đổi trong một transaction; `RecordView` produce thẳng `view.recorded`; consumer gom lô
+      5.000 record/1 s, đếm đúng một lần nhờ offset lưu trong `svp_engagement` cùng transaction với bộ đếm; `GetStats`
+      đọc theo khoá chính); feed-service (bản sao follow và video, fan-out on write bằng một câu `INSERT ... SELECT`
+      dưới advisory lock theo tác giả, follow mới nhận 20 video gần nhất, dọn timeline quá 30 ngày mỗi giờ, feed
+      following và khám phá phân trang keyset, page token mã hoá bằng `protowire`, tối đa 64 ký tự); `internal/kafkax`
+      thêm consumer theo lô và header `dlq-group`; gateway thêm 5 route, ghép `stats` với timeout 100 ms; compose thêm
+      hai service (256 MB, không publish cổng) và 4 topic. `make smoke` thêm follow → feed → like/view → unfollow; thêm
+      `tools/fakefollows` và ba target `drill-duplicates-feed`, `drill-engagement-down`, `measure-freshness`.
+    - Độ tươi (`make measure-freshness`, từ `published_at` tới dòng timeline cuối), **đạt** NFR p95 < 10 s ở cả hai mức:
+      - 10.000 follower, N=10: 0,100 / 0,183 / 0,105 / 0,121 / 0,192 / 0,233 / 0,217 / 0,219 / 0,163 / 0,168 s,
+        p50 0,168 s, p95 = max 0,233 s (với N < 20, p95 = max); relay outbox 0,045–0,176 s (chu kỳ poll 200 ms), giao
+        2–9 ms, fan-out 45–69 ms. Nạp 10.000 follow 13,1 s (763 follow/s), dọn 16,0 s. Hai lần đo trước cho p95
+        0,278 s và 0,402 s (lần viết công cụ); lệch do chu kỳ poll của relay, cùng bậc.
+      - 200.000 follower (A7), N=3, đo một lần khi viết công cụ, không đo lại: 1,104 / 1,197 / 1,281 s, p50 1,197 s,
+        p95 = max 1,281 s; fan-out 0,88–0,96 s (một transaction, tuyến tính theo số follower). Nạp 261,4 s (765
+        follow/s), dọn 291,1 s.
+    - Diễn tập gửi trùng (`make drill-duplicates-feed`): phát lại 5 `view.recorded` thì `view_count` vẫn 5,
+      `like_counts` và `likes` giống hệt; phát lại `user.followed`, rồi cả follow, unfollow và `video.ready`, thì
+      `follows`, `timeline`, `videos` giống hệt (so cả `created_at`, `updated_at`), video vẫn không có trong feed sau
+      unfollow. Hai diễn tập của phần A vẫn xanh: `drill-kill-worker` (video `READY` 93 s sau khi worker khởi động lại,
+      một `transcode.completed`) và `drill-duplicates`.
+    - Diễn tập tắt engagement-service (`make drill-engagement-down`): feed following trả 200 trong 0,113 s, khám phá
+      0,115 s, không item nào có `stats`; `PUT like` 504 sau 3,05 s (timeout gọi service 3 s của gateway); `/readyz`
+      200; bật lại thì `stats` quay lại.
+    - RAM lúc nghỉ (sau mọi diễn tập): engagement-service 9,9 MiB, feed-service 21,5 MiB / 256 MiB, user-service
+      49,5 MiB, redpanda 471,9 MiB / 1,5 GiB, minio 256,1 MiB / 512 MiB; cả stack ~856 MiB. feed-service khi nạp follow
+      đỉnh 20 MiB ở 10.000, 82 MiB ở 200.000.
+    - Image: `svp/engagement-service` 32,9 MB, `svp/feed-service` 33,1 MB, `svp/user-service` 33,1 MB (từ 26,1 MB, thêm
+      franz-go cho relay outbox); `svp/gateway` 21,2 MB, `svp/video-service` 40,9 MB, `svp/media-worker` 150 MB.
+      `go test -race -count=1 ./...` 78,1 s, phần lớn vẫn là `internal/kafkax` 76,8 s. `make check`, `buf breaking`
+      (`proto/` không đổi), `make smoke` (8,3 s), `make test-stack` sạch.
+  - [ ] Phần C: Redis; cache feed khám phá + singleflight; rate limit ở gateway (gồm RL-3, RL-6); timeout/retry/circuit
+    breaker giữa service; job dọn upload bỏ dở và giới hạn số video `UPLOADING` mỗi user (UP-7).
 - [ ] 3. Observability
 - [ ] 4. Kubernetes local
 - [ ] 5. CI/CD và DevSecOps

@@ -7,6 +7,7 @@ package store
 import (
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"uuid"
 )
 
@@ -14,6 +15,17 @@ type Follow struct {
 	FollowerID uuid.UUID
 	FolloweeID uuid.UUID
 	CreatedAt  time.Time
+}
+
+type Outbox struct {
+	ID          int64
+	EventID     uuid.UUID
+	Topic       string
+	RecordKey   string
+	Payload     []byte
+	Headers     []byte
+	CreatedAt   time.Time
+	PublishedAt pgtype.Timestamptz
 }
 
 type User struct {

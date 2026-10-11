@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # End-to-end smoke test of the core stack through the gateway: register and log in user A,
-# create and read a video, check the visibility rule against user B (threat model UP-3), follow
-# and unfollow; then upload a real video through its presigned form, complete it, wait for the
+# create and read a video, check the visibility rule against user B (threat model UP-3), B
+# follows A; then upload a real video through its presigned form, complete it, wait for the
 # asynchronous transcode to make it READY, play its HLS anonymously, and check that the storage
-# refuses a file larger than declared (UP-1). Prints one ok/FAIL line per step and exits non-zero
-# on the first failure. Needs curl, jq, openssl and ffmpeg on the host.
+# refuses a file larger than declared (UP-1); then find the video in B's following feed and in
+# explore, like and unlike it, count views, and check that unfollowing removes it from B's
+# following feed (ADR-0009). Prints one ok/FAIL line per step and exits non-zero on the first
+# failure. Needs curl, jq, openssl and ffmpeg on the host.
 #
 # Usage: deploy/compose/smoke.sh [base-url]   (default http://127.0.0.1:8080)
 set -euo pipefail
@@ -13,7 +15,7 @@ base=${1:-http://127.0.0.1:8080}
 # shellcheck source=deploy/compose/lib.sh
 source "$(dirname "$0")/lib.sh"
 
-# 1. Wait for the gateway and both services to be ready.
+# 1. Wait for the gateway and the three services behind /readyz (user, video, feed) to be ready.
 wait_gateway_ready 60
 
 # 2. User A creates a video and reads it back.
@@ -45,16 +47,14 @@ status=$(request GET "/videos/$video_id" "$work/b.auth")
   fail "other user reads unpublished video is 404 VIDEO_NOT_FOUND (status $status, $(problem_summary))"
 ok "other user reads unpublished video: 404 VIDEO_NOT_FOUND"
 
-# 5. B follows A twice (idempotent) and unfollows.
+# 5. B follows A twice (idempotent) before A uploads, so A's upload reaches B's following feed by
+# fan-out. B unfollows in step 15.
 status=$(request PUT "/me/following/$a_id" "$work/b.auth")
 [[ $status == 204 ]] || fail "follow (status $status, $(problem_summary))"
 ok "follow"
 status=$(request PUT "/me/following/$a_id" "$work/b.auth")
 [[ $status == 204 ]] || fail "follow again (status $status, $(problem_summary))"
 ok "follow again"
-status=$(request DELETE "/me/following/$a_id" "$work/b.auth")
-[[ $status == 204 ]] || fail "unfollow (status $status, $(problem_summary))"
-ok "unfollow"
 
 # 6. User A uploads a real 10 s 720p video through the presigned form and completes it.
 make_video "$work/clip.mp4" 10 1280x720
@@ -127,5 +127,63 @@ code=$(storage_error_code)
 [[ $status == 400 && $code == EntityTooLarge ]] ||
   fail "upload larger than size_bytes is refused with 400 EntityTooLarge (status $status, code $code)"
 ok "upload larger than size_bytes refused by the storage: $status $code"
+
+# 11. The READY video reaches B's following feed (video.ready, feed-service fan-out) and explore,
+# and the playlist_url of the feed item plays.
+wait_feed_item following "$work/b.auth" "$clip_id" 15 '. != null' "video in B's following feed"
+feed_playlist_url=$(jq -r '.playlist_url' "$work/item")
+ok "video in B's following feed"
+wait_feed_item explore "$work/b.auth" "$clip_id" 15 '. != null' "video in explore"
+ok "video in explore"
+status=$(fetch "$feed_playlist_url" "$work/feed-master.m3u8")
+[[ $status == 200 ]] && grep -q '^#EXT-X-STREAM-INF' "$work/feed-master.m3u8" ||
+  fail "anonymous GET of the feed item's playlist_url is 200 with #EXT-X-STREAM-INF (status $status)"
+ok "anonymous GET of the feed item's playlist_url"
+
+# 12. Likes: B likes twice (idempotent), counted once and seen as B's own like, not A's; then B
+# unlikes. The feed carries stats only when engagement-service answers in time, so every stats
+# check polls.
+for i in 1 2; do
+  status=$(request PUT "/videos/$clip_id/like" "$work/b.auth")
+  [[ $status == 204 ]] || fail "B likes the video, call $i (status $status, $(problem_summary))"
+done
+ok "B likes the video twice: 204"
+wait_feed_item explore "$work/b.auth" "$clip_id" 15 '.stats.like_count == 1 and .stats.liked_by_me == true' \
+  "like_count 1, liked_by_me true for B"
+ok "like_count 1, liked_by_me true for B"
+wait_feed_item explore "$work/a.auth" "$clip_id" 15 '.stats.like_count == 1 and .stats.liked_by_me == false' \
+  "like_count 1, liked_by_me false for A"
+ok "like_count 1, liked_by_me false for A"
+status=$(request DELETE "/videos/$clip_id/like" "$work/b.auth")
+[[ $status == 204 ]] || fail "B unlikes the video (status $status, $(problem_summary))"
+wait_feed_item explore "$work/b.auth" "$clip_id" 15 '.stats.like_count == 0 and .stats.liked_by_me == false' \
+  "like_count 0 after unlike"
+ok "B unlikes the video: like_count 0"
+
+# 13. Views are counted asynchronously (engagement.views.v1, batched by engagement-service).
+for i in 1 2 3; do
+  status=$(request POST "/videos/$clip_id/views" "$work/b.auth")
+  [[ $status == 202 ]] || fail "B records view $i (status $status, $(problem_summary))"
+done
+ok "B records 3 views: 202"
+wait_feed_item explore "$work/b.auth" "$clip_id" 30 '.stats.view_count == 3' "view_count 3"
+ok "view_count 3"
+
+# 14. A cursor that cannot be decoded is refused.
+status=$(request GET "/feed/following?cursor=abc" "$work/b.auth")
+[[ $status == 400 && $(field code) == INVALID_PAGE_TOKEN ]] ||
+  fail "following feed with cursor=abc is 400 INVALID_PAGE_TOKEN (status $status, $(problem_summary))"
+ok "following feed with cursor=abc: 400 INVALID_PAGE_TOKEN"
+
+# 15. B unfollows A (user.unfollowed): the video leaves B's following feed but stays in explore.
+status=$(request DELETE "/me/following/$a_id" "$work/b.auth")
+[[ $status == 204 ]] || fail "unfollow (status $status, $(problem_summary))"
+ok "unfollow"
+wait_feed_item following "$work/b.auth" "$clip_id" 15 '. == null' "video gone from B's following feed after unfollow"
+ok "video gone from B's following feed after unfollow"
+status=$(feed_item explore "$work/b.auth" "$clip_id")
+[[ $status == 200 && $(<"$work/item") != null ]] ||
+  fail "video still in explore after unfollow (status $status, $(item_summary))"
+ok "video still in explore after unfollow"
 
 echo "smoke: all steps passed"
