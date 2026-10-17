@@ -2,11 +2,14 @@
 // migrations (migrate) or checks a running instance's health (healthcheck). Configuration comes
 // from environment variables (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 4);
 // serve also needs KAFKA_BROKERS for the outbox relay (docs/adr/0009-engagement-feed-stage2b.md,
-// section 1).
+// section 1), exports telemetry when OTEL_EXPORTER_OTLP_ENDPOINT is set, profiles when
+// PYROSCOPE_SERVER_ADDRESS is, and reports errors when SENTRY_DSN is
+// (docs/adr/0011-observability-stage3.md).
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -27,6 +30,9 @@ import (
 	"github.com/anhnvcoder/short-video-platform/internal/kafkax"
 	"github.com/anhnvcoder/short-video-platform/internal/logx"
 	"github.com/anhnvcoder/short-video-platform/internal/outbox"
+	"github.com/anhnvcoder/short-video-platform/internal/pgpool"
+	"github.com/anhnvcoder/short-video-platform/internal/sentryx"
+	"github.com/anhnvcoder/short-video-platform/internal/telemetry"
 	"github.com/anhnvcoder/short-video-platform/services/user-service/internal/password"
 	"github.com/anhnvcoder/short-video-platform/services/user-service/internal/server"
 	"github.com/anhnvcoder/short-video-platform/services/user-service/migrations"
@@ -63,13 +69,27 @@ func main() {
 		err = fmt.Errorf("unknown subcommand %q, want serve, migrate or healthcheck", cmd)
 	}
 	if err != nil {
-		logger.Error(cmd+" failed", slog.Any("error", err))
+		if _, logged := errors.AsType[loggedError](err); !logged {
+			logFailure(logger, err)
+		}
 		stop()
 		os.Exit(1)
 	}
 }
 
-func serve(ctx context.Context, logger *slog.Logger) error {
+// logFailure logs that a subcommand failed with err, under a constant message so the error
+// tracker groups it (ADR-0011, section 7).
+func logFailure(logger *slog.Logger, err error) {
+	logger.Error("user-service failed", slog.Any("error", err))
+}
+
+// loggedError is a serve failure that serve has already logged, while the error tracker and the
+// telemetry providers were still running, so that it reaches both (ADR-0011, sections 4 and 7).
+type loggedError struct{ error }
+
+func (e loggedError) Unwrap() error { return e.error }
+
+func serve(ctx context.Context, logger *slog.Logger) (err error) {
 	addr := envcfg.String("LISTEN_ADDR", defaultListenAddr)
 	databaseURL, err := envcfg.Required("DATABASE_URL")
 	if err != nil {
@@ -97,14 +117,34 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	}
 	defer kafka.Close()
 
-	pool, err := pgxpool.New(ctx, databaseURL)
+	shutdownTelemetry, err := telemetry.Setup(ctx, serviceName)
+	if err != nil {
+		return fmt.Errorf("set up telemetry: %w", err)
+	}
+	flushErrors, err := sentryx.Init(serviceName)
+	if err != nil {
+		return errors.Join(err, shutdownTelemetry(context.WithoutCancel(ctx)))
+	}
+	var pool *pgxpool.Pool
+	// Runs once the server and the relay have stopped: a failure is logged first, while the error
+	// tracker and the providers still run, then telemetry is flushed while the pool still exists,
+	// then the error reports, and the pool closes last.
+	defer func() {
+		if err != nil {
+			logFailure(logger, err)
+			err = loggedError{err}
+		}
+		if err := shutdownTelemetry(context.WithoutCancel(ctx)); err != nil {
+			logger.Warn("telemetry shutdown failed", slog.Any("error", err))
+		}
+		flushErrors()
+		if pool != nil {
+			pool.Close()
+		}
+	}()
+	pool, err = pgpool.New(ctx, databaseURL)
 	if err != nil {
 		return fmt.Errorf("DATABASE_URL: %w", err)
-	}
-	defer pool.Close()
-	// pgxpool connects lazily; fail at startup instead of on the first request.
-	if err := pool.Ping(ctx); err != nil {
-		return fmt.Errorf("connect to database: %w", err)
 	}
 
 	// The relay stops after the server has drained. It does not flush: rows the last RPCs wrote

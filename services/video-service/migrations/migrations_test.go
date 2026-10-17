@@ -37,6 +37,20 @@ func uploadingIndexes(t *testing.T, pool *pgxpool.Pool) int {
 	return n
 }
 
+// hasProcessingAt reports whether videos has the processing_at column of 00004.
+func hasProcessingAt(t *testing.T, pool *pgxpool.Pool) bool {
+	t.Helper()
+	var ok bool
+	err := pool.QueryRow(t.Context(),
+		`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		   WHERE table_schema = 'public' AND table_name = 'videos' AND column_name = 'processing_at')`,
+	).Scan(&ok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ok
+}
+
 // Every migration goes down and up again cleanly after pgtest applied them.
 func TestMigrationsDownAndUp(t *testing.T) {
 	pool := pgtest.New(t, "svp_video_migrations_test", migrations.FS)
@@ -45,6 +59,9 @@ func TestMigrationsDownAndUp(t *testing.T) {
 	}
 	if n := uploadingIndexes(t, pool); n != 2 {
 		t.Fatalf("after up: %d UPLOADING indexes, want 2", n)
+	}
+	if !hasProcessingAt(t, pool) {
+		t.Fatal("after up: videos has no processing_at")
 	}
 
 	db := stdlib.OpenDBFromPool(pool)
@@ -58,6 +75,15 @@ func TestMigrationsDownAndUp(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if _, err := provider.Down(t.Context()); err != nil {
+		t.Fatalf("down 00004: %v", err)
+	}
+	if hasProcessingAt(t, pool) {
+		t.Fatal("after down 00004: videos still has processing_at")
+	}
+	if n := uploadingIndexes(t, pool); n != 2 {
+		t.Fatalf("after down 00004: %d UPLOADING indexes, want 2", n)
+	}
 	if _, err := provider.Down(t.Context()); err != nil {
 		t.Fatalf("down 00003: %v", err)
 	}
@@ -87,5 +113,8 @@ func TestMigrationsDownAndUp(t *testing.T) {
 	}
 	if n := uploadingIndexes(t, pool); n != 2 {
 		t.Fatalf("after up again: %d UPLOADING indexes, want 2", n)
+	}
+	if !hasProcessingAt(t, pool) {
+		t.Fatal("after up again: videos has no processing_at")
 	}
 }

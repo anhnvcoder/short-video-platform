@@ -18,7 +18,7 @@ import (
 // requestWithTrace returns the request a handler behind Trace sees, and its trace-id.
 func requestWithTrace(t *testing.T) (*http.Request, string) {
 	var seen *http.Request
-	Trace(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { seen = r })).
+	Trace(testServer)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { seen = r })).
 		ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
 	return seen, traceID(seen.Context())
 }
@@ -85,8 +85,9 @@ func TestGRPCCodeTable(t *testing.T) {
 						t.Errorf("5xx body leaks the service message or reason: %s", rec.Body)
 					}
 					lines := logRecords(t, logs, "grpc call failed")
-					if len(lines) != 1 || !strings.Contains(fmt.Sprint(lines[0]["error"]), "10.0.0.7") || lines[0]["trace_id"] != traceID {
-						t.Errorf("5xx log = %v, want the original error with trace_id %s", lines, traceID)
+					if len(lines) != 1 || !strings.Contains(fmt.Sprint(lines[0]["error"]), "10.0.0.7") || lines[0]["trace_id"] != traceID ||
+						lines[0]["code"] != tt.code.String() || lines[0]["grpc_code"] != nil {
+						t.Errorf("5xx log = %v, want the original error with trace_id %s and code %s", lines, traceID, tt.code)
 					}
 				}
 				if p.Code != wantCode || p.Detail != wantDetail {
@@ -157,7 +158,7 @@ func TestWriteRateLimited(t *testing.T) {
 
 func TestAccessLogNamesRateLimit(t *testing.T) {
 	logs := captureLog(t)
-	h := Trace(AccessLog(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := Trace(testServer)(AccessLog(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		WriteRateLimited(w, r, "register", time.Minute)
 	})))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/auth/register", nil))

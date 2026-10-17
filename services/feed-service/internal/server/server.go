@@ -43,8 +43,8 @@ const (
 	// ExploreCacheTTL is how long a cached first explore page is served; nothing deletes it
 	// earlier, so a new video reaches the explore feed at most this late.
 	ExploreCacheTTL = 5 * time.Second
-	// cacheTimeout bounds one Redis command; past it the page is read from Postgres.
-	cacheTimeout = 50 * time.Millisecond
+	// defaultCacheTimeout bounds one Redis command; past it the page is read from Postgres.
+	defaultCacheTimeout = 50 * time.Millisecond
 	// exploreLoadTimeout bounds the shared Postgres read of a first explore page.
 	exploreLoadTimeout = 2 * time.Second
 	// cacheWarnInterval is the least time between two warnings about a failing cache, so a
@@ -68,6 +68,11 @@ type Server struct {
 
 	cache       *redis.Client
 	cachePrefix string
+	// cacheTimeout bounds one Redis command.
+	cacheTimeout time.Duration
+	// exploreCacheTTL is ExploreCacheTTL; tests lengthen it so a slow run does not see the page
+	// expire.
+	exploreCacheTTL time.Duration
 	// exploreRows reads explore rows; tests wrap it to count or slow down reads.
 	exploreRows func(context.Context, store.GetExploreFeedParams) ([]store.GetExploreFeedRow, error)
 	// firstPages makes concurrent cache misses of one first explore page share a single read.
@@ -76,12 +81,26 @@ type Server struct {
 	lastCacheWarn atomic.Int64
 }
 
+// Option changes a Server built by New.
+type Option func(*Server)
+
+// WithCacheTimeout bounds every Redis command of the explore cache by d instead of 50 ms
+// (ADR-0010, section 3). Tests that count Postgres reads use a longer bound, so a slow test run
+// does not take the Postgres path.
+func WithCacheTimeout(d time.Duration) Option {
+	return func(s *Server) { s.cacheTimeout = d }
+}
+
 // New returns a Server reading through pool, which caches the first explore page in cache under
 // keys starting with cachePrefix. The cache is optional to serving: when Redis fails or is
 // slow, the page is read from Postgres.
-func New(pool *pgxpool.Pool, cache *redis.Client, cachePrefix string, logger *slog.Logger) *Server {
-	s := &Server{queries: store.New(pool), logger: logger, cache: cache, cachePrefix: cachePrefix}
+func New(pool *pgxpool.Pool, cache *redis.Client, cachePrefix string, logger *slog.Logger, opts ...Option) *Server {
+	s := &Server{queries: store.New(pool), logger: logger, cache: cache, cachePrefix: cachePrefix,
+		cacheTimeout: defaultCacheTimeout, exploreCacheTTL: ExploreCacheTTL}
 	s.exploreRows = s.queries.GetExploreFeed
+	for _, opt := range opts {
+		opt(s)
+	}
 	return s
 }
 
@@ -190,7 +209,7 @@ func (s *Server) firstExplorePage(ctx context.Context, p page) (*feedv1.GetExplo
 // instead. A read that fails because the request of ctx was cancelled or ran out of time is not
 // a cache failure and is not logged.
 func (s *Server) cachedExplorePage(ctx context.Context, key string) (*feedv1.GetExploreFeedResponse, []byte, bool) {
-	getCtx, cancel := context.WithTimeout(ctx, cacheTimeout)
+	getCtx, cancel := context.WithTimeout(ctx, s.cacheTimeout)
 	defer cancel()
 	b, err := s.cache.Get(getCtx, key).Bytes()
 	if err != nil {
@@ -210,9 +229,9 @@ func (s *Server) cachedExplorePage(ctx context.Context, key string) (*feedv1.Get
 // cacheExplorePage stores page b under key for ExploreCacheTTL. A failure is only logged: the
 // next request reads Postgres again.
 func (s *Server) cacheExplorePage(ctx context.Context, key string, b []byte) {
-	ctx, cancel := context.WithTimeout(ctx, cacheTimeout)
+	ctx, cancel := context.WithTimeout(ctx, s.cacheTimeout)
 	defer cancel()
-	if err := s.cache.Set(ctx, key, b, ExploreCacheTTL).Err(); err != nil {
+	if err := s.cache.Set(ctx, key, b, s.exploreCacheTTL).Err(); err != nil {
 		s.warnCache(ctx, "write explore cache", err)
 	}
 }

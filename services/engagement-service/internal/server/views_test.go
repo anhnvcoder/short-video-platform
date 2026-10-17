@@ -668,3 +668,54 @@ func TestPostgresErrorRetriesTheBatch(t *testing.T) {
 		t.Errorf("logged %d retries, want at least 2", len(got))
 	}
 }
+
+// Each batch attempt has a deadline of its own (ADR-0011, section 11).
+func TestViewsConsumerConfigBoundsEachAttempt(t *testing.T) {
+	s, _ := newServerWithoutDB(nil)
+	if cfg := s.ViewsConsumerConfig("127.0.0.1:19092"); cfg.HandlerTimeout != 30*time.Second {
+		t.Errorf("HandlerTimeout = %s, want 30s", cfg.HandlerTimeout)
+	}
+}
+
+// A batch attempt waiting on the offset row that another transaction locks ends at the
+// attempt's deadline, its transaction rolled back: nothing is counted, and the batch counts once
+// when retried after the lock is free.
+func TestBatchWaitingOnOffsetLockEndsAtDeadline(t *testing.T) {
+	e := newViewsEnv(t, "lock_wait")
+	id := ids.New()
+	rs := e.produceViews(t, 0, repeat(id, 5)...)
+
+	holder, err := e.pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Rollback(context.Background()) }()
+	if _, err := holder.Exec(t.Context(),
+		"INSERT INTO consumer_offsets (consumer_group, topic, partition, next_offset) VALUES ($1, $2, 0, 0)",
+		ViewsGroup, TopicViews); err != nil {
+		t.Fatal(err)
+	}
+
+	const deadline = 200 * time.Millisecond
+	ctx, cancel := context.WithTimeout(t.Context(), deadline)
+	defer cancel()
+	start := time.Now()
+	_, err = e.s.HandleViews(ctx, &kafkax.Batch{Records: rs})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("HandleViews returned nil while the offset row was locked")
+	}
+	if elapsed > deadline+rollbackTimeout {
+		t.Errorf("HandleViews returned after %s, want within the deadline %s and the rollback bound %s", elapsed, deadline, rollbackTimeout)
+	}
+	t.Logf("batch attempt on a locked offset row returned after %s: %v", elapsed, err)
+
+	if err := holder.Rollback(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	e.wantCounts(t, map[string]int64{id: 0})
+	e.handle(t, rs...)
+	e.handle(t, rs...)
+	e.wantCounts(t, map[string]int64{id: 5})
+	e.wantNextOffset(t, 0, 5)
+}

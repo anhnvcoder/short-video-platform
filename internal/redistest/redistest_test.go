@@ -1,9 +1,15 @@
 package redistest
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log"
+	"net"
+	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -118,12 +124,113 @@ func TestNewDeletesOnlyItsOwnKeys(t *testing.T) {
 // the cleanup of New runs.
 func patientClient(t *testing.T, c *redis.Client) *redis.Client {
 	t.Helper()
-	o := *c.Options()
-	o.DialTimeout = 5 * time.Second
-	o.ReadTimeout = 5 * time.Second
-	o.WriteTimeout = 5 * time.Second
-	o.PoolTimeout = 5 * time.Second
-	p := redis.NewClient(&o)
+	o, err := options(os.Getenv(EnvURL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Addr != c.Options().Addr {
+		t.Fatalf("%s names %s, the client of New %s", EnvURL, o.Addr, c.Options().Addr)
+	}
+	p := redis.NewClient(o)
 	t.Cleanup(func() { _ = p.Close() })
 	return p
+}
+
+// dropConns returns the address of a listener that closes every connection at once, so each
+// attempt of a command fails, and a function returning how many connections it accepted.
+func dropConns(t *testing.T) (string, func() int64) {
+	t.Helper()
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var accepted atomic.Int64
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepted.Add(1)
+			_ = c.Close()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-done
+	})
+	return ln.Addr().String(), accepted.Load
+}
+
+// TestClientMakesOneAttempt checks the client of New sends a failing command once, without
+// retries or backoff: built from options copied off a built client, it made 4 attempts.
+func TestClientMakesOneAttempt(t *testing.T) {
+	o, err := options("redis://127.0.0.1:6379/15")
+	if err != nil {
+		t.Fatalf("options() error = %v", err)
+	}
+	if o.MaxRetries != -1 || o.DialerRetries != 1 {
+		t.Errorf("MaxRetries, DialerRetries = %d, %d, want -1, 1", o.MaxRetries, o.DialerRetries)
+	}
+	// Same options against a server that drops every connection: no command reaches Redis.
+	addr, accepted := dropConns(t)
+	o.Addr = addr
+	c := redis.NewClient(o)
+	t.Cleanup(func() { _ = c.Close() })
+	if got := c.Options().MaxRetries; got != 0 {
+		t.Errorf("built client MaxRetries = %d, want 0 (go-redis stores -1, no retries, as 0)", got)
+	}
+	if err := c.Ping(t.Context()).Err(); err == nil {
+		t.Fatal("Ping() error = nil, want an error from the dropped connection")
+	}
+	if n := accepted(); n != 1 {
+		t.Errorf("Ping() opened %d connections, want 1 (one attempt)", n)
+	}
+}
+
+// logRecorder collects what go-redis logs.
+type logRecorder struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (r *logRecorder) Printf(_ context.Context, format string, v ...any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lines = append(r.lines, fmt.Sprintf(format, v...))
+}
+
+func (r *logRecorder) all() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return strings.Join(r.lines, "\n")
+}
+
+// TestOpenLogsNothing checks building the test client logs nothing: built from options copied
+// off a built client, it logged "failed to initialize maintnotifications" each time.
+func TestOpenLogsNothing(t *testing.T) {
+	rec := &logRecorder{}
+	redis.SetLogger(rec)
+	t.Cleanup(func() { redis.SetLogger(stdLogger{log.New(os.Stderr, "redis: ", log.LstdFlags|log.Lshortfile)}) })
+
+	for range 3 {
+		c, err := open("redis://127.0.0.1:6379/15")
+		if err != nil {
+			t.Fatalf("open() error = %v", err)
+		}
+		_ = c.Close()
+	}
+	if got := rec.all(); got != "" {
+		t.Errorf("go-redis logged %q, want nothing", got)
+	}
+}
+
+// stdLogger puts the go-redis log back on stderr after TestOpenLogsNothing.
+type stdLogger struct{ l *log.Logger }
+
+func (s stdLogger) Printf(_ context.Context, format string, v ...any) {
+	_ = s.l.Output(2, fmt.Sprintf(format, v...))
 }

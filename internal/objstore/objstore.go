@@ -22,6 +22,10 @@ import (
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+
+	// Deprecated upstream; docs/adr/0011-observability-stage3.md, section 2, keeps it for now and
+	// asks to revisit it before upgrading the AWS SDK or moving to the cloud.
+	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws" //nolint:staticcheck // see above
 )
 
 // Key prefixes of the contract; each one maps to its own bucket.
@@ -93,6 +97,10 @@ type Store struct {
 }
 
 // New returns a Store for cfg. It does not connect; the first call does.
+//
+// Every call sent to the storage (HEAD, GET, PUT, DELETE, list) gets a client span from the
+// global tracer provider, with the bucket and key as attributes, and carries the trace context
+// in its headers. Signing a presigned form sends nothing and gets no span.
 func New(cfg Config) (*Store, error) {
 	required := []struct{ name, value string }{
 		{"Endpoint", cfg.Endpoint},
@@ -121,8 +129,9 @@ func New(cfg Config) (*Store, error) {
 		RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired,
 		ResponseChecksumValidation: aws.ResponseChecksumValidationWhenRequired,
 	}
-	client := s3.New(opts)
+	client := s3.New(opts, func(o *s3.Options) { otelaws.AppendMiddlewares(&o.APIOptions) })
 	// A second client only for signing: the SDK builds the form URL from the client's endpoint.
+	// Without the tracing middleware: signing is local.
 	publicClient := s3.New(opts, func(o *s3.Options) { o.BaseEndpoint = aws.String(public) })
 	return &Store{
 		client:        client,

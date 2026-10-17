@@ -1,0 +1,111 @@
+# Collector of the `obs` profile (docs/adr/0011-observability-stage3.md, sections 1, 5 and 9).
+# Services send OTLP/gRPC to otelcol:4317; this Collector scrubs sensitive attributes and
+# forwards everything to the Collector inside grafana/otel-lgtm (lgtm:4317), which splits it into
+# Tempo, Loki and Prometheus. Nothing here is published on the host.
+# The `obs-elastic` profile runs this same file with ../elastic/otelcol-config.yaml merged over it,
+# which swaps the exporters only (docs/adr/0012-elastic-vs-grafana-stage3.md, section 1): the
+# receivers and the scrubbing processors live here alone.
+
+extensions:
+  # Reachable inside the compose network only, e.g. from the lgtm container:
+  # curl http://otelcol:13133/
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+  # Consumer group lag and broker metrics; enable_consumer_group_metrics is set by redpanda-init
+  # (deploy/redpanda/create-topics.sh).
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: redpanda
+          scrape_interval: 15s
+          metrics_path: /public_metrics
+          static_configs:
+            - targets: ["redpanda:9644"]
+
+processors:
+  # 192 MiB soft limit in a 256 MiB container: refuses data instead of being OOM-killed.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 192
+    spike_limit_mib: 48
+  # A second line of defence only: services must not record these in the first place (JWT-8).
+  # Signal attributes (span, log record, data point) and resource attributes are both scrubbed.
+  attributes/scrub:
+    actions:
+      - key: http.request.header.authorization
+        action: delete
+      - key: http.request.header.cookie
+        action: delete
+      - key: user.email
+        action: delete
+      - key: user.name
+        action: delete
+  resource/scrub:
+    attributes:
+      - key: http.request.header.authorization
+        action: delete
+      - key: http.request.header.cookie
+        action: delete
+      - key: user.email
+        action: delete
+      - key: user.name
+        action: delete
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+exporters:
+  otlp_grpc/lgtm:
+    endpoint: lgtm:4317
+    tls:
+      insecure: true
+    # Bounded in-memory queue (no disk queue, ADR-0011 section 1): when LGTM is down or slow,
+    # telemetry is dropped once the queue is full or a batch has been retried for a minute.
+    sending_queue:
+      enabled: true
+      queue_size: 256
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 10s
+      max_elapsed_time: 60s
+
+service:
+  extensions: [health_check]
+  # The Collector's own metrics (queue size and capacity, refused, failed and dropped data), pushed
+  # by OTLP every 15 s like the services' metrics, straight to LGTM rather than through this
+  # Collector's own pipeline, so they still arrive while that pipeline refuses data. Setting a
+  # reader replaces the default Prometheus endpoint on :8888, which nothing scrapes. service.name
+  # tells these series from those of the Collector inside lgtm (service_name="otelcol-contrib").
+  telemetry:
+    resource:
+      service.name: otelcol
+    metrics:
+      level: normal
+      readers:
+        - periodic:
+            interval: 15000
+            exporter:
+              otlp:
+                protocol: grpc
+                endpoint: http://lgtm:4317
+                insecure: true
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/scrub, resource/scrub, batch]
+      exporters: [otlp_grpc/lgtm]
+    metrics:
+      receivers: [otlp, prometheus]
+      processors: [memory_limiter, attributes/scrub, resource/scrub, batch]
+      exporters: [otlp_grpc/lgtm]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/scrub, resource/scrub, batch]
+      exporters: [otlp_grpc/lgtm]

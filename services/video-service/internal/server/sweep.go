@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/anhnvcoder/short-video-platform/internal/objstore"
+	"github.com/anhnvcoder/short-video-platform/internal/telemetry"
 	"github.com/anhnvcoder/short-video-platform/services/video-service/internal/store"
 )
 
@@ -33,23 +34,28 @@ type UploadSweeper struct {
 	queries *store.Queries
 	storage Storage
 	logger  *slog.Logger
+	// loop reports the last successful batch as svp.loop.last_success{loop="upload-sweep"}.
+	loop *telemetry.Loop
 
-	abandonAfter time.Duration
-	interval     time.Duration
-	batchTimeout time.Duration
+	abandonAfter    time.Duration
+	interval        time.Duration
+	batchTimeout    time.Duration
+	rollbackTimeout time.Duration
 }
 
 // NewUploadSweeper returns a sweeper that, every interval, fails the videos UPLOADING for more
-// than abandonAfter.
+// than abandonAfter. Create one per process: each registers its own loop gauge.
 func (s *Server) NewUploadSweeper(abandonAfter, interval time.Duration) *UploadSweeper {
 	return &UploadSweeper{
-		pool:         s.pool,
-		queries:      s.queries,
-		storage:      s.storage,
-		logger:       s.logger,
-		abandonAfter: abandonAfter,
-		interval:     interval,
-		batchTimeout: sweepBatchTimeout,
+		pool:            s.pool,
+		queries:         s.queries,
+		storage:         s.storage,
+		logger:          s.logger,
+		loop:            telemetry.NewLoop("upload-sweep"),
+		abandonAfter:    abandonAfter,
+		interval:        interval,
+		batchTimeout:    sweepBatchTimeout,
+		rollbackTimeout: s.rollbackTimeout,
 	}
 }
 
@@ -70,7 +76,10 @@ func (w *UploadSweeper) Run(ctx context.Context) {
 // sweep runs one round and returns how many videos it moved to FAILED. The next batch starts
 // at once only when the last one was full and failed every video it selected; a short batch, a
 // delete error or a batch error ends the round, so videos whose delete failed are retried in the
-// next round instead of being selected again and again.
+// next round instead of being selected again and again. Every batch that moves every video it
+// selected, one that found nothing or found the lock taken included, refreshes the loop gauge; a
+// batch error or a delete error does not, so storage that keeps refusing deletes shows as a
+// stalled loop (docs/adr/0011-observability-stage3.md, section 5).
 func (w *UploadSweeper) sweep(ctx context.Context) int {
 	total := 0
 	for {
@@ -83,7 +92,13 @@ func (w *UploadSweeper) sweep(ctx context.Context) int {
 			}
 			break
 		}
-		if selected < sweepBatchSize || failed < selected {
+		// The selected rows stay locked until the batch ends, so a video selected but not moved
+		// is one whose delete failed.
+		if failed < selected {
+			break
+		}
+		w.loop.Succeeded()
+		if selected < sweepBatchSize {
 			break
 		}
 	}
@@ -96,8 +111,9 @@ func (w *UploadSweeper) sweep(ctx context.Context) int {
 // sweepBatch locks up to sweepBatchSize of the oldest abandoned videos, deletes their upload and moves
 // the videos whose delete succeeded to FAILED, in one transaction bounded by batchTimeout. It
 // returns how many videos it selected and how many it moved, both 0 when another instance holds
-// the sweep lock. On an error the transaction rolls back: every video stays UPLOADING, and an
-// upload already deleted is deleted again, without error, next time.
+// the sweep lock. On an error the transaction rolls back, within rollbackTimeout past the batch's
+// deadline: every video stays UPLOADING, and an upload already deleted is deleted again, without
+// error, next time.
 func (w *UploadSweeper) sweepBatch(ctx context.Context) (selected, failed int, err error) {
 	ctx, cancel := context.WithTimeout(ctx, w.batchTimeout)
 	defer cancel()
@@ -105,8 +121,7 @@ func (w *UploadSweeper) sweepBatch(ctx context.Context) (selected, failed int, e
 	if err != nil {
 		return 0, 0, fmt.Errorf("begin: %w", err)
 	}
-	// After Commit this is a no-op; on ctx cancellation it still reaches the server.
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	defer rollback(ctx, tx, w.rollbackTimeout)
 	q := w.queries.WithTx(tx)
 
 	locked, err := q.TryLockUploadSweep(ctx, sweepLockID)

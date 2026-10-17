@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
-
-	"github.com/anhnvcoder/short-video-platform/internal/logx"
-	"github.com/anhnvcoder/short-video-platform/internal/traceparent"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Defaults for the zero fields of ConsumerConfig.
@@ -48,6 +50,10 @@ const DLQSuffix = ".dlq"
 // the handler finished is still committed when shutdown starts at that moment.
 const commitTimeout = 10 * time.Second
 
+// deadLetterTimeout bounds the produce of one record to its dead-letter topic
+// (docs/adr/0011-observability-stage3.md, section 11).
+const deadLetterTimeout = 10 * time.Second
+
 // Attempt tells a handler which try this is.
 type Attempt struct {
 	// Number counts from 1.
@@ -62,8 +68,8 @@ type Attempt struct {
 // error is retried with backoff, and sent to the dead-letter topic after the last attempt.
 //
 // ctx is canceled when the consumer stops; a handler that returns an error after that leaves the
-// record uncommitted, so it is delivered again. ctx carries the record's traceparent header,
-// when valid, as the log trace_id and as traceparent.FromContext, which Produce passes on.
+// record uncommitted, so it is delivered again. ctx carries a consumer span extracted from the
+// record's trace headers; logs and Produce use that span's context.
 type Handler func(ctx context.Context, r *kgo.Record, a Attempt) error
 
 type permanentError struct{ err error }
@@ -92,6 +98,8 @@ type ConsumerConfig struct {
 
 	// MaxAttempts is the number of handler calls per record, the first included.
 	MaxAttempts int
+	// HandlerTimeout bounds each attempt; zero leaves the handler without a deadline.
+	HandlerTimeout time.Duration
 	// BackoffBase is the wait after the first failure; each later wait doubles, up to
 	// BackoffMax. Each wait is randomized to between half and all of that value.
 	BackoffBase time.Duration
@@ -110,6 +118,8 @@ type ConsumerConfig struct {
 
 	// opts are extra client options for tests.
 	opts []kgo.Opt
+	// deadLetterTimeout replaces the package's deadLetterTimeout in tests when set.
+	deadLetterTimeout time.Duration
 }
 
 // Consumer runs a Handler over the records of a consumer group. Records are handled one at a
@@ -118,6 +128,7 @@ type ConsumerConfig struct {
 type Consumer struct {
 	cl  *kgo.Client
 	cfg ConsumerConfig
+	dlq metric.Int64Counter
 }
 
 // NewConsumer checks cfg, fills in defaults and creates the client. It does not connect.
@@ -145,6 +156,9 @@ func newConsumer(cfg ConsumerConfig) (*Consumer, error) {
 	if cfg.RebalanceTimeout <= 0 {
 		cfg.RebalanceTimeout = DefaultRebalanceTimeout
 	}
+	if cfg.deadLetterTimeout <= 0 {
+		cfg.deadLetterTimeout = deadLetterTimeout
+	}
 	opts := []kgo.Opt{
 		kgo.ConsumerGroup(cfg.Group),
 		kgo.ConsumeTopics(cfg.Topics...),
@@ -159,7 +173,15 @@ func newConsumer(cfg ConsumerConfig) (*Consumer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Consumer{cl: cl, cfg: cfg}, nil
+	dlq, err := otel.Meter(tracerName).Int64Counter("svp.kafka.dlq.records")
+	if err != nil {
+		cl.Close()
+		return nil, fmt.Errorf("create kafka dead-letter counter: %w", err)
+	}
+	for _, topic := range cfg.Topics {
+		dlq.Add(context.Background(), 0, metric.WithAttributes(attribute.String("topic", topic), attribute.String("group", cfg.Group)))
+	}
+	return &Consumer{cl: cl, cfg: cfg, dlq: dlq}, nil
 }
 
 // errStopped means ctx was canceled while a record was in progress; that record stays
@@ -206,14 +228,14 @@ func (c *Consumer) settleAll(ctx context.Context, fetches kgo.Fetches) error {
 // settle runs the handler on r with retries, sends r to the dead-letter topic when it fails,
 // and commits it.
 func (c *Consumer) settle(ctx context.Context, r *kgo.Record) error {
-	hctx := handlerContext(ctx, r)
+	var hctx context.Context
 	var (
 		err    error
 		reason string
 	)
 	for n := 1; ; n++ {
 		a := Attempt{Number: n, Last: n >= c.cfg.MaxAttempts}
-		err = c.cfg.Handler(hctx, r, a)
+		hctx, err = c.handle(ctx, r, a)
 		if err == nil {
 			return c.commit(ctx, r)
 		}
@@ -235,12 +257,25 @@ func (c *Consumer) settle(ctx context.Context, r *kgo.Record) error {
 			return errStopped
 		}
 	}
-	if err := c.deadLetter(ctx, r, reason, err); err != nil {
+	dctx := trace.ContextWithSpanContext(ctx, trace.SpanContextFromContext(hctx))
+	if err := c.deadLetter(dctx, r, reason, err); err != nil {
 		return err
 	}
 	c.cfg.Logger.LogAttrs(hctx, slog.LevelWarn, "kafka record sent to dead-letter topic",
 		recordAttrs(r, slog.String("reason", reason), slog.String("error", err.Error()))...)
 	return c.commit(ctx, r)
+}
+
+func (c *Consumer) handle(ctx context.Context, r *kgo.Record, a Attempt) (context.Context, error) {
+	hctx, span := otel.Tracer(tracerName).Start(handlerContext(ctx, r), "process "+r.Topic,
+		trace.WithSpanKind(trace.SpanKindConsumer), trace.WithAttributes(
+			semconv.MessagingSystemKafka, semconv.MessagingDestinationName(r.Topic),
+			semconv.MessagingConsumerGroupName(c.cfg.Group), semconv.MessagingOperationName("process"),
+			semconv.MessagingOperationTypeProcess))
+	hctx, cancel := attemptContext(hctx, c.cfg.HandlerTimeout)
+	defer cancel()
+	err := c.cfg.Handler(hctx, r, a)
+	return hctx, endAttempt(span, err)
 }
 
 // deadLetter writes r, with its key, value and headers, to its dead-letter topic.
@@ -256,12 +291,15 @@ func (c *Consumer) deadLetter(ctx context.Context, r *kgo.Record, reason string,
 		kgo.RecordHeader{Key: HeaderDLQGroup, Value: []byte(c.cfg.Group)},
 	)
 	dlq := &kgo.Record{Topic: r.Topic + DLQSuffix, Key: r.Key, Value: r.Value, Headers: headers}
-	if err := c.cl.ProduceSync(ctx, dlq).FirstErr(); err != nil {
+	pctx, cancel := context.WithTimeout(ctx, c.cfg.deadLetterTimeout)
+	defer cancel()
+	if err := Produce(pctx, c.cl, dlq); err != nil {
 		if ctx.Err() != nil {
 			return errStopped
 		}
 		return fmt.Errorf("produce %s/%d@%d to dead-letter topic %s: %w", r.Topic, r.Partition, r.Offset, dlq.Topic, err)
 	}
+	c.dlq.Add(ctx, 1, metric.WithAttributes(attribute.String("topic", r.Topic), attribute.String("group", c.cfg.Group)))
 	return nil
 }
 
@@ -295,18 +333,6 @@ func sleep(ctx context.Context, d time.Duration) bool {
 	case <-ctx.Done():
 		return false
 	}
-}
-
-// handlerContext adds the trace-id of a valid traceparent header to the log context and the raw
-// value to ctx. A missing or malformed header is ignored.
-func handlerContext(ctx context.Context, r *kgo.Record) context.Context {
-	if v, ok := header(r, traceparent.MetadataKey); ok {
-		if id, ok := traceparent.TraceID(v); ok {
-			ctx = logx.With(ctx, slog.String("trace_id", id))
-			ctx = traceparent.NewContext(ctx, v)
-		}
-	}
-	return ctx
 }
 
 // recordAttrs locates r in a log line; the value is never logged.

@@ -16,22 +16,27 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/anhnvcoder/short-video-platform/internal/logx"
-	"github.com/anhnvcoder/short-video-platform/internal/traceparent"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc/filters"
 )
 
 // shutdownTimeout bounds GracefulStop; after it, in-flight RPCs are cut off by Stop.
 const shutdownTimeout = 10 * time.Second
 
+// healthCheckMethod is the RPC Healthcheck and the compose health checks call.
+const healthCheckMethod = "/grpc.health.v1.Health/Check"
+
 // Run listens on addr and serves gRPC until ctx is done, then stops gracefully. It returns an
 // error when it cannot listen or serving fails, and nil after a shutdown caused by ctx.
 //
-// register adds the service's handlers. Every unary RPC passes, in order, through: trace
-// context (metadata traceparent into the log context), the RPC log line, panic recovery, then
-// interceptors. The standard health service reports SERVING until shutdown starts.
+// register adds the service's handlers. Every RPC but the health check gets a server span and
+// the rpc.server.call.duration metric from the otelgrpc stats handler, which continues the trace
+// of the metadata traceparent (a new root trace when it is missing or malformed), using the
+// global OTel providers and propagator. Every unary RPC then passes, in order, through: the RPC
+// log line, panic recovery, then interceptors. The standard health service reports SERVING until
+// shutdown starts.
 func Run(ctx context.Context, addr string, logger *slog.Logger, register func(*grpc.Server), interceptors ...grpc.UnaryServerInterceptor) error {
 	var lc net.ListenConfig
 	lis, err := lc.Listen(ctx, "tcp", addr)
@@ -42,8 +47,12 @@ func Run(ctx context.Context, addr string, logger *slog.Logger, register func(*g
 }
 
 func serve(ctx context.Context, lis net.Listener, logger *slog.Logger, register func(*grpc.Server), interceptors ...grpc.UnaryServerInterceptor) error {
-	chain := append([]grpc.UnaryServerInterceptor{traceInterceptor, logInterceptor(logger), recoverInterceptor(logger)}, interceptors...)
-	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(chain...))
+	chain := append([]grpc.UnaryServerInterceptor{logInterceptor(logger), recoverInterceptor(logger)}, interceptors...)
+	srv := grpc.NewServer(
+		// Docker probes the health check every 10 s: no span or metric for it.
+		grpc.StatsHandler(otelgrpc.NewServerHandler(otelgrpc.WithFilter(filters.Not(filters.FullMethodName(healthCheckMethod))))),
+		grpc.ChainUnaryInterceptor(chain...),
+	)
 
 	hs := health.NewServer()
 	healthpb.RegisterHealthServer(srv, hs)
@@ -83,30 +92,23 @@ func serve(ctx context.Context, lis net.Listener, logger *slog.Logger, register 
 	return nil
 }
 
-// traceInterceptor puts the trace-id of a valid traceparent metadata value into the log
-// context, and the raw value into the context (traceparent.NewContext) for events the handler
-// writes. A missing or malformed value is ignored: the RPC runs without a trace_id.
-func traceInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-	if md, ok := metadata.FromIncomingContext(ctx); ok {
-		if vals := md.Get(traceparent.MetadataKey); len(vals) > 0 {
-			if id, ok := traceparent.TraceID(vals[0]); ok {
-				ctx = logx.With(ctx, slog.String("trace_id", id))
-				ctx = traceparent.NewContext(ctx, vals[0])
-			}
-		}
-	}
-	return handler(ctx, req)
-}
-
 // logInterceptor writes one line per RPC: method, status code and duration. Request and
-// response bodies are never logged, since they can hold passwords and tokens.
+// response bodies are never logged, since they can hold passwords and tokens. The line is at
+// ERROR for the codes that mean a fault of the server (UNKNOWN, INTERNAL, DATA_LOSS), so the error
+// tracker gets it, and at INFO otherwise.
 func logInterceptor(logger *slog.Logger) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		start := time.Now()
 		resp, err := handler(ctx, req)
-		logger.LogAttrs(ctx, slog.LevelInfo, "rpc",
+		code := status.Code(err)
+		level := slog.LevelInfo
+		switch code {
+		case codes.Unknown, codes.Internal, codes.DataLoss:
+			level = slog.LevelError
+		}
+		logger.LogAttrs(ctx, level, "rpc",
 			slog.String("method", info.FullMethod),
-			slog.String("code", status.Code(err).String()),
+			slog.String("code", code.String()),
 			slog.Float64("duration_ms", float64(time.Since(start).Microseconds())/1000),
 		)
 		return resp, err

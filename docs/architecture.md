@@ -1,12 +1,14 @@
 # Kiến trúc short-video platform
 
-> Trạng thái: giai đoạn 0, 1 và 2 xong (2026-10-11). ADR 0001–0010, contract ở [`proto/`](../proto/)
+> Trạng thái: giai đoạn 0, 1, 2 (2026-10-11) và 3 (2026-10-17) xong. ADR 0001–0012, contract ở [`proto/`](../proto/)
 > ([§8](#8-contract)), threat model ở [`threat-model.md`](threat-model.md). `make up` chạy luồng đồng bộ (đăng ký, đăng
 > nhập, tạo và đọc video, follow), luồng upload bất đồng bộ (presigned POST lên MinIO, outbox → Redpanda, media-worker
 > transcode ra HLS, video `READY` hoặc `FAILED`, job dọn upload bỏ dở), luồng feed (follow qua outbox, feed-service
 > fan-out on write, feed following và khám phá có cache trang đầu trong Redis, like, lượt xem gom theo lô ở
-> engagement-service), rate limit ở gateway bằng Redis, retry và circuit breaker cho lời gọi gRPC của gateway. Phần còn
-> lại của tài liệu (CDN, observability, k8s, cloud) là thiết kế đích.
+> engagement-service), rate limit ở gateway bằng Redis, retry và circuit breaker cho lời gọi gRPC của gateway. Mọi
+> service đẩy trace, metric, log qua OpenTelemetry tới Collector; `make up OBS=lgtm` thêm Grafana LGTM, Alertmanager và
+> GlitchTip với SLO, cảnh báo burn rate và dashboard ([ADR-0011](adr/0011-observability-stage3.md),
+> [§5](#5-c4-mức-container)). Phần còn lại của tài liệu (CDN, k8s, cloud) là thiết kế đích.
 
 Tài liệu này mô tả hệ thống sẽ được xây và lý do. Mỗi quyết định lớn có một ADR trong [`adr/`](adr/); ở đây chỉ tóm tắt
 và trỏ tới.
@@ -32,14 +34,14 @@ gợi ý bằng ML, thông báo, xoá/sửa video, kiểm duyệt nội dung. Th
 
 | Mảng | Yêu cầu | Đo ở đâu |
 | --- | --- | --- |
-| Độ trễ | Feed p99 < 150 ms tại 1.000 req/s | Gateway, k6 (giai đoạn 3, 6) |
-| Sẵn sàng | Khởi tạo upload thành công 99,9%; đọc feed 99,9% | SLO + burn rate (giai đoạn 3) |
-| Xử lý video | Video 1 phút sẵn sàng phát p95 < 2 phút kể từ lúc upload xong | Từ `CompleteUpload` tới `READY` |
-| Độ tươi | Video `READY` xuất hiện trong feed follower p95 < 10 s | Từ `video.ready` tới dòng timeline cuối cùng |
+| Độ trễ | Feed p99 < 150 ms tại 1.000 req/s | SLO `feed-latency`: 99% request GET feed ở gateway nằm trong bucket 150 ms của `http_server_request_duration_seconds`, cảnh báo burn rate (giai đoạn 3); tải 1.000 req/s bằng k6 (giai đoạn 6) |
+| Sẵn sàng | Khởi tạo upload thành công 99,9%; đọc feed 99,9% | SLO `upload-init-availability`, `feed-availability`: tỉ lệ 5xx trên tổng request ở gateway, cảnh báo burn rate qua Alertmanager (giai đoạn 3) |
+| Xử lý video | Video 1 phút sẵn sàng phát p95 < 2 phút kể từ lúc upload xong | Từ `CompleteUpload` tới `READY`: `make measure-ready`; SLO `video-ready-latency`, 95% mẫu `svp_video_ready_duration_seconds` của video-service trong bucket 120 s, `FAILED` luôn tính xấu (giai đoạn 3) |
+| Độ tươi | Video `READY` xuất hiện trong feed follower p95 < 10 s | Từ `video.ready` tới dòng timeline cuối cùng: `make measure-freshness`; histogram `svp_feed_freshness_seconds` trên dashboard, chưa thành SLO vì local quá ít event |
 | Bền dữ liệu | Video đã `CompleteUpload` thành công thì không mất; event không mất | Diễn tập kill worker (giai đoạn 2) |
 | Đúng đắn | Event gửi trùng không làm sai bộ đếm, không transcode hai lần ra kết quả khác | Test gửi trùng (giai đoạn 2) |
 | Nhất quán | Số lượt xem trễ tối đa ~1 phút; like của chính mình thấy ngay | — |
-| Vận hành | Mọi request có `trace_id`; deploy không downtime; cảnh báo theo SLO | Giai đoạn 3, 4 |
+| Vận hành | Mọi request có `trace_id`; deploy không downtime; cảnh báo theo SLO | Giai đoạn 3: trace OpenTelemetry mở ở gateway, log có `trace_id`, cảnh báo burn rate của 4 SLO cùng cảnh báo lag, vòng nền, DLQ, breaker, rate limit dự phòng; `make drill-alert-to-sentry`. Deploy không downtime ở giai đoạn 4 |
 | Chi phí | Local trước; tài nguyên cloud dựng và xoá trong cùng buổi | Budget alert |
 
 Hai dòng "Độ tươi" và "Nhất quán" không có trong plan gốc; người học đã duyệt ngày 2026-10-11. Hệ thống dùng event nên
@@ -114,8 +116,8 @@ flowchart TB
     user["<b>Người dùng</b><br/>[Người]<br/>Xem feed, upload, like"]
     ops["<b>Người vận hành</b><br/>[Người]<br/>Dev, on-call"]
     svp["<b>Short-video platform</b><br/>[Hệ thống]<br/>Upload, transcode HLS, feed, like/view"]
-    sentry["<b>Sentry</b><br/>[SaaS]<br/>Gom lỗi ứng dụng"]
-    chat["<b>Slack / Telegram</b><br/>[SaaS]<br/>Kênh cảnh báo"]
+    sentry["<b>GlitchTip</b><br/>[tự host ở local, giao thức Sentry]<br/>Gom lỗi ứng dụng"]
+    chat["<b>Telegram</b><br/>[SaaS, tuỳ chọn]<br/>Kênh cảnh báo page"]
 
     user -->|"REST/JSON, tải HLS qua HTTPS"| svp
     ops -->|"Grafana, Argo CD"| svp
@@ -199,8 +201,22 @@ CDN (client đọc thẳng MinIO). Redpanda và MinIO chạy trong compose profi
   mọi diễn tập: Redis native dùng 6,9 MB (gồm cả dữ liệu dự án khác), db 10 còn 15 khoá (trung bình 96 B), db 14
   trống.
 - **Mạng riêng của media-worker:** worker chạy ffmpeg trên file người dùng tải lên, nên chỉ nằm trong mạng compose `worker`
-  (`internal`, không route ra ngoài) cùng Redpanda và MinIO; nó không tới được gateway, các service gRPC, Postgres hay
-  internet. Container chỉ đọc, bỏ mọi capability, giới hạn 2 CPU, 2 GB.
+  (`internal`, không route ra ngoài) cùng Redpanda, MinIO và Collector `otelcol`; nó không tới được gateway, các service
+  gRPC, Postgres hay internet. Container chỉ đọc, bỏ mọi capability, giới hạn 2 CPU, 2 GB.
+- **Observability** ([ADR-0011](adr/0011-observability-stage3.md), so sánh Elastic ở
+  [ADR-0012](adr/0012-elastic-vs-grafana-stage3.md)): mọi service đẩy trace, metric (mỗi 15 s) và log qua OTLP/gRPC tới
+  Collector `otelcol` (`otel/opentelemetry-collector-contrib`, nằm ở cả mạng `default` và `worker`, cổng 4317 không
+  publish; memory limiter, xoá attribute nhạy cảm, batch, scrape lag Redpanda). Không service nào mở `/metrics` hay pprof.
+  Profile `obs` (`make up OBS=lgtm`) thêm `lgtm` (Grafana `127.0.0.1:3000` cùng Prometheus giữ 30 ngày, Loki, Tempo,
+  Pyroscope; 5 service đẩy profile tới `lgtm:4040`, media-worker không), `alertmanager` (`127.0.0.1:9093`, gửi
+  `severity=page` tới Telegram khi `.env` có bot) và `glitchtip` (`127.0.0.1:8000`, tracker lỗi qua giao thức Sentry,
+  database `svp_glitchtip` trên Postgres native). Không có profile `obs`, DNS `otelcol` không tồn tại: SDK bỏ export,
+  service vẫn chạy. Đo 2026-10-17 (`docker stats` lúc nghỉ): `otelcol` 64–100 MiB / 256 MiB, `lgtm` 740 MiB sau 3 lượt
+  smoke và 1 245 MiB sau mọi diễn tập / 1 536 MiB, `alertmanager` 17–42 MiB / 64 MiB, `glitchtip` 185–232 MiB / 512 MiB;
+  cả `core` + `obs` 1,71–2,19 GiB. Overhead của SDK trên 6 service so với tắt telemetry: khoảng +50 MiB RAM và +2% một lõi
+  CPU dưới tải smoke, p50/p95 trang khám phá +12/+12 ms (số đo và cách đo ở
+  [plan](../plans/261004-devops-sa-roadmap/plan.md), Tiến độ giai đoạn 3). Profile `obs-elastic` (Elasticsearch, Kibana
+  `127.0.0.1:5601`, APM Server, `otelcol-elastic` cùng alias `otelcol`) chỉ để so sánh, không chạy cùng `obs`.
 
 ## 6. Sở hữu dữ liệu và event
 
@@ -445,6 +461,10 @@ Thân lỗi theo RFC 9457 (`Content-Type: application/problem+json`):
 
 - `type` là `about:blank` và `title` là tên chuẩn của mã HTTP; `detail` là message của service; `code` là
   `ErrorInfo.reason`, không có thì là tên mã gRPC (`NOT_FOUND`); `trace_id` để tra log và trace.
+- `trace_id` là trace ID của span OpenTelemetry mà gateway mở cho request, luôn là trace gốc mới (`traceparent` của
+  client bị bỏ qua, [ADR-0011](adr/0011-observability-stage3.md) §3); cùng giá trị với trace trong Tempo, field
+  `trace_id` của log và tag `trace_id` của event lỗi. `/healthz`, `/readyz` không có span, nên problem của chúng (503
+  `NOT_READY`) có `trace_id` rỗng.
 - Với mã 5xx, gateway **không** trả message gốc và lý do của service (tránh lộ chi tiết nội bộ): `detail` bỏ trống, `code`
   là tên mã gRPC, chỉ `trace_id` để tra.
 - Lỗi do chính gateway sinh (JWT sai hoặc hết hạn: 401; vượt rate limit: 429) dùng cùng định dạng.
@@ -514,8 +534,8 @@ Rate limit, cache, timeout/retry/circuit breaker và job dọn upload chốt ở
   (UP-7, đếm ở video-service dưới advisory lock theo tác giả, mục 5);
 - video-service chạy job dọn upload bỏ dở mỗi 5 phút, một instance một lúc nhờ `pg_try_advisory_xact_lock`: video
   `UPLOADING` quá 1 giờ bị xoá object `uploads/<video_id>` rồi chuyển `FAILED`, lô 100 video, hạn 30 s mỗi lô (mục 5);
-- mọi lời gọi gRPC của gateway có deadline (3 s, `GetStats` 100 ms); timeout ngoài gRPC (Postgres trong vòng nền, client
-  Kafka và S3) để giai đoạn 3 (mục 4).
+- mọi lời gọi gRPC của gateway có deadline (3 s, `GetStats` 100 ms); hạn của lời gọi ngoài gRPC (Postgres trong vòng nền
+  và consumer, produce Kafka, S3) chốt ở [ADR-0011](adr/0011-observability-stage3.md) §11.
 
 ## 9. Quyết định
 
@@ -527,5 +547,3 @@ Danh sách ADR và trạng thái: [`adr/README.md`](adr/README.md).
 - **Trên cloud dùng chung một instance Postgres cho mọi service hay tách:** chốt ở giai đoạn 7.
 - **Số hop proxy tin cậy khi đọc `X-Forwarded-For`** (RL-1): gateway hiện lấy IP từ địa chỉ kết nối, chỉ đúng ở compose;
   chốt ở giai đoạn 4 (Envoy Gateway) trước khi đưa gateway ra sau proxy, xem lại theo môi trường ở giai đoạn 7.
-- **Hạn cho lời gọi ngoài gRPC** (Postgres trong relay, consumer, projector, dọn timeline; client Kafka và S3): chốt ở
-  giai đoạn 3, cùng metric lag và cảnh báo.

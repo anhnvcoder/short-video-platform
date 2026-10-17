@@ -18,6 +18,7 @@ import (
 
 	"github.com/twmb/franz-go/pkg/kfake"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.opentelemetry.io/otel"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -647,8 +648,11 @@ func TestConsumerRetriesStorageThenCompletes(t *testing.T) {
 	e := newEnv(t)
 	e.store.failDownloads = 2
 	id, r := e.withSource(t, clip(t, "640x360", 2))
-	const tp = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
-	r.Headers = []kgo.RecordHeader{{Key: "traceparent", Value: []byte(tp)}}
+	// Produced in a trace, as the relay of video-service sends it. Each run starts a trace of its
+	// own, so a run with -count=N does not count the spans of an earlier one.
+	ctx, parent := otel.Tracer("test").Start(t.Context(), "send "+InputTopic)
+	parent.End()
+	r.Context = ctx
 	e.startConsumer(t)
 	e.produce(t, r)
 
@@ -656,8 +660,19 @@ func TestConsumerRetriesStorageThenCompletes(t *testing.T) {
 	if c := decodeOut(t, out).GetTranscodeCompleted(); c.GetVideoId() != id {
 		t.Errorf("event = %v, want transcode.completed for %s", c, id)
 	}
-	if got := headerValue(out, "traceparent"); got != tp {
-		t.Errorf("traceparent = %q, want %q", got, tp)
+	want := parent.SpanContext().TraceID()
+	if got := traceIDOf(t, headerValue(out, "traceparent")); got != want {
+		t.Errorf("result is in trace %s, want the record's trace %s", got, want)
+	}
+	// Every try, the two failed downloads included, traced its steps in the record's trace.
+	var downloads int
+	for _, s := range spansOf(want) {
+		if s.Name() == "download source" {
+			downloads++
+		}
+	}
+	if downloads != 3 {
+		t.Errorf("%d download spans in the record's trace, want 3", downloads)
 	}
 	if _, downloads := e.store.snapshot(); downloads != 3 {
 		t.Errorf("downloads = %d, want 3", downloads)

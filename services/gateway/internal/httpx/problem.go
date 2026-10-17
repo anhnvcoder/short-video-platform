@@ -6,8 +6,12 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -68,16 +72,36 @@ func WriteRateLimited(w http.ResponseWriter, r *http.Request, class string, retr
 
 // Routes serves mux, answering a request that matches no route with a problem response instead
 // of ServeMux's text/plain one: 404 NOT_FOUND, or 405 METHOD_NOT_ALLOWED with the Allow header
-// ServeMux sets.
+// ServeMux sets. A matched request has its route set on the span and metric of Trace before the
+// route's handler, and so before its authentication and rate limit, runs.
 func Routes(mux *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h, pattern := mux.Handler(r)
 		if pattern != "" {
+			setRoute(r, pattern)
 			mux.ServeHTTP(w, r)
 			return
 		}
 		h.ServeHTTP(&unmatchedWriter{ResponseWriter: w, r: r}, r)
 	})
+}
+
+// setRoute names the request's span "METHOD /route" and sets http.route on the span and on
+// http.server.request.duration (docs/adr/0011-observability-stage3.md, section 2). The route is
+// the path of the mux pattern, such as /videos/{video_id}, never the URL path, which holds ids.
+// otelhttp cannot see the pattern itself: ServeMux sets it on a copy of the request made deeper
+// in the chain.
+func setRoute(r *http.Request, pattern string) {
+	i := strings.IndexByte(pattern, '/')
+	if i < 0 {
+		return
+	}
+	route := pattern[i:]
+	span := trace.SpanFromContext(r.Context())
+	span.SetName(r.Method + " " + route)
+	span.SetAttributes(semconv.HTTPRoute(route))
+	labeler, _ := otelhttp.LabelerFromContext(r.Context())
+	labeler.Add(semconv.HTTPRoute(route))
 }
 
 // unmatchedWriter replaces the 404 or 405 reply of ServeMux with a problem response. Other
@@ -141,8 +165,10 @@ var grpcToHTTP = map[codes.Code]grpcMapping{
 // is unwrapped first, so the wrapping text never reaches detail.
 //
 // A 5xx response never carries the service's message or reason (threat model IN-8): detail is
-// empty, code is the gRPC code name, and the original error goes to the log with the trace_id.
-// An error that is not a gRPC status is answered as INTERNAL.
+// empty, code is the gRPC code name, and the original error goes to an ERROR log line with the
+// trace_id, the route pattern (route, empty outside a route) and the gRPC code (code). The error
+// tracker groups that line by route and reads the error's type and code from error, which stays
+// an error value. An error that is not a gRPC status is answered as INTERNAL.
 func WriteGRPCError(w http.ResponseWriter, r *http.Request, err error) {
 	var se interface{ GRPCStatus() *status.Status }
 	ok := errors.As(err, &se)
@@ -156,8 +182,9 @@ func WriteGRPCError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	if m.status >= http.StatusInternalServerError {
 		slog.ErrorContext(r.Context(), "grpc call failed",
-			slog.String("grpc_code", st.Code().String()),
-			slog.String("error", err.Error()),
+			slog.String("route", r.Pattern),
+			slog.String("code", st.Code().String()),
+			slog.Any("error", err),
 		)
 		WriteProblem(w, r, m.status, m.name, "")
 		return

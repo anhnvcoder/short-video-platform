@@ -52,12 +52,13 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	eventv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/event/v1"
 	"github.com/anhnvcoder/short-video-platform/internal/ids"
-	"github.com/anhnvcoder/short-video-platform/internal/traceparent"
 )
 
 // Event is a topic's wrapper message, such as svp.video.v1.VideoEvent: the envelope in field 1,
@@ -73,7 +74,7 @@ func NewMeta() *eventv1.EventMeta {
 }
 
 // Write adds ev to the outbox in tx, to be produced to topic with record key key (the entity
-// id). The traceparent stored in ctx by traceparent.NewContext, if any, becomes a record header.
+// id). The current trace context, if any, is stored in headers for the relay to extract.
 // The caller must have locked the entity row in tx before calling Write (see the package doc).
 func Write(ctx context.Context, tx pgx.Tx, topic, key string, ev Event) error {
 	if topic == "" || key == "" {
@@ -91,9 +92,7 @@ func Write(ctx context.Context, tx pgx.Tx, topic, key string, ev Event) error {
 		return fmt.Errorf("outbox: marshal event: %w", err)
 	}
 	headers := map[string]string{}
-	if tp, ok := traceparent.FromContext(ctx); ok {
-		headers[traceparent.MetadataKey] = tp
-	}
+	otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(headers))
 	_, err = tx.Exec(ctx,
 		"INSERT INTO outbox (event_id, topic, record_key, payload, headers) VALUES ($1, $2, $3, $4, $5)",
 		meta.GetEventId(), topic, key, payload, headers)

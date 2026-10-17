@@ -1,0 +1,45 @@
+# Collector of the `obs-elastic` profile, the Elastic comparison of
+# docs/adr/0012-elastic-vs-grafana-stage3.md. Not a config of its own: compose passes
+# ../otelcol/config.yaml first and this file second, and the Collector merges the second over the
+# first (maps key by key, a list replaced whole). The receivers and processors, the scrubbing of
+# sensitive attributes among them (JWT-8), therefore come from that file alone, and the two stacks
+# get the same data. This file only adds the exporter to APM Server (apm-server:8200), which writes
+# traces, metrics and logs to Elasticsearch for Kibana, and points every pipeline and the
+# Collector's own metrics at it. The `otlp_grpc/lgtm` exporter of the first file is left defined
+# but in no pipeline, so the Collector never starts it. `make otelcol-validate` checks the merge.
+# Nothing here is published on the host.
+
+exporters:
+  # APM Server takes OTLP/gRPC and HTTP on its one port, without TLS or a token here: security is
+  # off in this local-only stack (apm-server.yml).
+  otlp_grpc/elastic:
+    endpoint: apm-server:8200
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: true
+      queue_size: 256
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 10s
+      max_elapsed_time: 60s
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - periodic:
+            interval: 15000
+            exporter:
+              otlp:
+                protocol: grpc
+                endpoint: http://apm-server:8200
+                insecure: true
+  pipelines:
+    traces:
+      exporters: [otlp_grpc/elastic]
+    metrics:
+      exporters: [otlp_grpc/elastic]
+    logs:
+      exporters: [otlp_grpc/elastic]

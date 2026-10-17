@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -10,8 +11,12 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/anhnvcoder/short-video-platform/internal/kafkax"
+	"github.com/anhnvcoder/short-video-platform/internal/telemetry"
 )
 
 // lockID is the transaction-scoped advisory lock a relay holds while it sends a batch, so only
@@ -24,6 +29,8 @@ const (
 	batchSize        = 100
 	idleWait         = 200 * time.Millisecond
 	produceTimeout   = 10 * time.Second
+	postgresTimeout  = 5 * time.Second
+	cleanupTimeout   = 30 * time.Second
 	retryBase        = 500 * time.Millisecond
 	retryMax         = 10 * time.Second
 	cleanupEvery     = 10 * time.Minute
@@ -36,24 +43,32 @@ type Relay struct {
 	client *kgo.Client
 	logger *slog.Logger
 
-	idleWait       time.Duration
-	produceTimeout time.Duration
-	retryBase      time.Duration
-	retryMax       time.Duration
-	cleanupEvery   time.Duration
+	idleWait        time.Duration
+	produceTimeout  time.Duration
+	postgresTimeout time.Duration
+	cleanupTimeout  time.Duration
+	retryBase       time.Duration
+	retryMax        time.Duration
+	cleanupEvery    time.Duration
+	relayLoop       *telemetry.Loop
+	cleanupLoop     *telemetry.Loop
 }
 
 // NewRelay returns a relay reading the outbox table through pool and producing with client.
 func NewRelay(pool *pgxpool.Pool, client *kgo.Client, logger *slog.Logger) *Relay {
 	return &Relay{
-		pool:           pool,
-		client:         client,
-		logger:         logger,
-		idleWait:       idleWait,
-		produceTimeout: produceTimeout,
-		retryBase:      retryBase,
-		retryMax:       retryMax,
-		cleanupEvery:   cleanupEvery,
+		pool:            pool,
+		client:          client,
+		logger:          logger,
+		idleWait:        idleWait,
+		produceTimeout:  produceTimeout,
+		postgresTimeout: postgresTimeout,
+		cleanupTimeout:  cleanupTimeout,
+		retryBase:       retryBase,
+		retryMax:        retryMax,
+		cleanupEvery:    cleanupEvery,
+		relayLoop:       telemetry.NewLoop("outbox-relay"),
+		cleanupLoop:     telemetry.NewLoop("outbox-cleanup"),
 	}
 }
 
@@ -76,6 +91,9 @@ func (r *Relay) Run(ctx context.Context) {
 			r.cleanup(ctx)
 		case <-next.C:
 			n, err := r.sendBatch(ctx)
+			if err == nil {
+				r.relayLoop.Succeeded()
+			}
 			switch {
 			case ctx.Err() != nil:
 				return
@@ -122,22 +140,31 @@ type row struct {
 // sent. It returns the number of rows sent, 0 when another relay holds the lock. On any error
 // the transaction rolls back and the rows stay unsent, including rows already produced.
 func (r *Relay) sendBatch(ctx context.Context) (n int, err error) {
-	tx, err := r.pool.Begin(ctx)
+	rctx, readCancel := context.WithTimeout(ctx, r.postgresTimeout)
+	defer readCancel()
+	tx, err := r.pool.Begin(rctx)
 	if err != nil {
 		return 0, fmt.Errorf("begin: %w", err)
 	}
 	// After Commit this is a no-op; on ctx cancellation it still reaches the server.
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	defer func() {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.postgresTimeout)
+		defer cancel()
+		if rollbackErr := tx.Rollback(rctx); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
+			err = errors.Join(err, fmt.Errorf("rollback outbox batch: %w", rollbackErr))
+		}
+	}()
 
 	var locked bool
-	if err := tx.QueryRow(ctx, "SELECT pg_try_advisory_xact_lock($1)", lockID).Scan(&locked); err != nil {
+	if err := tx.QueryRow(rctx, "SELECT pg_try_advisory_xact_lock($1)", lockID).Scan(&locked); err != nil {
 		return 0, fmt.Errorf("take relay lock: %w", err)
 	}
 	if !locked {
 		return 0, nil
 	}
 
-	rows, err := readUnsent(ctx, tx)
+	rows, err := readUnsent(rctx, tx)
+	readCancel()
 	if err != nil {
 		return 0, err
 	}
@@ -148,7 +175,7 @@ func (r *Relay) sendBatch(ctx context.Context) (n int, err error) {
 	records := make([]*kgo.Record, len(rows))
 	rowIDs := make([]int64, len(rows))
 	for i, x := range rows {
-		records[i] = toRecord(x)
+		records[i] = toRecord(ctx, x)
 		rowIDs[i] = x.id
 	}
 	pctx, cancel := context.WithTimeout(ctx, r.produceTimeout)
@@ -159,10 +186,12 @@ func (r *Relay) sendBatch(ctx context.Context) (n int, err error) {
 	}
 	sentAt := time.Now()
 
-	if _, err := tx.Exec(ctx, "UPDATE outbox SET published_at = now() WHERE id = ANY($1)", rowIDs); err != nil {
+	mctx, markCancel := context.WithTimeout(ctx, r.postgresTimeout)
+	defer markCancel()
+	if _, err := tx.Exec(mctx, "UPDATE outbox SET published_at = now() WHERE id = ANY($1)", rowIDs); err != nil {
 		return 0, fmt.Errorf("mark outbox rows sent: %w", err)
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(mctx); err != nil {
 		return 0, fmt.Errorf("commit outbox rows sent: %w", err)
 	}
 	r.logger.LogAttrs(ctx, slog.LevelInfo, "outbox batch sent",
@@ -191,14 +220,19 @@ func readUnsent(ctx context.Context, tx pgx.Tx) ([]row, error) {
 	return out, nil
 }
 
-func toRecord(x row) *kgo.Record {
-	rec := &kgo.Record{Topic: x.topic, Key: []byte(x.key), Value: x.payload}
+func toRecord(ctx context.Context, x row) *kgo.Record {
+	parent := trace.ContextWithSpanContext(ctx, trace.SpanContext{})
+	parent = otel.GetTextMapPropagator().Extract(parent, propagation.MapCarrier(x.headers))
+	rec := &kgo.Record{Topic: x.topic, Key: []byte(x.key), Value: x.payload, Context: parent}
 	keys := make([]string, 0, len(x.headers))
 	for k := range x.headers {
 		keys = append(keys, k)
 	}
 	slices.Sort(keys)
 	for _, k := range keys {
+		if k == "traceparent" || k == "tracestate" {
+			continue
+		}
 		rec.Headers = append(rec.Headers, kgo.RecordHeader{Key: k, Value: []byte(x.headers[k])})
 	}
 	return rec
@@ -208,9 +242,11 @@ func toRecord(x row) *kgo.Record {
 // statement holds many row locks for long. Unsent rows are never deleted. Deleting is
 // idempotent, so relays of several replicas may run it at the same time without the lock.
 func (r *Relay) cleanup(ctx context.Context) {
+	cctx, cancel := context.WithTimeout(ctx, r.cleanupTimeout)
+	defer cancel()
 	total := int64(0)
 	for {
-		tag, err := r.pool.Exec(ctx,
+		tag, err := r.pool.Exec(cctx,
 			`DELETE FROM outbox WHERE id IN (
 			   SELECT id FROM outbox WHERE published_at < now() - interval '24 hours' LIMIT $1)`,
 			cleanupBatchSize)
@@ -221,6 +257,7 @@ func (r *Relay) cleanup(ctx context.Context) {
 			}
 			return
 		}
+		r.cleanupLoop.Succeeded()
 		total += tag.RowsAffected()
 		if tag.RowsAffected() < cleanupBatchSize {
 			break

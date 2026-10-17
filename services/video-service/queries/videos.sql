@@ -8,7 +8,7 @@ WHERE id = $1;
 
 -- name: MarkVideoProcessing :one
 -- Locks the row; only an UPLOADING video moves, so a concurrent call updates nothing.
-UPDATE videos SET status = 'PROCESSING'
+UPDATE videos SET status = 'PROCESSING', processing_at = now()
 WHERE id = $1 AND status = 'UPLOADING'
 RETURNING *;
 
@@ -20,10 +20,17 @@ SET status = 'READY', duration_ms = $2, playlist_key = $3, thumbnail_key = $4, p
 WHERE id = $1 AND status = 'PROCESSING'
 RETURNING *;
 
--- name: MarkVideoFailed :execrows
+-- name: MarkVideoFailed :one
 -- Only a PROCESSING video moves: READY stays READY, and a redelivery finds FAILED already.
 UPDATE videos SET status = 'FAILED'
-WHERE id = $1 AND status = 'PROCESSING';
+WHERE id = $1 AND status = 'PROCESSING'
+RETURNING processing_at;
+
+-- name: ClockTimestamp :one
+-- The current time on Postgres's clock, the one that set processing_at. Read outside a
+-- transaction after a commit, it marks when the committed status became visible; now() would
+-- give the start of the transaction, before any lock wait.
+SELECT clock_timestamp()::timestamptz AS now;
 
 -- name: LockAuthorUploads :exec
 -- Serializes the InitUpload calls of one author until the transaction ends, so two concurrent

@@ -12,6 +12,8 @@
 // variables of docs/adr/0008-async-upload-pipeline-stage2a.md, section 11. UPLOAD_ABANDON_AFTER
 // (default 1h) and UPLOAD_SWEEP_INTERVAL (default 5m) set when an upload counts as abandoned and
 // how often they are swept (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 5).
+// serve also reads the OTEL_*, PYROSCOPE_SERVER_ADDRESS and SENTRY_* variables of
+// docs/adr/0011-observability-stage3.md; telemetry and error reporting stay off without them.
 package main
 
 import (
@@ -36,6 +38,9 @@ import (
 	"github.com/anhnvcoder/short-video-platform/internal/logx"
 	"github.com/anhnvcoder/short-video-platform/internal/objstore"
 	"github.com/anhnvcoder/short-video-platform/internal/outbox"
+	"github.com/anhnvcoder/short-video-platform/internal/pgpool"
+	"github.com/anhnvcoder/short-video-platform/internal/sentryx"
+	"github.com/anhnvcoder/short-video-platform/internal/telemetry"
 	"github.com/anhnvcoder/short-video-platform/services/video-service/internal/server"
 	"github.com/anhnvcoder/short-video-platform/services/video-service/migrations"
 )
@@ -60,10 +65,18 @@ func main() {
 	err := run(ctx, logger, os.Args[1:])
 	stop()
 	if err != nil {
-		logger.Error("video-service failed", slog.Any("error", err))
+		if _, logged := errors.AsType[loggedError](err); !logged {
+			logger.Error("video-service failed", slog.Any("error", err))
+		}
 		os.Exit(1)
 	}
 }
+
+// loggedError is an error serve has logged already, while the error tracker and the telemetry
+// providers still took records, so main does not log it again.
+type loggedError struct{ error }
+
+func (e loggedError) Unwrap() error { return e.error }
 
 func run(ctx context.Context, logger *slog.Logger, args []string) error {
 	cmd := "serve"
@@ -81,7 +94,7 @@ func run(ctx context.Context, logger *slog.Logger, args []string) error {
 	return fmt.Errorf("unknown command %q, want serve, migrate or healthcheck", cmd)
 }
 
-func serve(ctx context.Context, logger *slog.Logger) error {
+func serve(ctx context.Context, logger *slog.Logger) (err error) {
 	databaseURL, err := envcfg.Required("DATABASE_URL")
 	if err != nil {
 		return err
@@ -102,6 +115,38 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+
+	// Providers first, so the clients below report to them.
+	shutdownTelemetry, err := telemetry.Setup(ctx, serviceName)
+	if err != nil {
+		return fmt.Errorf("set up telemetry: %w", err)
+	}
+	flushErrors := func() {}
+	var pool *pgxpool.Pool
+	// Deferred first, so it runs last: once the server, the consumer and the relay have stopped,
+	// a failure is logged while the error tracker and the providers still take it
+	// (docs/adr/0011-observability-stage3.md, section 7), the providers export what they
+	// recorded, the error reports flush, then the pool closes (its statistics are read up to the
+	// last export).
+	defer func() {
+		if err != nil {
+			logger.Error("video-service failed", slog.Any("error", err))
+			err = loggedError{err}
+		}
+		if err := shutdownTelemetry(context.WithoutCancel(ctx)); err != nil {
+			logger.Warn("telemetry shutdown failed", slog.Any("error", err))
+		}
+		flushErrors()
+		if pool != nil {
+			pool.Close()
+		}
+	}()
+	flush, err := sentryx.Init(serviceName)
+	if err != nil {
+		return err
+	}
+	flushErrors = flush
+
 	storage, err := objstore.New(storageCfg)
 	if err != nil {
 		return err
@@ -112,14 +157,9 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	}
 	defer kafka.Close()
 
-	pool, err := pgxpool.New(ctx, databaseURL)
+	pool, err = pgpool.New(ctx, databaseURL)
 	if err != nil {
 		return fmt.Errorf("open database pool: %w", err)
-	}
-	defer pool.Close()
-	// pgxpool connects lazily: check the database now so a bad URL fails at startup.
-	if err := pool.Ping(ctx); err != nil {
-		return fmt.Errorf("connect to database: %w", err)
 	}
 
 	// The relay stops after the server has drained and the consumer has stopped. It does not

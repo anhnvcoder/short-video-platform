@@ -12,6 +12,20 @@ import (
 	"uuid"
 )
 
+const clockTimestamp = `-- name: ClockTimestamp :one
+SELECT clock_timestamp()::timestamptz AS now
+`
+
+// The current time on Postgres's clock, the one that set processing_at. Read outside a
+// transaction after a commit, it marks when the committed status became visible; now() would
+// give the start of the transaction, before any lock wait.
+func (q *Queries) ClockTimestamp(ctx context.Context) (time.Time, error) {
+	row := q.db.QueryRow(ctx, clockTimestamp)
+	var now time.Time
+	err := row.Scan(&now)
+	return now, err
+}
+
 const countOpenUploads = `-- name: CountOpenUploads :one
 SELECT count(*) FROM videos
 WHERE author_id = $1 AND status = 'UPLOADING' AND created_at > $2
@@ -55,7 +69,7 @@ func (q *Queries) CreateVideo(ctx context.Context, arg CreateVideoParams) error 
 }
 
 const getVideo = `-- name: GetVideo :one
-SELECT id, author_id, title, status, size_bytes, content_type, duration_ms, playlist_key, thumbnail_key, published_at, created_at FROM videos
+SELECT id, author_id, title, status, size_bytes, content_type, duration_ms, playlist_key, thumbnail_key, published_at, created_at, processing_at FROM videos
 WHERE id = $1
 `
 
@@ -74,6 +88,7 @@ func (q *Queries) GetVideo(ctx context.Context, id uuid.UUID) (Video, error) {
 		&i.ThumbnailKey,
 		&i.PublishedAt,
 		&i.CreatedAt,
+		&i.ProcessingAt,
 	)
 	return i, err
 }
@@ -160,24 +175,24 @@ func (q *Queries) MarkUploadsFailed(ctx context.Context, ids []uuid.UUID) ([]Mar
 	return items, nil
 }
 
-const markVideoFailed = `-- name: MarkVideoFailed :execrows
+const markVideoFailed = `-- name: MarkVideoFailed :one
 UPDATE videos SET status = 'FAILED'
 WHERE id = $1 AND status = 'PROCESSING'
+RETURNING processing_at
 `
 
 // Only a PROCESSING video moves: READY stays READY, and a redelivery finds FAILED already.
-func (q *Queries) MarkVideoFailed(ctx context.Context, id uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, markVideoFailed, id)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+func (q *Queries) MarkVideoFailed(ctx context.Context, id uuid.UUID) (*time.Time, error) {
+	row := q.db.QueryRow(ctx, markVideoFailed, id)
+	var processing_at *time.Time
+	err := row.Scan(&processing_at)
+	return processing_at, err
 }
 
 const markVideoProcessing = `-- name: MarkVideoProcessing :one
-UPDATE videos SET status = 'PROCESSING'
+UPDATE videos SET status = 'PROCESSING', processing_at = now()
 WHERE id = $1 AND status = 'UPLOADING'
-RETURNING id, author_id, title, status, size_bytes, content_type, duration_ms, playlist_key, thumbnail_key, published_at, created_at
+RETURNING id, author_id, title, status, size_bytes, content_type, duration_ms, playlist_key, thumbnail_key, published_at, created_at, processing_at
 `
 
 // Locks the row; only an UPLOADING video moves, so a concurrent call updates nothing.
@@ -196,6 +211,7 @@ func (q *Queries) MarkVideoProcessing(ctx context.Context, id uuid.UUID) (Video,
 		&i.ThumbnailKey,
 		&i.PublishedAt,
 		&i.CreatedAt,
+		&i.ProcessingAt,
 	)
 	return i, err
 }
@@ -204,7 +220,7 @@ const markVideoReady = `-- name: MarkVideoReady :one
 UPDATE videos
 SET status = 'READY', duration_ms = $2, playlist_key = $3, thumbnail_key = $4, published_at = now()
 WHERE id = $1 AND status = 'PROCESSING'
-RETURNING id, author_id, title, status, size_bytes, content_type, duration_ms, playlist_key, thumbnail_key, published_at, created_at
+RETURNING id, author_id, title, status, size_bytes, content_type, duration_ms, playlist_key, thumbnail_key, published_at, created_at, processing_at
 `
 
 type MarkVideoReadyParams struct {
@@ -236,6 +252,7 @@ func (q *Queries) MarkVideoReady(ctx context.Context, arg MarkVideoReadyParams) 
 		&i.ThumbnailKey,
 		&i.PublishedAt,
 		&i.CreatedAt,
+		&i.ProcessingAt,
 	)
 	return i, err
 }

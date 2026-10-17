@@ -17,7 +17,9 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/anhnvcoder/short-video-platform/internal/logx"
-	"github.com/anhnvcoder/short-video-platform/internal/traceparent"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -307,34 +309,72 @@ func TestBackoff(t *testing.T) {
 }
 
 func TestProduceTraceparent(t *testing.T) {
+	recorder, _ := traceTelemetry(t)
 	brokers := cluster(t, 1, "out")
 	cl := producer(t, brokers)
-	ctx := traceparent.NewContext(t.Context(), validTP)
-	const other = "00-11111111111111111111111111111111-2222222222222222-01"
-
-	produce(t, cl, &kgo.Record{Topic: "out", Value: []byte("plain")})
-	if err := Produce(ctx, cl,
-		&kgo.Record{Topic: "out", Value: []byte("from ctx")},
-		&kgo.Record{Topic: "out", Value: []byte("own"), Headers: []kgo.RecordHeader{{Key: "traceparent", Value: []byte(other)}}},
-	); err != nil {
+	ctx, parent := otel.Tracer("test").Start(t.Context(), "request")
+	state, err := trace.ParseTraceState("vendor=value")
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	rs := readTopic(t, brokers, "out", 3, 15*time.Second)
-	if len(rs) != 3 {
-		t.Fatalf("read %d records, want 3", len(rs))
+	own := trace.SpanContextFromContext(propagation.TraceContext{}.Extract(t.Context(), propagation.MapCarrier{
+		"traceparent": validTP,
+	})).WithTraceState(state)
+	rs := []*kgo.Record{
+		{Topic: "out", Value: []byte("plain")},
+		{Topic: "out", Value: []byte("from ctx"), Headers: []kgo.RecordHeader{
+			{Key: "traceparent", Value: []byte("old")}, {Key: "traceparent", Value: []byte("duplicate")},
+			{Key: "tracestate", Value: []byte("stale=value")}, {Key: "custom", Value: []byte("kept")}}},
+		{Topic: "out", Value: []byte("own"), Context: trace.ContextWithRemoteSpanContext(t.Context(), own)},
 	}
-	want := map[string][]string{"plain": nil, "from ctx": {validTP}, "own": {other}}
-	for _, r := range rs {
-		var got []string
+	if err := Produce(ctx, cl, rs...); err != nil {
+		t.Fatal(err)
+	}
+	parent.End()
+	got := readTopic(t, brokers, "out", 3, 15*time.Second)
+	if len(got) != 3 {
+		t.Fatalf("read %d records, want 3", len(got))
+	}
+	spans := recorder.Ended()
+	if len(spans) != 4 {
+		t.Fatalf("spans = %d, want 3 producers and request", len(spans))
+	}
+	for i, r := range got {
+		sc := trace.SpanContextFromContext(handlerContext(t.Context(), r))
+		want := parent.SpanContext()
+		if i == 2 {
+			want = own
+		}
+		if !sc.IsValid() || sc.TraceID() != want.TraceID() || sc.SpanID() == want.SpanID() {
+			t.Errorf("record %d context = %v, parent = %v", i, sc, want)
+		}
+		count := 0
 		for _, h := range r.Headers {
 			if h.Key == "traceparent" {
-				got = append(got, string(h.Value))
+				count++
 			}
 		}
-		if fmt.Sprint(got) != fmt.Sprint(want[string(r.Value)]) {
-			t.Errorf("record %q traceparent headers = %v, want %v", r.Value, got, want[string(r.Value)])
+		if count != 1 {
+			t.Errorf("record %d has %d traceparent headers", i, count)
 		}
+		found := false
+		for _, span := range spans {
+			if span.SpanContext().Equal(sc.WithRemote(false)) {
+				found = true
+				if span.SpanKind() != trace.SpanKindProducer || span.Name() != "send out" || span.Parent().SpanID() != want.SpanID() {
+					t.Errorf("unexpected producer: %v", span)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("record %d has no matching producer span", i)
+		}
+	}
+	if h := headerMap(got[1]); h["tracestate"] != "" || h["custom"] != "kept" {
+		t.Errorf("headers = %v", h)
+	}
+	if h := headerMap(got[2]); h["tracestate"] != "vendor=value" {
+		t.Errorf("tracestate lost: %v", h)
 	}
 }
 
@@ -543,6 +583,7 @@ func TestStopLeavesInFlightRecordUncommitted(t *testing.T) {
 }
 
 func TestDLQProduceFailureStopsWithoutCommit(t *testing.T) {
+	_, reader := traceTelemetry(t)
 	brokers := cluster(t, 1, "in") // no in.dlq
 	produce(t, producer(t, brokers), &kgo.Record{Topic: "in", Value: []byte("bad")})
 
@@ -552,51 +593,79 @@ func TestDLQProduceFailureStopsWithoutCommit(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "dead-letter topic in.dlq") {
 		t.Fatalf("Run() = %v, want a dead-letter produce error", err)
 	}
+	if got := dlqCount(t, reader, "in", "g"); got != 0 {
+		t.Errorf("failed DLQ produce counted: %d", got)
+	}
 	if next := nextInGroup(t, brokers, "g", "in"); string(next.Value) != "bad" {
 		t.Errorf("next record for the group = %q, want the record that failed to dead-letter", next.Value)
 	}
 }
 
 func TestTraceparentHeader(t *testing.T) {
+	recorder, _ := traceTelemetry(t)
 	brokers := cluster(t, 1, "in", "in.dlq", "out")
 	logger, logs := newLogger()
 	prod := producer(t, brokers)
-	produce(t, prod,
-		&kgo.Record{Topic: "in", Value: []byte("bad"), Headers: []kgo.RecordHeader{{Key: "traceparent", Value: []byte("00-zzzz-00f067aa0ba902b7-01")}}},
+	// External producers may send invalid headers or omit them entirely.
+	if err := prod.ProduceSync(t.Context(),
+		&kgo.Record{Topic: "in", Value: []byte("bad"), Headers: []kgo.RecordHeader{{Key: "traceparent", Value: []byte("invalid")}}},
+		&kgo.Record{Topic: "in", Value: []byte("missing")},
 		&kgo.Record{Topic: "in", Value: []byte("good"), Headers: []kgo.RecordHeader{{Key: "traceparent", Value: []byte(validTP)}}},
-	)
-
+	).FirstErr(); err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan struct{})
-	start(t, ConsumerConfig{Brokers: brokers, Group: "g", Topics: []string{"in"}, Logger: logger,
+	r := start(t, ConsumerConfig{Brokers: brokers, Group: "g", Topics: []string{"in"}, Logger: logger,
 		Handler: func(ctx context.Context, r *kgo.Record, _ Attempt) error {
 			logger.InfoContext(ctx, "probe", slog.String("value", string(r.Value)))
-			if string(r.Value) == "bad" {
-				if v, ok := traceparent.FromContext(ctx); ok {
-					t.Errorf("malformed header put traceparent %q in ctx", v)
-				}
+			if string(r.Value) != "good" {
 				return nil
 			}
 			defer close(done)
 			return Produce(ctx, prod, &kgo.Record{Topic: "out", Value: []byte("follow-up")})
 		}})
 	waitFor(t, done, "the valid record")
-
-	for _, rec := range logs.records(t, "probe") {
+	if err := r.stop(t); err != nil {
+		t.Fatal(err)
+	}
+	probes := logs.records(t, "probe")
+	if len(probes) != 3 {
+		t.Fatalf("probes = %v", probes)
+	}
+	for _, rec := range probes {
 		id, has := rec["trace_id"]
-		switch rec["value"] {
-		case "bad":
-			if has {
-				t.Errorf("malformed header: trace_id = %v, want none", id)
-			}
-		case "good":
-			if id != validTraceID {
-				t.Errorf("valid header: trace_id = %v, want %s", id, validTraceID)
-			}
+		if !has || id == "" {
+			t.Errorf("missing new trace: %v", rec)
+		}
+		if rec["value"] == "good" && id != validTraceID {
+			t.Errorf("valid trace lost: %v", rec)
+		}
+		if rec["value"] != "good" && id == validTraceID {
+			t.Errorf("invalid header reused trace: %v", rec)
 		}
 	}
 	out := readTopic(t, brokers, "out", 1, 15*time.Second)
-	if len(out) != 1 || headerMap(out[0])["traceparent"] != validTP {
-		t.Fatalf("follow-up record = %v, want traceparent %s", out, validTP)
+	if len(out) != 1 {
+		t.Fatalf("out records = %d", len(out))
+	}
+	outgoing := trace.SpanContextFromContext(handlerContext(t.Context(), out[0]))
+	spans := recorder.Ended()
+	if len(spans) != 4 {
+		t.Fatalf("spans = %d, want 3 consumers and follow-up producer", len(spans))
+	}
+	for _, span := range spans {
+		if span.SpanKind() == trace.SpanKindConsumer && span.SpanContext().TraceID().String() == validTraceID {
+			if span.Parent().SpanID().String() != "00f067aa0ba902b7" || outgoing.TraceID() != span.SpanContext().TraceID() {
+				t.Errorf("incorrect consumer parent or follow-up trace: %v", span)
+			}
+			for _, send := range spans {
+				if send.SpanKind() == trace.SpanKindProducer && send.Parent().SpanID() != span.SpanContext().SpanID() {
+					t.Errorf("follow-up not a child of handler: %v", send)
+				}
+			}
+		} else if span.SpanKind() == trace.SpanKindConsumer && span.Parent().IsValid() {
+			t.Errorf("invalid header has parent: %v", span.Parent())
+		}
 	}
 }
 

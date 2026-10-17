@@ -193,6 +193,60 @@ func TestConsumerConfigRetriesWithoutLimit(t *testing.T) {
 	}
 }
 
+// Each attempt has a deadline of its own (ADR-0011, section 11): long enough for a fan-out to
+// 200k followers, about a second, and short enough that a stuck lock does not hold the consumer.
+func TestConsumerConfigBoundsEachAttempt(t *testing.T) {
+	cfg := New(nil, slog.New(slog.DiscardHandler)).ConsumerConfig("127.0.0.1:19092")
+	if cfg.HandlerTimeout != 30*time.Second {
+		t.Errorf("HandlerTimeout = %s, want 30s", cfg.HandlerTimeout)
+	}
+}
+
+// An attempt waiting on the author lock that another transaction holds ends at the attempt's
+// deadline, its transaction rolled back: nothing is written, and the event applies once the lock
+// is free.
+func TestAttemptWaitingOnAuthorLockEndsAtDeadline(t *testing.T) {
+	needDB(t)
+	p := newProjector()
+	author, b, video := ids.New(), ids.New(), ids.New()
+	handle(t, p, followRecord(t, b, author))
+
+	holder, err := testPool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Rollback(context.Background()) }()
+	if _, err := holder.Exec(t.Context(),
+		"SELECT pg_advisory_xact_lock(hashtextextended('feed-author:' || $1::uuid::text, 0))", author); err != nil {
+		t.Fatal(err)
+	}
+
+	const deadline = 200 * time.Millisecond
+	ctx, cancel := context.WithTimeout(t.Context(), deadline)
+	defer cancel()
+	start := time.Now()
+	err = p.Handle(ctx, readyRecord(t, video, author, now()), kafkax.Attempt{Number: 1})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("Handle returned nil while the author lock was held")
+	}
+	if elapsed > deadline+rollbackTimeout {
+		t.Errorf("Handle returned after %s, want within the deadline %s and the rollback bound %s", elapsed, deadline, rollbackTimeout)
+	}
+	t.Logf("attempt on a held author lock returned after %s: %v", elapsed, err)
+	if n := count(t, "SELECT count(*) FROM videos WHERE video_id = $1", video); n != 0 {
+		t.Errorf("timed-out attempt stored the video")
+	}
+
+	if err := holder.Rollback(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	handle(t, p, readyRecord(t, video, author, now()))
+	if got := timeline(t, b); !slices.Equal(got, []string{video}) {
+		t.Errorf("timeline after the lock was freed = %v, want [%s]", got, video)
+	}
+}
+
 // A rebalance waits for the records in hand, for longer than a short Postgres outage, so a
 // partition does not move while an old event is still being retried.
 func TestConsumerConfigBlocksRebalance(t *testing.T) {
@@ -821,12 +875,17 @@ func TestPruneTimelineDeletesOnlyExpired(t *testing.T) {
 	insert(time.Hour, 1)
 
 	// A batch of 2 needs four DELETEs for 7 rows, the last one partial.
-	n, err := p.pruneTimeline(t.Context(), 2)
+	batches := 0
+	n, err := p.pruneTimeline(t.Context(), 2, func() { batches++ })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n < 7 {
 		t.Errorf("pruned %d rows, want at least the 7 expired", n)
+	}
+	// Every full batch is followed by another DELETE, and the last one, partial or empty, counts too.
+	if want := int(n/2) + 1; batches != want {
+		t.Errorf("onBatch called %d times for %d rows in batches of 2, want %d", batches, n, want)
 	}
 	if got := count(t, "SELECT count(*) FROM timeline WHERE user_id = $1", user); got != 4 {
 		t.Errorf("%d rows left, want the 4 within 30 days", got)
@@ -835,8 +894,35 @@ func TestPruneTimelineDeletesOnlyExpired(t *testing.T) {
 		t.Errorf("%d expired rows left, want 0", got)
 	}
 
-	// Nothing left to do.
-	if n, err := p.PruneTimeline(t.Context()); err != nil || n != 0 {
-		t.Errorf("PruneTimeline again = %d, %v, want 0, nil", n, err)
+	// Nothing left to do, which is still a batch done.
+	batches = 0
+	if n, err := p.PruneTimeline(t.Context(), func() { batches++ }); err != nil || n != 0 || batches != 1 {
+		t.Errorf("PruneTimeline again = %d, %v with %d batches, want 0, nil with 1", n, err, batches)
+	}
+}
+
+// A run whose deadline passes between two batches fails, and the batch it finished before that
+// was reported (docs/adr/0011-observability-stage3.md, section 5).
+func TestPruneTimelineReportsBatchesOfARunCutShort(t *testing.T) {
+	needDB(t)
+	p := newProjector()
+	if _, err := testPool.Exec(t.Context(),
+		"INSERT INTO timeline (user_id, published_at, video_id) SELECT $1, $2, gen_random_uuid() FROM generate_series(1, 5)",
+		ids.New(), now().Add(-31*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	batches := 0
+	// The deadline comes once the first batch is done, so the second DELETE never runs.
+	n, err := p.pruneTimeline(ctx, 2, func() {
+		batches++
+		cancel()
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("pruneTimeline() error = %v, want the run's context error", err)
+	}
+	if n != 2 || batches != 1 {
+		t.Errorf("pruneTimeline() deleted %d rows in %d reported batches, want 2 in 1", n, batches)
 	}
 }

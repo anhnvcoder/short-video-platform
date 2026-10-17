@@ -10,8 +10,10 @@ import (
 	"strings"
 
 	"github.com/twmb/franz-go/pkg/kgo"
-
-	"github.com/anhnvcoder/short-video-platform/internal/traceparent"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // NewClient returns a client for brokers, a comma-separated list of host:port such as the
@@ -29,7 +31,7 @@ func NewClient(brokers, clientID string, opts ...kgo.Opt) (*kgo.Client, error) {
 	if len(seeds) == 0 {
 		return nil, errors.New("kafka broker list is empty")
 	}
-	all := append([]kgo.Opt{kgo.SeedBrokers(seeds...), kgo.ClientID(clientID)}, opts...)
+	all := append([]kgo.Opt{kgo.SeedBrokers(seeds...), kgo.ClientID(clientID), kgo.AllowIdempotentProduceCancellation()}, opts...)
 	cl, err := kgo.NewClient(all...)
 	if err != nil {
 		return nil, fmt.Errorf("create kafka client: %w", err)
@@ -37,30 +39,39 @@ func NewClient(brokers, clientID string, opts ...kgo.Opt) (*kgo.Client, error) {
 	return cl, nil
 }
 
-// Produce writes rs and waits until every record is acknowledged. A record without a
-// traceparent header gets the one stored in ctx by traceparent.NewContext, if any; the header is
-// appended to the record itself. It returns the first error when any record fails.
+// Produce writes rs and waits until every record is acknowledged. Each record gets a producer
+// span parented by its Context, or ctx when absent, and fresh trace headers for that span.
+// The call's cancellation and deadline bound every record, one already sent included; a record
+// whose connection was lost is failed at the client's next metadata refresh, which can come up to
+// MetadataMinAge (5 s) after the deadline. It returns the first produce error.
 func Produce(ctx context.Context, cl *kgo.Client, rs ...*kgo.Record) error {
-	if tp, ok := traceparent.FromContext(ctx); ok {
-		for _, r := range rs {
-			if !hasHeader(r, traceparent.MetadataKey) {
-				r.Headers = append(r.Headers, kgo.RecordHeader{Key: traceparent.MetadataKey, Value: []byte(tp)})
-			}
+	for _, r := range rs {
+		parent := ctx
+		if r.Context != nil {
+			parent = trace.ContextWithSpanContext(ctx, trace.SpanContextFromContext(r.Context))
 		}
+		r.Context, _ = otel.Tracer(tracerName).Start(parent, "send "+r.Topic,
+			trace.WithSpanKind(trace.SpanKindProducer), trace.WithAttributes(
+				semconv.MessagingSystemKafka, semconv.MessagingDestinationName(r.Topic),
+				semconv.MessagingOperationName("send"), semconv.MessagingOperationTypeSend))
+		carrier := recordCarrier{r}
+		carrier.remove("traceparent")
+		carrier.remove("tracestate")
+		otel.GetTextMapPropagator().Inject(r.Context, carrier)
 	}
-	if err := cl.ProduceSync(ctx, rs...).FirstErr(); err != nil {
+	results := cl.ProduceSync(ctx, rs...)
+	for _, result := range results {
+		span := trace.SpanFromContext(result.Record.Context)
+		if result.Err != nil {
+			span.RecordError(result.Err)
+			span.SetStatus(codes.Error, result.Err.Error())
+		}
+		span.End()
+	}
+	if err := results.FirstErr(); err != nil {
 		return fmt.Errorf("produce: %w", err)
 	}
 	return nil
-}
-
-func hasHeader(r *kgo.Record, key string) bool {
-	for _, h := range r.Headers {
-		if h.Key == key {
-			return true
-		}
-	}
-	return false
 }
 
 // header returns the value of the first header named key, and whether there is one.

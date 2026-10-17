@@ -21,6 +21,12 @@ import (
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -71,6 +77,13 @@ const (
 	outName    = "out"
 )
 
+// instrumentationName names the tracer and meter of the worker.
+const instrumentationName = "github.com/anhnvcoder/short-video-platform/services/media-worker/internal/worker"
+
+// transcodeBuckets are the V buckets of docs/adr/0011-observability-stage3.md, section 5, in
+// seconds.
+var transcodeBuckets = []float64{10, 20, 30, 45, 60, 90, 120, 180, 300, 600}
+
 // Storage is the part of objstore.Store the worker uses. Errors follow objstore: ErrNotFound,
 // ErrTooLarge and ErrAccessDenied wrapped; anything else is temporary.
 type Storage interface {
@@ -86,16 +99,33 @@ type Worker struct {
 	logger   *slog.Logger
 	// tryTimeout is the constant of the same name; tests shorten it.
 	tryTimeout time.Duration
+	// transcodeDuration is svp.transcode.duration: the transcode step of a try that ended with a
+	// result.
+	transcodeDuration metric.Float64Histogram
 }
 
 // New returns a Worker that reads and writes objects through store, publishes with producer and
-// keeps job files under workDir.
+// keeps job files under workDir. Its spans and metrics go to the global providers.
 func New(store Storage, producer *kgo.Client, workDir string, logger *slog.Logger) *Worker {
-	return &Worker{store: store, producer: producer, workDir: workDir, logger: logger, tryTimeout: tryTimeout}
+	transcodeDuration, err := otel.Meter(instrumentationName).Float64Histogram("svp.transcode.duration",
+		metric.WithUnit("s"), metric.WithDescription("Time ffprobe and ffmpeg took on a try that ended with a result"),
+		metric.WithExplicitBucketBoundaries(transcodeBuckets...))
+	if err != nil {
+		// A metric never stops the worker: report the error and record nothing.
+		otel.Handle(err)
+		transcodeDuration = noop.Float64Histogram{}
+	}
+	return &Worker{
+		store: store, producer: producer, workDir: workDir, logger: logger, tryTimeout: tryTimeout,
+		transcodeDuration: transcodeDuration,
+	}
 }
 
 // ConsumerConfig returns the consumer of InputTopic in Group with the worker's retry budget:
-// one record per poll, and rebalances wait for the record in hand.
+// one record per poll, and rebalances wait for the record in hand. HandlerTimeout stays unset:
+// Handle bounds each try with tryTimeout and the publish of its result with produceTimeout
+// (docs/adr/0011-observability-stage3.md, section 11, keeps these instead of the 10 s or 30 s of
+// the other consumers).
 func (w *Worker) ConsumerConfig(brokers string) kafkax.ConsumerConfig {
 	return kafkax.ConsumerConfig{
 		Brokers:          brokers,
@@ -161,6 +191,15 @@ func (w *Worker) Handle(ctx context.Context, r *kgo.Record, a kafkax.Attempt) er
 		return err
 	}
 	j.log(ctx, slog.LevelInfo, "transcode job finished", a, outcomeAttrs(ev)...)
+	// Only once the result is out, so a try retried after a failed publish counts once; a try
+	// that ended before transcoding (source missing) has no transcode step to count.
+	if j.transcode > 0 {
+		outcome := "ready"
+		if ev.GetTranscodeFailed() != nil {
+			outcome = "failed"
+		}
+		w.transcodeDuration.Record(ctx, j.transcode.Seconds(), metric.WithAttributes(attribute.String("outcome", outcome)))
+	}
 	return nil
 }
 
@@ -223,7 +262,9 @@ func (j *job) run(ctx context.Context) (*mediav1.TranscodeEvent, error) {
 
 	src := filepath.Join(dir, sourceName)
 	start := time.Now()
-	err := j.w.store.Download(ctx, j.up.GetSourceKey(), src, min(j.up.GetSizeBytes(), maxSourceBytes))
+	err := j.step(ctx, "download source", func(ctx context.Context) error {
+		return j.w.store.Download(ctx, j.up.GetSourceKey(), src, min(j.up.GetSizeBytes(), maxSourceBytes))
+	})
 	j.download = time.Since(start)
 	switch {
 	case errors.Is(err, objstore.ErrNotFound):
@@ -237,7 +278,13 @@ func (j *job) run(ctx context.Context) (*mediav1.TranscodeEvent, error) {
 
 	out := filepath.Join(dir, outName)
 	start = time.Now()
-	res, err := transcode.Run(ctx, src, out)
+	var res transcode.Result
+	// transcode.Run adds a span for each ffprobe and ffmpeg run under this one.
+	err = j.step(ctx, "transcode", func(ctx context.Context) error {
+		var err error
+		res, err = transcode.Run(ctx, src, out)
+		return err
+	})
 	j.transcode = time.Since(start)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -251,14 +298,34 @@ func (j *job) run(ctx context.Context) (*mediav1.TranscodeEvent, error) {
 
 	prefix := objstore.MediaPrefix + id + "/"
 	start = time.Now()
-	// Files come segments first and master.m3u8 last: no playlist is visible before its parts.
-	for _, f := range res.Files {
-		if err := j.w.store.Upload(ctx, prefix+f.Path, filepath.Join(out, filepath.FromSlash(f.Path)), f.ContentType); err != nil {
-			return nil, err
+	err = j.step(ctx, "upload output", func(ctx context.Context) error {
+		// Files come segments first and master.m3u8 last: no playlist is visible before its parts.
+		for _, f := range res.Files {
+			if err := j.w.store.Upload(ctx, prefix+f.Path, filepath.Join(out, filepath.FromSlash(f.Path)), f.ContentType); err != nil {
+				return err
+			}
 		}
-	}
+		return nil
+	})
 	j.upload = time.Since(start)
+	if err != nil {
+		return nil, err
+	}
 	return completed(j.up, prefix, res), nil
+}
+
+// step runs fn in a child span of ctx named name. The span carries the video id and nothing
+// taken from the file or its paths: a failure gets a fixed description, its error stays in the
+// log.
+func (j *job) step(ctx context.Context, name string, fn func(context.Context) error) error {
+	ctx, span := otel.Tracer(instrumentationName).Start(ctx, name,
+		trace.WithAttributes(attribute.String("video_id", j.up.GetVideoId())))
+	defer span.End()
+	err := fn(ctx)
+	if err != nil {
+		span.SetStatus(codes.Error, name+" failed")
+	}
+	return err
 }
 
 // permanentReason classifies a transcode error: true when retrying cannot help.

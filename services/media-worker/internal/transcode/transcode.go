@@ -24,6 +24,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 )
 
 var (
@@ -294,8 +297,16 @@ func (e *toolError) Unwrap() error { return e.err }
 
 // runTool runs name from PATH with an empty environment (FF-2). With timeout > 0 the run gets
 // its own deadline; when the deadline or ctx ends, exec.CommandContext kills the process
-// (SIGKILL) and Wait reaps it before runTool returns.
-func runTool(ctx context.Context, timeout time.Duration, stdout io.Writer, dirs []string, name string, args ...string) error {
+// (SIGKILL) and Wait reaps it before runTool returns. Each run is a span named after the tool,
+// without its arguments: they hold the job's paths.
+func runTool(ctx context.Context, timeout time.Duration, stdout io.Writer, dirs []string, name string, args ...string) (err error) {
+	ctx, span := otel.Tracer("github.com/anhnvcoder/short-video-platform/services/media-worker/internal/transcode").Start(ctx, name)
+	defer func() {
+		if err != nil {
+			span.SetStatus(codes.Error, name+" failed")
+		}
+		span.End()
+	}()
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -307,7 +318,7 @@ func runTool(ctx context.Context, timeout time.Duration, stdout io.Writer, dirs 
 	stderr := &tailBuffer{max: 4096}
 	cmd.Stderr = stderr
 
-	err := cmd.Run()
+	err = cmd.Run()
 	if err == nil {
 		return nil
 	}

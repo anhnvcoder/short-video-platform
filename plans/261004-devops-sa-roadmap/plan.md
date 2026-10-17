@@ -2,7 +2,8 @@
 
 > Ngày lập: 2026-10-04
 >
-> Trạng thái: giai đoạn 0, 1 và 2 xong (2026-10-11); chặng G hoãn; tiếp theo là giai đoạn 3 (observability)
+> Trạng thái: giai đoạn 0, 1, 2 (2026-10-11) và 3 (2026-10-17) xong; chặng G hoãn; tiếp theo là giai đoạn 4 (Kubernetes
+> local)
 
 ## Mục tiêu
 
@@ -228,13 +229,24 @@ Tổng ước lượng: khoảng 8–10 tháng làm cuối tuần, đã tính ch
 
 ## Ràng buộc máy (Apple M2, 16 GB RAM)
 
-- **Chạy compose theo profile:**
-  - `core`: service + Redpanda + MinIO;
-  - `obs`: `grafana/otel-lgtm` (một container, nhẹ);
-  - `obs-elastic`: Elasticsearch + Kibana + APM, chỉ bật trong bài so sánh, heap 1 GB.
+- **Chạy compose theo profile** (`make up OBS=lgtm|elastic|off`, số đo ngày 2026-10-17, `docker stats` lúc nghỉ):
+  - `core`: 6 service + Redpanda + MinIO, 680–955 MiB khi telemetry tắt và 720–745 MiB khi SDK bật (trung vị 6 mẫu sau
+    60 s nghỉ và 3 lượt smoke, ba lượt đo mỗi trạng thái), 951 MiB sau mọi diễn tập giai đoạn 2; Redpanda 365–513, MinIO
+    256–337, mỗi service Go 7–22 MiB lúc nghỉ và tới 48 MiB (feed-service, gateway) sau diễn tập;
+  - `obs`: `otelcol` (Collector riêng, 64–100 MiB; một lượt đo 255 MiB, số của Collector Go dao động theo GC và bộ nhớ
+    trang), `lgtm` (`grafana/otel-lgtm`: Grafana, Prometheus, Loki, Tempo, Pyroscope trong một container, 735–740 MiB
+    sau 3 lượt smoke, 1 245 MiB sau mọi diễn tập), `alertmanager` (17–42 MiB), `glitchtip` (185–232 MiB); cả stack
+    `core` + `obs` 1 746–1 975 MiB (1,71–1,93 GiB) sau smoke, 2 244 MiB (2,19 GiB) sau mọi diễn tập của giai đoạn 3;
+  - `obs-elastic`: Elasticsearch (heap 1 GB, 1 712 MiB ≈ 1,67 GiB), Kibana (1 167 MiB ≈ 1,14 GiB), APM Server, Collector
+    riêng; cả stack 3 585 MiB ≈ 3,50 GiB,
+    chỉ bật trong bài so sánh ([ADR-0012](../../docs/adr/0012-elastic-vs-grafana-stage3.md)).
 
-  Không bật hai bộ observability cùng lúc.
-- **Sentry dùng gói SaaS miễn phí,** vì bản self-host cần khoảng 16 GB RAM riêng cho nó.
+  Không bật hai bộ observability cùng lúc; `make up` từ chối khi bộ kia đang chạy. Docker Desktop đã nâng lên khoảng
+  9,7 GiB RAM, 8 CPU trước bài Elastic.
+- **Tracker lỗi là GlitchTip tự host** (profile `obs`, database `svp_glitchtip` trên Postgres native, không Valkey) thay
+  cho Sentry SaaS: máy chặn `sentry.io` trong `/etc/hosts`, còn Sentry self-host cần khoảng 16 GB RAM riêng
+  ([ADR-0011](../../docs/adr/0011-observability-stage3.md) §7). SDK vẫn là `sentry-go`, đổi sang SaaS chỉ bằng
+  `SENTRY_DSN`.
 - **Chạy native arm64.** Shell global đặt `DOCKER_DEFAULT_PLATFORM=linux/amd64` (phục vụ dự án khác), khiến mọi container, kể cả node k3d, chạy amd64 qua giả lập: chậm và tốn RAM. Project này gọi docker/compose/k3d qua `Makefile` với `env -u DOCKER_DEFAULT_PLATFORM`; image cho cloud build đa kiến trúc ở bước CI.
 - **Không chạy song song k3d và compose.** Giai đoạn compose dùng Postgres/Redis native (5432/6379), mỗi service một database riêng. Giai đoạn k8s quyết định bằng ADR: tự vận hành Postgres/Redis trong cluster, hay trỏ ra bản native.
 
@@ -379,7 +391,114 @@ Tổng ước lượng: khoảng 8–10 tháng làm cuối tuần, đã tính ch
       circuit breaker cho mọi lời gọi" theo ADR-0010 mục 4 giới hạn ở **lời gọi gRPC** (chỉ gateway gọi gRPC, mọi lời gọi
       có deadline, có retry và breaker); hạn riêng cho lời gọi ngoài gRPC (Postgres trong relay, consumer, projector, dọn
       timeline; client Kafka và S3) để giai đoạn 3, cùng metric lag và cảnh báo.
-- [ ] 3. Observability
+- [x] 3. Observability (xong 2026-10-17), quyết định ở [ADR-0011](../../docs/adr/0011-observability-stage3.md) (toàn bộ
+  thiết kế) và [ADR-0012](../../docs/adr/0012-elastic-vs-grafana-stage3.md) (bài so sánh Elastic):
+  - Đã làm: OpenTelemetry SDK (`go.opentelemetry.io/otel` v1.47.0) trong 6 service, chỉ khởi tạo ở lệnh con `serve`, đẩy
+    OTLP/gRPC tới Collector contrib riêng `otelcol` (processor memory limiter, xoá attribute nhạy cảm, batch; scrape lag
+    Redpanda; không publish cổng); trace gốc do gateway mở (bỏ `traceparent` của client), nối HTTP → gRPC → outbox →
+    Kafka → consumer bằng W3C TraceContext trong header Kafka, lô consumer link tối đa 128 context; `internal/traceparent`
+    bỏ. Metric: histogram HTTP/RPC của instrumentation, `svp_ratelimit_decisions_total` (RL-2), `svp_breaker_state`,
+    `svp_kafka_dlq_records_total`, `svp_loop_last_success_seconds`, `svp_video_ready_duration_seconds` (cột
+    `processing_at`, migration `00004`), `svp_transcode_duration_seconds`, `svp_feed_freshness_seconds`, pool pgx/Redis và
+    runtime Go. Log `slog` ra stdout JSON và bridge OTLP vào Loki (chỉ `service_name` là label index), `trace_id` lấy từ
+    span. Profile đẩy tới Pyroscope bằng `pyroscope-go` (5 service, không media-worker). Lỗi ERROR gửi GlitchTip 6.2.6 tự
+    host bằng `sentry-go` (`internal/sentryx`: allowlist message và attribute, exception chỉ kiểu lỗi và mã an toàn, bỏ
+    `Request`, che email/JWT, giới hạn 1 event/30 s mỗi fingerprint). Hạn cho mọi lời gọi ngoài gRPC (pool, relay,
+    consumer, dọn timeline, dọn upload, produce có huỷ `AllowIdempotentProduceCancellation`). Compose profile `obs`:
+    `otelcol`, `lgtm` (Grafana `127.0.0.1:3000`, Prometheus giữ 30 ngày, Loki, Tempo, Pyroscope), `alertmanager`
+    (`127.0.0.1:9093`, Telegram cho `severity=page` khi có bot), `glitchtip` (`127.0.0.1:8000`, database `svp_glitchtip`,
+    `make glitchtip-init`); profile `obs-elastic` (Elasticsearch, Kibana `127.0.0.1:5601`, APM Server) chỉ để so sánh.
+    4 SLO bằng Sloth (`feed-availability`, `upload-init-availability` 99,9%; `feed-latency` 99% trong 150 ms;
+    `video-ready-latency` 95% trong 120 s) với cảnh báo burn rate nhiều cửa sổ, cộng 9 rule viết tay (lag consumer, vòng
+    nền đứng, DLQ, breaker mở, rate limit dự phòng; thời lượng đo bằng mẫu, lọc mẫu mới hơn 45 s) có test promtool
+    (`make slo-check`); 4 dashboard Grafana (RED, USE, pipeline, SLO). Thêm `make up OBS=lgtm|elastic|off`,
+    `make compose-config`, `make otelcol-validate`, `make slo`, `make cover`, hai diễn tập `drill-alert-to-sentry`,
+    `drill-obs-threats`; quy tắc đọc `.env` chung (`dotenv.sh`). Threat model cập nhật JWT-8, UP-8, RL-2, OPS-1, OPS-2,
+    FF-5.
+  - Diễn tập cảnh báo → lỗi (`make drill-alert-to-sentry`, stack `OBS=lgtm`): tắt feed-service lúc T0, cảnh báo page
+    `FeedAvailabilityBudgetBurn` có trong Alertmanager sau **58,3 s** (T1); từ T1, trace của request lỗi đầu tiên
+    (`GetExploreFeed` `DEADLINE_EXCEEDED`, gateway 504) tìm thấy trong Tempo sau 7,1 s, dòng access log trong Loki sau
+    7,2 s, event GlitchTip cùng `trace_id` sau **7,4 s** (T4 − T1, tiêu chí < 5 phút); 5 event GlitchTip trong lượt (tối
+    đa 1 event/fingerprint/30 s). Alertmanager gửi **1 thông báo Telegram**, 0 lỗi (bot và chat do người học cấp trong
+    `.env`).
+  - Diễn tập threat model (`make drill-obs-threats`): JWT-8 với 6 trace (44 span), 47 dòng log của 5 service và 2 event
+    GlitchTip (login 504 và follow 504 lúc user-service tắt): không email, mật khẩu, access token, `Authorization`,
+    `Bearer`; UP-8: `video created`, `upload completed` và access log của gateway có `user_id`, `video_id`, `trace_id`;
+    OPS-1: `/debug/pprof/`, `/debug/pprof/heap`, `/metrics` qua gateway 404, project publish đúng 7 cổng loopback
+    (8080, 9000, 9001, 19092, 3000, 8000, 9093), Collector/Prometheus/Tempo/Loki/Pyroscope không publish; RL-2: gateway
+    dựng lại với Redis `.invalid` thì `svp_ratelimit_decisions_total{store="fallback"}` = 6 sau 16 s, cảnh báo
+    `RateLimitFallbackActive` startsAt 28 s, thấy sau 31 s (hạn 240 s).
+  - Overhead telemetry (ADR-0011 §10), cùng tải trên ba trạng thái, hai lượt đo độc lập, mỗi trạng thái: `make up`, nghỉ
+    60 s, 6 mẫu `docker stats` (trung vị), 3 × `make smoke`, 3 × `make measure-explore-cache N=100`; CPU là tổng giây
+    CPU của container (Docker API) trong cửa sổ tải 54–64 s của lượt 2:
+
+    | | (a) `OBS=off`, telemetry tắt | (b) `OBS=lgtm`, backend tới được | (c) `make up`, SDK bật, Collector không có |
+    | --- | --- | --- | --- |
+    | RAM 6 service Go lúc nghỉ (lượt 2) | 56 MiB (7–10 mỗi service) | 106 MiB (10–20) | 99 MiB (9–22) |
+    | RAM cả stack lúc nghỉ (lượt 1 / lượt 2) | 955 / 687 MiB | 1 975 / 1 746 MiB | 743 / 736 MiB |
+    | CPU 5 service Go (gateway, user, video, engagement, feed) trong cửa sổ tải | 3,9 s | 4,9 s | 5,9 s |
+    | CPU backend obs trong cửa sổ tải | — | lgtm 5,3 s, glitchtip 1,0, otelcol 0,8, alertmanager 0,1 | — |
+    | `make smoke` (3 lượt, mỗi lượt đo) | 9,86 / 8,63 / 9,32; 18,21 / 9,72 / 8,53 s | 8,37 / 8,32 / 8,49; 9,27 / 10,07 / 8,63 s | 9,46 / 8,35 / 8,85; 9,55 / 9,48 / 9,78 s |
+    | Explore sóng 2 (trong TTL), trung vị p50 / p95 của 6 lượt | 62,5 / 74,2 ms | 74,4 / 86,6 ms | 86,0 / 103,6 ms |
+    | Explore sóng 2, lượt tốt nhất p50 / p95 | 36,0 / 46,5 ms | 46,7 / 56,9 ms | 41,5 / 52,4 ms |
+
+    **b − a:** +50 MiB RAM cho 6 service (≈ +8 MiB mỗi service; Pyroscope, hàng đợi span/log, metric), +1,0 s CPU của 5
+    service trên ~55 s tải (≈ 2% một lõi), p50/p95 sóng 2 +12/+12 ms theo trung vị (+11/+10 ms theo lượt tốt nhất);
+    backend `obs` thêm 1 008 MiB RAM và 7,2 s CPU. **c − a:** +43 MiB RAM, +2,0 s CPU (gRPC client của exporter phân
+    giải lại DNS `otelcol` và hết hạn 5 s mỗi kỳ, WARN `telemetry export failed` tối đa 1 dòng/phút), p50/p95 sóng 2
+    +24/+29 ms theo trung vị (+6/+6 ms theo lượt tốt nhất). Lượt đầu của mỗi trạng thái luôn chậm nhất (sóng 1 p50
+    141–238 ms, các lượt sau 47–106 ms) nên chênh lệch giữa các lượt lớn hơn chênh lệch giữa ba trạng thái; smoke bị
+    thời gian transcode chi phối (18,21 s là lượt có worker vừa khởi động, `READY` sau 12 s thay vì 4 s). Mốc hiện có
+    chưa làm feed vượt 150 ms hay vượt ngân sách RAM, chưa cần đổi sampling. Riêng trạng thái (c), 2 trong 7 lượt
+    `measure-explore-cache` FAIL vì một lần GET cache Redis native quá hạn đọc 50 ms (WARN `read explore cache ...
+    i/o timeout`), feed-service đọc Postgres theo đường dự phòng của ADR-0010 §3 nên đếm 2 lần đọc thay vì 1; (a), (b)
+    và `core` sau diễn tập 0 trong 19 lượt. Chưa kết luận nguyên nhân; xem lại khi lặp ở giai đoạn 6 (k6).
+  - Diễn tập giai đoạn 2 chạy lại trên code cuối, stack `core` không `OBS`: `drill-kill-worker` (`READY` 80 s sau khi
+    worker khởi động lại, một `transcode.completed`, outbox 2 dòng), `drill-duplicates` (`master.m3u8` lệch BANDWIDTH tối
+    đa 0,19%), `measure-ready N=5` (41,5–41,7 s, p95 = max 41,7 s; worker đỉnh 734 MiB, CPU 210,6%),
+    `drill-duplicates-feed`, `measure-freshness FOLLOWERS=10000 N=10` (p50 0,139 s, p95 = max 0,257 s; `follows` của
+    `svp_feed` 13 trước = 13 sau), `drill-engagement-down` (breaker mở sau 6 like, 3,3 s; like 503 chậm nhất 8,7 ms; bật
+    lại 204 sau 1,6 s), `drill-rate-limit` (5 × 401 rồi 429 `Retry-After` 360 s; Redis `.invalid`: 3 × 401 rồi 429,
+    720 s), `measure-explore-cache` (sóng 1 p50 181,3 / p95 203,0 ms, 1 lần đọc; sóng 2 p50 97,1 / p95 118,6 ms),
+    `drill-upload-cleanup` (`FAILED` sau 23 s). Trên stack `OBS=lgtm`: `make smoke` 9,9 s; `measure-ready N=5` 52,6 /
+    54,8 / 58,7 / 47,3 / 64,2 s, p50 54,8 s, p95 = max 64,2 s (**đạt** SLO 120 s; chậm hơn `core` 41,7 s vì CPU của máy
+    chia cho LGTM, Collector và span của worker); `measure-freshness FOLLOWERS=10000 N=10` 0,332 / 0,143 / 0,160 / 0,227
+    / 0,251 / 0,058 / 0,215 / 0,149 / 0,195 / 0,172 s, p50 0,172 s, p95 = max 0,332 s (**đạt** NFR 10 s; nạp 10.000
+    follow 18,4 s, dọn 32,6 s, 0 follow của tác giả giả còn lại).
+  - RAM lúc nghỉ (`docker stats`, trung vị 6 mẫu sau 60 s nghỉ): `core` sau mọi diễn tập giai đoạn 2: redpanda 513,
+    minio 256, feed 47,5, gateway 46,3, engagement 27,7, user 23,2, video 20,7, media-worker 15,8 MiB, tổng 951 MiB.
+    `core` + `obs` sau mọi diễn tập giai đoạn 3: lgtm 1 245, redpanda 375, glitchtip 232, minio 152, otelcol 98,
+    video 26,6, feed 21,8, user 21,5, engagement 20,3, gateway 18,0, alertmanager 17,3, media-worker 15,8 MiB, tổng
+    2 244 MiB; ngay sau 3 lượt smoke thì 1 746–1 975 MiB (bảng trên). Bài Elastic (ADR-0012): backend 2 995 so với
+    1 374 MiB, cả stack 3 585 so với 2 276 MiB, khởi động ấm 44 s so với 19–20 s; giữ LGTM làm bộ chính.
+  - Kiểm: `GOFLAGS=-count=1 make check` sạch (42 gói, 90 s; lint 0 issue, `buf lint`/`buf build` sạch) và
+    `GOFLAGS=-count=1 make test` thêm hai lần sạch (87 s mỗi lần, `internal/kafkax` ~85 s vẫn lâu nhất); `buf breaking`
+    sạch (`proto/` không đổi); `make test-stack` sạch (test `objstore` chạy trên MinIO thật, không SKIP); `make
+    compose-config`, `make slo-check`, `make otelcol-validate` sạch. `.env` không đổi qua mọi lệnh
+    (sha256 trước = sau). Chưa làm: thao tác trên trình duyệt Grafana/Kibana (chỉ gọi API), blackbox exporter/uptime
+    (dòng "Uptime" của bản đồ kiến thức), tail sampling.
+  - Đối chiếu "Làm" và "Xong khi" của giai đoạn 3:
+    - OpenTelemetry SDK trong mọi service + Collector: **đã làm**, Collector contrib riêng (ADR-0011 §1, chỉnh ở ADR-0012
+      §1), kiểm bằng `drill-obs-threats` (trace 6 service) và dashboard.
+    - `grafana/otel-lgtm` local: **đã làm**, kèm `otelcol`, `alertmanager`, `glitchtip` trong cùng profile `obs` (khác
+      plan "một container": Collector tách để đổi backend, Alertmanager tách để học định tuyến, GlitchTip vì SaaS bị
+      chặn).
+    - Dashboard RED/USE, lag consumer, service graph từ trace: **đã làm**, 4 dashboard (43 panel), kiểm lại trên code
+      cuối bằng hai lượt `make up OBS=lgtm` + `make smoke`: mọi truy vấn của mọi panel chạy qua datasource proxy của
+      Grafana (Prometheus, Tempo search, service graph) 0 lỗi; lượt 1 42/43 panel có dữ liệu 75 s sau smoke (trống:
+      "Burn rate now (5 m)", truy vấn tức thời chưa có series lúc đó), lượt 2 43/43 (rule 5 phút có giá trị từ 45 s sau
+      smoke). Hai panel SLI và ngân sách 30 ngày có số nhờ rule 30 ngày của ADR-0011 §8 (`feed-availability` SLI lỗi
+      4,3%, ngân sách âm vì các diễn tập tắt service trong ngày); panel cảnh báo có dòng vì cảnh báo của diễn tập trong
+      giờ trước còn trong Prometheus (volume giữ qua `make down`).
+    - Log có cấu trúc kèm `trace_id`, nhảy từ trace sang log: **đã làm**, datasource Tempo ↔ Loki, kiểm ở
+      `drill-alert-to-sentry` (T3) và ADR-0012 §4.
+    - Sentry cho lỗi ứng dụng, Pyroscope cho profiling: **đã làm** với GlitchTip tự host qua giao thức Sentry (ADR-0011
+      §7) và Pyroscope trong LGTM (5 service); kiểm ở `drill-alert-to-sentry` (T4) và `drill-obs-threats` (JWT-8).
+    - Alertmanager gửi Slack/Telegram; SLO bằng Sloth + cảnh báo burn rate: **đã làm**, chỉ Telegram (một kênh đủ cho bài
+      học, ADR-0011 §8), 1 thông báo gửi thật trong `drill-alert-to-sentry`; 4 SLO Sloth, test promtool.
+    - Bài so sánh Elastic: **đã làm**, chạy lần lượt (không song song, vì RAM), kết luận ở ADR-0012.
+    - Xong khi "từ một cảnh báo lần ra trace, ra log, ra lỗi trong Sentry trong vòng 5 phút": **đạt**, T4 − T1 = 7,4 s
+      (cảnh báo tới sau 58,3 s kể từ lúc tắt service).
 - [ ] 4. Kubernetes local
 - [ ] 5. CI/CD và DevSecOps
 - [ ] 6. Reliability

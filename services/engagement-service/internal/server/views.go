@@ -9,6 +9,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 	"uuid"
 
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -24,16 +25,22 @@ import (
 // consumer_offsets.
 const ViewsGroup = "engagement-service"
 
+// viewsHandlerTimeout bounds one attempt at a batch: the end offset lookup and the transaction,
+// commit included (docs/adr/0011-observability-stage3.md, section 11).
+const viewsHandlerTimeout = 30 * time.Second
+
 // ViewsConsumerConfig returns the batch consumer of TopicViews in ViewsGroup, with the batch
-// size and retry settings of kafkax (ADR-0009, section 4).
+// size and retry settings of kafkax (ADR-0009, section 4). A batch attempt past
+// viewsHandlerTimeout is retried like any other failure.
 func (s *Server) ViewsConsumerConfig(brokers string) kafkax.BatchConsumerConfig {
 	return kafkax.BatchConsumerConfig{
-		Brokers:  brokers,
-		ClientID: ViewsGroup,
-		Group:    ViewsGroup,
-		Topics:   []string{TopicViews},
-		Handler:  s.HandleViews,
-		Logger:   s.logger,
+		Brokers:        brokers,
+		ClientID:       ViewsGroup,
+		Group:          ViewsGroup,
+		Topics:         []string{TopicViews},
+		Handler:        s.HandleViews,
+		Logger:         s.logger,
+		HandlerTimeout: viewsHandlerTimeout,
 	}
 }
 

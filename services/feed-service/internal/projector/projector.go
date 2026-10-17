@@ -1,6 +1,8 @@
 // Package projector builds feed-service's read model (follows, videos, timeline) from the events
 // of user.follows.v1 and video.lifecycle.v1, and prunes timeline rows past 30 days
-// (docs/adr/0009-engagement-feed-stage2b.md, sections 6 and 7).
+// (docs/adr/0009-engagement-feed-stage2b.md, sections 6 and 7). It reports feed freshness, from a
+// video.ready to its fan-out commit, as svp.feed.freshness (docs/adr/0011-observability-stage3.md,
+// section 5).
 package projector
 
 import (
@@ -16,6 +18,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
 	"google.golang.org/protobuf/proto"
 
 	userv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1"
@@ -50,18 +55,37 @@ const (
 	// retrying. An outage longer than this gets the member dropped from the group, and its
 	// partitions move to another member while it still retries.
 	rebalanceTimeout = 5 * time.Minute
+	// handlerTimeout bounds one attempt at an event, author lock, fan-out and commit included
+	// (ADR-0011, section 11). A fan-out to 200k followers takes about a second.
+	handlerTimeout = 30 * time.Second
+	// rollbackTimeout bounds the rollback of a failed transaction, which runs on a context of its
+	// own: the attempt's may have run out.
+	rollbackTimeout = 5 * time.Second
 )
+
+// freshnessBuckets are the bucket bounds of svp.feed.freshness, in seconds (ADR-0011, section 5).
+var freshnessBuckets = []float64{0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60}
 
 // Projector applies events to the read model.
 type Projector struct {
 	pool    *pgxpool.Pool
 	queries *store.Queries
 	logger  *slog.Logger
+	// freshness records, per video, the seconds from its video.ready to its fan-out commit.
+	freshness metric.Float64Histogram
 }
 
-// New returns a Projector writing to pool.
+// New returns a Projector writing to pool, with its metrics on the global meter provider.
 func New(pool *pgxpool.Pool, logger *slog.Logger) *Projector {
-	return &Projector{pool: pool, queries: store.New(pool), logger: logger}
+	meter := otel.Meter("github.com/anhnvcoder/short-video-platform/services/feed-service/internal/projector")
+	freshness, err := meter.Float64Histogram("svp.feed.freshness", metric.WithUnit("s"),
+		metric.WithDescription("Time from video.ready to the commit of its fan-out to the followers' timelines."),
+		metric.WithExplicitBucketBoundaries(freshnessBuckets...))
+	if err != nil {
+		otel.Handle(err)
+		freshness = noop.Float64Histogram{}
+	}
+	return &Projector{pool: pool, queries: store.New(pool), logger: logger, freshness: freshness}
 }
 
 // ConsumerConfig returns the consumer of both topics in Group. Transient errors are retried
@@ -78,6 +102,8 @@ func (p *Projector) ConsumerConfig(brokers string) kafkax.ConsumerConfig {
 		Handler:     p.Handle,
 		Logger:      p.logger,
 		MaxAttempts: math.MaxInt,
+		// A timed-out attempt is a transient error and is retried like the others.
+		HandlerTimeout: handlerTimeout,
 		// A rebalance waits for the records in hand. Without this, a partition could move to
 		// another member while this one retries an old user.followed through a Postgres outage,
 		// and that retry could land after the new owner applied a later user.unfollowed.
@@ -197,7 +223,12 @@ func (p *Projector) handleVideo(ctx context.Context, r *kgo.Record) error {
 	}
 	ctx = logx.With(ctx, slog.String("video_id", v.VideoID.String()), slog.String("author_id", v.AuthorID.String()),
 		slog.String("event_id", ev.GetMeta().GetEventId()))
-	return p.publish(ctx, v)
+	// Without a valid occurred_at the video is still published, only not measured.
+	var occurred time.Time
+	if at := ev.GetMeta().GetOccurredAt(); at.CheckValid() == nil {
+		occurred = at.AsTime()
+	}
+	return p.publish(ctx, v, occurred)
 }
 
 // checkVideoReady checks every field the feed stores or serves, so a forged or broken event goes
@@ -252,14 +283,18 @@ func validTitle(title string) bool {
 	return n > 0 && n <= maxTitleRunes
 }
 
-// publish stores the video and fans it out to its author's followers in one transaction.
-func (p *Projector) publish(ctx context.Context, v store.InsertVideoParams) error {
-	var fanned int64
+// publish stores the video and fans it out to its author's followers in one transaction. Once
+// that commits, it records the time since occurred, the event's occurred_at, unless occurred is
+// zero or the video was stored already.
+func (p *Projector) publish(ctx context.Context, v store.InsertVideoParams, occurred time.Time) error {
+	var inserted, fanned int64
 	err := p.inAuthorTx(ctx, v.AuthorID, func(q *store.Queries) error {
-		if err := q.InsertVideo(ctx, v); err != nil {
+		n, err := q.InsertVideo(ctx, v)
+		if err != nil {
 			return fmt.Errorf("insert video: %w", err)
 		}
-		n, err := q.FanOutVideo(ctx, store.FanOutVideoParams{VideoID: v.VideoID, AuthorID: v.AuthorID})
+		inserted = n
+		n, err = q.FanOutVideo(ctx, store.FanOutVideoParams{VideoID: v.VideoID, AuthorID: v.AuthorID})
 		if err != nil {
 			return fmt.Errorf("fan out video: %w", err)
 		}
@@ -268,6 +303,12 @@ func (p *Projector) publish(ctx context.Context, v store.InsertVideoParams) erro
 	})
 	if err != nil {
 		return err
+	}
+	// One sample per video, from its first fan-out: a redelivered or forged second video.ready
+	// finds the video stored. An author without followers still counts, with 0 timeline rows.
+	if inserted == 1 && !occurred.IsZero() {
+		// Clocks of two hosts can disagree: a video.ready from the future reads as 0 s.
+		p.freshness.Record(ctx, max(time.Since(occurred).Seconds(), 0))
 	}
 	p.logger.InfoContext(ctx, "video fanned out", slog.Int64("timeline_rows", fanned))
 	return nil
@@ -280,8 +321,13 @@ func (p *Projector) inAuthorTx(ctx context.Context, author uuid.UUID, fn func(q 
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
-	// After Commit this is a no-op; on ctx cancellation it still reaches the server.
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	// After Commit this is a no-op. Once the attempt has run out of time, the rollback still
+	// reaches the server, within a bound of its own.
+	defer func() {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
+		defer cancel()
+		_ = tx.Rollback(rctx)
+	}()
 
 	q := p.queries.WithTx(tx)
 	if err := q.LockAuthor(ctx, author); err != nil {
@@ -297,13 +343,15 @@ func (p *Projector) inAuthorTx(ctx context.Context, author uuid.UUID, fn func(q 
 }
 
 // PruneTimeline deletes timeline rows older than 30 days, a batch at a time until none is left,
-// and returns how many it deleted. Reads filter those rows out anyway, so running late, twice or
-// on several replicas at once is harmless.
-func (p *Projector) PruneTimeline(ctx context.Context) (int64, error) {
-	return p.pruneTimeline(ctx, pruneBatch)
+// and returns how many it deleted. It calls onBatch after every batch deleted, the last one
+// included, even when it deleted nothing, so a run cut short by its deadline still reports the
+// batches it got through (docs/adr/0011-observability-stage3.md, section 5). Reads filter those
+// rows out anyway, so running late, twice or on several replicas at once is harmless.
+func (p *Projector) PruneTimeline(ctx context.Context, onBatch func()) (int64, error) {
+	return p.pruneTimeline(ctx, pruneBatch, onBatch)
 }
 
-func (p *Projector) pruneTimeline(ctx context.Context, batch int32) (int64, error) {
+func (p *Projector) pruneTimeline(ctx context.Context, batch int32, onBatch func()) (int64, error) {
 	var total int64
 	for {
 		n, err := p.queries.DeleteExpiredTimeline(ctx, batch)
@@ -311,6 +359,7 @@ func (p *Projector) pruneTimeline(ctx context.Context, batch int32) (int64, erro
 		if err != nil {
 			return total, fmt.Errorf("delete expired timeline rows: %w", err)
 		}
+		onBatch()
 		if n < int64(batch) {
 			return total, nil
 		}

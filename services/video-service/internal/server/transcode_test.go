@@ -12,6 +12,9 @@ import (
 
 	"github.com/twmb/franz-go/pkg/kfake"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -21,7 +24,6 @@ import (
 	"github.com/anhnvcoder/short-video-platform/internal/ids"
 	"github.com/anhnvcoder/short-video-platform/internal/kafkax"
 	"github.com/anhnvcoder/short-video-platform/internal/outbox"
-	"github.com/anhnvcoder/short-video-platform/internal/traceparent"
 	"github.com/anhnvcoder/short-video-platform/services/video-service/internal/store"
 )
 
@@ -127,10 +129,12 @@ func filesOf(id string) []string {
 
 func TestTranscodeCompletedMarksReadyAndEmitsVideoReady(t *testing.T) {
 	needDB(t)
+	testTelemetry(t)
 	s, storage, logs := newServerWithStorage()
 	id := newVideo(t, "PROCESSING")
-	// As kafkax leaves the context of a record with a traceparent header.
-	ctx := traceparent.NewContext(t.Context(), testTraceparent)
+	// As kafkax leaves the context of a record: its consumer span.
+	ctx, span := otel.Tracer("test").Start(t.Context(), "process "+TopicMediaTranscodes)
+	defer span.End()
 
 	before := time.Now()
 	if err := handleTranscode(ctx, s, transcodeRecord(id, completedEvent(id))); err != nil {
@@ -152,8 +156,8 @@ func TestTranscodeCompletedMarksReadyAndEmitsVideoReady(t *testing.T) {
 	if rows[0].topic != TopicVideoLifecycle {
 		t.Errorf("topic = %q, want %s", rows[0].topic, TopicVideoLifecycle)
 	}
-	if len(rows[0].headers) != 1 || rows[0].headers["traceparent"] != testTraceparent {
-		t.Errorf("headers = %v, want the record's traceparent", rows[0].headers)
+	if want := traceparentOf(span); len(rows[0].headers) != 1 || rows[0].headers["traceparent"] != want {
+		t.Errorf("headers = %v, want the consumer span's traceparent %s", rows[0].headers, want)
 	}
 	wantVideoReady(t, rows[0].payload, v)
 	wantDeletes(t, storage)
@@ -588,9 +592,10 @@ func TestTranscodeFailedUncommittedUntilDeleted(t *testing.T) {
 
 // The whole saga in-process: CompleteUpload, the relay publishes video.uploaded, the test plays
 // media-worker and answers transcode.completed, the consumer marks the video READY and the relay
-// publishes video.ready, carrying the request's traceparent all the way.
+// publishes video.ready, all in the request's trace.
 func TestUploadToReadyThroughKafka(t *testing.T) {
 	needDB(t)
+	testTelemetry(t)
 	brokers := transcodeCluster(t, 3)
 	s, storage, logs := newServerWithStorage()
 
@@ -613,15 +618,20 @@ func TestUploadToReadyThroughKafka(t *testing.T) {
 
 	author := ids.New()
 	id := uploaded(t, s, storage, author)
-	if _, err := completeUpload(traceparent.NewContext(t.Context(), testTraceparent), t, s, author, id); err != nil {
+	ctx, span := otel.Tracer("test").Start(t.Context(), "CompleteUpload")
+	_, err = completeUpload(ctx, t, s, author, id)
+	span.End()
+	if err != nil {
 		t.Fatal(err)
 	}
+	traceID := span.SpanContext().TraceID()
 
 	uploadedRec := readTopic(t, brokers, TopicVideoLifecycle, id, 1)[0]
 	wantVideoUploaded(t, uploadedRec.Value, id, author)
-	// Like media-worker, answer with the traceparent of the record being handled.
+	// Like media-worker, answer in the trace of the record being handled.
 	r := transcodeRecord(id, completedEvent(id))
-	r.Headers = []kgo.RecordHeader{{Key: "traceparent", Value: []byte(headerValue(uploadedRec, "traceparent"))}}
+	r.Context = otel.GetTextMapPropagator().Extract(t.Context(),
+		propagation.MapCarrier{"traceparent": headerValue(uploadedRec, "traceparent")})
 	produce(t, brokers, r)
 
 	recs := readTopic(t, brokers, TopicVideoLifecycle, id, 2)
@@ -630,11 +640,265 @@ func TestUploadToReadyThroughKafka(t *testing.T) {
 		t.Fatalf("status = %s, want READY", v.Status)
 	}
 	wantVideoReady(t, recs[1].Value, v)
-	if got := headerValue(recs[1], "traceparent"); got != testTraceparent {
-		t.Errorf("video.ready traceparent = %q, want %q", got, testTraceparent)
+	if got := traceIDOf(t, headerValue(recs[1], "traceparent")); got != traceID {
+		t.Errorf("video.ready is in trace %s, want the request's trace %s", got, traceID)
 	}
 	resp, err := getVideo(t, s, ids.New(), id)
 	if err != nil || resp.GetVideo().GetStatus() != videov1.VideoStatus_VIDEO_STATUS_READY {
 		t.Errorf("GetVideo by another user = %v, %v; want the READY video", resp, err)
 	}
+}
+
+// completedUpload creates a video through InitUpload and CompleteUpload, so it is PROCESSING
+// with processing_at set, and returns its id.
+func completedUpload(t *testing.T, s *Server, storage *fakeStorage) string {
+	t.Helper()
+	author := ids.New()
+	id := uploaded(t, s, storage, author)
+	if _, err := completeUpload(t.Context(), t, s, author, id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// transcode.completed records one svp.video.ready.duration sample, outcome ready, of about the
+// time since CompleteUpload; a redelivery records nothing more.
+func TestReadyDurationFromCompleteUploadToReady(t *testing.T) {
+	needDB(t)
+	_, reader := testTelemetry(t)
+	s, storage, _ := newServerWithStorage()
+	start := time.Now()
+	id := completedUpload(t, s, storage)
+	const wait = 300 * time.Millisecond
+	time.Sleep(wait)
+
+	r := transcodeRecord(id, completedEvent(id))
+	if err := handleTranscode(t.Context(), s, r); err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(start).Seconds()
+	points := readySamples(t, reader)
+	ready, ok := points["ready"]
+	if !ok || len(points) != 1 || ready.Count != 1 {
+		t.Fatalf("samples = %v, want one with outcome ready", points)
+	}
+	// Postgres and the test share this machine's clock.
+	if ready.Sum < wait.Seconds() || ready.Sum > elapsed {
+		t.Errorf("sample = %.3fs, want between %.3fs and %.3fs", ready.Sum, wait.Seconds(), elapsed)
+	}
+	// The sample is read from Postgres's clock alone: it ends after the moving transaction
+	// committed, so no earlier than published_at, its now(), and no later than a clock read after
+	// the handler returned.
+	after := postgresNow(t)
+	v := loadVideo(t, id)
+	if low, high := v.PublishedAt.Sub(*v.ProcessingAt).Seconds(), after.Sub(*v.ProcessingAt).Seconds(); ready.Sum < low || ready.Sum > high {
+		t.Errorf("sample = %.6fs, want between published_at - processing_at = %.6fs and %.6fs on Postgres's clock", ready.Sum, low, high)
+	}
+	if want := readyBuckets; !slices.Equal(ready.Bounds, want) {
+		t.Errorf("bounds = %v, want %v", ready.Bounds, want)
+	}
+
+	for _, again := range []*kgo.Record{r, transcodeRecord(id, completedEvent(id))} {
+		if err := handleTranscode(t.Context(), s, again); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := readySamples(t, reader)["ready"].Count; got != 1 {
+		t.Errorf("after redeliveries: %d samples, want 1", got)
+	}
+}
+
+// The sample ends when the video is READY for everyone, after the commit: a transcode.completed
+// whose UPDATE waits for a lock on the row counts the wait, which the transaction's now() in
+// published_at leaves out (ADR-0011 section 5, "tới READY thật").
+func TestReadyDurationIncludesLockWait(t *testing.T) {
+	needDB(t)
+	_, reader := testTelemetry(t)
+	s, storage, _ := newServerWithStorage()
+	id := completedUpload(t, s, storage)
+
+	lock, err := testPool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Rollback(context.Background()) }()
+	var lockPID int
+	if err := lock.QueryRow(t.Context(), "SELECT pg_backend_pid()").Scan(&lockPID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lock.Exec(t.Context(), "SELECT 1 FROM videos WHERE id = $1 FOR UPDATE", id); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- handleTranscode(t.Context(), s, transcodeRecord(id, completedEvent(id))) }()
+	waitBlockedBy(t, lockPID)
+	const hold = 300 * time.Millisecond
+	time.Sleep(hold)
+	if err := lock.Rollback(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	after := postgresNow(t)
+
+	points := readySamples(t, reader)
+	ready, ok := points["ready"]
+	if !ok || len(points) != 1 || ready.Count != 1 {
+		t.Fatalf("samples = %v, want one with outcome ready", points)
+	}
+	v := loadVideo(t, id)
+	if v.Status != "READY" {
+		t.Fatalf("status = %s, want READY", v.Status)
+	}
+	// The transaction began, at published_at, before its UPDATE blocked, and the lock was held
+	// for hold after that: the sample must cover both.
+	txStart := v.PublishedAt.Sub(*v.ProcessingAt).Seconds()
+	if low, high := txStart+hold.Seconds(), after.Sub(*v.ProcessingAt).Seconds(); ready.Sum < low || ready.Sum > high {
+		t.Errorf("sample = %.3fs, want between %.3fs (published_at - processing_at = %.3fs, plus the %s lock wait) and %.3fs",
+			ready.Sum, low, txStart, hold, high)
+	}
+}
+
+// waitBlockedBy returns once some backend waits for a lock held by the backend pid, or fails
+// after a while.
+func waitBlockedBy(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var blocked int
+		err := testPool.QueryRow(t.Context(),
+			"SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))", pid).Scan(&blocked)
+		if err != nil {
+			t.Fatalf("read pg_stat_activity: %v", err)
+		}
+		if blocked > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no backend blocked by pid %d after 5s", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// postgresNow returns the time on Postgres's clock.
+func postgresNow(t *testing.T) time.Time {
+	t.Helper()
+	var now time.Time
+	if err := testPool.QueryRow(t.Context(), "SELECT clock_timestamp()").Scan(&now); err != nil {
+		t.Fatalf("read Postgres clock: %v", err)
+	}
+	return now
+}
+
+// transcode.failed records one sample, outcome failed, and leaves the consumer span in error; a
+// redelivery records nothing more.
+func TestReadyDurationOfFailedVideo(t *testing.T) {
+	needDB(t)
+	recorder, reader := testTelemetry(t)
+	s, storage, _ := newServerWithStorage()
+	id := completedUpload(t, s, storage)
+
+	ctx, span := otel.Tracer("test").Start(t.Context(), "process "+TopicMediaTranscodes)
+	r := transcodeRecord(id, failedEvent(id))
+	before := postgresNow(t)
+	err := handleTranscode(ctx, s, r)
+	after := postgresNow(t)
+	span.End()
+	if err != nil {
+		t.Fatal(err)
+	}
+	points := readySamples(t, reader)
+	p, ok := points["failed"]
+	if !ok || len(points) != 1 || p.Count != 1 || p.Sum <= 0 {
+		t.Fatalf("samples = %v, want one positive with outcome failed", points)
+	}
+	// Measured on Postgres's clock, from processing_at to after the failing UPDATE committed.
+	start := *loadVideo(t, id).ProcessingAt
+	if low, high := before.Sub(start).Seconds(), after.Sub(start).Seconds(); p.Sum < low || p.Sum > high {
+		t.Errorf("sample = %.6fs, want between %.6fs and %.6fs on Postgres's clock", p.Sum, low, high)
+	}
+	ended := recorder.Ended()
+	if len(ended) == 0 || ended[len(ended)-1].Status().Code != codes.Error ||
+		ended[len(ended)-1].Status().Description != "transcode failed: TRANSCODE_FAILURE_REASON_INVALID_INPUT" {
+		t.Errorf("consumer span status = %v, want Error with the reason", ended[len(ended)-1].Status())
+	}
+
+	if err := handleTranscode(t.Context(), s, r); err != nil {
+		t.Fatal(err)
+	}
+	if got := readySamples(t, reader)["failed"].Count; got != 1 {
+		t.Errorf("after a redelivery: %d samples, want 1", got)
+	}
+}
+
+// A video that became PROCESSING before processing_at existed moves as before and records no
+// sample.
+func TestReadyDurationSkipsVideoWithoutProcessingAt(t *testing.T) {
+	needDB(t)
+	_, reader := testTelemetry(t)
+	s, _, _ := newServerWithStorage()
+	ready, failed := newVideo(t, "PROCESSING"), newVideo(t, "PROCESSING")
+
+	if err := handleTranscode(t.Context(), s, transcodeRecord(ready, completedEvent(ready))); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleTranscode(t.Context(), s, transcodeRecord(failed, failedEvent(failed))); err != nil {
+		t.Fatal(err)
+	}
+	if v := loadVideo(t, ready); v.Status != "READY" || v.ProcessingAt != nil {
+		t.Errorf("video = %s, processing_at %v; want READY without processing_at", v.Status, v.ProcessingAt)
+	}
+	wantUnchanged(t, failed, "FAILED")
+	if points := readySamples(t, reader); len(points) != 0 {
+		t.Errorf("samples = %v, want none", points)
+	}
+}
+
+func TestTranscodeConsumerBoundsEachAttempt(t *testing.T) {
+	s, _ := newServer()
+	if got := s.TranscodeConsumerConfig("127.0.0.1:1").HandlerTimeout; got != 10*time.Second {
+		t.Errorf("HandlerTimeout = %s, want 10s", got)
+	}
+}
+
+// A transcode.completed whose row is locked past the attempt's deadline returns an error, and its
+// rollback, against a Postgres that does not answer, ends within rollbackTimeout.
+func TestTranscodeRollbackIsBounded(t *testing.T) {
+	needDB(t)
+	pool, hang := withHangingRollback(t, testPool)
+	s := New(pool, newFakeStorage(), slog.New(slog.DiscardHandler))
+	s.rollbackTimeout = 200 * time.Millisecond
+	id := newVideo(t, "PROCESSING")
+
+	lock, err := testPool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Rollback(context.Background()) }()
+	if _, err := lock.Exec(t.Context(), "SELECT 1 FROM videos WHERE id = $1 FOR UPDATE", id); err != nil {
+		t.Fatal(err)
+	}
+
+	const attempt = 300 * time.Millisecond
+	ctx, cancel := context.WithTimeout(t.Context(), attempt)
+	defer cancel()
+	start := time.Now()
+	err = handleTranscode(ctx, s, transcodeRecord(id, completedEvent(id)))
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("HandleTranscode = nil, want an error")
+	}
+	if hang.rollbacks.Load() == 0 || hang.unbounded.Load() != 0 {
+		t.Errorf("rollbacks = %d, without deadline %d; want some, all with a deadline", hang.rollbacks.Load(), hang.unbounded.Load())
+	}
+	if limit := attempt + s.rollbackTimeout + time.Second; elapsed > limit {
+		t.Errorf("HandleTranscode took %s, want at most %s", elapsed, limit)
+	}
+	if err := lock.Rollback(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	wantUnchanged(t, id, "PROCESSING")
 }

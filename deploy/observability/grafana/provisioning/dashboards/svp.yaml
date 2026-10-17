@@ -1,0 +1,15 @@
+# Dashboard provider for the project's dashboards, mounted read-only next to the image's own
+# providers in /otel-lgtm/grafana/conf/provisioning/dashboards/ (docs/adr/0011-observability-stage3.md,
+# section 9). The JSON files live in deploy/observability/grafana/dashboards/, mounted at
+# /otel-lgtm/svp-dashboards; they are edited in the repo, not in the UI.
+apiVersion: 1
+
+providers:
+  - name: svp
+    type: file
+    folder: svp
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /otel-lgtm/svp-dashboards
+      foldersFromFilesStructure: false

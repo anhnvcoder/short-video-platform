@@ -29,8 +29,9 @@ DELETE FROM timeline t
 USING videos v
 WHERE t.user_id = @follower_id AND t.video_id = v.video_id AND v.author_id = @followee_id;
 
--- name: InsertVideo :exec
--- The first video.ready wins: published_at of a stored video never changes.
+-- name: InsertVideo :execrows
+-- The first video.ready wins: published_at of a stored video never changes. Returns 0 for a video
+-- already stored.
 INSERT INTO videos (video_id, author_id, title, duration_ms, playlist_key, thumbnail_key, published_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (video_id) DO NOTHING;

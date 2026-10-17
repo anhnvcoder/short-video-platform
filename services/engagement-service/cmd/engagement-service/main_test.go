@@ -1,12 +1,21 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/anhnvcoder/short-video-platform/internal/pgpool"
+	"github.com/anhnvcoder/short-video-platform/internal/sentryx"
 )
 
 func TestServeRequiresItsVariables(t *testing.T) {
@@ -24,6 +33,43 @@ func TestServeRequiresItsVariables(t *testing.T) {
 			t.Errorf("DATABASE_URL=%q KAFKA_BROKERS=%q: serve() = %v, want an error naming %s",
 				tc.databaseURL, tc.brokers, err, tc.want)
 		}
+	}
+}
+
+// A failure after the error tracker has started is logged while the tracker still runs, so that
+// it reaches the tracker, and only once: main does not log it again (ADR-0011, section 7).
+func TestServeReportsAFailureBeforeTheErrorTrackerStops(t *testing.T) {
+	var mu sync.Mutex
+	var envelopes []string
+	tracker := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		envelopes = append(envelopes, string(body))
+		mu.Unlock()
+	}))
+	defer tracker.Close()
+	t.Setenv("SENTRY_DSN", "http://public@"+tracker.Listener.Addr().String()+"/1")
+	t.Setenv("OTEL_SDK_DISABLED", "true")
+	t.Setenv("KAFKA_BROKERS", "redpanda:9092")
+	// pgpool rejects this URL once the tracker has started. Every later failure, a malformed
+	// LISTEN_ADDR included, returns through the same deferred call.
+	t.Setenv("DATABASE_URL", "postgres://%zz")
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewMultiHandler(slog.NewJSONHandler(&logs, nil), &sentryx.Handler{}))
+
+	err := run(t.Context(), logger, []string{"serve"})
+	if _, logged := errors.AsType[loggedError](err); !logged || !errors.Is(err, pgpool.ErrInvalidURL) {
+		t.Fatalf("run(serve) = %v, want a loggedError wrapping pgpool.ErrInvalidURL", err)
+	}
+	if n := strings.Count(logs.String(), `"msg":"engagement-service failed"`); n != 1 {
+		t.Errorf("logged the failure %d times, want 1; log:\n%s", n, logs.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.ContainsFunc(envelopes, func(e string) bool {
+		return strings.Contains(e, `"message":"engagement-service failed"`)
+	}) {
+		t.Errorf("tracker received %q, want an event for the failure", envelopes)
 	}
 }
 

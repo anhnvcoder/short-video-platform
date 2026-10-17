@@ -16,6 +16,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -48,7 +51,13 @@ const (
 	MaxOpenUploads = 3
 	// TopicVideoLifecycle carries svp.video.v1.VideoEvent, keyed by video_id.
 	TopicVideoLifecycle = "video.lifecycle.v1"
+	// rollbackTimeout bounds the rollback of a transcode or sweep transaction, which runs after
+	// the step's own deadline may have passed (docs/adr/0011-observability-stage3.md, section 11).
+	rollbackTimeout = 5 * time.Second
 )
+
+// readyBuckets are the V buckets of docs/adr/0011-observability-stage3.md, section 5, in seconds.
+var readyBuckets = []float64{10, 20, 30, 45, 60, 90, 120, 180, 300, 600}
 
 // ErrorInfo reasons returned by the service.
 const (
@@ -91,11 +100,29 @@ type Server struct {
 	queries *store.Queries
 	storage Storage
 	logger  *slog.Logger
+
+	// readyDuration is svp.video.ready.duration: from CompleteUpload to READY or FAILED.
+	readyDuration metric.Float64Histogram
+	// rollbackTimeout is the constant of the same name; tests shorten it.
+	rollbackTimeout time.Duration
 }
 
-// New returns a Server reading and writing through pool and storage.
+// New returns a Server reading and writing through pool and storage. Its metrics go to the
+// global meter provider.
 func New(pool *pgxpool.Pool, storage Storage, logger *slog.Logger) *Server {
-	return &Server{pool: pool, queries: store.New(pool), storage: storage, logger: logger}
+	readyDuration, err := otel.Meter("github.com/anhnvcoder/short-video-platform/services/video-service/internal/server").
+		Float64Histogram("svp.video.ready.duration", metric.WithUnit("s"),
+			metric.WithDescription("Time from CompleteUpload to the video becoming READY or FAILED"),
+			metric.WithExplicitBucketBoundaries(readyBuckets...))
+	if err != nil {
+		// A metric never stops the service: report the error and record nothing.
+		otel.Handle(err)
+		readyDuration = noop.Float64Histogram{}
+	}
+	return &Server{
+		pool: pool, queries: store.New(pool), storage: storage, logger: logger,
+		readyDuration: readyDuration, rollbackTimeout: rollbackTimeout,
+	}
 }
 
 // CallerInterceptor requires the caller's x-user-id on every VideoService RPC. Only the health

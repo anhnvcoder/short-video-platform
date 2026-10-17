@@ -11,6 +11,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/twmb/franz-go/pkg/kfake"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -19,13 +21,9 @@ import (
 	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
 	"github.com/anhnvcoder/short-video-platform/internal/ids"
 	"github.com/anhnvcoder/short-video-platform/internal/kafkax"
-	"github.com/anhnvcoder/short-video-platform/internal/logx"
 	"github.com/anhnvcoder/short-video-platform/internal/objstore"
 	"github.com/anhnvcoder/short-video-platform/internal/outbox"
-	"github.com/anhnvcoder/short-video-platform/internal/traceparent"
 )
-
-const testTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 
 func completeUpload(ctx context.Context, t *testing.T, s *Server, caller, videoID string) (*videov1.CompleteUploadResponse, error) {
 	t.Helper()
@@ -104,12 +102,13 @@ func wantVideoUploaded(t *testing.T, payload []byte, videoID, author string) {
 
 func TestCompleteUploadMovesToProcessingAndEmitsVideoUploaded(t *testing.T) {
 	needDB(t)
+	testTelemetry(t)
 	s, storage, logs := newServerWithStorage()
 	author := ids.New()
 	id := uploaded(t, s, storage, author)
-	// As grpcserver's trace interceptor leaves the context.
-	ctx := logx.With(t.Context(), slog.String("trace_id", "4bf92f3577b34da6a3ce929d0e0e4736"))
-	ctx = traceparent.NewContext(ctx, testTraceparent)
+	// As the otelgrpc stats handler of grpcserver leaves the context: the RPC's server span.
+	ctx, span := otel.Tracer("test").Start(t.Context(), "CompleteUpload")
+	defer span.End()
 
 	resp, err := completeUpload(ctx, t, s, author, id)
 	if err != nil {
@@ -129,8 +128,8 @@ func TestCompleteUploadMovesToProcessingAndEmitsVideoUploaded(t *testing.T) {
 	if rows[0].topic != "video.lifecycle.v1" {
 		t.Errorf("topic = %q, want video.lifecycle.v1", rows[0].topic)
 	}
-	if len(rows[0].headers) != 1 || rows[0].headers["traceparent"] != testTraceparent {
-		t.Errorf("headers = %v, want the request's traceparent", rows[0].headers)
+	if want := traceparentOf(span); len(rows[0].headers) != 1 || rows[0].headers["traceparent"] != want {
+		t.Errorf("headers = %v, want the request span's traceparent %s", rows[0].headers, want)
 	}
 	wantVideoUploaded(t, rows[0].payload, id, author)
 
@@ -138,7 +137,7 @@ func TestCompleteUploadMovesToProcessingAndEmitsVideoUploaded(t *testing.T) {
 	if len(recs) != 1 {
 		t.Fatalf("got %d \"upload completed\" log lines, want 1", len(recs))
 	}
-	for key, val := range map[string]string{"user_id": author, "video_id": id, "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"} {
+	for key, val := range map[string]string{"user_id": author, "video_id": id, "trace_id": span.SpanContext().TraceID().String()} {
 		if recs[0][key] != val {
 			t.Errorf("log %s = %v, want %q", key, recs[0][key], val)
 		}
@@ -456,9 +455,11 @@ func eventually(t *testing.T, what string, cond func() bool) {
 }
 
 // The relay, wired as main wires it, puts the event on video.lifecycle.v1 keyed by video_id with
-// the request's traceparent as a record header.
+// a traceparent header in the request's trace: that of the producer span, a child of the
+// request's span.
 func TestRelaySendsVideoUploadedWithTraceparent(t *testing.T) {
 	needDB(t)
+	recorder, _ := testTelemetry(t)
 	cluster, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(3, TopicVideoLifecycle))
 	if err != nil {
 		t.Fatal(err)
@@ -469,8 +470,10 @@ func TestRelaySendsVideoUploadedWithTraceparent(t *testing.T) {
 	s, storage, logs := newServerWithStorage()
 	author := ids.New()
 	id := uploaded(t, s, storage, author)
-	ctx := traceparent.NewContext(t.Context(), testTraceparent)
-	if _, err := completeUpload(ctx, t, s, author, id); err != nil {
+	ctx, span := otel.Tracer("test").Start(t.Context(), "CompleteUpload")
+	_, err = completeUpload(ctx, t, s, author, id)
+	span.End()
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -515,8 +518,24 @@ func TestRelaySendsVideoUploadedWithTraceparent(t *testing.T) {
 			tps = append(tps, string(h.Value))
 		}
 	}
-	if len(tps) != 1 || tps[0] != testTraceparent {
-		t.Errorf("traceparent headers = %q, want [%q]", tps, testTraceparent)
+	if len(tps) != 1 {
+		t.Fatalf("traceparent headers = %q, want one", tps)
+	}
+	if got := traceIDOf(t, tps[0]); got != span.SpanContext().TraceID() {
+		t.Errorf("traceparent %s is in trace %s, want the request's trace %s", tps[0], got, span.SpanContext().TraceID())
+	}
+	// The relay ends the producer span after the broker acknowledged the record.
+	var send sdktrace.ReadOnlySpan
+	eventually(t, "the producer span to end", func() bool {
+		for _, ended := range recorder.Ended() {
+			if traceparentOfContext(ended.SpanContext()) == tps[0] {
+				send = ended
+			}
+		}
+		return send != nil
+	})
+	if send.Name() != "send "+TopicVideoLifecycle || send.Parent().SpanID() != span.SpanContext().SpanID() {
+		t.Errorf("record traceparent %s is not a producer span child of the request span", tps[0])
 	}
 	wantVideoUploaded(t, rec.Value, id, author)
 }

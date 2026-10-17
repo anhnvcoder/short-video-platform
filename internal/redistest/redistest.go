@@ -82,16 +82,24 @@ func New(t testing.TB) (*redis.Client, string) {
 	return client, prefix
 }
 
-// open checks rawURL names the test database and returns a client to it, without connecting. The
-// client has the options of redisx.New (one attempt, context deadlines) with the timeouts of
-// clientTimeout.
+// open checks rawURL names the test database and returns a client to it, without connecting.
 func open(rawURL string) (*redis.Client, error) {
-	probe, err := redisx.New(rawURL)
+	o, err := options(rawURL)
 	if err != nil {
 		return nil, err
 	}
-	o := *probe.Options()
-	_ = probe.Close()
+	return redis.NewClient(o), nil
+}
+
+// options checks rawURL names the test database and returns the options of redisx.Options (one
+// attempt, context deadlines) with the timeouts of clientTimeout. They are parsed afresh: options
+// copied from a built client have lost the one-attempt setting (-1 is stored as 0, which a new
+// client reads as 3 retries) and carry handlers a new client cannot register again.
+func options(rawURL string) (*redis.Options, error) {
+	o, err := redisx.Options(rawURL)
+	if err != nil {
+		return nil, err
+	}
 	if o.Network != "tcp" || !allowedAddrs[o.Addr] || o.DB != DB {
 		return nil, fmt.Errorf("%w; got %s %s db %d", ErrNotTestDB, o.Network, o.Addr, o.DB)
 	}
@@ -99,7 +107,7 @@ func open(rawURL string) (*redis.Client, error) {
 	o.ReadTimeout = clientTimeout
 	o.WriteTimeout = clientTimeout
 	o.PoolTimeout = clientTimeout
-	return redis.NewClient(&o), nil
+	return o, nil
 }
 
 func newPrefix() string {

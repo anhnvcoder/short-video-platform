@@ -387,3 +387,117 @@ func TestSweeperRunSweepsAtStartAndStops(t *testing.T) {
 		t.Fatal("Run did not return after cancel")
 	}
 }
+
+// A batch that runs out of time against a Postgres that does not answer its rollback still
+// returns within rollbackTimeout past the batch's deadline.
+func TestSweepRollbackIsBounded(t *testing.T) {
+	storage := newBlockingStorage()
+	e := newSweepEnv(t, "rollback", storage)
+	id := e.insert(t, "UPLOADING", 2*time.Hour)
+	pool, hang := withHangingRollback(t, e.pool)
+	s := New(pool, storage, slog.New(slog.DiscardHandler))
+	s.rollbackTimeout = 200 * time.Millisecond
+
+	w := s.NewUploadSweeper(testAbandonAfter, time.Hour)
+	w.batchTimeout = 300 * time.Millisecond
+	start := time.Now()
+	_, _, err := w.sweepBatch(t.Context())
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("sweepBatch() error = nil, want the batch's deadline")
+	}
+	if hang.rollbacks.Load() == 0 || hang.unbounded.Load() != 0 {
+		t.Errorf("rollbacks = %d, without deadline %d; want some, all with a deadline", hang.rollbacks.Load(), hang.unbounded.Load())
+	}
+	if limit := w.batchTimeout + w.rollbackTimeout + time.Second; elapsed > limit {
+		t.Errorf("sweepBatch took %s, want at most %s", elapsed, limit)
+	}
+	if st := e.status(t, id); st != "UPLOADING" {
+		t.Errorf("status = %s, want UPLOADING", st)
+	}
+}
+
+// svp.loop.last_success{loop="upload-sweep"} stays 0 until a batch succeeds, is not refreshed by a
+// failed batch, and is refreshed by a batch that finds nothing to do.
+func TestSweepReportsLastSuccess(t *testing.T) {
+	_, reader := testTelemetry(t)
+	storage := newBlockingStorage()
+	e := newSweepEnv(t, "loop", storage)
+	e.insert(t, "UPLOADING", 2*time.Hour)
+	w := e.sweeper()
+	w.batchTimeout = 200 * time.Millisecond
+
+	if got, ok := loopLastSuccess(t, reader, "upload-sweep"); !ok || got != 0 {
+		t.Fatalf("before any sweep: last success = %d (reported %v), want 0", got, ok)
+	}
+	w.sweep(t.Context())
+	if got, _ := loopLastSuccess(t, reader, "upload-sweep"); got != 0 {
+		t.Errorf("after a failed batch: last success = %d, want 0", got)
+	}
+
+	close(storage.release)
+	// The batches that must succeed get the production deadline, so a loaded test run does not
+	// fail them.
+	w.batchTimeout = sweepBatchTimeout
+	before := time.Now().Unix()
+	if n := w.sweep(t.Context()); n != 1 {
+		t.Fatalf("sweep() = %d, want 1", n)
+	}
+	first, _ := loopLastSuccess(t, reader, "upload-sweep")
+	if first < before {
+		t.Errorf("after a successful batch: last success = %d, want at least %d", first, before)
+	}
+
+	time.Sleep(1100 * time.Millisecond)
+	if n := w.sweep(t.Context()); n != 0 {
+		t.Fatalf("idle sweep() = %d, want 0", n)
+	}
+	if idle, _ := loopLastSuccess(t, reader, "upload-sweep"); idle <= first {
+		t.Errorf("after an idle round: last success = %d, want later than %d", idle, first)
+	}
+}
+
+// A batch whose deletes fail is not a success: with storage refusing every delete the abandoned
+// videos stay UPLOADING and svp.loop.last_success{loop="upload-sweep"} stays as it was, and so it
+// does when only some deletes fail; the round after storage is back refreshes it.
+func TestSweepDeleteErrorsDoNotReportSuccess(t *testing.T) {
+	_, reader := testTelemetry(t)
+	storage := newFakeStorage()
+	e := newSweepEnv(t, "loopdelete", storage)
+	first := e.insert(t, "UPLOADING", 3*time.Hour)
+	second := e.insert(t, "UPLOADING", 2*time.Hour)
+	w := e.sweeper()
+
+	storage.setFailDeletes(2)
+	if n := w.sweep(t.Context()); n != 0 {
+		t.Fatalf("sweep() with every delete failing = %d, want 0", n)
+	}
+	if n := e.countStatus(t, "UPLOADING"); n != 2 {
+		t.Fatalf("%d videos UPLOADING, want 2", n)
+	}
+	if got, _ := loopLastSuccess(t, reader, "upload-sweep"); got != 0 {
+		t.Errorf("every delete failed: last success = %d, want 0", got)
+	}
+
+	storage.setFailDeletes(1)
+	if n := w.sweep(t.Context()); n != 1 {
+		t.Fatalf("sweep() with one delete failing = %d, want 1", n)
+	}
+	if st := e.status(t, second); st != "FAILED" {
+		t.Errorf("video whose delete succeeded: status %s, want FAILED", st)
+	}
+	if got, _ := loopLastSuccess(t, reader, "upload-sweep"); got != 0 {
+		t.Errorf("one delete failed: last success = %d, want 0", got)
+	}
+
+	before := time.Now().Unix()
+	if n := w.sweep(t.Context()); n != 1 {
+		t.Fatalf("sweep() with storage back = %d, want 1", n)
+	}
+	if st := e.status(t, first); st != "FAILED" {
+		t.Errorf("after storage is back: status %s, want FAILED", st)
+	}
+	if got, _ := loopLastSuccess(t, reader, "upload-sweep"); got < before {
+		t.Errorf("after storage is back: last success = %d, want at least %d", got, before)
+	}
+}

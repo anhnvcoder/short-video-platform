@@ -10,6 +10,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -28,18 +32,22 @@ import (
 const (
 	TopicMediaTranscodes = "media.transcodes.v1"
 	TranscodeGroup       = "video-service"
+	// transcodeHandlerTimeout bounds one attempt at a transcode event, its Postgres work and S3
+	// deletes included (docs/adr/0011-observability-stage3.md, section 11).
+	transcodeHandlerTimeout = 10 * time.Second
 )
 
 // TranscodeConsumerConfig returns the consumer of TopicMediaTranscodes in TranscodeGroup, with
 // the default retry budget of kafkax.
 func (s *Server) TranscodeConsumerConfig(brokers string) kafkax.ConsumerConfig {
 	return kafkax.ConsumerConfig{
-		Brokers:  brokers,
-		ClientID: TranscodeGroup,
-		Group:    TranscodeGroup,
-		Topics:   []string{TopicMediaTranscodes},
-		Handler:  s.HandleTranscode,
-		Logger:   s.logger,
+		Brokers:        brokers,
+		ClientID:       TranscodeGroup,
+		Group:          TranscodeGroup,
+		Topics:         []string{TopicMediaTranscodes},
+		Handler:        s.HandleTranscode,
+		Logger:         s.logger,
+		HandlerTimeout: transcodeHandlerTimeout,
 	}
 }
 
@@ -106,27 +114,28 @@ func (s *Server) transcodeCompleted(ctx context.Context, id uuid.UUID, c *mediav
 		return kafkax.Permanent(errors.New("transcode.completed duration is not positive"))
 	}
 
-	moved, err := s.markReady(ctx, id, c, d.AsDuration().Milliseconds())
+	v, moved, err := s.markReady(ctx, id, c, d.AsDuration().Milliseconds())
 	if err != nil {
 		return err
 	}
 	if !moved {
 		return s.notProcessing(ctx, id, "transcode.completed")
 	}
+	s.recordReadyDuration(ctx, v.ProcessingAt, "ready")
 	s.logger.InfoContext(ctx, "video ready")
 	return nil
 }
 
 // markReady moves the video from PROCESSING to READY and writes its video.ready event in one
 // transaction; the UPDATE locks the row before the outbox insert, as internal/outbox requires.
-// It returns false, writing nothing, when the video is not PROCESSING.
-func (s *Server) markReady(ctx context.Context, id uuid.UUID, c *mediav1.TranscodeCompleted, durationMs int64) (bool, error) {
+// It returns the video as the UPDATE left it and true once committed, or false, writing
+// nothing, when the video is not PROCESSING.
+func (s *Server) markReady(ctx context.Context, id uuid.UUID, c *mediav1.TranscodeCompleted, durationMs int64) (store.Video, bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return false, fmt.Errorf("begin transaction: %w", err)
+		return store.Video{}, false, fmt.Errorf("begin transaction: %w", err)
 	}
-	// After Commit this is a no-op; on ctx cancellation it still reaches the server.
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	defer rollback(ctx, tx, s.rollbackTimeout)
 
 	playlist, thumbnail := c.GetPlaylistKey(), c.GetThumbnailKey()
 	v, err := s.queries.WithTx(tx).MarkVideoReady(ctx, store.MarkVideoReadyParams{
@@ -136,10 +145,10 @@ func (s *Server) markReady(ctx context.Context, id uuid.UUID, c *mediav1.Transco
 		ThumbnailKey: &thumbnail,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+		return store.Video{}, false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("mark video ready: %w", err)
+		return store.Video{}, false, fmt.Errorf("mark video ready: %w", err)
 	}
 	ev := &videov1.VideoEvent{
 		Meta: outbox.NewMeta(),
@@ -155,22 +164,54 @@ func (s *Server) markReady(ctx context.Context, id uuid.UUID, c *mediav1.Transco
 		}},
 	}
 	if err := outbox.Write(ctx, tx, TopicVideoLifecycle, id.String(), ev); err != nil {
-		return false, err
+		return store.Video{}, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("commit transaction: %w", err)
+		return store.Video{}, false, fmt.Errorf("commit transaction: %w", err)
 	}
-	return true, nil
+	return v, true, nil
+}
+
+// rollback rolls tx back within timeout, even when ctx has already ended; after Commit it does
+// nothing. A Postgres that does not answer cannot hold the caller longer than timeout.
+func rollback(ctx context.Context, tx pgx.Tx, timeout time.Duration) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	defer cancel()
+	_ = tx.Rollback(ctx)
+}
+
+// recordReadyDuration records the time from when the video became PROCESSING until now as
+// svp.video.ready.duration with outcome. It runs once the new status is committed, and reads the
+// end from Postgres's clock, the one that set processing_at, so a lock wait or a slow commit is
+// counted and the service's own clock never is. A video that became PROCESSING before
+// processing_at existed has none, and records nothing; so does a video whose clock read fails,
+// as its status is already committed and the handler must not run again for a sample.
+func (s *Server) recordReadyDuration(ctx context.Context, processingAt *time.Time, outcome string) {
+	if processingAt == nil {
+		return
+	}
+	end, err := s.queries.ClockTimestamp(ctx)
+	if err != nil {
+		s.logger.WarnContext(ctx, "ready duration not recorded", slog.String("outcome", outcome), slog.Any("error", err))
+		return
+	}
+	s.readyDuration.Record(ctx, end.Sub(*processingAt).Seconds(),
+		metric.WithAttributes(attribute.String("outcome", outcome)))
 }
 
 func (s *Server) transcodeFailed(ctx context.Context, id uuid.UUID, f *mediav1.TranscodeFailed) error {
-	n, err := s.queries.MarkVideoFailed(ctx, id)
+	processingAt, err := s.queries.MarkVideoFailed(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return s.notProcessing(ctx, id, "transcode.failed")
+	}
 	if err != nil {
 		return fmt.Errorf("mark video failed: %w", err)
 	}
-	if n == 0 {
-		return s.notProcessing(ctx, id, "transcode.failed")
-	}
+	// The UPDATE ran on its own and is committed.
+	s.recordReadyDuration(ctx, processingAt, "failed")
+	// The record was handled, but the trace ends in a failed video. The reason is an enum name;
+	// the free-text detail stays in the log.
+	trace.SpanFromContext(ctx).SetStatus(codes.Error, "transcode failed: "+f.GetReason().String())
 	s.logger.WarnContext(ctx, "video failed",
 		slog.String("reason", f.GetReason().String()), slog.String("detail", f.GetDetail()))
 	return s.deleteFiles(ctx, id)

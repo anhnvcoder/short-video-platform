@@ -1,0 +1,13 @@
+# Kibana of the `obs-elastic` profile (docs/adr/0012-elastic-vs-grafana-stage3.md). Elasticsearch
+# security is off, so Kibana has no login: accepted only because it is published on the host's
+# loopback and holds local lab data, as with Grafana's anonymous Admin (ADR-0011, section 9).
+server.host: "0.0.0.0"
+server.shutdownTimeout: "5s"
+elasticsearch.hosts: ["http://elasticsearch:9200"]
+
+# The lab keeps its data on the machine (ADR-0011, section 7): no usage telemetry to Elastic, no
+# news feed, and Fleet does not reach the Elastic Package Registry.
+telemetry.optIn: false
+telemetry.allowChangingOptInStatus: false
+newsfeed.enabled: false
+xpack.fleet.isAirGapped: true

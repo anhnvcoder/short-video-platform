@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"runtime/debug"
@@ -11,21 +12,48 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/anhnvcoder/short-video-platform/internal/authtoken"
 	"github.com/anhnvcoder/short-video-platform/internal/logx"
-	"github.com/anhnvcoder/short-video-platform/internal/traceparent"
 )
 
-// Trace gives every request a new W3C traceparent, ignoring the one the client sent, and puts
-// its trace_id into the log context. OutgoingContext sends the traceparent to the services.
-func Trace(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tp := traceparent.New()
-		id, _ := traceparent.TraceID(tp)
-		ctx := context.WithValue(r.Context(), traceparentKey, tp)
-		ctx = logx.With(ctx, slog.String("trace_id", id))
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+// Trace returns the otelhttp handler around next: every request gets a server span and the
+// http.server.request.duration metric (docs/adr/0011-observability-stage3.md, sections 2 and 3).
+// The span is always a new root trace: the propagator is empty, so a traceparent, tracestate or
+// baggage the client sent is neither read nor linked (ADR-0007 section 8). logx writes the
+// span's trace_id and span_id into every record logged with the request's context, and the
+// stats handler of ClientTelemetry continues the trace in the services. The span is named after
+// the method until Routes names the matched route. Its client.address is the connection's
+// address: otelhttp would take X-Forwarded-For, which the client sets (threat model RL-1).
+//
+// server is the gateway's host:port, with a numeric port; it gives the server.address and
+// server.port of spans and metrics. Without it otelhttp takes both from the Host header, which
+// the client sets: every new value would be a new metric series, until the SDK's limit on series
+// folds real routes into its overflow series (ADR-0011 section 5).
+//
+// The probes /healthz and /readyz, which run every few seconds, get neither span nor metric;
+// they are matched by their exact path.
+func Trace(server string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return otelhttp.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			host, _, err := net.SplitHostPort(r.RemoteAddr)
+			if err != nil {
+				host = r.RemoteAddr
+			}
+			trace.SpanFromContext(r.Context()).SetAttributes(semconv.ClientAddress(host))
+			next.ServeHTTP(w, r)
+		}), "",
+			otelhttp.WithServerName(server),
+			otelhttp.WithPropagators(propagation.NewCompositeTextMapPropagator()),
+			otelhttp.WithFilter(func(r *http.Request) bool {
+				return r.URL.Path != "/healthz" && r.URL.Path != "/readyz"
+			}),
+		)
+	}
 }
 
 // Recover turns a panic in next into a 500 problem response; the panic value and stack go to

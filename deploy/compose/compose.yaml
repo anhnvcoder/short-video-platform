@@ -5,15 +5,29 @@
 # (docs/adr/0009-engagement-feed-stage2b.md, sections 9, 11 and 12). Run it through `make up` /
 # `make down` (deploy/compose/compose.mk), which pass --env-file .env.
 #
+# Profiles: `core` is the application above. `obs` (`make up OBS=lgtm`) adds the observability
+# stack of docs/adr/0011-observability-stage3.md, section 9: the OpenTelemetry Collector `otelcol`,
+# `lgtm` (Grafana, Prometheus, Tempo, Loki, Pyroscope), `alertmanager` and the error tracker
+# `glitchtip` with its one-shot `glitchtip-init` (ADR-0011, section 7). Every Go service sends
+# OTLP to otelcol:4317 whether or not `obs` runs; without it the name does not resolve, export
+# fails with a rate-limited WARN and the services work as before (ADR-0011, section 10). No core
+# service depends on an obs service. `obs-elastic` (`make up OBS=elastic`) is the Elastic
+# comparison of docs/adr/0012-elastic-vs-grafana-stage3.md instead of `obs`, never with it:
+# Elasticsearch, Kibana (127.0.0.1:5601), APM Server and its own Collector under the name otelcol.
+#
 # Postgres and Redis are the native ones on the host (127.0.0.1:5432, 127.0.0.1:6379), reached
 # as host.docker.internal; each service has its own Redis db (CLAUDE.md, ADR-0010, section 1).
-# Published ports are on the host's loopback only: the gateway, the MinIO API and console, and
-# Redpanda's host listener. gRPC ports stay inside the compose network (threat model IN-2).
+# Published ports are on the host's loopback only: the gateway, the MinIO API and console,
+# Redpanda's host listener, and with `obs` Grafana (3000), Alertmanager (9093) and GlitchTip
+# (8000). gRPC ports stay inside the compose network (threat model IN-2); so do the Collector
+# (4317) and LGTM's Prometheus (9090), Tempo (3200), Loki (3100) and Pyroscope (4040), reached from
+# the host through Grafana's datasource proxy.
 #
 # Two networks: `default` holds everything but media-worker; `worker` (internal, no route out)
-# holds media-worker, Redpanda and MinIO only, so the worker that runs ffmpeg on uploaded files
-# reaches neither the gateway, the gRPC services, Postgres nor the internet (ADR-0008, section 9;
-# threat model FF-4, FF-5).
+# holds media-worker, Redpanda, MinIO and the Collector only, so the worker that runs ffmpeg on
+# uploaded files reaches neither the gateway, the gRPC services, Postgres, LGTM nor the internet
+# (ADR-0008, section 9; threat model FF-4, FF-5). The Collector only receives telemetry there; it
+# proxies nothing for the worker (ADR-0011, section 1).
 name: svp
 
 x-healthcheck: &healthcheck
@@ -30,9 +44,55 @@ x-host-services: &host-services
   # line makes it work on Linux too.
   extra_hosts: ["host.docker.internal:host-gateway"]
 
+# Telemetry settings of every Go service (docs/adr/0011-observability-stage3.md, sections 9 and 10).
+# Only `make up OBS=off` sets SVP_OTEL_SDK_DISABLED, SVP_PYROSCOPE_SERVER_ADDRESS (empty) and an
+# empty SENTRY_DSN, to measure the services with telemetry off; do not set them in .env.
+x-telemetry-env: &telemetry-env
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otelcol:4317
+  OTEL_EXPORTER_OTLP_INSECURE: "true"
+  OTEL_SDK_DISABLED: ${SVP_OTEL_SDK_DISABLED:-false}
+
+# The five services on the `default` network also push profiles to LGTM's Pyroscope and report
+# errors to the tracker at SENTRY_DSN (empty: off). media-worker gets neither: its network reaches
+# only the Collector (ADR-0011, sections 6 and 7).
+x-telemetry-app-env: &telemetry-app-env
+  <<: *telemetry-env
+  PYROSCOPE_SERVER_ADDRESS: ${SVP_PYROSCOPE_SERVER_ADDRESS-http://lgtm:4040}
+  SENTRY_DSN: ${SENTRY_DSN:-}
+  SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-local}
+
 x-redpanda-image: &redpanda-image redpandadata/redpanda:v26.2.4@sha256:c98c2f04a751e6646012cc701bac5183252cee44c88ba1dfa412e4c7124f2e89
 # Chainguard's free tier only publishes `latest`, so the image is pinned by digest (ADR-0008, section 6).
 x-minio-image: &minio-image cgr.dev/chainguard/minio@sha256:7df55d002b698e4494a131b848dd553361bbe58b7e19f62d9623c29af1ba9ccf
+x-glitchtip-image: &glitchtip-image glitchtip/glitchtip:6.2.6@sha256:a3d8eb1b36c1e1603d55ab32711ea3dd8115874742a781a57391a62a16e0dff6
+
+# Settings shared by `glitchtip` and `glitchtip-init` (ADR-0011, section 7). Database svp_glitchtip
+# on the native Postgres: the app role for requests and tasks, the migrator role (MAINTENANCE_*)
+# for migrations, the cache table and partitions. VALKEY_URL is empty on purpose: queue, cache and
+# sessions live in Postgres; left out, it would default to redis://redis:6379/0. Only error
+# tracking is on: no uptime checks, log ingest, DuckDB cold storage or metrics API, no
+# self-registration, no SMTP, and no SENTRY_DSN, so GlitchTip does not report on itself.
+x-glitchtip-env: &glitchtip-env
+  SECRET_KEY: ${GLITCHTIP_SECRET_KEY:?run make env}
+  DATABASE_URL: postgres://svp_glitchtip_app:${SVP_GLITCHTIP_APP_DB_PASSWORD:?run make env}@host.docker.internal:5432/svp_glitchtip?sslmode=disable
+  MAINTENANCE_DATABASE_URL: postgres://svp_glitchtip_migrator:${SVP_GLITCHTIP_MIGRATOR_DB_PASSWORD:?run make env}@host.docker.internal:5432/svp_glitchtip?sslmode=disable
+  VALKEY_URL: ""
+  # DSNs it hands out name the host's loopback address; `make glitchtip-init` rewrites the one the
+  # Go services get to glitchtip:8000. The service name, the host and the healthcheck's localhost
+  # are the only Host headers it answers.
+  GLITCHTIP_DOMAIN: http://127.0.0.1:8000
+  ALLOWED_HOSTS: glitchtip,127.0.0.1,localhost
+  DEBUG: "false"
+  ENABLE_USER_REGISTRATION: "false"
+  EMAIL_URL: consolemail://
+  GLITCHTIP_ENABLE_UPTIME: "false"
+  GLITCHTIP_ENABLE_LOGS: "false"
+  GLITCHTIP_ENABLE_DUCKDB: "false"
+  ENABLE_OBSERVABILITY_API: "false"
+  SENTRY_DSN: ""
+  GLITCHTIP_RETENTION_DAYS: "14"
+  VTASKS_CONCURRENCY: "2"
+  DATABASE_POOL_MAX_SIZE: "4"
 
 services:
   redpanda:
@@ -72,6 +132,8 @@ services:
     entrypoint: ["/bin/bash", "/init/create-topics.sh"]
     environment:
       RPK_BROKERS: redpanda:9092
+      # `rpk cluster config set` goes to the Admin API, which is not on localhost here.
+      RPK_ADMIN_HOSTS: redpanda:9644
     volumes:
       - ../redpanda:/init:ro
     restart: "no"
@@ -171,6 +233,7 @@ services:
       args:
         SERVICE: user-service
     environment:
+      <<: *telemetry-app-env
       LISTEN_ADDR: ":9101"
       DATABASE_URL: postgres://svp_user_app:${SVP_USER_APP_DB_PASSWORD:?run make env}@host.docker.internal:5432/svp_user?sslmode=disable
       # Only user-service holds the signing key (threat model JWT-10).
@@ -199,6 +262,7 @@ services:
       args:
         SERVICE: video-service
     environment:
+      <<: *telemetry-app-env
       LISTEN_ADDR: ":9102"
       DATABASE_URL: postgres://svp_video_app:${SVP_VIDEO_APP_DB_PASSWORD:?run make env}@host.docker.internal:5432/svp_video?sslmode=disable
       KAFKA_BROKERS: redpanda:9092
@@ -236,6 +300,7 @@ services:
       args:
         SERVICE: engagement-service
     environment:
+      <<: *telemetry-app-env
       LISTEN_ADDR: ":9103"
       DATABASE_URL: postgres://svp_engagement_app:${SVP_ENGAGEMENT_APP_DB_PASSWORD:?run make env}@host.docker.internal:5432/svp_engagement?sslmode=disable
       # Produces to and consumes engagement.views.v1 (ADR-0009, sections 3, 4 and 11).
@@ -263,6 +328,7 @@ services:
       args:
         SERVICE: feed-service
     environment:
+      <<: *telemetry-app-env
       LISTEN_ADDR: ":9104"
       DATABASE_URL: postgres://svp_feed_app:${SVP_FEED_APP_DB_PASSWORD:?run make env}@host.docker.internal:5432/svp_feed?sslmode=disable
       # Consumes user.follows.v1 and video.lifecycle.v1 (ADR-0009, sections 7 and 11).
@@ -292,6 +358,7 @@ services:
       args:
         SERVICE: gateway
     environment:
+      <<: *telemetry-app-env
       LISTEN_ADDR: ":8080"
       USER_SERVICE_ADDR: user-service:9101
       VIDEO_SERVICE_ADDR: video-service:9102
@@ -327,6 +394,7 @@ services:
       context: ../..
       dockerfile: deploy/docker/media-worker.Dockerfile
     environment:
+      <<: *telemetry-env
       KAFKA_BROKERS: redpanda:9092
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY_ID: svp-media-worker
@@ -363,6 +431,236 @@ services:
       minio-init:
         condition: service_completed_successfully
 
+  otelcol:
+    profiles: [obs]
+    image: otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ../observability/otelcol/config.yaml:/etc/otelcol/config.yaml:ro
+    # The memory_limiter processor keeps the heap at 192 MiB of this (ADR-0011, sections 1 and 13).
+    mem_limit: 256m
+    # `default` for the services and LGTM, `worker` for media-worker. No published port.
+    networks: [default, worker]
+    restart: unless-stopped
+
+  lgtm:
+    profiles: [obs]
+    image: grafana/otel-lgtm:0.36.0@sha256:57c04cbd8e7022f32bb84c4ac005d79baf8b08e2c5be44facf11f5f1f9944ba2
+    # Dev image: Grafana lets anonymous users in as Admin. Accepted only because it is published on
+    # the host's loopback and holds local lab data (ADR-0011, section 9; threat model OPS-2).
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      # The lab keeps its data on the machine, as with the local error tracker (ADR-0011, section 7):
+      # Grafana, Tempo, Loki and Pyroscope do not report usage to stats.grafana.org, and Grafana does
+      # not ask grafana.com for new versions. Grafana installs no plugin at run time either: no
+      # preinstall (the image asks for grafana-llm-app, Grafana itself for its Drilldown and advisor
+      # apps, all unpinned), no update of the ones a volume already holds, and the plugin signing
+      # key stays the one built in. A new lgtm-data volume has no Drilldown apps; the bundled
+      # datasources (Prometheus, Tempo, Loki, Pyroscope) are not plugins Grafana downloads (ADR-0011,
+      # section 9). The image's run scripts append *_EXTRA_ARGS to their binary's command line.
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_PLUGINS_PREINSTALL_AUTO_UPDATE: "false"
+      GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED: "true"
+      TEMPO_EXTRA_ARGS: -reporting.enabled=false
+      LOKI_EXTRA_ARGS: -reporting.enabled=false
+      PYROSCOPE_EXTRA_ARGS: -usage-stats.enabled=false
+    mem_limit: 1536m
+    volumes:
+      - lgtm-data:/data
+      # Overrides at the paths the image's run scripts read (ADR-0011, section 9).
+      - ../observability/lgtm/loki-config.yaml:/otel-lgtm/loki-config.yaml:ro
+      # Prometheus: rule evaluation every 15 s, the SLO and alert rules, alerts to `alertmanager`.
+      - ../observability/prometheus/prometheus.yaml:/otel-lgtm/prometheus.yaml:ro
+      - ../observability/prometheus/rules:/otel-lgtm/svp-rules:ro
+      - ../observability/grafana/provisioning/datasources/grafana-datasources.yaml:/otel-lgtm/grafana/conf/provisioning/datasources/grafana-datasources.yaml:ro
+      - ../observability/grafana/provisioning/dashboards/svp.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/svp.yaml:ro
+      - ../observability/grafana/dashboards:/otel-lgtm/svp-dashboards:ro
+    healthcheck:
+      # run-all.sh writes /tmp/ready once Grafana, Prometheus, Tempo, Loki, Pyroscope and the
+      # image's Collector all answer.
+      test: ["CMD-SHELL", "test -f /tmp/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+      start_interval: 2s
+    restart: unless-stopped
+
+  # Routes the alerts of LGTM's Prometheus (ADR-0011, section 8). The entry point writes the config:
+  # severity="page" goes to Telegram only when SVP_ALERT_TELEGRAM_BOT_TOKEN and
+  # SVP_ALERT_TELEGRAM_CHAT_ID are both set in .env; otherwise every alert is only listed in the UI.
+  # The token comes in as a compose secret, not an environment variable, so `docker inspect` does
+  # not show it. Telegram's Bot API is the only address outside the machine the lab sends to.
+  alertmanager:
+    profiles: [obs]
+    image: prom/alertmanager:v0.34.1@sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a
+    entrypoint: ["/bin/sh", "/etc/alertmanager/entrypoint.sh"]
+    environment:
+      SVP_ALERT_TELEGRAM_CHAT_ID: ${SVP_ALERT_TELEGRAM_CHAT_ID:-}
+    secrets:
+      - telegram_bot_token
+    volumes:
+      - ../observability/alertmanager/entrypoint.sh:/etc/alertmanager/entrypoint.sh:ro
+      - alertmanager-data:/alertmanager
+    ports:
+      - "127.0.0.1:9093:9093"
+    mem_limit: 64m
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9093/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+      start_interval: 1s
+    restart: unless-stopped
+
+  # Migrates svp_glitchtip, then creates the admin user, organization, team and project `svp` and
+  # the API token of the drills (ADR-0011, section 7). Idempotent; `glitchtip` starts only after it
+  # succeeds. Run here it prints only counts: `make glitchtip-init` runs it once more with an output
+  # directory mounted to collect the DSN and token for .env (deploy/observability/glitchtip/init.sh).
+  # migrate and createcachetable go through the migrator role: the app role cannot create tables.
+  glitchtip-init:
+    <<: *host-services
+    profiles: [obs]
+    image: *glitchtip-image
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        python manage.py migrate --no-input --database maintenance
+        python manage.py createcachetable --database maintenance
+        python manage.py maintain_partitions
+        python manage.py shell < /init/bootstrap.py
+    environment:
+      <<: *glitchtip-env
+      GLITCHTIP_ADMIN_EMAIL: ${GLITCHTIP_ADMIN_EMAIL:?run make env}
+      GLITCHTIP_ADMIN_PASSWORD: ${GLITCHTIP_ADMIN_PASSWORD:?run make env}
+    volumes:
+      - ../observability/glitchtip/bootstrap.py:/init/bootstrap.py:ro
+    mem_limit: 512m
+    restart: "no"
+
+  # GlitchTip web and task worker in one process (all-in-one, ADR-0011, sections 7 and 13). Its
+  # init commands are skipped: glitchtip-init ran them. On `default` only: media-worker, on
+  # `worker`, reports no errors. No core service depends on it.
+  glitchtip:
+    <<: *host-services
+    profiles: [obs]
+    image: *glitchtip-image
+    environment:
+      <<: *glitchtip-env
+      GLITCHTIP_EMBED_WORKER: "true"
+      SKIP_INIT: "true"
+      GRANIAN_WORKERS: "1"
+    ports:
+      - "127.0.0.1:8000:8000"
+    mem_limit: 512m
+    healthcheck:
+      # The image's script: GET http://localhost:8000/_health/ must answer 200.
+      test: ["CMD", "python", "healthcheck.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+      start_interval: 2s
+    restart: unless-stopped
+    depends_on:
+      glitchtip-init:
+        condition: service_completed_successfully
+
+  # Profile `obs-elastic` (`make up OBS=elastic`): the Elastic comparison of
+  # docs/adr/0012-elastic-vs-grafana-stage3.md. Never runs together with `obs` (compose.mk refuses
+  # it). Elasticsearch security is off and nothing has a login: local lab only, Kibana published on
+  # the host's loopback only, Elasticsearch and APM Server inside the compose network only.
+  elasticsearch:
+    profiles: [obs-elastic]
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.5@sha256:13b4a40bb095774f5fda635e45fd5677cc6a26565e42b24997b0c72b88e75984
+    environment:
+      # One node: no cluster formation, and the production bootstrap checks (vm.max_map_count among
+      # them) are not enforced.
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      # No GeoIP database downloads from Elastic: the lab sends nothing out (ADR-0011, section 7).
+      ingest.geoip.downloader.enabled: "false"
+      ES_JAVA_OPTS: -Xms1g -Xmx1g
+    # 1 GiB heap plus off-heap memory (Lucene, the ML controller, thread stacks).
+    mem_limit: 2g
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=1s' >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+      start_interval: 2s
+    restart: unless-stopped
+
+  kibana:
+    profiles: [obs-elastic]
+    image: docker.elastic.co/kibana/kibana:9.5.5@sha256:13b72ce7222c36e4213229004ae62a87aeb32fd372ebfa6fb38f7a3285fdbb78
+    volumes:
+      - ../observability/elastic/kibana.yml:/usr/share/kibana/config/kibana.yml:ro
+    ports:
+      - "127.0.0.1:5601:5601"
+    mem_limit: 1536m
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5601/api/status | grep -q '\"overall\":{\"level\":\"available\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 180s
+      start_interval: 2s
+    restart: unless-stopped
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  apm-server:
+    profiles: [obs-elastic]
+    image: docker.elastic.co/apm/apm-server:9.5.5@sha256:9262426d04743c1160ed133d149e85bcad3361ef24e47f902f7f5d23d2fbf60e
+    # A bind-mounted config is owned by the host user, which the default permission check refuses.
+    command: ["-c", "/etc/apm-server/apm-server.yml", "--strict.perms=false"]
+    volumes:
+      - ../observability/elastic/apm-server.yml:/etc/apm-server/apm-server.yml:ro
+    mem_limit: 512m
+    healthcheck:
+      # No curl or wget in the image: bash asks the server's root endpoint, which answers 200 once
+      # it is ready to take data.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8200 && printf 'GET / HTTP/1.0\\r\\n\\r\\n' >&3 && read -r status <&3 && [[ $$status == *' 200 '* ]]"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+      start_interval: 2s
+    restart: unless-stopped
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  # The Collector of this profile: the image of `otelcol` (keep the two in step), the config of
+  # `otelcol` with a second file merged over it that only swaps the exporters for APM Server, and
+  # the network alias `otelcol`, so the services send to the same otelcol:4317 with no change
+  # (docs/adr/0012-elastic-vs-grafana-stage3.md, section 1). `make otelcol-validate` checks both.
+  otelcol-elastic:
+    profiles: [obs-elastic]
+    image: otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
+    command: ["--config=/etc/otelcol/config.yaml", "--config=/etc/otelcol/elastic.yaml"]
+    volumes:
+      - ../observability/otelcol/config.yaml:/etc/otelcol/config.yaml:ro
+      - ../observability/elastic/otelcol-config.yaml:/etc/otelcol/elastic.yaml:ro
+    mem_limit: 256m
+    networks:
+      default:
+        aliases: [otelcol]
+      worker:
+        aliases: [otelcol]
+    restart: unless-stopped
+
 networks:
   default:
   worker:
@@ -373,3 +671,16 @@ volumes:
   minio-data:
   # Created owned by 65532:65532 from the image's /work, so the worker can write to it.
   media-worker-work:
+  # Prometheus, Tempo, Loki, Pyroscope and Grafana data of the obs profile.
+  lgtm-data:
+  # Alertmanager's silences and notification log, so a restart neither forgets a silence nor sends
+  # a firing alert again; created owned by nobody from the image's /alertmanager. Named, unlike the
+  # image's anonymous volume, so `make down` reuses it and `make clean-data` removes it.
+  alertmanager-data:
+  # Elasticsearch indices of the obs-elastic profile.
+  elasticsearch-data:
+
+secrets:
+  # Read by compose from .env; empty when the variable is empty or absent (compose.mk).
+  telegram_bot_token:
+    environment: SVP_ALERT_TELEGRAM_BOT_TOKEN

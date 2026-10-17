@@ -1,0 +1,65 @@
+# Grafana datasources of grafana/otel-lgtm 0.36.0, mounted read-only over the image's
+# /otel-lgtm/grafana/conf/provisioning/datasources/grafana-datasources.yaml
+# (docs/adr/0011-observability-stage3.md, sections 4 and 9). Same as the image's file except
+# timeInterval 15s, the services' metric export interval. Dashboards and scripts rely on these
+# UIDs: prometheus, tempo, loki, pyroscope. `$$` is a literal `$` in Grafana provisioning.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    url: http://127.0.0.1:9090
+    editable: true
+    jsonData:
+      timeInterval: 15s
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+          urlDisplayLabel: "Trace: $${__value.raw}"
+
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    url: http://127.0.0.1:3200
+    editable: true
+    jsonData:
+      # Trace -> logs: {service_name="<service>"} | trace_id = "<trace id>"; trace_id is structured
+      # metadata in Loki, not a label.
+      tracesToLogsV2:
+        customQuery: true
+        datasourceUid: "loki"
+        query: '{$${__tags}} | trace_id = "$${__trace.traceId}"'
+        tags:
+          - key: "service.name"
+            value: "service_name"
+
+      # Service graph from Tempo's metrics generator, written to Prometheus.
+      serviceMap:
+        datasourceUid: "prometheus"
+      search:
+        hide: false
+      nodeGraph:
+        enabled: true
+      lokiSearch:
+        datasourceUid: "loki"
+
+  - name: Loki
+    type: loki
+    uid: loki
+    url: http://127.0.0.1:3100
+    editable: true
+    jsonData:
+      # Log -> trace: the trace_id field of a log line opens that trace in Tempo.
+      derivedFields:
+        - name: "trace_id"
+          matcherType: "label"
+          matcherRegex: "trace_id"
+          url: "$${__value.raw}"
+          datasourceUid: "tempo"
+          urlDisplayLabel: "Trace: $${__value.raw}"
+
+  - name: Pyroscope
+    type: grafana-pyroscope-datasource
+    uid: pyroscope
+    url: http://127.0.0.1:4040

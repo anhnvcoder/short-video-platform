@@ -28,6 +28,11 @@ import (
 // loadMessage is the log line the drills count, one per Postgres read of a first explore page.
 const loadMessage = "explore page loaded from database"
 
+// testCacheTimeout bounds the Redis commands of cachedServer: a test run under -race with every
+// package at once can take longer than the 50 ms of production for a local Redis call, and the
+// tests count Postgres reads, which a timed-out cache read adds.
+const testCacheTimeout = 5 * time.Second
+
 // loadLog is a slog.Handler keeping the page_size of every loadMessage record.
 type loadLog struct {
 	mu    sync.Mutex
@@ -70,10 +75,13 @@ func newCache(t *testing.T) (*redis.Client, string) {
 		if prefix == "" {
 			return // skipped or failed before a prefix was made
 		}
-		c, err := redisx.New(os.Getenv(redistest.EnvURL))
+		// The production timeouts of redisx are too short for a loaded test run.
+		o, err := redisx.Options(os.Getenv(redistest.EnvURL))
 		if err != nil {
 			t.Fatal(err)
 		}
+		o.DialTimeout, o.ReadTimeout, o.WriteTimeout, o.PoolTimeout = testCacheTimeout, testCacheTimeout, testCacheTimeout, testCacheTimeout
+		c := redis.NewClient(o)
 		defer func() { _ = c.Close() }()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -103,13 +111,27 @@ func keysUnder(ctx context.Context, c *redis.Client, prefix string) ([]string, e
 }
 
 // cachedServer returns a Server on the test database and a test Redis prefix of its own, with its
-// log of Postgres reads of a first page.
+// log of Postgres reads of a first page. Its cache commands get testCacheTimeout, and a cached
+// page stays a minute: the tests count reads, which an expiry during a slow run would add.
 func cachedServer(t *testing.T) (*Server, *redis.Client, string, *loadLog) {
 	t.Helper()
 	needDB(t)
 	client, prefix := newCache(t)
 	log := &loadLog{}
-	return New(testPool, client, prefix, slog.New(log)), client, prefix, log
+	s := New(testPool, client, prefix, slog.New(log), WithCacheTimeout(testCacheTimeout))
+	s.exploreCacheTTL = time.Minute
+	return s, client, prefix, log
+}
+
+// Production keeps the cache budget of ADR-0010: 50 ms per Redis command, pages cached 5 s.
+func TestCacheDefaults(t *testing.T) {
+	s := New(nil, nil, "svp:feed:", slog.New(slog.DiscardHandler))
+	if s.cacheTimeout != 50*time.Millisecond || s.exploreCacheTTL != 5*time.Second {
+		t.Errorf("cache timeout %s, TTL %s; want 50ms and 5s", s.cacheTimeout, s.exploreCacheTTL)
+	}
+	if s := New(nil, nil, "svp:feed:", slog.New(slog.DiscardHandler), WithCacheTimeout(time.Second)); s.cacheTimeout != time.Second {
+		t.Errorf("WithCacheTimeout(1s) set %s", s.cacheTimeout)
+	}
 }
 
 // countReads makes every explore read of s wait delay before it reads Postgres, and returns the
@@ -197,8 +219,8 @@ func TestExploreFirstPageConcurrentMissReadsPostgresOnce(t *testing.T) {
 			t.Logf("%d concurrent requests on an empty cache: %d Postgres read(s)", n, reads())
 
 			ttl, err := client.PTTL(t.Context(), firstPageKey(prefix, "10")).Result()
-			if err != nil || ttl <= 0 || ttl > ExploreCacheTTL {
-				t.Errorf("cached page TTL = %s, %v; want within (0, %s]", ttl, err, ExploreCacheTTL)
+			if err != nil || ttl <= 0 || ttl > s.exploreCacheTTL {
+				t.Errorf("cached page TTL = %s, %v; want within (0, %s]", ttl, err, s.exploreCacheTTL)
 			}
 			resp, err := explore(t, s, ids.New(), 0, "")
 			if err != nil || !slices.Equal(videoIDs(resp.GetItems()), want) {

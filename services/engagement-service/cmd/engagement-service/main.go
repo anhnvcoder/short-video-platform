@@ -12,7 +12,9 @@
 //
 // Configuration comes from the environment: LISTEN_ADDR (default 127.0.0.1:9103) and
 // DATABASE_URL (required for serve and migrate); serve also needs KAFKA_BROKERS
-// (docs/adr/0009-engagement-feed-stage2b.md, section 12).
+// (docs/adr/0009-engagement-feed-stage2b.md, section 12). serve exports telemetry when
+// OTEL_EXPORTER_OTLP_ENDPOINT is set, profiles when PYROSCOPE_SERVER_ADDRESS is, and reports
+// errors when SENTRY_DSN is (docs/adr/0011-observability-stage3.md).
 package main
 
 import (
@@ -34,6 +36,9 @@ import (
 	"github.com/anhnvcoder/short-video-platform/internal/grpcserver"
 	"github.com/anhnvcoder/short-video-platform/internal/kafkax"
 	"github.com/anhnvcoder/short-video-platform/internal/logx"
+	"github.com/anhnvcoder/short-video-platform/internal/pgpool"
+	"github.com/anhnvcoder/short-video-platform/internal/sentryx"
+	"github.com/anhnvcoder/short-video-platform/internal/telemetry"
 	"github.com/anhnvcoder/short-video-platform/services/engagement-service/internal/server"
 	"github.com/anhnvcoder/short-video-platform/services/engagement-service/migrations"
 )
@@ -56,10 +61,18 @@ func main() {
 	err := run(ctx, logger, os.Args[1:])
 	stop()
 	if err != nil {
-		logger.Error("engagement-service failed", slog.Any("error", err))
+		if _, logged := errors.AsType[loggedError](err); !logged {
+			logger.Error("engagement-service failed", slog.Any("error", err))
+		}
 		os.Exit(1)
 	}
 }
+
+// loggedError is a serve failure that serve has already logged, while the error tracker and the
+// telemetry providers were still running, so that it reaches both (ADR-0011, sections 4 and 7).
+type loggedError struct{ error }
+
+func (e loggedError) Unwrap() error { return e.error }
 
 func run(ctx context.Context, logger *slog.Logger, args []string) error {
 	cmd := "serve"
@@ -77,7 +90,7 @@ func run(ctx context.Context, logger *slog.Logger, args []string) error {
 	return fmt.Errorf("unknown command %q, want serve, migrate or healthcheck", cmd)
 }
 
-func serve(ctx context.Context, logger *slog.Logger) error {
+func serve(ctx context.Context, logger *slog.Logger) (err error) {
 	databaseURL, err := envcfg.Required("DATABASE_URL")
 	if err != nil {
 		return err
@@ -92,14 +105,34 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	}
 	defer kafka.Close()
 
-	pool, err := pgxpool.New(ctx, databaseURL)
+	shutdownTelemetry, err := telemetry.Setup(ctx, serviceName)
 	if err != nil {
-		return fmt.Errorf("open database pool: %w", err)
+		return fmt.Errorf("set up telemetry: %w", err)
 	}
-	defer pool.Close()
-	// pgxpool connects lazily: check the database now so a bad URL fails at startup.
-	if err := pool.Ping(ctx); err != nil {
-		return fmt.Errorf("connect to database: %w", err)
+	flushErrors, err := sentryx.Init(serviceName)
+	if err != nil {
+		return errors.Join(err, shutdownTelemetry(context.WithoutCancel(ctx)))
+	}
+	var pool *pgxpool.Pool
+	// Runs once the server and the consumer have stopped: a failure is logged first, while the
+	// error tracker and the providers still run, then telemetry is flushed while the pool still
+	// exists, then the error reports, and the pool closes last.
+	defer func() {
+		if err != nil {
+			logger.Error("engagement-service failed", slog.Any("error", err))
+			err = loggedError{err}
+		}
+		if err := shutdownTelemetry(context.WithoutCancel(ctx)); err != nil {
+			logger.Warn("telemetry shutdown failed", slog.Any("error", err))
+		}
+		flushErrors()
+		if pool != nil {
+			pool.Close()
+		}
+	}()
+	pool, err = pgpool.New(ctx, databaseURL)
+	if err != nil {
+		return err
 	}
 
 	srv := server.New(pool, kafka, logger)

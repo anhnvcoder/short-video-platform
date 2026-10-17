@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -32,6 +33,7 @@ import (
 	"github.com/anhnvcoder/short-video-platform/internal/ids"
 	"github.com/anhnvcoder/short-video-platform/internal/logx"
 	"github.com/anhnvcoder/short-video-platform/internal/objstore"
+	"github.com/anhnvcoder/short-video-platform/internal/pgpool"
 	"github.com/anhnvcoder/short-video-platform/internal/pgtest"
 	"github.com/anhnvcoder/short-video-platform/services/video-service/migrations"
 )
@@ -289,9 +291,12 @@ func readStored(t *testing.T, videoID string) storedVideo {
 
 func TestInitUploadCreatesUploadingVideo(t *testing.T) {
 	needDB(t)
+	testTelemetry(t)
 	s, logs := newServer()
 	caller := ids.New()
-	ctx := logx.With(t.Context(), slog.String("trace_id", "4bf92f3577b34da6a3ce929d0e0e4736"))
+	// As the otelgrpc stats handler of grpcserver leaves the context: the RPC's server span.
+	ctx, span := otel.Tracer("test").Start(t.Context(), "InitUpload")
+	defer span.End()
 
 	req := &videov1.InitUploadRequest{Title: "  Chuyến đi Đà Lạt  ", SizeBytes: 12345, ContentType: "Video/MP4; codecs=avc1"}
 	resp, err := call(ctx, caller, methodInitUpload, req, s.InitUpload)
@@ -311,7 +316,7 @@ func TestInitUploadCreatesUploadingVideo(t *testing.T) {
 	if len(recs) != 1 {
 		t.Fatalf("got %d \"video created\" log lines, want 1", len(recs))
 	}
-	for key, val := range map[string]string{"user_id": caller, "video_id": resp.GetVideoId(), "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"} {
+	for key, val := range map[string]string{"user_id": caller, "video_id": resp.GetVideoId(), "trace_id": span.SpanContext().TraceID().String()} {
 		if recs[0][key] != val {
 			t.Errorf("log %s = %v, want %q", key, recs[0][key], val)
 		}
@@ -650,7 +655,8 @@ func TestGetVideoInvalidID(t *testing.T) {
 
 func TestDatabaseErrorIsGenericInternal(t *testing.T) {
 	needDB(t)
-	closed, err := pgxpool.New(t.Context(), testPool.Config().ConnString())
+	// Opened as main opens its pool.
+	closed, err := pgpool.New(t.Context(), testPool.Config().ConnString())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,0 +1,1004 @@
+# promtool tests of svp-alerts.yaml and the Sloth recording rules (docs/adr/0011-observability-stage3.md,
+# section 8). Run with `make slo-check`. Samples are 15 s apart, like the services' metric export.
+# Loop gauges hold the Unix time of the last success; promtool time starts at 0, so a success is
+# never recorded as 0 here (0 means "never succeeded"). A series that stops is written with `_`
+# (no sample), never `stale`: OTLP-pushed series get no staleness marker.
+rule_files:
+  - svp-alerts.yaml
+  - slo-generated.yaml
+
+evaluation_interval: 15s
+
+tests:
+  # Breaker open (2) and half-open (1) in turn with sparse traffic fires once every sample of the last minute is above 0, one 0 resolves it.
+  - interval: 15s
+    input_series:
+      - series: 'svp_breaker_state{service_name="gateway",instance="a",target="engagement-service"}'
+        values: '0 0 2 1 2 1 2 2 2 0 0 0'
+    alert_rule_test:
+      - eval_time: 90s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+      - eval_time: 105s
+        alertname: CircuitBreakerOpen
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_name: gateway
+              instance: a
+              target: engagement-service
+            exp_annotations:
+              summary: "gateway: circuit breaker to engagement-service has not been closed for 1 minute"
+      - eval_time: 120s
+        alertname: CircuitBreakerOpen
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_name: gateway
+              instance: a
+              target: engagement-service
+            exp_annotations:
+              summary: "gateway: circuit breaker to engagement-service has not been closed for 1 minute"
+      - eval_time: 135s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+
+  # Breaker closed, or open for less than a minute, does not fire.
+  - interval: 15s
+    input_series:
+      - series: 'svp_breaker_state{service_name="gateway",instance="a",target="engagement-service"}'
+        values: '0 0 1 2 2 0 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 60s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+      - eval_time: 90s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+      - eval_time: 180s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+
+  # Gateway recreated while its breaker is open for 30 s: the old instance stops exporting, the new one is closed; nothing fires.
+  - interval: 15s
+    input_series:
+      - series: 'svp_breaker_state{service_name="gateway",instance="old",target="engagement-service"}'
+        values: '0 0 0 2 2 2 _x20'
+      - series: 'svp_breaker_state{service_name="gateway",instance="new",target="engagement-service"}'
+        values: '_x6 0x20'
+    alert_rule_test:
+      - eval_time: 90s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+      - eval_time: 105s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+      - eval_time: 120s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+      - eval_time: 135s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+      - eval_time: 180s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+      - eval_time: 240s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+      - eval_time: 300s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+      - eval_time: 390s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+
+  # Gateway recreated while open for 45 s (four samples): still under a minute of samples, nothing fires.
+  - interval: 15s
+    input_series:
+      - series: 'svp_breaker_state{service_name="gateway",instance="old",target="engagement-service"}'
+        values: '0 0 2 2 2 2 _x20'
+      - series: 'svp_breaker_state{service_name="gateway",instance="new",target="engagement-service"}'
+        values: '_x6 0x20'
+    alert_rule_test:
+      - eval_time: 90s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+      - eval_time: 105s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+      - eval_time: 120s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+      - eval_time: 180s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+      - eval_time: 300s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+
+  # Breaker opening at the old instance's last sample does not fire after the restart.
+  - interval: 15s
+    input_series:
+      - series: 'svp_breaker_state{service_name="gateway",instance="old",target="engagement-service"}'
+        values: '0 0 0 0 0 2 _x20'
+      - series: 'svp_breaker_state{service_name="gateway",instance="new",target="engagement-service"}'
+        values: '_x6 0x20'
+    alert_rule_test:
+      - eval_time: 90s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+      - eval_time: 105s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+      - eval_time: 120s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+      - eval_time: 180s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+
+  # An open breaker of one instance fires even when another instance is closed; it resolves once its samples stop.
+  - interval: 15s
+    input_series:
+      - series: 'svp_breaker_state{service_name="gateway",instance="a",target="engagement-service"}'
+        values: '0 2x7 _x10'
+      - series: 'svp_breaker_state{service_name="gateway",instance="b",target="engagement-service"}'
+        values: '0x18'
+    alert_rule_test:
+      - eval_time: 75s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+      - eval_time: 90s
+        alertname: CircuitBreakerOpen
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_name: gateway
+              instance: a
+              target: engagement-service
+            exp_annotations:
+              summary: "gateway: circuit breaker to engagement-service has not been closed for 1 minute"
+      - eval_time: 120s
+        alertname: CircuitBreakerOpen
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_name: gateway
+              instance: a
+              target: engagement-service
+            exp_annotations:
+              summary: "gateway: circuit breaker to engagement-service has not been closed for 1 minute"
+      - eval_time: 150s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+      - eval_time: 165s
+        alertname: CircuitBreakerOpen
+        exp_alerts: []
+
+  # outbox-relay: healthy loop, the last success never older than the cycle plus a slow lap, does not fire.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="video-service",instance="a",loop="outbox-relay"}'
+        values: '1+15x4 61x3 121+15x28'
+    alert_rule_test:
+      - eval_time: 120s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 135s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 555s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+
+  # outbox-relay: stalled after a success while still exporting fires once a sample shows the last success older than 120 s; another healthy instance does not hide it; it resolves 45 s after its last sample.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="video-service",instance="a",loop="outbox-relay"}'
+        values: '1+15x4 61x10 _x10'
+      - series: 'svp_loop_last_success_seconds{service_name="video-service",instance="b",loop="outbox-relay"}'
+        values: '1+15x25'
+    alert_rule_test:
+      - eval_time: 180s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 195s
+        alertname: BackgroundLoopStalled
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_name: video-service
+              instance: a
+              loop: outbox-relay
+            exp_annotations:
+              summary: "video-service: background loop outbox-relay has not succeeded for 2 minutes"
+      - eval_time: 255s
+        alertname: BackgroundLoopStalled
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_name: video-service
+              instance: a
+              loop: outbox-relay
+            exp_annotations:
+              summary: "video-service: background loop outbox-relay has not succeeded for 2 minutes"
+      - eval_time: 270s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 285s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+
+  # outbox-relay: never succeeded fires once every sample over 120 s is 0.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="video-service",instance="a",loop="outbox-relay"}'
+        values: '0x18'
+    alert_rule_test:
+      - eval_time: 105s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 120s
+        alertname: BackgroundLoopStalled
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_name: video-service
+              instance: a
+              loop: outbox-relay
+            exp_annotations:
+              summary: "video-service: background loop outbox-relay has not succeeded for 2 minutes"
+
+  # outbox-relay: first success before the limit does not fire.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="video-service",instance="a",loop="outbox-relay"}'
+        values: '0x4 76+15x18'
+    alert_rule_test:
+      - eval_time: 120s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 135s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 270s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+
+  # outbox-relay: instance replaced while the old one was close to the limit; the old series stops, the new one is healthy; nothing fires for 5 minutes.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="video-service",instance="old",loop="outbox-relay"}'
+        values: '1 16 31x7 _x30'
+      - series: 'svp_loop_last_success_seconds{service_name="video-service",instance="new",loop="outbox-relay"}'
+        values: '_x10 151+15x30'
+    alert_rule_test:
+      - eval_time: 150s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 165s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 180s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 255s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 450s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+
+  # outbox-relay: instance replaced before its first success; the old zeros stop one sample short, the new one succeeds; nothing fires for 5 minutes.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="video-service",instance="old",loop="outbox-relay"}'
+        values: '0x7 _x30'
+      - series: 'svp_loop_last_success_seconds{service_name="video-service",instance="new",loop="outbox-relay"}'
+        values: '_x8 0 136+15x30'
+    alert_rule_test:
+      - eval_time: 120s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 135s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 165s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 420s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+
+  # outbox-cleanup: healthy loop, the last success never older than the cycle plus a slow lap, does not fire.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="user-service",instance="a",loop="outbox-cleanup"}'
+        values: '1x41 631x39 1231x39 1831x39 2431x39 3031x39'
+    alert_rule_test:
+      - eval_time: 1920s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1935s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 3615s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+
+  # outbox-cleanup: stalled after a success while still exporting fires once a sample shows the last success older than 1920 s; another healthy instance does not hide it; it resolves 45 s after its last sample.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="user-service",instance="a",loop="outbox-cleanup"}'
+        values: '1+15x4 61x130 _x10'
+      - series: 'svp_loop_last_success_seconds{service_name="user-service",instance="b",loop="outbox-cleanup"}'
+        values: '1+15x145'
+    alert_rule_test:
+      - eval_time: 1980s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1995s
+        alertname: BackgroundLoopStalled
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_name: user-service
+              instance: a
+              loop: outbox-cleanup
+            exp_annotations:
+              summary: "user-service: background loop outbox-cleanup has not succeeded for 32 minutes"
+      - eval_time: 2055s
+        alertname: BackgroundLoopStalled
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_name: user-service
+              instance: a
+              loop: outbox-cleanup
+            exp_annotations:
+              summary: "user-service: background loop outbox-cleanup has not succeeded for 32 minutes"
+      - eval_time: 2070s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 2085s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+
+  # outbox-cleanup: never succeeded fires once every sample over 1920 s is 0.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="user-service",instance="a",loop="outbox-cleanup"}'
+        values: '0x138'
+    alert_rule_test:
+      - eval_time: 1905s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1920s
+        alertname: BackgroundLoopStalled
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_name: user-service
+              instance: a
+              loop: outbox-cleanup
+            exp_annotations:
+              summary: "user-service: background loop outbox-cleanup has not succeeded for 32 minutes"
+
+  # outbox-cleanup: first success before the limit does not fire.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="user-service",instance="a",loop="outbox-cleanup"}'
+        values: '0x105 1591+15x138'
+    alert_rule_test:
+      - eval_time: 1920s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1935s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 2070s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+
+  # outbox-cleanup: instance replaced while the old one was close to the limit; the old series stops, the new one is healthy; nothing fires for 5 minutes.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="user-service",instance="old",loop="outbox-cleanup"}'
+        values: '1x127 _x30'
+      - series: 'svp_loop_last_success_seconds{service_name="user-service",instance="new",loop="outbox-cleanup"}'
+        values: '_x128 1921+15x30'
+    alert_rule_test:
+      - eval_time: 1920s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1935s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1950s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 2025s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 2220s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+
+  # outbox-cleanup: instance replaced before its first success; the old zeros stop one sample short, the new one succeeds; nothing fires for 5 minutes.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="user-service",instance="old",loop="outbox-cleanup"}'
+        values: '0x127 _x30'
+      - series: 'svp_loop_last_success_seconds{service_name="user-service",instance="new",loop="outbox-cleanup"}'
+        values: '_x128 0 1936+15x30'
+    alert_rule_test:
+      - eval_time: 1920s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1935s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1965s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 2220s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+
+  # upload-sweep: healthy loop, the last success never older than the cycle plus a slow lap, does not fire.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="video-service",instance="a",loop="upload-sweep"}'
+        values: '1x21 331x19 631x19 931x19 1231x19 1531x19'
+    alert_rule_test:
+      - eval_time: 1080s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1095s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1815s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+
+  # upload-sweep: stalled after a success while still exporting fires once a sample shows the last success older than 1080 s; another healthy instance does not hide it; it resolves 45 s after its last sample.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="video-service",instance="a",loop="upload-sweep"}'
+        values: '1+15x4 61x74 _x10'
+      - series: 'svp_loop_last_success_seconds{service_name="video-service",instance="b",loop="upload-sweep"}'
+        values: '1+15x89'
+    alert_rule_test:
+      - eval_time: 1140s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1155s
+        alertname: BackgroundLoopStalled
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_name: video-service
+              instance: a
+              loop: upload-sweep
+            exp_annotations:
+              summary: "video-service: background loop upload-sweep has not succeeded for 18 minutes"
+      - eval_time: 1215s
+        alertname: BackgroundLoopStalled
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_name: video-service
+              instance: a
+              loop: upload-sweep
+            exp_annotations:
+              summary: "video-service: background loop upload-sweep has not succeeded for 18 minutes"
+      - eval_time: 1230s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1245s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+
+  # upload-sweep: never succeeded fires once every sample over 1080 s is 0.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="video-service",instance="a",loop="upload-sweep"}'
+        values: '0x82'
+    alert_rule_test:
+      - eval_time: 1065s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1080s
+        alertname: BackgroundLoopStalled
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_name: video-service
+              instance: a
+              loop: upload-sweep
+            exp_annotations:
+              summary: "video-service: background loop upload-sweep has not succeeded for 18 minutes"
+
+  # upload-sweep: first success before the limit does not fire.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="video-service",instance="a",loop="upload-sweep"}'
+        values: '0x59 901+15x82'
+    alert_rule_test:
+      - eval_time: 1080s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1095s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1230s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+
+  # upload-sweep: instance replaced while the old one was close to the limit; the old series stops, the new one is healthy; nothing fires for 5 minutes.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="video-service",instance="old",loop="upload-sweep"}'
+        values: '1x71 _x30'
+      - series: 'svp_loop_last_success_seconds{service_name="video-service",instance="new",loop="upload-sweep"}'
+        values: '_x72 1081+15x30'
+    alert_rule_test:
+      - eval_time: 1080s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1095s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1110s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1185s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1380s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+
+  # upload-sweep: instance replaced before its first success; the old zeros stop one sample short, the new one succeeds; nothing fires for 5 minutes.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="video-service",instance="old",loop="upload-sweep"}'
+        values: '0x71 _x30'
+      - series: 'svp_loop_last_success_seconds{service_name="video-service",instance="new",loop="upload-sweep"}'
+        values: '_x72 0 1096+15x30'
+    alert_rule_test:
+      - eval_time: 1080s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1095s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1125s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 1380s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+
+  # timeline-prune: healthy loop, the last success never older than the cycle plus a slow lap, does not fire.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="feed-service",instance="a",loop="timeline-prune"}'
+        values: '1x241 3631x239 7231x239 10831x239 14431x239 18031x239'
+    alert_rule_test:
+      - eval_time: 11400s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 11415s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 21615s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+
+  # timeline-prune: stalled after a success while still exporting fires once a sample shows the last success older than 11400 s; another healthy instance does not hide it; it resolves 45 s after its last sample.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="feed-service",instance="a",loop="timeline-prune"}'
+        values: '1+15x4 61x762 _x10'
+      - series: 'svp_loop_last_success_seconds{service_name="feed-service",instance="b",loop="timeline-prune"}'
+        values: '1+15x777'
+    alert_rule_test:
+      - eval_time: 11460s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 11475s
+        alertname: BackgroundLoopStalled
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_name: feed-service
+              instance: a
+              loop: timeline-prune
+            exp_annotations:
+              summary: "feed-service: background loop timeline-prune has not succeeded for 3 hours 10 minutes"
+      - eval_time: 11535s
+        alertname: BackgroundLoopStalled
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_name: feed-service
+              instance: a
+              loop: timeline-prune
+            exp_annotations:
+              summary: "feed-service: background loop timeline-prune has not succeeded for 3 hours 10 minutes"
+      - eval_time: 11550s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 11565s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+
+  # timeline-prune: never succeeded fires once every sample over 11400 s is 0.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="feed-service",instance="a",loop="timeline-prune"}'
+        values: '0x770'
+    alert_rule_test:
+      - eval_time: 11385s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 11400s
+        alertname: BackgroundLoopStalled
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_name: feed-service
+              instance: a
+              loop: timeline-prune
+            exp_annotations:
+              summary: "feed-service: background loop timeline-prune has not succeeded for 3 hours 10 minutes"
+
+  # timeline-prune: first success before the limit does not fire.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="feed-service",instance="a",loop="timeline-prune"}'
+        values: '0x637 9571+15x770'
+    alert_rule_test:
+      - eval_time: 11400s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 11415s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 11550s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+
+  # timeline-prune: instance replaced while the old one was close to the limit; the old series stops, the new one is healthy; nothing fires for 5 minutes.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="feed-service",instance="old",loop="timeline-prune"}'
+        values: '1x759 _x30'
+      - series: 'svp_loop_last_success_seconds{service_name="feed-service",instance="new",loop="timeline-prune"}'
+        values: '_x760 11401+15x30'
+    alert_rule_test:
+      - eval_time: 11400s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 11415s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 11430s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 11505s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 11700s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+
+  # timeline-prune: instance replaced before its first success; the old zeros stop one sample short, the new one succeeds; nothing fires for 5 minutes.
+  - interval: 15s
+    input_series:
+      - series: 'svp_loop_last_success_seconds{service_name="feed-service",instance="old",loop="timeline-prune"}'
+        values: '0x759 _x30'
+      - series: 'svp_loop_last_success_seconds{service_name="feed-service",instance="new",loop="timeline-prune"}'
+        values: '_x760 0 11416+15x30'
+    alert_rule_test:
+      - eval_time: 11400s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 11415s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 11445s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+      - eval_time: 11700s
+        alertname: BackgroundLoopStalled
+        exp_alerts: []
+
+  # Fallback counter 0 -> 1 then flat fires, then resolves once the minute has no increase.
+  - interval: 15s
+    input_series:
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",instance="a",class="login",result="allowed",store="fallback"}'
+        values: '0 0 0 1x20'
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 45s
+        alertname: RateLimitFallbackActive
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "gateway: rate limiting runs on the in-memory fallback, Redis is unreachable"
+      - eval_time: 75s
+        alertname: RateLimitFallbackActive
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "gateway: rate limiting runs on the in-memory fallback, Redis is unreachable"
+      - eval_time: 90s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+
+  # Fallback series born above 0 (a burst before the first export) fires until it has a minute of history.
+  - interval: 15s
+    input_series:
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",instance="a",class="login",result="limited",store="fallback"}'
+        values: '_x3 3x20'
+    alert_rule_test:
+      - eval_time: 45s
+        alertname: RateLimitFallbackActive
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "gateway: rate limiting runs on the in-memory fallback, Redis is unreachable"
+      - eval_time: 90s
+        alertname: RateLimitFallbackActive
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "gateway: rate limiting runs on the in-memory fallback, Redis is unreachable"
+      - eval_time: 105s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+
+  # Fallback counters at 0 and a growing Redis counter do not fire.
+  - interval: 15s
+    input_series:
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",instance="a",class="login",result="allowed",store="fallback"}'
+        values: '0x20'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",instance="a",class="login",result="limited",store="fallback"}'
+        values: '0x20'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",instance="a",class="login",result="allowed",store="redis"}'
+        values: '0+5x20'
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 120s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 300s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+
+  # Gateway restart: the old instance stops at 5, the new one is born at 2; the new series fires.
+  - interval: 15s
+    input_series:
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",instance="old",class="login",result="allowed",store="fallback"}'
+        values: '5x7 _x20'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",instance="new",class="login",result="allowed",store="fallback"}'
+        values: '_x8 2x20'
+    alert_rule_test:
+      - eval_time: 105s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 120s
+        alertname: RateLimitFallbackActive
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "gateway: rate limiting runs on the in-memory fallback, Redis is unreachable"
+      - eval_time: 135s
+        alertname: RateLimitFallbackActive
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "gateway: rate limiting runs on the in-memory fallback, Redis is unreachable"
+      - eval_time: 195s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 300s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+
+  # DLQ series born at 1 (the first dead-lettered record) fires until it has 10 minutes of history.
+  - interval: 15s
+    input_series:
+      - series: 'svp_kafka_dlq_records_total{service_name="feed-service",instance="a",topic="video.lifecycle.v1",group="feed-service"}'
+        values: '_x2 1x60'
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: KafkaDLQRecords
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_name: feed-service
+              topic: video.lifecycle.v1
+              group: feed-service
+            exp_annotations:
+              summary: "feed-service: consumer group feed-service sent records from video.lifecycle.v1 to its dead-letter topic"
+      - eval_time: 615s
+        alertname: KafkaDLQRecords
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_name: feed-service
+              topic: video.lifecycle.v1
+              group: feed-service
+            exp_annotations:
+              summary: "feed-service: consumer group feed-service sent records from video.lifecycle.v1 to its dead-letter topic"
+      - eval_time: 630s
+        alertname: KafkaDLQRecords
+        exp_alerts: []
+
+  # DLQ counter 0 -> 1 fires for 10 minutes; a counter at 0 does not.
+  - interval: 15s
+    input_series:
+      - series: 'svp_kafka_dlq_records_total{service_name="feed-service",instance="a",topic="video.lifecycle.v1",group="feed-service"}'
+        values: '0x4 1x60'
+      - series: 'svp_kafka_dlq_records_total{service_name="feed-service",instance="a",topic="user.follows.v1",group="feed-service"}'
+        values: '0x64'
+    alert_rule_test:
+      - eval_time: 60s
+        alertname: KafkaDLQRecords
+        exp_alerts: []
+      - eval_time: 75s
+        alertname: KafkaDLQRecords
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_name: feed-service
+              topic: video.lifecycle.v1
+              group: feed-service
+            exp_annotations:
+              summary: "feed-service: consumer group feed-service sent records from video.lifecycle.v1 to its dead-letter topic"
+      - eval_time: 645s
+        alertname: KafkaDLQRecords
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_name: feed-service
+              topic: video.lifecycle.v1
+              group: feed-service
+            exp_annotations:
+              summary: "feed-service: consumer group feed-service sent records from video.lifecycle.v1 to its dead-letter topic"
+      - eval_time: 660s
+        alertname: KafkaDLQRecords
+        exp_alerts: []
+
+  # Lag of feed-service for 2 minutes fires; media-worker lag during one transcode does not.
+  - interval: 15s
+    input_series:
+      - series: 'redpanda_kafka_consumer_group_lag_max{service_name="redpanda",redpanda_group="feed-service",shard="0"}'
+        values: '0 3x12 0x4'
+      - series: 'redpanda_kafka_consumer_group_lag_max{service_name="redpanda",redpanda_group="media-worker",shard="0"}'
+        values: '0 1x40 0'
+    alert_rule_test:
+      - eval_time: 105s
+        alertname: KafkaConsumerLagHigh
+        exp_alerts: []
+      - eval_time: 135s
+        alertname: KafkaConsumerLagHigh
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              redpanda_group: feed-service
+            exp_annotations:
+              summary: "Kafka consumer group feed-service has had lag for 2 minutes"
+      - eval_time: 210s
+        alertname: KafkaConsumerLagHigh
+        exp_alerts: []
+      - eval_time: 600s
+        alertname: KafkaConsumerLagHigh
+        exp_alerts: []
+
+  # SLO rules: feed with 2xx only has error ratio 0; 503s on POST /videos count as errors; half of the feed requests over 150 ms.
+  - interval: 15s
+    input_series:
+      - series: 'http_server_request_duration_seconds_count{service_name="gateway",http_request_method="GET",http_route="/feed/explore",http_response_status_code="200"}'
+        values: '0+4x40'
+      - series: 'http_server_request_duration_seconds_bucket{service_name="gateway",http_request_method="GET",http_route="/feed/explore",http_response_status_code="200",le="0.15"}'
+        values: '0+2x40'
+      - series: 'http_server_request_duration_seconds_count{service_name="gateway",http_request_method="POST",http_route="/videos",http_response_status_code="201"}'
+        values: '0+3x40'
+      - series: 'http_server_request_duration_seconds_count{service_name="gateway",http_request_method="POST",http_route="/videos",http_response_status_code="503"}'
+        values: '0+1x40'
+    promql_expr_test:
+      - expr: 'slo:sli_error:ratio_rate5m{sloth_slo="feed-availability"}'
+        eval_time: 10m
+        exp_samples:
+          - labels: 'slo:sli_error:ratio_rate5m{sloth_id="svp-feed-availability",sloth_service="svp",sloth_slo="feed-availability",sloth_window="5m"}'
+            value: 0
+      - expr: 'slo:sli_error:ratio_rate5m{sloth_slo="feed-latency"}'
+        eval_time: 10m
+        exp_samples:
+          - labels: 'slo:sli_error:ratio_rate5m{sloth_id="svp-feed-latency",sloth_service="svp",sloth_slo="feed-latency",sloth_window="5m"}'
+            value: 0.5
+      - expr: 'slo:sli_error:ratio_rate5m{sloth_slo="upload-init-availability"}'
+        eval_time: 10m
+        exp_samples:
+          - labels: 'slo:sli_error:ratio_rate5m{sloth_id="svp-upload-init-availability",sloth_service="svp",sloth_slo="upload-init-availability",sloth_window="5m"}'
+            value: 0.25
+
+  # SLO rules: a window with failed videos only is all errors; ready in 120 s is good, slower is bad; no traffic gives no ratio, not a good one.
+  - interval: 15s
+    input_series:
+      - series: 'svp_video_ready_duration_seconds_count{service_name="video-service",outcome="failed"}'
+        values: '0+1x40'
+      - series: 'svp_video_ready_duration_seconds_bucket{service_name="video-service",outcome="failed",le="120"}'
+        values: '0+1x40'
+      - series: 'svp_video_ready_duration_seconds_count{service_name="video-service",outcome="ready"}'
+        values: '_x20 0+4x20'
+      - series: 'svp_video_ready_duration_seconds_bucket{service_name="video-service",outcome="ready",le="120"}'
+        values: '_x20 0+3x20'
+    promql_expr_test:
+      - expr: 'slo:sli_error:ratio_rate5m{sloth_slo="video-ready-latency"}'
+        eval_time: 4m
+        exp_samples:
+          - labels: 'slo:sli_error:ratio_rate5m{sloth_id="svp-video-ready-latency",sloth_service="svp",sloth_slo="video-ready-latency",sloth_window="5m"}'
+            value: 1
+      - expr: 'slo:sli_error:ratio_rate5m{sloth_slo="feed-availability"}'
+        eval_time: 4m
+        exp_samples: []
+      - expr: 'slo:sli_error:ratio_rate5m{sloth_slo="upload-init-availability"}'
+        eval_time: 4m
+        exp_samples: []
+
+  # SLO rules, sparse traffic as on the lab: feed requests during 2 minutes, then none for 2 hours
+  # while the counters are still exported. Every 5 m ratio of the quiet time is NaN (0/0; counted
+  # with `x != x`, true only for NaN), the 30-day SLI, period burn rate and budget remaining are
+  # finite: 8 of 40 requests 5xx, 16 of 40 slower than 150 ms. promtool compares values exactly,
+  # hence round() on the ratios.
+  - interval: 15s
+    input_series:
+      - series: 'http_server_request_duration_seconds_count{service_name="gateway",http_request_method="GET",http_route="/feed/explore",http_response_status_code="200"}'
+        values: '0+4x8 32x480'
+      - series: 'http_server_request_duration_seconds_bucket{service_name="gateway",http_request_method="GET",http_route="/feed/explore",http_response_status_code="200",le="0.15"}'
+        values: '0+2x8 16x480'
+      - series: 'http_server_request_duration_seconds_count{service_name="gateway",http_request_method="GET",http_route="/feed/following",http_response_status_code="503"}'
+        values: '0+1x8 8x480'
+      - series: 'http_server_request_duration_seconds_bucket{service_name="gateway",http_request_method="GET",http_route="/feed/following",http_response_status_code="503",le="0.15"}'
+        values: '0+1x8 8x480'
+    promql_expr_test:
+      - expr: 'count(slo:sli_error:ratio_rate5m{sloth_slo=~"feed-availability|feed-latency"} != slo:sli_error:ratio_rate5m{sloth_slo=~"feed-availability|feed-latency"})'
+        eval_time: 2h
+        exp_samples:
+          - labels: '{}'
+            value: 2
+      - expr: 'round(slo:sli_error:ratio_rate30d{sloth_slo="feed-availability"}, 0.0001)'
+        eval_time: 2h
+        exp_samples:
+          - labels: '{sloth_id="svp-feed-availability",sloth_service="svp",sloth_slo="feed-availability",sloth_window="30d"}'
+            value: 0.2
+      - expr: 'round(slo:sli_error:ratio_rate30d{sloth_slo="feed-latency"}, 0.0001)'
+        eval_time: 2h
+        exp_samples:
+          - labels: '{sloth_id="svp-feed-latency",sloth_service="svp",sloth_slo="feed-latency",sloth_window="30d"}'
+            value: 0.4
+      - expr: 'round(slo:period_burn_rate:ratio{sloth_slo="feed-availability"}, 0.001)'
+        eval_time: 2h
+        exp_samples:
+          - labels: '{sloth_id="svp-feed-availability",sloth_service="svp",sloth_slo="feed-availability",sloth_window="30d"}'
+            value: 200
+      - expr: 'round(slo:period_error_budget_remaining:ratio{sloth_slo="feed-latency"}, 0.001)'
+        eval_time: 2h
+        exp_samples:
+          - labels: '{sloth_id="svp-feed-latency",sloth_service="svp",sloth_slo="feed-latency",sloth_window="30d"}'
+            value: -39

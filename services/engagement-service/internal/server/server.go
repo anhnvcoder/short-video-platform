@@ -39,6 +39,9 @@ const (
 	// produceTimeout bounds producing one view.recorded (ADR-0009, section 3): enough for
 	// franz-go to retry through a leader change or a reconnect, short for a side action.
 	produceTimeout = 2 * time.Second
+	// rollbackTimeout bounds the rollback of a failed transaction, which runs on a context of its
+	// own: the caller's may have run out (docs/adr/0011-observability-stage3.md, section 11).
+	rollbackTimeout = 5 * time.Second
 )
 
 // ErrorInfo reasons returned by the service.
@@ -125,14 +128,20 @@ func (s *Server) Unlike(ctx context.Context, req *engagementv1.UnlikeRequest) (*
 	return &engagementv1.UnlikeResponse{}, nil
 }
 
-// inTx runs fn on queries bound to one transaction and commits when fn returns nil.
+// inTx runs fn on queries bound to one transaction and commits when fn returns nil, within the
+// deadline of ctx.
 func (s *Server) inTx(ctx context.Context, fn func(q *store.Queries) error) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	// After Commit this is a no-op; on ctx cancellation it still reaches the server.
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	// After Commit this is a no-op. Once ctx is canceled or past its deadline, the rollback still
+	// reaches the server, within a bound of its own.
+	defer func() {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
+		defer cancel()
+		_ = tx.Rollback(rctx)
+	}()
 	if err := fn(s.queries.WithTx(tx)); err != nil {
 		return err
 	}
@@ -207,7 +216,8 @@ func (s *Server) RecordView(ctx context.Context, req *engagementv1.RecordViewReq
 
 	produceCtx, cancel := context.WithTimeout(ctx, produceTimeout)
 	defer cancel()
-	// kafkax.Produce adds the request's traceparent header from ctx.
+	// kafkax.Produce gives the record a producer span under the request's span, and that span's
+	// traceparent header. A produce cut short is not retried: the broker may have the record.
 	err = kafkax.Produce(produceCtx, s.producer, &kgo.Record{Topic: TopicViews, Key: []byte(id), Value: value})
 	if err != nil {
 		s.logger.ErrorContext(logx.With(ctx, slog.String("video_id", id)), "produce view.recorded", slog.Any("error", err))

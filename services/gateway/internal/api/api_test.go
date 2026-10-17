@@ -16,6 +16,9 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -35,7 +38,7 @@ import (
 	"github.com/anhnvcoder/short-video-platform/internal/callerid"
 	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
 	"github.com/anhnvcoder/short-video-platform/internal/logx"
-	"github.com/anhnvcoder/short-video-platform/internal/traceparent"
+	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/httpx"
 	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/ratelimit"
 )
 
@@ -48,6 +51,7 @@ const (
 	videoID2 = "01928c6e-7b3a-7cde-8f01-333333333333"
 	// clientTraceparent is a valid traceparent a client might send; it must never be used.
 	clientTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	clientTraceID     = "4bf92f3577b34da6a3ce929d0e0e4736"
 	fakeAccessToken   = "fake.access.token"
 	mediaBase         = "http://127.0.0.1:9000/media"
 	// uploadSecret stands for a presigned POST credential: it must reach the client, not the log.
@@ -58,6 +62,8 @@ const (
 	nextCursor = "next-page-token"
 	// emptyCursor is a page_token fakeFeed answers with an empty last page.
 	emptyCursor = "empty"
+	// traceparentKey is the metadata key of the W3C trace context the services receive.
+	traceparentKey = "traceparent"
 )
 
 var (
@@ -131,12 +137,13 @@ func (b *backend) only(t *testing.T) call {
 }
 
 // startBackend serves register on a new bufconn listener and returns the fake and a client
-// connection to it, dialed with opts added.
+// connection to it, dialed like the gateway's (with httpx.ClientTelemetry) and with opts added.
+// The fake continues the trace it receives, as a service's grpcserver does.
 func startBackend(t *testing.T, register func(*grpc.Server), opts ...grpc.DialOption) (*backend, *grpc.ClientConn) {
 	t.Helper()
 	b := &backend{health: health.NewServer()}
 	lis := bufconn.Listen(1 << 20)
-	srv := grpc.NewServer(grpc.UnaryInterceptor(b.intercept))
+	srv := grpc.NewServer(grpc.StatsHandler(otelgrpc.NewServerHandler()), grpc.UnaryInterceptor(b.intercept))
 	healthpb.RegisterHealthServer(srv, b.health)
 	register(srv)
 	go func() { _ = srv.Serve(lis) }()
@@ -146,6 +153,7 @@ func startBackend(t *testing.T, register func(*grpc.Server), opts ...grpc.DialOp
 	conn, err := grpc.NewClient("passthrough:///bufnet", append([]grpc.DialOption{
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		httpx.ClientTelemetry(),
 	}, opts...)...)
 	if err != nil {
 		t.Fatal(err)
@@ -371,7 +379,7 @@ func newEnvWithLimits(t *testing.T, limits *ratelimit.Limiter, engagementOpts ..
 	engagement, engagementConn := startBackend(t, func(s *grpc.Server) { engagementv1.RegisterEngagementServiceServer(s, stats) }, engagementOpts...)
 	verifier := authtoken.NewVerifier(map[string]ed25519.PublicKey{testKID: key.Public().(ed25519.PublicKey)})
 	return &env{
-		handler:    New(userConn, videoConn, feedConn, engagementConn, verifier, mediaBase, limits),
+		handler:    New(userConn, videoConn, feedConn, engagementConn, verifier, mediaBase, limits, "gateway:8080"),
 		users:      users,
 		videos:     videos,
 		feeds:      feeds,
@@ -431,7 +439,19 @@ type problem struct {
 	TraceID string `json:"trace_id"`
 }
 
+// decodeProblem checks the problem+json content type and returns the body, which must carry a
+// trace_id.
 func decodeProblem(t *testing.T, rec *httptest.ResponseRecorder) problem {
+	t.Helper()
+	p := decodeUntracedProblem(t, rec)
+	if p.TraceID == "" {
+		t.Error("trace_id is empty")
+	}
+	return p
+}
+
+// decodeUntracedProblem is decodeProblem for the probes, which have no trace.
+func decodeUntracedProblem(t *testing.T, rec *httptest.ResponseRecorder) problem {
 	t.Helper()
 	if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
 		t.Fatalf("Content-Type = %q, want application/problem+json (body %q)", ct, rec.Body.String())
@@ -440,10 +460,16 @@ func decodeProblem(t *testing.T, rec *httptest.ResponseRecorder) problem {
 	if p.Status != rec.Code {
 		t.Errorf("status field = %d, response status = %d", p.Status, rec.Code)
 	}
-	if p.TraceID == "" {
-		t.Error("trace_id is empty")
-	}
 	return p
+}
+
+// traceOf returns the trace a call's metadata carries; it is invalid when there is none.
+func traceOf(md metadata.MD) trace.SpanContext {
+	carrier := propagation.MapCarrier{}
+	for _, v := range md.Get(traceparentKey) {
+		carrier[traceparentKey] = v
+	}
+	return trace.SpanContextFromContext(propagation.TraceContext{}.Extract(context.Background(), carrier))
 }
 
 func wantStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
@@ -536,8 +562,8 @@ func TestPublicRoutesSendNoUserID(t *testing.T) {
 		if v := c.md.Get(callerid.MetadataKey); len(v) != 0 {
 			t.Errorf("%s got x-user-id %v", c.method, v)
 		}
-		if v := c.md.Get(traceparent.MetadataKey); len(v) != 1 {
-			t.Errorf("%s got traceparent %v, want one value", c.method, v)
+		if v := c.md.Get(traceparentKey); len(v) != 1 || !traceOf(c.md).IsValid() {
+			t.Errorf("%s got traceparent %v, want one valid value", c.method, v)
 		}
 	}
 }
@@ -807,8 +833,9 @@ func TestReadyzNotReady(t *testing.T) {
 			if elapsed := time.Since(start); elapsed > readyTimeout+500*time.Millisecond {
 				t.Errorf("readyz took %v", elapsed)
 			}
-			p := decodeProblem(t, rec)
-			if p.Code != "NOT_READY" || p.Detail != "" {
+			// /readyz is left out of tracing: its problem has an empty trace_id.
+			p := decodeUntracedProblem(t, rec)
+			if p.Code != "NOT_READY" || p.Detail != "" || p.TraceID != "" {
 				t.Errorf("problem = %+v", p)
 			}
 			if !strings.Contains(logs.String(), "dependency not ready") {
@@ -865,11 +892,11 @@ func TestOutgoingMetadataFromTokenOnly(t *testing.T) {
 	if v := md.Get(callerid.MetadataKey); !slices.Equal(v, []string{userA}) {
 		t.Errorf("x-user-id = %v, want [%s]", v, userA)
 	}
-	tp := md.Get(traceparent.MetadataKey)
+	tp := md.Get(traceparentKey)
 	if len(tp) != 1 || tp[0] == clientTraceparent {
 		t.Errorf("traceparent = %v, want one value made by the gateway", tp)
-	} else if _, ok := traceparent.TraceID(tp[0]); !ok {
-		t.Errorf("traceparent %q is not valid", tp[0])
+	} else if sc := traceOf(md); !sc.IsValid() || sc.TraceID().String() == clientTraceID {
+		t.Errorf("traceparent %q is not valid or continues the client's trace", tp[0])
 	}
 	if v := md.Get("x-foo"); len(v) != 0 {
 		t.Errorf("x-foo = %v, want none", v)
@@ -1394,7 +1421,7 @@ func TestFeedIgnoresClientUserID(t *testing.T) {
 		if v := c.md.Get(callerid.MetadataKey); !slices.Equal(v, []string{userA}) {
 			t.Errorf("%s x-user-id = %v, want [%s]", c.method, v, userA)
 		}
-		if tp := c.md.Get(traceparent.MetadataKey); len(tp) != 1 || tp[0] == clientTraceparent {
+		if tp := c.md.Get(traceparentKey); len(tp) != 1 || tp[0] == clientTraceparent || traceOf(c.md).TraceID().String() == clientTraceID {
 			t.Errorf("%s traceparent = %v, want one value made by the gateway", c.method, tp)
 		}
 	}

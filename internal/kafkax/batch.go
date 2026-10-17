@@ -10,6 +10,9 @@ import (
 	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/kmsg"
+	"go.opentelemetry.io/otel"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Defaults for the zero fields of BatchConsumerConfig (ADR-0009 section 4).
@@ -68,6 +71,8 @@ type BatchConsumerConfig struct {
 	// first record, whichever comes first.
 	MaxBatchRecords int
 	MaxBatchWait    time.Duration
+	// HandlerTimeout bounds each batch attempt; zero leaves it without a deadline.
+	HandlerTimeout time.Duration
 
 	// BackoffBase and BackoffMax shape the waits between attempts, as in ConsumerConfig.
 	BackoffBase time.Duration
@@ -83,6 +88,8 @@ type BatchConsumerConfig struct {
 
 	// opts are extra client options for tests.
 	opts []kgo.Opt
+	// deadLetterTimeout replaces the package's deadLetterTimeout in tests when set.
+	deadLetterTimeout time.Duration
 }
 
 // BatchConsumer runs a BatchHandler over the records of a consumer group and commits each batch
@@ -112,17 +119,18 @@ func NewBatchConsumer(cfg BatchConsumerConfig) (*BatchConsumer, error) {
 		cfg.MaxBatchWait = DefaultMaxBatchWait
 	}
 	c, err := newConsumer(ConsumerConfig{
-		Brokers:          cfg.Brokers,
-		ClientID:         cfg.ClientID,
-		Group:            cfg.Group,
-		Topics:           cfg.Topics,
-		Logger:           cfg.Logger,
-		BackoffBase:      cfg.BackoffBase,
-		BackoffMax:       cfg.BackoffMax,
-		BlockRebalance:   true,
-		SessionTimeout:   cfg.SessionTimeout,
-		RebalanceTimeout: cfg.RebalanceTimeout,
-		opts:             cfg.opts,
+		Brokers:           cfg.Brokers,
+		ClientID:          cfg.ClientID,
+		Group:             cfg.Group,
+		Topics:            cfg.Topics,
+		Logger:            cfg.Logger,
+		BackoffBase:       cfg.BackoffBase,
+		BackoffMax:        cfg.BackoffMax,
+		BlockRebalance:    true,
+		SessionTimeout:    cfg.SessionTimeout,
+		RebalanceTimeout:  cfg.RebalanceTimeout,
+		opts:              cfg.opts,
+		deadLetterTimeout: cfg.deadLetterTimeout,
 	})
 	if err != nil {
 		return nil, err
@@ -191,17 +199,18 @@ func (b *BatchConsumer) collect(ctx context.Context) *Batch {
 // dead-letter topic, and commits the batch.
 func (b *BatchConsumer) settle(ctx context.Context, batch *Batch) error {
 	for n := 1; ; n++ {
-		rejected, err := b.cfg.Handler(ctx, batch)
+		hctx, rejected, err := b.handle(ctx, batch)
 		if err == nil {
 			for _, rj := range rejected {
 				cause := rj.Err
 				if cause == nil {
 					cause = errors.New("rejected by handler")
 				}
-				if err := b.c.deadLetter(ctx, rj.Record, ReasonPermanent, cause); err != nil {
+				dctx := trace.ContextWithSpanContext(ctx, trace.SpanContextFromContext(hctx))
+				if err := b.c.deadLetter(dctx, rj.Record, ReasonPermanent, cause); err != nil {
 					return err
 				}
-				b.c.cfg.Logger.LogAttrs(ctx, slog.LevelWarn, "kafka record sent to dead-letter topic",
+				b.c.cfg.Logger.LogAttrs(hctx, slog.LevelWarn, "kafka record sent to dead-letter topic",
 					recordAttrs(rj.Record, slog.String("reason", ReasonPermanent), slog.String("error", cause.Error()))...)
 			}
 			return b.commit(ctx, batch)
@@ -210,13 +219,35 @@ func (b *BatchConsumer) settle(ctx context.Context, batch *Batch) error {
 			return errStopped
 		}
 		wait := b.c.backoff(n)
-		b.c.cfg.Logger.LogAttrs(ctx, slog.LevelWarn, "kafka batch handler failed, retrying",
+		b.c.cfg.Logger.LogAttrs(hctx, slog.LevelWarn, "kafka batch handler failed, retrying",
 			slog.Int("records", len(batch.Records)), slog.Int("attempt", n), slog.Duration("backoff", wait),
 			slog.String("error", err.Error()))
 		if !sleep(ctx, wait) {
 			return errStopped
 		}
 	}
+}
+
+func (b *BatchConsumer) handle(ctx context.Context, batch *Batch) (context.Context, []Rejected, error) {
+	links := make([]trace.Link, 0, min(len(batch.Records), 128))
+	for _, r := range batch.Records {
+		if sc := trace.SpanContextFromContext(handlerContext(ctx, r)); sc.IsValid() {
+			links = append(links, trace.Link{SpanContext: sc})
+			if len(links) == 128 {
+				break
+			}
+		}
+	}
+	topic := batch.Records[0].Topic
+	hctx, span := otel.Tracer(tracerName).Start(ctx, "process "+topic,
+		trace.WithNewRoot(), trace.WithSpanKind(trace.SpanKindConsumer), trace.WithLinks(links...),
+		trace.WithAttributes(semconv.MessagingSystemKafka, semconv.MessagingDestinationName(topic),
+			semconv.MessagingConsumerGroupName(b.cfg.Group), semconv.MessagingOperationName("process"),
+			semconv.MessagingOperationTypeProcess))
+	hctx, cancel := attemptContext(hctx, b.cfg.HandlerTimeout)
+	defer cancel()
+	rejected, err := b.cfg.Handler(hctx, batch)
+	return hctx, rejected, endAttempt(span, err)
 }
 
 // commit commits the highest offset of every partition in batch, and no other partition.

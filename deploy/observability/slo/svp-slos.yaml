@@ -1,0 +1,114 @@
+# SLO spec of docs/adr/0011-observability-stage3.md, section 8. `make slo` turns it into
+# deploy/observability/prometheus/rules/slo-generated.yaml with Sloth; edit this file, not that one.
+# 30-day window, Sloth's default multi-window burn rates: page 14.4x (1h/5m) and 6x (6h/30m),
+# ticket 3x (1d/2h) and 1x (3d/6h). Alertmanager pages only severity="page".
+#
+# HTTP totals count the `_count` series of the gateway histogram; `http_route` holds the path
+# pattern without the method. An error query that may have no series yet ends in `or vector(0)`;
+# a total query never does, so no traffic gives no ratio rather than a fake good one.
+version: "prometheus/v1"
+service: "svp"
+# Sloth's default plugins, in their default order, with one setting changed: the 30-day SLI
+# (slo:sli_error:ratio_rate30d, and the period burn rate and budget remaining built on it) is the
+# SLI's own error and total queries over [30d], like every shorter window, instead of the mean of
+# 30 days of 5 m ratios. That mean is NaN as soon as one 5 m window had no request (0/0), which on
+# this lab is nearly always; the raw ratio stays finite while any request fell in the 30 days, and
+# weighs each request the same. It costs Prometheus a read of 30 days of the raw series per
+# evaluation (ADR-0011, section 8).
+slo_plugins:
+  overridePrevious: true
+  chain:
+    - id: "sloth.dev/core/validate/v1"
+    - id: "sloth.dev/core/sli_rules/v1"
+      config:
+        disableOptimized: true
+    - id: "sloth.dev/core/metadata_rules/v1"
+    - id: "sloth.dev/core/alert_rules/v1"
+slos:
+  - name: "feed-availability"
+    objective: 99.9
+    description: "GET /feed/following and /feed/explore at the gateway answer without a 5xx."
+    sli:
+      events:
+        error_query: >-
+          sum(rate(http_server_request_duration_seconds_count{service_name="gateway",http_request_method="GET",http_route=~"/feed/following|/feed/explore",http_response_status_code=~"5.."}[{{.window}}]))
+          or vector(0)
+        total_query: >-
+          sum(rate(http_server_request_duration_seconds_count{service_name="gateway",http_request_method="GET",http_route=~"/feed/following|/feed/explore"}[{{.window}}]))
+    alerting:
+      name: FeedAvailabilityBudgetBurn
+      annotations:
+        summary: "gateway: feed requests (GET /feed/following, /feed/explore) burn the 99.9% availability budget"
+      page_alert:
+        labels:
+          severity: page
+      ticket_alert:
+        labels:
+          severity: ticket
+
+  - name: "upload-init-availability"
+    objective: 99.9
+    description: "POST /videos at the gateway answers without a 5xx."
+    sli:
+      events:
+        error_query: >-
+          sum(rate(http_server_request_duration_seconds_count{service_name="gateway",http_request_method="POST",http_route="/videos",http_response_status_code=~"5.."}[{{.window}}]))
+          or vector(0)
+        total_query: >-
+          sum(rate(http_server_request_duration_seconds_count{service_name="gateway",http_request_method="POST",http_route="/videos"}[{{.window}}]))
+    alerting:
+      name: UploadInitAvailabilityBudgetBurn
+      annotations:
+        summary: "gateway: upload init requests (POST /videos) burn the 99.9% availability budget"
+      page_alert:
+        labels:
+          severity: page
+      ticket_alert:
+        labels:
+          severity: ticket
+
+  - name: "feed-latency"
+    objective: 99
+    description: "GET /feed/following and /feed/explore at the gateway answer within the 150 ms bucket."
+    sli:
+      events:
+        error_query: >-
+          sum(rate(http_server_request_duration_seconds_count{service_name="gateway",http_request_method="GET",http_route=~"/feed/following|/feed/explore"}[{{.window}}]))
+          -
+          sum(rate(http_server_request_duration_seconds_bucket{service_name="gateway",http_request_method="GET",http_route=~"/feed/following|/feed/explore",le="0.15"}[{{.window}}]))
+        total_query: >-
+          sum(rate(http_server_request_duration_seconds_count{service_name="gateway",http_request_method="GET",http_route=~"/feed/following|/feed/explore"}[{{.window}}]))
+    alerting:
+      name: FeedLatencyBudgetBurn
+      annotations:
+        summary: "gateway: feed requests slower than 150 ms burn the 99% latency budget"
+      page_alert:
+        labels:
+          severity: page
+      ticket_alert:
+        labels:
+          severity: ticket
+
+  - name: "video-ready-latency"
+    objective: 95
+    description: "A completed upload reaches READY within the 120 s bucket; FAILED is always bad."
+    sli:
+      events:
+        # Good is outcome="ready" in the 120 s bucket only. `or vector(0)` sits on the good term
+        # alone, so a window with failed videos only still counts every one of them as an error.
+        error_query: >-
+          sum(rate(svp_video_ready_duration_seconds_count{service_name="video-service"}[{{.window}}]))
+          -
+          (sum(rate(svp_video_ready_duration_seconds_bucket{service_name="video-service",outcome="ready",le="120"}[{{.window}}])) or vector(0))
+        total_query: >-
+          sum(rate(svp_video_ready_duration_seconds_count{service_name="video-service"}[{{.window}}]))
+    alerting:
+      name: VideoReadyLatencyBudgetBurn
+      annotations:
+        summary: "video-service: videos not READY within 120 s burn the 95% budget"
+      page_alert:
+        labels:
+          severity: page
+      ticket_alert:
+        labels:
+          severity: ticket

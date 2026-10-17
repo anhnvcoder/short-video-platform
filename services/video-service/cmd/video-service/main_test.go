@@ -5,10 +5,14 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
+
 	"github.com/anhnvcoder/short-video-platform/internal/objstore"
+	"github.com/anhnvcoder/short-video-platform/internal/sentryx"
 )
 
 func setStorageEnv(t *testing.T, env map[string]string) {
@@ -27,12 +31,117 @@ func TestServeMalformedKafkaBrokersNamesTheVariable(t *testing.T) {
 	})
 	// The broker list is checked before the database is opened, so this URL is never dialled.
 	t.Setenv("DATABASE_URL", "postgres://unused@127.0.0.1:1/unused")
+	// Telemetry and error reporting off, as without the obs profile: serve gets past both.
+	for _, name := range []string{"SENTRY_DSN", "OTEL_EXPORTER_OTLP_ENDPOINT", "PYROSCOPE_SERVER_ADDRESS"} {
+		t.Setenv(name, "")
+	}
 	for _, brokers := range []string{" , ", "redpanda:notaport"} {
 		t.Setenv("KAFKA_BROKERS", brokers)
 		err := serve(t.Context(), slog.New(slog.DiscardHandler))
 		if err == nil || !strings.Contains(err.Error(), "KAFKA_BROKERS") {
 			t.Errorf("KAFKA_BROKERS=%q: serve() = %v, want an error naming KAFKA_BROKERS", brokers, err)
 		}
+	}
+}
+
+// probedError is an ERROR record and what was still open when it was logged.
+type probedError struct {
+	message string
+	// tracker reports whether the error tracker took ERROR records.
+	tracker bool
+	// telemetry reports whether the tracer provider of telemetry.Setup was still open. It shuts
+	// down together with the logger and meter providers, so this stands for all three.
+	telemetry bool
+}
+
+// failureProbe is a slog handler noting, for each ERROR record, whether the error tracker and the
+// telemetry providers still took records. It forwards nothing, so no event is ever sent.
+type failureProbe struct {
+	mu     sync.Mutex
+	errors []probedError
+}
+
+func (*failureProbe) Enabled(context.Context, slog.Level) bool { return true }
+
+func (p *failureProbe) Handle(ctx context.Context, r slog.Record) error {
+	if r.Level < slog.LevelError {
+		return nil
+	}
+	_, span := otel.Tracer("probe").Start(ctx, "probe")
+	e := probedError{message: r.Message, tracker: (&sentryx.Handler{}).Enabled(ctx, slog.LevelError), telemetry: span.IsRecording()}
+	span.End()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.errors = append(p.errors, e)
+	return nil
+}
+
+func (p *failureProbe) WithAttrs([]slog.Attr) slog.Handler { return p }
+func (p *failureProbe) WithGroup(string) slog.Handler      { return p }
+
+func (p *failureProbe) logged() []probedError {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]probedError(nil), p.errors...)
+}
+
+// serveEnv sets what serve needs to get past its configuration, with the error tracker on and
+// telemetry recording but exporting nowhere.
+func serveEnv(t *testing.T) {
+	t.Helper()
+	setStorageEnv(t, map[string]string{
+		"S3_ENDPOINT":          "http://minio:9000",
+		"S3_ACCESS_KEY_ID":     "svp-video-service",
+		"S3_SECRET_ACCESS_KEY": "secret-value",
+	})
+	t.Setenv("DATABASE_URL", "postgres://unused@127.0.0.1:1/unused")
+	t.Setenv("UPLOAD_ABANDON_AFTER", "")
+	t.Setenv("UPLOAD_SWEEP_INTERVAL", "")
+	// A valid DSN whose host never resolves: the probe sends no event.
+	t.Setenv("SENTRY_DSN", "http://public@glitchtip.invalid/1")
+	for _, name := range []string{"OTEL_SDK_DISABLED", "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_TRACES_SAMPLER",
+		"PYROSCOPE_SERVER_ADDRESS"} {
+		t.Setenv(name, "")
+	}
+}
+
+// A failure once the error tracker and the providers are set up is logged while both still take
+// records, so it reaches GlitchTip and the Collector, and is marked so main does not log it again.
+func TestServeLogsFailureBeforeClosingReporters(t *testing.T) {
+	serveEnv(t)
+	// Checked after the error tracker is set up, before the database is opened.
+	t.Setenv("KAFKA_BROKERS", "redpanda:notaport")
+	probe := &failureProbe{}
+	err := serve(t.Context(), slog.New(probe))
+	if err == nil || !strings.Contains(err.Error(), "KAFKA_BROKERS") {
+		t.Fatalf("serve() = %v, want an error naming KAFKA_BROKERS", err)
+	}
+	if _, ok := errors.AsType[loggedError](err); !ok {
+		t.Error("serve() error is not marked as logged: main would log it a second time")
+	}
+	want := probedError{message: "video-service failed", tracker: true, telemetry: true}
+	if got := probe.logged(); len(got) != 1 || got[0] != want {
+		t.Errorf("ERROR records = %+v, want [%+v]", got, want)
+	}
+	if (&sentryx.Handler{}).Enabled(t.Context(), slog.LevelError) {
+		t.Error("error tracker still open after serve returned")
+	}
+}
+
+// A configuration error comes before there is anything to report to: serve leaves it to main.
+func TestServeLeavesEarlyFailureToMain(t *testing.T) {
+	serveEnv(t)
+	t.Setenv("DATABASE_URL", "")
+	probe := &failureProbe{}
+	err := serve(t.Context(), slog.New(probe))
+	if err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
+		t.Fatalf("serve() = %v, want an error naming DATABASE_URL", err)
+	}
+	if _, ok := errors.AsType[loggedError](err); ok {
+		t.Error("serve() marked an error it did not log")
+	}
+	if got := probe.logged(); len(got) != 0 {
+		t.Errorf("ERROR records = %+v, want none", got)
 	}
 }
 

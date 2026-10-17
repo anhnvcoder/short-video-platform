@@ -16,6 +16,9 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 const (
@@ -58,6 +61,9 @@ var (
 	Read       = Class{Name: "read", Limit: Limit{600, time.Minute, 200}}
 )
 
+// classes are the classes above, whose decision series New creates at zero.
+var classes = []Class{Register, LoginIP, LoginEmail, Upload, Write, Read}
+
 // gcraScript is the GCRA step, atomic in Redis. KEYS[1] holds the theoretical arrival time
 // (TAT) in Unix milliseconds; ARGV[1] is the interval T and ARGV[2] the burst. Time comes from
 // Redis, so gateway instances never disagree about it. A request is allowed when the new TAT is
@@ -90,6 +96,8 @@ type Limiter struct {
 	storeTimeout time.Duration
 	// lastWarn is the Unix nanoseconds of the last "store unavailable" WARN.
 	lastWarn atomic.Int64
+	// decisions counts every Allow answer (svp.ratelimit.decisions).
+	decisions metric.Int64Counter
 }
 
 // Option changes a Limiter built by New.
@@ -102,13 +110,39 @@ func WithStoreTimeout(d time.Duration) Option {
 }
 
 // New returns a Limiter on client with keys under prefix. It does not touch Redis.
+//
+// Every Allow answer is counted by the global OTel meter provider in svp.ratelimit.decisions,
+// labelled class, result (allowed or limited) and store (redis, or fallback when Redis failed),
+// so the fallback in use is visible (threat model RL-2; docs/adr/0011-observability-stage3.md,
+// section 5). An answer to a request cancelled before Redis answered is not counted. New adds 0
+// to every series of the classes of ADR-0010, so they exist before the first request.
 func New(client *redis.Client, prefix string, opts ...Option) *Limiter {
 	l := &Limiter{client: client, prefix: prefix, mem: newMemory(time.Now), storeTimeout: defaultStoreTimeout}
 	for _, opt := range opts {
 		opt(l)
 	}
+	decisions, err := otel.Meter("github.com/anhnvcoder/short-video-platform/services/gateway/internal/ratelimit").
+		Int64Counter("svp.ratelimit.decisions")
+	if err != nil {
+		// The SDK still returns a working instrument along with the error.
+		otel.Handle(err)
+	}
+	l.decisions = decisions
+	for _, c := range classes {
+		for _, allowed := range []bool{true, false} {
+			for _, store := range []string{storeRedis, storeFallback} {
+				l.count(context.Background(), c, allowed, store, 0)
+			}
+		}
+	}
 	return l
 }
+
+// The store label of svp.ratelimit.decisions.
+const (
+	storeRedis    = "redis"
+	storeFallback = "fallback"
+)
 
 // Allow counts one request of class c by id (a client IP, a user id, ...) and reports whether it
 // may go on; when it may not, retryAfter is how long until it would. Allow never fails: when
@@ -116,13 +150,33 @@ func New(client *redis.Client, prefix string, opts ...Option) *Limiter {
 func (l *Limiter) Allow(ctx context.Context, c Class, id string) (ok bool, retryAfter time.Duration) {
 	ok, retryAfter, err := l.allowRedis(ctx, c.Limit, l.prefix+"rl:"+c.Name+":"+id)
 	if err == nil {
+		l.count(ctx, c, ok, storeRedis, 1)
 		return ok, retryAfter
 	}
 	l.warnUnlessGone(ctx, err)
-	if c.Fallback == (Limit{}) {
-		return true, 0
+	ok, retryAfter = true, 0
+	if c.Fallback != (Limit{}) {
+		ok, retryAfter = l.mem.allow(c.Name+":"+id, c.Fallback)
 	}
-	return l.mem.allow(c.Name+":"+id, c.Fallback)
+	// Like the WARN, the decision counts under fallback only when Redis failed: when the request
+	// was already cancelled or past its deadline, the Redis call failed because of the request.
+	if ctx.Err() == nil {
+		l.count(ctx, c, ok, storeFallback, 1)
+	}
+	return ok, retryAfter
+}
+
+// count adds n to the decisions of class c with result allowed in store.
+func (l *Limiter) count(ctx context.Context, c Class, allowed bool, store string, n int64) {
+	result := "limited"
+	if allowed {
+		result = "allowed"
+	}
+	l.decisions.Add(ctx, n, metric.WithAttributes(
+		attribute.String("class", c.Name),
+		attribute.String("result", result),
+		attribute.String("store", store),
+	))
 }
 
 func (l *Limiter) allowRedis(ctx context.Context, lim Limit, key string) (bool, time.Duration, error) {

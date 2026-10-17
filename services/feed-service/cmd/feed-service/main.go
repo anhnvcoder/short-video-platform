@@ -15,7 +15,9 @@
 // DATABASE_URL (required for serve and migrate); serve also needs KAFKA_BROKERS
 // (docs/adr/0009-engagement-feed-stage2b.md, section 12) and reads REDIS_URL (default
 // redis://127.0.0.1:6379/14) for the explore cache. Redis is not needed to start or to serve
-// (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 1).
+// (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 1). serve exports
+// telemetry when OTEL_EXPORTER_OTLP_ENDPOINT is set, profiles when PYROSCOPE_SERVER_ADDRESS is,
+// and reports errors when SENTRY_DSN is (docs/adr/0011-observability-stage3.md).
 package main
 
 import (
@@ -37,7 +39,10 @@ import (
 	"github.com/anhnvcoder/short-video-platform/internal/grpcserver"
 	"github.com/anhnvcoder/short-video-platform/internal/kafkax"
 	"github.com/anhnvcoder/short-video-platform/internal/logx"
+	"github.com/anhnvcoder/short-video-platform/internal/pgpool"
 	"github.com/anhnvcoder/short-video-platform/internal/redisx"
+	"github.com/anhnvcoder/short-video-platform/internal/sentryx"
+	"github.com/anhnvcoder/short-video-platform/internal/telemetry"
 	"github.com/anhnvcoder/short-video-platform/services/feed-service/internal/projector"
 	"github.com/anhnvcoder/short-video-platform/services/feed-service/internal/server"
 	"github.com/anhnvcoder/short-video-platform/services/feed-service/migrations"
@@ -55,6 +60,8 @@ const (
 	// pruneInterval is how often timeline rows older than 30 days are deleted (ADR-0009,
 	// section 6). Reads filter them out meanwhile.
 	pruneInterval = time.Hour
+	// pruneTimeout bounds one prune run, every batch included (ADR-0011, section 11).
+	pruneTimeout = 2 * time.Minute
 )
 
 func main() {
@@ -66,10 +73,18 @@ func main() {
 	err := run(ctx, logger, os.Args[1:])
 	stop()
 	if err != nil {
-		logger.Error("feed-service failed", slog.Any("error", err))
+		if _, logged := errors.AsType[loggedError](err); !logged {
+			logger.Error("feed-service failed", slog.Any("error", err))
+		}
 		os.Exit(1)
 	}
 }
+
+// loggedError is a serve failure that serve has already logged, while the error tracker and the
+// telemetry providers were still running, so that it reaches both (ADR-0011, sections 4 and 7).
+type loggedError struct{ error }
+
+func (e loggedError) Unwrap() error { return e.error }
 
 func run(ctx context.Context, logger *slog.Logger, args []string) error {
 	cmd := "serve"
@@ -87,7 +102,7 @@ func run(ctx context.Context, logger *slog.Logger, args []string) error {
 	return fmt.Errorf("unknown command %q, want serve, migrate or healthcheck", cmd)
 }
 
-func serve(ctx context.Context, logger *slog.Logger) error {
+func serve(ctx context.Context, logger *slog.Logger) (err error) {
 	databaseURL, err := envcfg.Required("DATABASE_URL")
 	if err != nil {
 		return err
@@ -111,14 +126,34 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	}
 	defer func() { _ = cache.Close() }()
 
-	pool, err := pgxpool.New(ctx, databaseURL)
+	shutdownTelemetry, err := telemetry.Setup(ctx, serviceName)
 	if err != nil {
-		return fmt.Errorf("open database pool: %w", err)
+		return fmt.Errorf("set up telemetry: %w", err)
 	}
-	defer pool.Close()
-	// pgxpool connects lazily: check the database now so a bad URL fails at startup.
-	if err := pool.Ping(ctx); err != nil {
-		return fmt.Errorf("connect to database: %w", err)
+	flushErrors, err := sentryx.Init(serviceName)
+	if err != nil {
+		return errors.Join(err, shutdownTelemetry(context.WithoutCancel(ctx)))
+	}
+	var pool *pgxpool.Pool
+	// Runs once the server, the consumer and the pruner have stopped: a failure is logged first,
+	// while the error tracker and the providers still run, then telemetry is flushed while the
+	// pool still exists, then the error reports, and the pool closes last.
+	defer func() {
+		if err != nil {
+			logger.Error("feed-service failed", slog.Any("error", err))
+			err = loggedError{err}
+		}
+		if err := shutdownTelemetry(context.WithoutCancel(ctx)); err != nil {
+			logger.Warn("telemetry shutdown failed", slog.Any("error", err))
+		}
+		flushErrors()
+		if pool != nil {
+			pool.Close()
+		}
+	}()
+	pool, err = pgpool.New(ctx, databaseURL)
+	if err != nil {
+		return err
 	}
 
 	proj := projector.New(pool, logger)
@@ -134,9 +169,10 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		consumerErr <- err
 	}()
 	pruneDone := make(chan struct{})
+	pruneLoop := telemetry.NewLoop("timeline-prune")
 	go func() {
 		defer close(pruneDone)
-		runPrune(ctx, logger, pruneInterval, proj.PruneTimeline)
+		runPrune(ctx, logger, pruneInterval, pruneTimeout, pruneLoop, proj.PruneTimeline)
 	}()
 
 	srv := server.New(pool, cache, cacheKeyPrefix, logger)
@@ -181,16 +217,27 @@ func runConsumer(ctx context.Context, logger *slog.Logger, delay time.Duration, 
 	}
 }
 
-// runPrune calls prune once at start and then every interval until ctx is canceled. A failed
-// run is logged and left to the next one: reads filter expired rows out whatever prune does.
-func runPrune(ctx context.Context, logger *slog.Logger, interval time.Duration, prune func(context.Context) (int64, error)) {
+// runPrune calls prune once at start and then every interval until ctx is canceled, each run
+// within timeout. A failed run is logged and left to the next one: reads filter expired rows out
+// whatever prune does. prune reports each batch it deletes to loop through onBatch, so a run that
+// keeps working through a backlog past its timeout does not look stalled (ADR-0011, section 5).
+func runPrune(ctx context.Context, logger *slog.Logger, interval, timeout time.Duration, loop *telemetry.Loop,
+	prune func(ctx context.Context, onBatch func()) (int64, error),
+) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
-		n, err := prune(ctx)
+		runCtx, cancel := context.WithTimeout(ctx, timeout)
+		n, err := prune(runCtx, loop.Succeeded)
+		timedOut := runCtx.Err() != nil
+		cancel()
 		switch {
 		case ctx.Err() != nil:
 			return
+		case err != nil && timedOut:
+			// The rows deleted so far stay deleted; the next run goes on from there.
+			logger.WarnContext(ctx, "prune timeline timed out", slog.Int64("deleted", n),
+				slog.Duration("timeout", timeout), slog.Any("error", err))
 		case err != nil:
 			logger.ErrorContext(ctx, "prune timeline", slog.Int64("deleted", n), slog.Any("error", err))
 		default:

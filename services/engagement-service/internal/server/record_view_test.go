@@ -1,12 +1,18 @@
 package server
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kfake"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -15,10 +21,26 @@ import (
 	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
 	"github.com/anhnvcoder/short-video-platform/internal/ids"
 	"github.com/anhnvcoder/short-video-platform/internal/kafkax"
-	"github.com/anhnvcoder/short-video-platform/internal/traceparent"
 )
 
-const testTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+// recordSpans makes the global tracer provider record every span, with W3C TraceContext
+// propagation as telemetry.Setup installs it, until the test ends.
+func recordSpans(t *testing.T) *tracetest.SpanRecorder {
+	t.Helper()
+	previousTP, previousProp := otel.GetTracerProvider(), otel.GetTextMapPropagator()
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder), sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previousTP)
+		otel.SetTextMapPropagator(previousProp)
+		if err := tp.Shutdown(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	return recorder
+}
 
 // newCluster starts an in-memory Kafka cluster holding TopicViews with 3 partitions and its
 // dead-letter topic with 1, as deploy/redpanda/create-topics.sh creates them, and returns it with
@@ -49,10 +71,15 @@ func TestRecordViewProducesViewRecorded(t *testing.T) {
 	// No database: RecordView must not touch it.
 	s, _ := newServerWithoutDB(newProducer(t, brokers))
 	caller, videoID := ids.New(), ids.New()
-	ctx := traceparent.NewContext(t.Context(), testTraceparent)
+	recorder := recordSpans(t)
+	// The span the gRPC server instrumentation opens for the call.
+	ctx, span := otel.Tracer("test").Start(t.Context(), "svp.engagement.v1.EngagementService/RecordView",
+		trace.WithSpanKind(trace.SpanKindServer))
 
 	before := time.Now()
-	if _, err := call(ctx, caller, methodRecordView, &engagementv1.RecordViewRequest{VideoId: videoID}, s.RecordView); err != nil {
+	_, err := call(ctx, caller, methodRecordView, &engagementv1.RecordViewRequest{VideoId: videoID}, s.RecordView)
+	span.End()
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -60,8 +87,22 @@ func TestRecordViewProducesViewRecorded(t *testing.T) {
 	if string(r.Key) != videoID {
 		t.Errorf("key = %q, want video_id %q", r.Key, videoID)
 	}
-	if got := headerValue(r, traceparent.MetadataKey); got != testTraceparent {
-		t.Errorf("traceparent header = %q, want %q", got, testTraceparent)
+	// The header names the producer span, a child of the request's span in the same trace.
+	header := headerValue(r, "traceparent")
+	parts := strings.Split(header, "-")
+	if len(parts) != 4 || parts[1] != span.SpanContext().TraceID().String() {
+		t.Errorf("traceparent header = %q, want trace id %s", header, span.SpanContext().TraceID())
+	}
+	var producer sdktrace.ReadOnlySpan
+	for _, sp := range recorder.Ended() {
+		if sp.SpanKind() == trace.SpanKindProducer {
+			producer = sp
+		}
+	}
+	if producer == nil || producer.Parent().SpanID() != span.SpanContext().SpanID() ||
+		len(parts) != 4 || parts[2] != producer.SpanContext().SpanID().String() {
+		t.Errorf("traceparent header = %q, want the producer span %v under the request span %s",
+			header, producer, span.SpanContext().SpanID())
 	}
 	var ev engagementv1.ViewEvent
 	if err := proto.Unmarshal(r.Value, &ev); err != nil {

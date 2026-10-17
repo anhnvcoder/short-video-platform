@@ -247,7 +247,7 @@ func (q *Queries) InsertFollow(ctx context.Context, arg InsertFollowParams) erro
 	return err
 }
 
-const insertVideo = `-- name: InsertVideo :exec
+const insertVideo = `-- name: InsertVideo :execrows
 INSERT INTO videos (video_id, author_id, title, duration_ms, playlist_key, thumbnail_key, published_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (video_id) DO NOTHING
@@ -263,9 +263,10 @@ type InsertVideoParams struct {
 	PublishedAt  time.Time
 }
 
-// The first video.ready wins: published_at of a stored video never changes.
-func (q *Queries) InsertVideo(ctx context.Context, arg InsertVideoParams) error {
-	_, err := q.db.Exec(ctx, insertVideo,
+// The first video.ready wins: published_at of a stored video never changes. Returns 0 for a video
+// already stored.
+func (q *Queries) InsertVideo(ctx context.Context, arg InsertVideoParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertVideo,
 		arg.VideoID,
 		arg.AuthorID,
 		arg.Title,
@@ -274,7 +275,10 @@ func (q *Queries) InsertVideo(ctx context.Context, arg InsertVideoParams) error 
 		arg.ThumbnailKey,
 		arg.PublishedAt,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const lockAuthor = `-- name: LockAuthor :exec

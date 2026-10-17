@@ -1,13 +1,28 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
+	"github.com/anhnvcoder/short-video-platform/internal/pgpool"
+	"github.com/anhnvcoder/short-video-platform/internal/sentryx"
+	"github.com/anhnvcoder/short-video-platform/internal/telemetry"
 )
 
 func TestServeRequiresItsVariables(t *testing.T) {
@@ -28,6 +43,42 @@ func TestServeRequiresItsVariables(t *testing.T) {
 			t.Errorf("DATABASE_URL=%q KAFKA_BROKERS=%q REDIS_URL=%q: serve() = %v, want an error naming %s",
 				tc.databaseURL, tc.brokers, tc.redisURL, err, tc.want)
 		}
+	}
+}
+
+// A failure after the error tracker has started is logged while the tracker still runs, so that
+// it reaches the tracker, and only once: main does not log it again (ADR-0011, section 7).
+func TestServeReportsAFailureBeforeTheErrorTrackerStops(t *testing.T) {
+	var mu sync.Mutex
+	var envelopes []string
+	tracker := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		envelopes = append(envelopes, string(body))
+		mu.Unlock()
+	}))
+	defer tracker.Close()
+	t.Setenv("SENTRY_DSN", "http://public@"+tracker.Listener.Addr().String()+"/1")
+	t.Setenv("OTEL_SDK_DISABLED", "true")
+	t.Setenv("KAFKA_BROKERS", "redpanda:9092")
+	t.Setenv("REDIS_URL", "")
+	// pgpool rejects this URL once the tracker has started. Every later failure, a malformed
+	// LISTEN_ADDR included, returns through the same deferred call.
+	t.Setenv("DATABASE_URL", "postgres://%zz")
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewMultiHandler(slog.NewJSONHandler(&logs, nil), &sentryx.Handler{}))
+
+	err := run(t.Context(), logger, []string{"serve"})
+	if _, logged := errors.AsType[loggedError](err); !logged || !errors.Is(err, pgpool.ErrInvalidURL) {
+		t.Fatalf("run(serve) = %v, want a loggedError wrapping pgpool.ErrInvalidURL", err)
+	}
+	if n := strings.Count(logs.String(), `"msg":"feed-service failed"`); n != 1 {
+		t.Errorf("logged the failure %d times, want 1; log:\n%s", n, logs.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.ContainsFunc(envelopes, func(e string) bool { return strings.Contains(e, `"message":"feed-service failed"`) }) {
+		t.Errorf("tracker received %q, want an event for the failure", envelopes)
 	}
 }
 
@@ -107,7 +158,7 @@ func TestRunPruneRepeatsUntilCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var calls atomic.Int32
-	prune := func(context.Context) (int64, error) {
+	prune := func(context.Context, func()) (int64, error) {
 		switch calls.Add(1) {
 		case 1:
 			return 0, errors.New("database down")
@@ -119,7 +170,7 @@ func TestRunPruneRepeatsUntilCanceled(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runPrune(ctx, slog.New(slog.DiscardHandler), time.Millisecond, prune)
+		runPrune(ctx, slog.New(slog.DiscardHandler), time.Millisecond, time.Minute, telemetry.NewLoop("timeline-prune"), prune)
 	}()
 	select {
 	case <-done:
@@ -136,15 +187,147 @@ func TestRunPruneRunsAtStart(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ran := make(chan struct{}, 1)
-	prune := func(context.Context) (int64, error) {
+	prune := func(context.Context, func()) (int64, error) {
 		ran <- struct{}{}
 		cancel()
 		return 0, nil
 	}
-	go runPrune(ctx, slog.New(slog.DiscardHandler), time.Hour, prune)
+	go runPrune(ctx, slog.New(slog.DiscardHandler), time.Hour, time.Minute, telemetry.NewLoop("timeline-prune"), prune)
 	select {
 	case <-ran:
 	case <-time.After(10 * time.Second):
 		t.Fatal("prune did not run at start")
+	}
+}
+
+// pruneLoop returns the timeline-prune loop on a meter provider of the test's own, and a function
+// reading the loop's last-success value as the next export would.
+func pruneLoop(t *testing.T) (*telemetry.Loop, func() int64) {
+	t.Helper()
+	previous := otel.GetMeterProvider()
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	otel.SetMeterProvider(mp)
+	t.Cleanup(func() {
+		otel.SetMeterProvider(previous)
+		if err := mp.Shutdown(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	loop := telemetry.NewLoop("timeline-prune")
+	return loop, func() int64 {
+		var data metricdata.ResourceMetrics
+		if err := reader.Collect(context.Background(), &data); err != nil {
+			t.Fatal(err)
+		}
+		for _, scope := range data.ScopeMetrics {
+			for _, m := range scope.Metrics {
+				if m.Name != "svp.loop.last_success" {
+					continue
+				}
+				for _, p := range m.Data.(metricdata.Gauge[int64]).DataPoints {
+					if v, _ := p.Attributes.Value(attribute.Key("loop")); v.AsString() == "timeline-prune" {
+						return p.Value
+					}
+				}
+			}
+		}
+		t.Fatal("no svp.loop.last_success point for timeline-prune")
+		return 0
+	}
+}
+
+// A run past its timeout is cut short and logged at WARN, a run that fails otherwise is logged at
+// ERROR, and neither is reported as a success; the run after them goes on as usual and is.
+func TestRunPruneBoundsEachRun(t *testing.T) {
+	loop, lastSuccess := pruneLoop(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	const timeout = 50 * time.Millisecond
+	var calls atomic.Int32
+	var afterFailures, afterSuccess int64
+	prune := func(ctx context.Context, onBatch func()) (int64, error) {
+		switch calls.Add(1) {
+		case 1:
+			deadline, ok := ctx.Deadline()
+			if !ok || time.Until(deadline) > timeout {
+				t.Errorf("prune run has deadline %v (set %v), want within %v", deadline, ok, timeout)
+			}
+			<-ctx.Done() // Postgres holding a lock
+			return 3, ctx.Err()
+		case 2:
+			return 0, errors.New("database down")
+		case 3:
+			afterFailures = lastSuccess()
+			onBatch() // the run's one batch, which found nothing to delete
+			return 0, nil
+		}
+		afterSuccess = lastSuccess()
+		cancel()
+		return 0, nil
+	}
+	var logs bytes.Buffer
+	done := make(chan struct{})
+	start := time.Now()
+	go func() {
+		defer close(done)
+		runPrune(ctx, slog.New(slog.NewJSONHandler(&logs, nil)), time.Millisecond, timeout, loop, prune)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("runPrune did not return")
+	}
+	if n := calls.Load(); n != 4 {
+		t.Fatalf("prune ran %d times, want 4", n)
+	}
+	if afterFailures != 0 {
+		t.Errorf("last success after two failed runs = %d, want 0 (never succeeded)", afterFailures)
+	}
+	if afterSuccess < start.Unix() {
+		t.Errorf("last success after a successful run = %d, want at least %d", afterSuccess, start.Unix())
+	}
+	out := logs.String()
+	for _, want := range []string{`"level":"WARN","msg":"prune timeline timed out"`, `"level":"ERROR","msg":"prune timeline"`} {
+		if strings.Count(out, want) != 1 {
+			t.Errorf("want one %s; log:\n%s", want, out)
+		}
+	}
+}
+
+// A run that works through a backlog past its timeout is still cut short and logged at WARN, and
+// each batch it finished before that refreshes the loop's last success, so the loop does not look
+// stalled while it keeps deleting (docs/adr/0011-observability-stage3.md, section 5).
+func TestRunPruneReportsBatchesOfATimedOutRun(t *testing.T) {
+	loop, lastSuccess := pruneLoop(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	start := time.Now()
+	var calls atomic.Int32
+	prune := func(ctx context.Context, onBatch func()) (int64, error) {
+		if calls.Add(1) == 2 {
+			cancel()
+			return 0, nil
+		}
+		onBatch()    // a first batch of 5000 rows deleted
+		<-ctx.Done() // the second one still running at the deadline
+		return 5000, ctx.Err()
+	}
+	var logs bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runPrune(ctx, slog.New(slog.NewJSONHandler(&logs, nil)), time.Millisecond, 50*time.Millisecond, loop, prune)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("runPrune did not return")
+	}
+	if got := lastSuccess(); got < start.Unix() {
+		t.Errorf("last success after a timed-out run with one batch done = %d, want at least %d", got, start.Unix())
+	}
+	if want := `"level":"WARN","msg":"prune timeline timed out"`; !strings.Contains(logs.String(), want) {
+		t.Errorf("want %s; log:\n%s", want, logs.String())
 	}
 }

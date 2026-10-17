@@ -9,9 +9,13 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/sony/gobreaker/v2"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -55,17 +59,25 @@ var (
 // counts neither way; any other code means the service answered and counts as a success. An
 // UNAVAILABLE carrying an ErrorInfo of the platform's domain is the service answering that one of
 // its own dependencies is down, so it counts neither way either: it must not cut off the methods
-// that do not need that dependency. For
-// the methods in ignoreDeadline (full names, "/pkg.Service/Method"), DEADLINE_EXCEEDED counts
-// neither way either: their own short deadline running out says nothing about the service.
+// that do not need that dependency. For the methods in ignoreDeadline (full names,
+// "/pkg.Service/Method"), DEADLINE_EXCEEDED counts neither way either: their own short deadline
+// running out says nothing about the service.
 // While the breaker is open, or half-open with its one trial call under way, a call fails at
 // once with UNAVAILABLE and nothing goes on the wire. grpc.health.v1.Health/Check bypasses the
 // breaker, so readiness sees the service as it is. Every state change is logged as a warning.
+//
+// The gauge svp.breaker.state, labelled target=service, reports the state the breaker last
+// changed to (0 closed, 1 half-open, 2 open; docs/adr/0011-observability-stage3.md, section 5)
+// to the global OTel meter provider, 0 until the first change.
 func New(service string, ignoreDeadline ...string) grpc.UnaryClientInterceptor {
 	return newInterceptor(adr, service, ignoreDeadline)
 }
 
 func newInterceptor(th thresholds, service string, ignoreDeadline []string) grpc.UnaryClientInterceptor {
+	// state is written on every state change and only read by the gauge's callback: calling
+	// cb.State there could itself move an open breaker to half-open.
+	var state atomic.Int64
+	observeState(service, &state)
 	cb := gobreaker.NewCircuitBreaker[struct{}](gobreaker.Settings{
 		Name:         service,
 		MaxRequests:  1,
@@ -80,6 +92,7 @@ func newInterceptor(th thresholds, service string, ignoreDeadline []string) grpc
 				(calls >= th.minCalls && float64(c.TotalFailures) >= th.ratio*float64(calls))
 		},
 		OnStateChange: func(name string, from, to gobreaker.State) {
+			state.Store(stateValue(to))
 			slog.Warn("circuit breaker state changed",
 				slog.String("target", name),
 				slog.String("from", from.String()),
@@ -122,5 +135,35 @@ func classify(err error, ignoreDeadline bool) error {
 		return errExcluded
 	default:
 		return nil
+	}
+}
+
+// stateValue is the svp.breaker.state value of s.
+func stateValue(s gobreaker.State) int64 {
+	switch s {
+	case gobreaker.StateHalfOpen:
+		return 1
+	case gobreaker.StateOpen:
+		return 2
+	default:
+		return 0
+	}
+}
+
+// observeState registers the callback that reports state as svp.breaker.state for target on
+// every collection.
+func observeState(target string, state *atomic.Int64) {
+	meter := otel.Meter("github.com/anhnvcoder/short-video-platform/services/gateway/internal/breaker")
+	gauge, err := meter.Int64ObservableGauge("svp.breaker.state")
+	if err != nil {
+		otel.Handle(err)
+		return
+	}
+	attrs := metric.WithAttributes(attribute.String("target", target))
+	if _, err := meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+		o.ObserveInt64(gauge, state.Load(), attrs)
+		return nil
+	}, gauge); err != nil {
+		otel.Handle(err)
 	}
 }

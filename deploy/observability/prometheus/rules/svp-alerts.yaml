@@ -1,0 +1,152 @@
+# Hand-written alerts of docs/adr/0011-observability-stage3.md, section 8; the SLO burn-rate alerts
+# are in slo-generated.yaml. Evaluated every 15 s. Tested by svp-alerts.test.yaml
+# (`make slo-check`). Every alert pages; annotations name the service or target, never a user value.
+#
+# Gauges pushed over OTLP get no staleness marker when a process stops, so a stopped instance's last
+# sample stays visible for the 5 m lookback, and every restart brings a new service_instance_id.
+# The gauge rules therefore:
+# - keep only samples newer than 45 s (2 x 15 s export + 15 s evaluation), per series including
+#   the instance, through `timestamp(x) > time() - 45` on the source series itself;
+# - measure every duration in real samples and use no `for`: a `for` would keep counting while a
+#   replaced instance's last sample is still inside the 45 s, and page about an instance that is
+#   gone. The breaker counts samples in a window; the loops compare a sample's own time with the
+#   last success it reports. A window is 20 s longer than the duration it proves (15 s for the
+#   sample at its start, 5 s of margin), so export jitter never drops a sample out of it and makes
+#   the alert flap.
+groups:
+  - name: svp-alerts
+    rules:
+      # Consumer group lag scraped from Redpanda by the obs Collector. Lag > 0 catches even one stuck
+      # record; the duration says the backlog lasts. media-worker holds a record for a whole transcode
+      # (up to 15 minutes per attempt), so its group gets 20 minutes.
+      - alert: KafkaConsumerLagHigh
+        expr: >-
+          max by (redpanda_group) (redpanda_kafka_consumer_group_lag_max{redpanda_group=~"video-service|feed-service|engagement-service"}) > 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "Kafka consumer group {{ $labels.redpanda_group }} has had lag for 2 minutes"
+      - alert: KafkaConsumerLagHigh
+        expr: >-
+          max by (redpanda_group) (redpanda_kafka_consumer_group_lag_max{redpanda_group="media-worker"}) > 0
+        for: 20m
+        labels:
+          severity: page
+          # Same as the series label; tells this rule from the one above (promtool lint).
+          redpanda_group: media-worker
+        annotations:
+          summary: "Kafka consumer group {{ $labels.redpanda_group }} has had lag for 20 minutes"
+
+      # A gateway counter on the in-memory fallback store means Redis is unreachable (ADR-0010,
+      # section 2). The `unless ... offset` branch catches a series whose first sample is already
+      # above 0 (a burst before the first export, or a restart), per full label set.
+      - alert: RateLimitFallbackActive
+        expr: >-
+          sum(increase(svp_ratelimit_decisions_total{service_name="gateway",store="fallback"}[1m])) > 0
+          or
+          sum(svp_ratelimit_decisions_total{service_name="gateway",store="fallback"}
+              unless svp_ratelimit_decisions_total{service_name="gateway",store="fallback"} offset 1m) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: "gateway: rate limiting runs on the in-memory fallback, Redis is unreachable"
+
+      # Same shape: a record went to a dead-letter topic in the last 10 minutes.
+      - alert: KafkaDLQRecords
+        expr: >-
+          sum by (service_name, topic, group) (increase(svp_kafka_dlq_records_total[10m])) > 0
+          or
+          sum by (service_name, topic, group) (svp_kafka_dlq_records_total
+              unless svp_kafka_dlq_records_total offset 10m) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.service_name }}: consumer group {{ $labels.group }} sent records from {{ $labels.topic }} to its dead-letter topic"
+
+      # Breaker of one gateway instance not closed (1 half-open, 2 open) in every sample of the last
+      # minute: 5 samples 15 s apart, all above 0. 2 <-> 1 does not reset it, one 0 does.
+      - alert: CircuitBreakerOpen
+        expr: >-
+          (min_over_time(svp_breaker_state{service_name="gateway"}[80s]) > 0)
+          and (count_over_time(svp_breaker_state{service_name="gateway"}[80s]) >= 5)
+          and (timestamp(svp_breaker_state{service_name="gateway"}) > time() - 45)
+        labels:
+          severity: page
+        annotations:
+          summary: "gateway: circuit breaker to {{ $labels.target }} has not been closed for 1 minute"
+
+      # Background loops: svp_loop_last_success_seconds is the Unix time of the last successful step,
+      # 0 before the first one. One rule per loop, two branches that exclude each other:
+      # - the loop has succeeded: a fresh sample reports a last success older than threshold + for
+      #   of the ADR table, measured at that sample's own time;
+      # - it never has: every sample over that same span is 0, so the window (span + 20 s) holds at
+      #   least span / 15 + 1 samples.
+      #   outbox-relay    60 s + 1 m    = 120 s
+      #   outbox-cleanup  1860 s + 1 m  = 1920 s
+      #   upload-sweep    960 s + 2 m   = 1080 s
+      #   timeline-prune  11100 s + 5 m = 11400 s
+      # The static `loop` label repeats the selector's: it tells the four rules apart (promtool lint).
+      - alert: BackgroundLoopStalled
+        expr: >-
+          (
+            (timestamp(svp_loop_last_success_seconds{loop="outbox-relay"}) - svp_loop_last_success_seconds{loop="outbox-relay"} > 120)
+            and (svp_loop_last_success_seconds{loop="outbox-relay"} > 0)
+            or
+            (max_over_time(svp_loop_last_success_seconds{loop="outbox-relay"}[140s]) == 0)
+            and (count_over_time(svp_loop_last_success_seconds{loop="outbox-relay"}[140s]) >= 9)
+          )
+          and (timestamp(svp_loop_last_success_seconds{loop="outbox-relay"}) > time() - 45)
+        labels:
+          severity: page
+          loop: outbox-relay
+        annotations:
+          summary: "{{ $labels.service_name }}: background loop {{ $labels.loop }} has not succeeded for 2 minutes"
+
+      - alert: BackgroundLoopStalled
+        expr: >-
+          (
+            (timestamp(svp_loop_last_success_seconds{loop="outbox-cleanup"}) - svp_loop_last_success_seconds{loop="outbox-cleanup"} > 1920)
+            and (svp_loop_last_success_seconds{loop="outbox-cleanup"} > 0)
+            or
+            (max_over_time(svp_loop_last_success_seconds{loop="outbox-cleanup"}[1940s]) == 0)
+            and (count_over_time(svp_loop_last_success_seconds{loop="outbox-cleanup"}[1940s]) >= 129)
+          )
+          and (timestamp(svp_loop_last_success_seconds{loop="outbox-cleanup"}) > time() - 45)
+        labels:
+          severity: page
+          loop: outbox-cleanup
+        annotations:
+          summary: "{{ $labels.service_name }}: background loop {{ $labels.loop }} has not succeeded for 32 minutes"
+
+      - alert: BackgroundLoopStalled
+        expr: >-
+          (
+            (timestamp(svp_loop_last_success_seconds{loop="upload-sweep"}) - svp_loop_last_success_seconds{loop="upload-sweep"} > 1080)
+            and (svp_loop_last_success_seconds{loop="upload-sweep"} > 0)
+            or
+            (max_over_time(svp_loop_last_success_seconds{loop="upload-sweep"}[1100s]) == 0)
+            and (count_over_time(svp_loop_last_success_seconds{loop="upload-sweep"}[1100s]) >= 73)
+          )
+          and (timestamp(svp_loop_last_success_seconds{loop="upload-sweep"}) > time() - 45)
+        labels:
+          severity: page
+          loop: upload-sweep
+        annotations:
+          summary: "{{ $labels.service_name }}: background loop {{ $labels.loop }} has not succeeded for 18 minutes"
+
+      - alert: BackgroundLoopStalled
+        expr: >-
+          (
+            (timestamp(svp_loop_last_success_seconds{loop="timeline-prune"}) - svp_loop_last_success_seconds{loop="timeline-prune"} > 11400)
+            and (svp_loop_last_success_seconds{loop="timeline-prune"} > 0)
+            or
+            (max_over_time(svp_loop_last_success_seconds{loop="timeline-prune"}[11420s]) == 0)
+            and (count_over_time(svp_loop_last_success_seconds{loop="timeline-prune"}[11420s]) >= 761)
+          )
+          and (timestamp(svp_loop_last_success_seconds{loop="timeline-prune"}) > time() - 45)
+        labels:
+          severity: page
+          loop: timeline-prune
+        annotations:
+          summary: "{{ $labels.service_name }}: background loop {{ $labels.loop }} has not succeeded for 3 hours 10 minutes"

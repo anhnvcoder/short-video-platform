@@ -14,7 +14,6 @@ import (
 
 	"github.com/anhnvcoder/short-video-platform/internal/callerid"
 	"github.com/anhnvcoder/short-video-platform/internal/logx"
-	"github.com/anhnvcoder/short-video-platform/internal/traceparent"
 )
 
 // captureLog points slog.Default at a logx JSON handler writing to the returned buffer until
@@ -105,13 +104,15 @@ func TestOutgoingContextReplacesExistingMetadata(t *testing.T) {
 	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs(
 		callerid.MetadataKey, "01928c6e-7b3a-7cde-8f01-000000000000",
 		"x-foo", "bar",
+		"traceparent", clientTraceparent,
 	))
-	tp := traceparent.New()
-	ctx = context.WithValue(ctx, traceparentKey, tp)
+	// The request's span is sent by the stats handler, not by OutgoingContext.
+	ctx, span := testTracerProvider.Tracer("test").Start(ctx, "request")
+	defer span.End()
 
 	md, _ := metadata.FromOutgoingContext(OutgoingContext(ctx))
-	if len(md) != 1 || len(md.Get(traceparent.MetadataKey)) != 1 || md.Get(traceparent.MetadataKey)[0] != tp {
-		t.Errorf("unauthenticated metadata = %v, want only traceparent %q", md, tp)
+	if len(md) != 0 {
+		t.Errorf("unauthenticated metadata = %v, want none", md)
 	}
 
 	const userID = "01928c6e-7b3a-7cde-8f01-23456789abcd"
@@ -119,7 +120,7 @@ func TestOutgoingContextReplacesExistingMetadata(t *testing.T) {
 	if got := md.Get(callerid.MetadataKey); len(got) != 1 || got[0] != userID {
 		t.Errorf("x-user-id = %v, want [%s]", got, userID)
 	}
-	if len(md) != 2 {
-		t.Errorf("authenticated metadata = %v, want only x-user-id and traceparent", md)
+	if len(md) != 1 {
+		t.Errorf("authenticated metadata = %v, want only x-user-id", md)
 	}
 }

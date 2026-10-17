@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -29,6 +30,8 @@ import (
 	"github.com/anhnvcoder/short-video-platform/internal/envcfg"
 	"github.com/anhnvcoder/short-video-platform/internal/logx"
 	"github.com/anhnvcoder/short-video-platform/internal/redisx"
+	"github.com/anhnvcoder/short-video-platform/internal/sentryx"
+	"github.com/anhnvcoder/short-video-platform/internal/telemetry"
 	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/api"
 	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/breaker"
 	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/httpx"
@@ -121,11 +124,12 @@ func (b backend) serviceConfig() string {
 }
 
 // dialOptions are the options of every connection to b: plain text until mTLS arrives in stage
-// 6, b's own circuit breaker, and b's service config. A service config from the resolver (a DNS
-// TXT record) is ignored, so the retry policy is always this one.
+// 6, client spans and metrics, b's own circuit breaker, and b's service config. A service config
+// from the resolver (a DNS TXT record) is ignored, so the retry policy is always this one.
 func (b backend) dialOptions() []grpc.DialOption {
 	return []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		httpx.ClientTelemetry(),
 		grpc.WithUnaryInterceptor(breaker.New(b.name, b.ignoreDeadline...)),
 		grpc.WithDisableServiceConfig(),
 		grpc.WithDefaultServiceConfig(b.serviceConfig()),
@@ -144,22 +148,62 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if err := run(ctx, logger, cmd); err != nil {
+		stop()
+		os.Exit(1)
+	}
+}
+
+// run runs the subcommand cmd and logs its error. Error reporting, telemetry and profiling start
+// for serve only, never for healthcheck (docs/adr/0011-observability-stage3.md, section 10), and
+// stop after the error is logged, so a failure that stops the gateway still reaches the error
+// tracker and the log pipeline (section 7). On shutdown the HTTP server stops first (in serve),
+// then the connections, then telemetry is flushed, and the error tracker last.
+func run(ctx context.Context, logger *slog.Logger, cmd string) error {
 	var err error
+	stopTelemetry := func() {}
 	switch cmd {
 	case "serve":
-		err = serve(ctx, logger)
+		stopTelemetry, err = startTelemetry(ctx, logger)
+		if err == nil {
+			err = serve(ctx, logger)
+		}
 	case "healthcheck":
 		err = healthcheck(ctx)
 	default:
 		err = fmt.Errorf("unknown subcommand %q, want serve or healthcheck", cmd)
 	}
 	if err != nil {
-		logger.Error(cmd+" failed", slog.Any("error", err))
-		stop()
-		os.Exit(1)
+		// A constant message, so the error tracker groups it (ADR-0011, section 7).
+		logger.Error("gateway failed", slog.Any("error", err))
 	}
+	stopTelemetry()
+	return err
 }
 
+// startTelemetry starts error reporting, then the OTel providers and the profiler. The returned
+// stop shuts the providers down, then flushes the error tracker. It is never nil: when the
+// providers fail to start, it flushes the error tracker, which reports that failure.
+func startTelemetry(ctx context.Context, logger *slog.Logger) (stop func(), err error) {
+	flushErrors, err := sentryx.Init(serviceName)
+	if err != nil {
+		return func() {}, err
+	}
+	shutdownTelemetry, err := telemetry.Setup(ctx, serviceName)
+	if err != nil {
+		return flushErrors, fmt.Errorf("telemetry: %w", err)
+	}
+	return func() {
+		// Setup bounds the shutdown itself; ctx is already cancelled by then.
+		if err := shutdownTelemetry(context.WithoutCancel(ctx)); err != nil {
+			logger.Warn("telemetry shutdown failed", slog.Any("error", err))
+		}
+		flushErrors()
+	}, nil
+}
+
+// serve runs the gateway until ctx is done. Deferred calls run in reverse order, so on shutdown
+// the HTTP server stops first, then the connections.
 func serve(ctx context.Context, logger *slog.Logger) error {
 	addr := envcfg.String("LISTEN_ADDR", defaultListenAddr)
 	verifyKeys, err := envcfg.Required("JWT_VERIFY_KEYS")
@@ -217,12 +261,15 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	defer func() { _ = redisClient.Close() }()
 	limits := ratelimit.New(redisClient, redisKeyPrefix)
 
-	srv := httpx.NewServer(addr, api.New(userConn, videoConn, feedConn, engagementConn, authtoken.NewVerifier(keys), mediaBase, limits))
 	var lc net.ListenConfig
 	lis, err := lc.Listen(ctx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", addr, err)
 	}
+	// The spans and metrics name the gateway by its service name and the port it listens on, a
+	// number even when LISTEN_ADDR names the port.
+	serverName := net.JoinHostPort(serviceName, strconv.Itoa(lis.Addr().(*net.TCPAddr).Port))
+	srv := httpx.NewServer(addr, api.New(userConn, videoConn, feedConn, engagementConn, authtoken.NewVerifier(keys), mediaBase, limits, serverName))
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(lis) }()
 	logger.InfoContext(ctx, "http server listening", slog.String("addr", lis.Addr().String()))

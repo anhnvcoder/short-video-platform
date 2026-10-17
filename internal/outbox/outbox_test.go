@@ -24,7 +24,9 @@ import (
 	"github.com/anhnvcoder/short-video-platform/internal/ids"
 	"github.com/anhnvcoder/short-video-platform/internal/kafkax"
 	"github.com/anhnvcoder/short-video-platform/internal/pgtest"
-	"github.com/anhnvcoder/short-video-platform/internal/traceparent"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -281,7 +283,8 @@ func TestWriteStoresEventInTransaction(t *testing.T) {
 	pool := newDB(t, "write")
 	key := ids.New()
 
-	ctx := traceparent.NewContext(t.Context(), validTP)
+	traceTelemetry(t)
+	ctx := propagation.TraceContext{}.Extract(t.Context(), propagation.MapCarrier{"traceparent": validTP, "tracestate": "vendor=value"})
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -330,8 +333,8 @@ func TestWriteStoresEventInTransaction(t *testing.T) {
 	if !proto.Equal(&decoded, ev) {
 		t.Errorf("payload = %v, want %v", &decoded, ev)
 	}
-	if first.headers[traceparent.MetadataKey] != validTP || len(first.headers) != 1 {
-		t.Errorf("headers = %v, want only traceparent %s", first.headers, validTP)
+	if first.headers["traceparent"] != validTP || first.headers["tracestate"] != "vendor=value" || len(first.headers) != 2 {
+		t.Errorf("headers = %v, want traceparent %s and tracestate vendor=value", first.headers, validTP)
 	}
 	if got[1].eventID != plain || len(got[1].headers) != 0 {
 		t.Errorf("second row = (%s, headers %v), want (%s, no headers)", got[1].eventID, got[1].headers, plain)
@@ -397,31 +400,68 @@ func TestRelaySendsInBatchesInOrder(t *testing.T) {
 }
 
 func TestRelayCarriesTraceparentHeader(t *testing.T) {
+	recorder, _ := traceTelemetry(t)
 	pool := newDB(t, "traceparent")
 	brokers := cluster(t, 1)
 	key := ids.New()
-
-	ctx := traceparent.NewContext(t.Context(), validTP)
-	tx, err := pool.Begin(ctx)
-	if err != nil {
+	parents := map[string]trace.SpanContext{}
+	for range 2 {
+		ctx, span := otel.Tracer("test").Start(t.Context(), "request")
+		id := write(ctx, t, pool, key)
+		parents[id] = span.SpanContext()
+		span.End() // The relay runs after the originating request has finished.
+	}
+	legacy := write(t.Context(), t, pool, key)
+	if _, err := pool.Exec(t.Context(), "UPDATE outbox SET headers = $1 WHERE event_id = $2",
+		map[string]string{"traceparent": validTP}, legacy); err != nil {
 		t.Fatal(err)
 	}
-	if err := Write(ctx, tx, topic, key, newEvent(key)); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	write(t.Context(), t, pool, key)
-
+	parents[legacy] = trace.SpanContextFromContext(propagation.TraceContext{}.Extract(t.Context(), propagation.MapCarrier{"traceparent": validTP}))
+	plain := write(t.Context(), t, pool, key)
+	parents[plain] = trace.SpanContext{}
 	r, _ := newRelay(pool, newClient(t, brokers))
-	start(t, r)
-	got := consume(t, brokers, 2, 0)
-	if v, ok := headerValue(got[0], traceparent.MetadataKey); !ok || v != validTP {
-		t.Errorf("traceparent header = (%q, %v), want %q", v, ok, validTP)
+	// An unrelated loop context must never replace a row's trace or parent an old untraced row.
+	loopCtx, loopSpan := otel.Tracer("test").Start(t.Context(), "loop")
+	if n, err := r.sendBatch(loopCtx); err != nil || n != 4 {
+		t.Fatalf("sendBatch = %d, %v", n, err)
 	}
-	if v, ok := headerValue(got[1], traceparent.MetadataKey); ok {
-		t.Errorf("event written without traceparent got header %q", v)
+	loopSpan.End()
+	got := consume(t, brokers, 4, 100*time.Millisecond)
+	producers := 0
+	for _, span := range recorder.Ended() {
+		if span.SpanKind() == trace.SpanKindProducer {
+			producers++
+		}
+	}
+	if producers != 4 {
+		t.Fatalf("producer spans = %d, want exactly one per row", producers)
+	}
+	for _, rec := range got {
+		tp, ok := headerValue(rec, "traceparent")
+		sc := trace.SpanContextFromContext(propagation.TraceContext{}.Extract(t.Context(), propagation.MapCarrier{"traceparent": tp}))
+		if !ok || !sc.IsValid() {
+			t.Fatalf("invalid outgoing trace: %q", tp)
+		}
+		parent := parents[eventID(t, rec)]
+		matched := 0
+		for _, span := range recorder.Ended() {
+			if span.SpanKind() != trace.SpanKindProducer || span.SpanContext().SpanID() != sc.SpanID() {
+				continue
+			}
+			matched++
+			if span.Parent().SpanID() != parent.SpanID() {
+				t.Errorf("producer parent = %v, want %v", span.Parent(), parent)
+			}
+			if parent.IsValid() && (sc.TraceID() != parent.TraceID() || sc.SpanID() == parent.SpanID()) {
+				t.Errorf("row trace lost: %v", sc)
+			}
+			if !parent.IsValid() && (span.Parent().IsValid() || sc.TraceID() == loopSpan.SpanContext().TraceID()) {
+				t.Error("untraced row inherited loop trace")
+			}
+		}
+		if matched != 1 {
+			t.Errorf("record has %d matching producers", matched)
+		}
 	}
 }
 
@@ -484,6 +524,7 @@ func TestTwoRelaysSendEachEventOnceInOrder(t *testing.T) {
 }
 
 func TestRelayRetriesUntilBrokerIsBack(t *testing.T) {
+	_, reader := traceTelemetry(t)
 	pool := newDB(t, "brokerdown")
 	// A port nothing listens on, for a broker that starts later.
 	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
@@ -503,6 +544,9 @@ func TestRelayRetriesUntilBrokerIsBack(t *testing.T) {
 	r, logs := newRelay(pool, newClient(t, brokers))
 	start(t, r)
 	eventually(t, "two failed attempts", func() bool { return len(logs.records(t, "outbox relay failed, retrying")) >= 2 })
+	if got := loopValues(t, reader)["outbox-relay"]; got != 0 {
+		t.Errorf("failed relay reported success: %d", got)
+	}
 	if n := countUnsent(t, pool); n != 3 {
 		t.Fatalf("%d rows unsent while the broker is down, want 3", n)
 	}
@@ -513,6 +557,7 @@ func TestRelayRetriesUntilBrokerIsBack(t *testing.T) {
 		t.Errorf("sent %v after the broker came back, want %v", gotIDs, want)
 	}
 	eventually(t, "the rows to be marked sent", func() bool { return countUnsent(t, pool) == 0 })
+	eventually(t, "relay heartbeat after recovery", func() bool { return loopValues(t, reader)["outbox-relay"] > 0 })
 }
 
 // cancelOnAck cancels a context once the broker acknowledges a record, which is after the
