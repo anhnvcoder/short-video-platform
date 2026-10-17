@@ -544,7 +544,12 @@ Danh sách ADR và trạng thái: [`adr/README.md`](adr/README.md).
 
 ## 10. Câu hỏi mở
 
-- **Giữ file gốc bao lâu** (50 hay ~25 TB/năm): chốt ở giai đoạn 7 (lifecycle S3) và mô hình chi phí ở giai đoạn 9.
-- **Trên cloud dùng chung một instance Postgres cho mọi service hay tách:** chốt ở giai đoạn 7.
-- **Số hop proxy tin cậy khi đọc `X-Forwarded-For`** (RL-1): gateway hiện lấy IP từ địa chỉ kết nối, chỉ đúng ở compose;
-  chốt ở giai đoạn 4 (Envoy Gateway) trước khi đưa gateway ra sau proxy, xem lại theo môi trường ở giai đoạn 7.
+Không còn câu hỏi mở. Đã chốt ngày 2026-10-18 (chi tiết và lý do ở mục "Quyết định đã chốt" của
+[`plan.md`](../plans/261004-devops-sa-roadmap/plan.md)):
+
+- **Giữ file gốc:** 30 ngày lớp chuẩn → lớp lưu trữ lạnh → xoá sau 365 ngày (lifecycle ở giai đoạn 7).
+- **Postgres trên cloud:** một instance, mỗi service một database và role riêng; tách khi số đo cho thấy cần (giai đoạn 7).
+- **Số hop proxy tin cậy (RL-1):** compose 0; k3d + Envoy Gateway 1 hop từ dải địa chỉ của Envoy; cloud có LB L7 thì 2, chốt lại
+  ở giai đoạn 7.
+- **`MetadataMinAge` của franz-go:** 1 s (ADR mới, đầu giai đoạn 4).
+- **Bài đo cache khám phá:** giữ hạn 50 ms, bài đo đếm riêng lần đọc do Redis quá hạn (đầu giai đoạn 4).

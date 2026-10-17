@@ -520,6 +520,29 @@ Tổng ước lượng: khoảng 8–10 tháng làm cuối tuần, đã tính ch
 - Docker runtime: Docker Desktop. Cấp cho VM khoảng 8–10 GB RAM và 6 CPU (Settings → Resources), chừa phần còn lại cho macOS, IDE và Postgres/Redis native.
 - Công cụ do AI đề xuất theo hiện trạng ngành, lý do bên dưới. Ví dụ ban đầu của người học (ELK, APM) chỉ là ví dụ, không phải lựa chọn.
 
+**Chốt ngày 2026-10-18** (AI chốt theo uỷ quyền của người học; làm ở giai đoạn ghi trong ngoặc):
+
+- **Giữ file video gốc:** 30 ngày ở lớp lưu trữ chuẩn (đủ để transcode lại khi lỗi, khiếu nại hay đổi bitrate ladder), rồi chuyển
+  lớp lưu trữ lạnh (S3 Glacier Deep Archive / GCS Archive), xoá sau 365 ngày. Bản gốc "nóng" chỉ còn ~2,25 TB (30 ngày × 75 GB)
+  thay vì cộng dồn ~27 TB/năm; lưu lạnh rẻ khoảng 20 lần. (Lifecycle rule ở giai đoạn 7, mô hình chi phí ở giai đoạn 9.)
+- **Postgres trên cloud:** một instance (RDS PostgreSQL / Cloud SQL) cho mọi service, mỗi service một database và role riêng như
+  local, không service nào đọc database của service khác (ADR-0001 giữ ở mức logic). Tách instance khi số đo cho thấy một service
+  ảnh hưởng p99 của service khác (ví dụ ghi lượt xem nóng của engagement-service). Lý do: dựng và xoá trong buổi, rẻ hơn khoảng 4
+  lần, cùng cách bootstrap. (Giai đoạn 7, đo dưới k6.)
+- **Số hop proxy tin cậy khi đọc `X-Forwarded-For` (RL-1):** compose: 0 hop (dùng địa chỉ kết nối, như hiện tại). k3d với Envoy
+  Gateway: tin đúng 1 hop — gateway chỉ đọc `X-Forwarded-For` khi kết nối tới từ dải địa chỉ của Envoy và lấy phần tử cuối do Envoy
+  nối; cấu hình bằng biến môi trường (số hop, CIDR tin cậy), mặc định 0. Cloud có load balancer L7 trước Envoy: 2 hop, chốt lại ở
+  giai đoạn 7 theo kiến trúc LB thật. (Giai đoạn 4, trước khi đưa gateway ra sau proxy.)
+- **`MetadataMinAge` của franz-go: 1 s** cho mọi client (thay mặc định 5 s). Tham số này chỉ giới hạn tần suất làm mới metadata
+  khi có lỗi (lúc khoẻ client làm mới theo `MetadataMaxAge` 5 phút), nên lúc khoẻ không tốn gì; khi broker lỗi mỗi client hỏi
+  thêm tối đa 1 lần/giây, không đáng kể với ~6 client. Đổi lại produce hết hạn trễ tối đa ~1 s thay vì ~5 s (relay giữ khoá ≤ ~11 s,
+  ghi lượt xem ≤ ~3 s). Ghi bằng ADR mới (chỉnh ADR-0011 §11), sửa `internal/kafkax` và cận trên của test in-flight. (Đầu giai
+  đoạn 4.)
+- **`measure-explore-cache` chập chờn:** giữ hạn đọc cache 50 ms (ADR-0010: đường Redis phải thất bại nhanh để giữ p99 feed);
+  sửa bài đo cho trung thực: đếm riêng lần đọc Postgres do Redis quá hạn (dòng WARN `read explore cache` có timeout trong cửa sổ
+  đo), đạt khi số lần đọc trừ số lần Redis quá hạn bằng 1, in rõ cả hai số; thừa lần đọc mà không có Redis quá hạn thì vẫn fail.
+  Giai đoạn 6 đo p99 lệnh Redis dưới k6 để xem lại mức 50 ms. (Đầu giai đoạn 4.)
+
 **Lý do chọn công cụ** (hiện trạng tháng 10/2026):
 
 | Lựa chọn | Lý do |
@@ -543,10 +566,5 @@ Tổng ước lượng: khoảng 8–10 tháng làm cuối tuần, đã tính ch
 
 ## Câu hỏi mở
 
-- Giữ file gốc bao lâu (50 hay ~25 TB/năm): chốt ở giai đoạn 7 (lifecycle S3) và giai đoạn 9 (mô hình chi phí).
-- Trên cloud dùng chung một instance Postgres hay tách: chốt ở giai đoạn 7.
-- Hạ `MetadataMinAge` của franz-go để produce hết hạn sát deadline khi broker mất kết nối (hiện trễ tới khoảng 5 s): việc để
-  sau, cần ADR mới.
-- `measure-explore-cache` chập chờn ở trạng thái "SDK bật, không Collector" (một GET Redis > 50 ms làm đọc Postgres lần
-  hai): xem lại ở giai đoạn 6 khi có k6.
+Không còn câu hỏi mở: năm câu cuối đã chốt ngày 2026-10-18, xem mục "Chốt ngày 2026-10-18" ở Quyết định đã chốt.
 - Chi tiết ở [`docs/architecture.md`](../../docs/architecture.md) §10.
