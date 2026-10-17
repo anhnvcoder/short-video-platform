@@ -195,12 +195,31 @@ Khác biệt cần chú ý khi chuyển từ TypeScript:
 
 ### 7. AWS — 4–6 cuối tuần
 
-- **Terraform:**
+- **Terraform** cho cả ba nhà cung cấp (AWS, Cloudflare ở giai đoạn này; GCP ở giai đoạn 8), cùng một quy trình `plan` → review →
+  `apply` → `destroy`. Mỗi biến thể kiến trúc là một env ghép từ module dùng chung: `deploy/terraform/envs/{aws,aws-cf,gcp}`,
+  `deploy/terraform/modules/…` (Cloudflare: module `r2-cdn` với provider chính thức `cloudflare/cloudflare`, ghim version; phần
+  provider chưa quản lý được ghi rõ trong ADR, không viết script gọi API thay):
   - module network, eks, data, edge; remote state S3 + lock;
   - EKS + Karpenter + Pod Identity + Load Balancer Controller + ExternalDNS + External Secrets;
   - RDS, ElastiCache; S3 + CloudFront;
   - MediaConvert (dùng lại module của `media-sdk`); Route 53 + ACM.
 - **Observability:** ADR chọn giữa tự dựng stack Grafana trên EKS, Amazon Managed Prometheus/Grafana + X-Ray, hoặc Grafana Cloud gói miễn phí. Code không đổi vì đã dùng OpenTelemetry.
+- **Transcode — tự làm hay mua** (học kiến trúc, chốt bằng ADR): điểm nối là contract event `video.uploaded` →
+  `transcode.completed`/`transcode.failed`, video-service không đổi. Chọn bằng worker nào được deploy, không bằng cờ trong code.
+  - tự làm: media-worker (ffmpeg) trên EKS, KEDA scale theo lag;
+  - **AWS MediaConvert dựng thật:** bridge nhận `video.uploaded` → tạo job (vào `uploads`, ra `media/<id>/` HLS) → nghe
+    EventBridge báo xong → phát `transcode.*`; kiểm thời lượng trước khi tạo job (FF-9);
+  - đo cả hai trên cùng video: thời gian tới `READY`, chi phí mỗi phút video, công vận hành.
+- **Lưu và phát video — AWS thuần hay ghép Cloudflare** (học kiến trúc, chốt bằng ADR):
+  - S3 + CloudFront (mặc định);
+  - **R2 + Cloudflare CDN dựng thật** cho bucket `media` (compute vẫn ở AWS): worker ghi HLS lên R2 qua S3 API (chỉ đổi
+    endpoint và key); kiểm presigned upload trên R2 (form POST có policy hay phải đổi sang PUT ký `Content-Length`, giữ UP-1…UP-7);
+    tính egress theo mô hình 100k DAU (~1,1 PB/tháng phát ra) cho cả hai;
+  - **Cloudflare Stream** phân tích trên giấy (thử nhỏ nếu gói miễn phí cho phép): gói trọn upload, transcode, lưu, CDN, player;
+    phải đổi `InitUpload`, contract `transcode.completed` (thêm URL phát) và rời bucket của mình; so chi phí và mức khoá nhà
+    cung cấp với hai phương án trên.
+- **Sơ đồ kiến trúc** (C4 mức container) cho từng biến thể: AWS thuần, AWS + Cloudflare (R2/CDN), AWS + Cloudflare Stream; mỗi
+  sơ đồ kèm bảng "thành phần local → dịch vụ cloud" và luồng upload → `READY` → feed → phát.
 - **CI:** đăng nhập AWS qua OIDC, đẩy image lên ECR.
 - **Chi phí:** Budgets + tag; báo cáo chi phí chia theo dịch vụ.
 - **Well-Architected review.**
@@ -212,14 +231,18 @@ Khác biệt cần chú ý khi chuyển từ TypeScript:
   - GKE Autopilot, Cloud SQL, Memorystore, GCS + Cloud CDN;
   - Pub/Sub (ADR: giữ Redpanda trong cluster hay dùng Pub/Sub);
   - Transcoder API, Workload Identity, Artifact Registry;
-  - observability: Managed Service for Prometheus + Cloud Trace/Logging, so với stack tự dựng.
+  - observability: Managed Service for Prometheus + Cloud Trace/Logging, so với stack tự dựng;
+  - Transcoder API qua cùng kiểu bridge như MediaConvert (contract event không đổi); GCS + Cloud CDN so với R2 + Cloudflare CDN;
+  - sơ đồ kiến trúc GCP cùng mẫu với giai đoạn 7.
 - **Xong khi:** đạt cùng tiêu chí như giai đoạn 7, kèm ADR so sánh AWS với GCP về chi phí, công vận hành và trải nghiệm.
 
 ### 9. SA capstone — 2 cuối tuần
 
 - **Làm:**
   - tài liệu kiến trúc bản cuối;
-  - mô hình chi phí ở 3 quy mô;
+  - mô hình chi phí ở 3 quy mô, cho từng kiến trúc đã dựng (AWS thuần, AWS + Cloudflare, GCP) và phương án mua (MediaConvert,
+    Transcoder API, Cloudflare Stream);
+  - bảng đối chiếu dịch vụ AWS ↔ GCP ↔ Cloudflare cho mọi thành phần của hệ thống;
   - kế hoạch DR (RPO/RTO, multi-region: thiết kế trên giấy + dựng thử dạng pilot light);
   - review bảo mật và Well-Architected;
   - bản tóm tắt để trình bày.
@@ -258,6 +281,10 @@ Tổng ước lượng: khoảng 8–10 tháng làm cuối tuần, đã tính ch
 
 - **AWS:** profile `anhnv-sso`. AI không chạy lệnh nào chạm account; người học chạy `sts get-caller-identity` trước mọi lần ghi; mỗi buổi kết thúc bằng destroy + quét tài nguyên sót.
 - **GCP:** project riêng cho lab, cùng cách làm như AWS.
+- **Cloudflare** (từ giai đoạn 7): tài khoản riêng cho lab; hạ tầng chỉ qua Terraform; AI không chạy `terraform plan/apply/destroy`,
+  `wrangler` hay gọi API nào chạm account (kể cả đọc),
+  chỉ soạn lệnh cho người học chạy; API token chỉ cấp quyền đúng bucket R2/zone của lab; mỗi buổi kết thúc bằng xoá bucket/rule
+  đã tạo. Bổ sung quy tắc này vào `CLAUDE.md` mục An toàn cloud khi bắt đầu giai đoạn 7.
 - **Budget alert bật từ ngày đầu ở cả hai cloud.**
 
 ## Lab liên quan
