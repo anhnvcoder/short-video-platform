@@ -15,7 +15,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Defaults for the zero fields of BatchConsumerConfig (ADR-0009 section 4).
+// Defaults for the zero fields of BatchConsumerConfig. At 10,000 events a second a batch of 5,000
+// fills in about half a second, so the handler runs about twice a second instead of once per
+// record, and the wait a record adds stays at or under a second (ADR-0009 section 4).
 const (
 	DefaultMaxBatchRecords = 5000
 	DefaultMaxBatchWait    = time.Second

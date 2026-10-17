@@ -2,7 +2,8 @@
 // builds from user.follows.v1 and video.lifecycle.v1 (docs/adr/0009-engagement-feed-stage2b.md,
 // sections 6 to 8).
 //
-// Subcommands (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 7):
+// Subcommands, in the service binary because its distroless image has no shell, curl or migration
+// tool (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 7):
 //
 //	serve        run the service (default when no subcommand is given)
 //	migrate      apply the database migrations, then exit
@@ -14,7 +15,8 @@
 // Configuration comes from the environment: LISTEN_ADDR (default 127.0.0.1:9104) and
 // DATABASE_URL (required for serve and migrate); serve also needs KAFKA_BROKERS
 // (docs/adr/0009-engagement-feed-stage2b.md, section 12) and reads REDIS_URL (default
-// redis://127.0.0.1:6379/14) for the explore cache. Redis is not needed to start or to serve
+// redis://127.0.0.1:6379/14) for the explore cache. Redis is not needed to start or to serve: a
+// failed or slow cache read falls back to Postgres
 // (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 1). serve exports
 // telemetry when OTEL_EXPORTER_OTLP_ENDPOINT is set, profiles when PYROSCOPE_SERVER_ADDRESS is,
 // and reports errors when SENTRY_DSN is (docs/adr/0011-observability-stage3.md).
@@ -52,7 +54,9 @@ const (
 	serviceName       = "feed-service"
 	defaultListenAddr = "127.0.0.1:9104"
 	defaultRedisURL   = "redis://127.0.0.1:6379/14"
-	// cacheKeyPrefix starts every Redis key of the service (ADR-0010, section 1).
+	// cacheKeyPrefix starts every Redis key of the service. A Redis db number is no access
+	// boundary; a prefix per service is, once a cloud Redis grants access by key prefix
+	// (ADR-0010, section 1).
 	cacheKeyPrefix     = "svp:feed:"
 	healthcheckTimeout = 3 * time.Second
 	// consumerRestartDelay is the wait before a consumer that stopped on an error is replaced.
@@ -60,7 +64,8 @@ const (
 	// pruneInterval is how often timeline rows older than 30 days are deleted (ADR-0009,
 	// section 6). Reads filter them out meanwhile.
 	pruneInterval = time.Hour
-	// pruneTimeout bounds one prune run, every batch included (ADR-0011, section 11).
+	// pruneTimeout bounds one prune run, every batch included, so a run stuck on a lock or a slow
+	// database gives up and leaves the rest to the next run (ADR-0011, section 11).
 	pruneTimeout = 2 * time.Minute
 )
 

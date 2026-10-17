@@ -211,9 +211,10 @@ CDN (client đọc thẳng MinIO). Redpanda và MinIO chạy trong compose profi
   Pyroscope; 5 service đẩy profile tới `lgtm:4040`, media-worker không), `alertmanager` (`127.0.0.1:9093`, gửi
   `severity=page` tới Telegram khi `.env` có bot) và `glitchtip` (`127.0.0.1:8000`, tracker lỗi qua giao thức Sentry,
   database `svp_glitchtip` trên Postgres native). Không có profile `obs`, DNS `otelcol` không tồn tại: SDK bỏ export,
-  service vẫn chạy. Đo 2026-10-17 (`docker stats` lúc nghỉ): `otelcol` 64–100 MiB / 256 MiB, `lgtm` 740 MiB sau 3 lượt
-  smoke và 1 245 MiB sau mọi diễn tập / 1 536 MiB, `alertmanager` 17–42 MiB / 64 MiB, `glitchtip` 185–232 MiB / 512 MiB;
-  cả `core` + `obs` 1,71–2,19 GiB. Overhead của SDK trên 6 service so với tắt telemetry: khoảng +50 MiB RAM và +2% một lõi
+  service vẫn chạy. Đo 2026-10-17 (`docker stats` lúc nghỉ): `otelcol` 64–255 MiB / 256 MiB (trung vị 246 và 255,3 ở hai
+  lượt đo), `lgtm` 730–750 MiB lúc nghỉ, 1 203 MiB sau smoke trên stack cuối và 1 245 MiB sau mọi diễn tập / 1 536 MiB,
+  `alertmanager` 17–42 MiB / 64 MiB, `glitchtip` 185–232 MiB / 512 MiB; cả `core` + `obs` 1,71–2,61 GiB (2,60 GiB sau một
+  smoke trên stack cuối, 2,22 GiB nghỉ và 2,61 GiB lúc smoke ở lượt so với Elastic). Overhead của SDK trên 6 service so với tắt telemetry: khoảng +50 MiB RAM và +2% một lõi
   CPU dưới tải smoke, p50/p95 trang khám phá +12/+12 ms (số đo và cách đo ở
   [plan](../plans/261004-devops-sa-roadmap/plan.md), Tiến độ giai đoạn 3). Profile `obs-elastic` (Elasticsearch, Kibana
   `127.0.0.1:5601`, APM Server, `otelcol-elastic` cùng alias `otelcol`) chỉ để so sánh, không chạy cùng `obs`.

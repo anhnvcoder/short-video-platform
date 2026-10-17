@@ -1,6 +1,7 @@
 -- name: LockAuthor :exec
 -- Serializes every change to the follow edges and fan-out of one author until the transaction
--- ends (docs/adr/0009-engagement-feed-stage2b.md, section 7). It must be the transaction's first
+-- ends, so a follower added during a fan-out still gets the new video and one removed does not
+-- keep it (docs/adr/0009-engagement-feed-stage2b.md, section 7). It must be the transaction's first
 -- statement: under READ COMMITTED each later statement then sees all that the previous holder
 -- committed.
 SELECT pg_advisory_xact_lock(hashtextextended('feed-author:' || sqlc.arg(author_id)::uuid::text, 0));

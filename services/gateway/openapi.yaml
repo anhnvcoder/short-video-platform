@@ -1,5 +1,6 @@
-# REST API of the gateway, written by hand (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md,
-# section 8). Keep it in step with services/gateway/internal/api.
+# REST API of the gateway, written by hand: generating it from code would need an annotation
+# library or a framework (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 8).
+# Keep it in step with services/gateway/internal/api.
 openapi: 3.1.0
 info:
   title: Short-video platform API
@@ -16,7 +17,8 @@ info:
     `INVALID_UTF8`, a 400 for any request whose path or query string, once percent-decoded, is
     not valid UTF-8.
 
-    Every route but `/healthz` and `/readyz` is rate limited (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md,
+    Every route but `/healthz` and `/readyz` is rate limited, to slow down password guessing, mass
+    sign-ups and junk writes (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md,
     section 2): `/auth/register` and `/auth/login` by the client's address, `/auth/login` also by
     the address and email together, the other routes by the authenticated user. Every call counts,
     successful or not. Over the limit the answer is a 429 with code `RATE_LIMITED` and a

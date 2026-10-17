@@ -38,7 +38,8 @@ var (
 	ErrDurationExceeded = errors.New("transcode: duration exceeded")
 )
 
-// Output layout and content types (ADR-0008 section 10).
+// Output layout and content types. The names are fixed, so transcoding the same video again
+// overwrites the same objects (ADR-0008 section 10).
 const (
 	MasterPlaylist = "master.m3u8"
 	Thumbnail      = "thumbnail.jpg"
@@ -50,7 +51,9 @@ const (
 	contentTypeJPEG     = "image/jpeg"
 )
 
-// Encoding settings (ADR-0008 section 10).
+// Encoding settings: 4 s segments make half the objects and requests of 2 s ones while a short
+// video still starts quickly; a keyframe every 2 s, whatever the fps, so every segment starts on
+// one (ADR-0008 section 10).
 const (
 	segmentSeconds  = 4
 	keyframeSeconds = 2

@@ -239,7 +239,8 @@ services:
       # Only user-service holds the signing key (threat model JWT-10).
       JWT_SIGNING_KID: ${JWT_SIGNING_KID:?run make env}
       JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:?run make env}
-      # The outbox relay publishes follow events to user.follows.v1 (ADR-0009, section 1).
+      # Follow events go out through the outbox: the follow and its event commit together, so a
+      # follow is not lost when Kafka is down (ADR-0009, section 1).
       KAFKA_BROKERS: redpanda:9092
     healthcheck: *healthcheck
     restart: unless-stopped
@@ -272,7 +273,8 @@ services:
       S3_PUBLIC_ENDPOINT: http://127.0.0.1:9000
       S3_ACCESS_KEY_ID: svp-video-service
       S3_SECRET_ACCESS_KEY: ${SVP_VIDEO_S3_SECRET_KEY:?run make env}
-      # Cleanup of abandoned uploads (ADR-0010, section 5). Only the upload-cleanup drill sets
+      # Abandoned uploads are cleaned up after this long, so their objects do not stay in MinIO
+      # (ADR-0010, section 5). Only the upload-cleanup drill sets
       # SVP_UPLOAD_* short; a value under the 15 minutes of an upload form is for drills only.
       UPLOAD_ABANDON_AFTER: ${SVP_UPLOAD_ABANDON_AFTER:-1h}
       UPLOAD_SWEEP_INTERVAL: ${SVP_UPLOAD_SWEEP_INTERVAL:-5m}
@@ -303,7 +305,9 @@ services:
       <<: *telemetry-app-env
       LISTEN_ADDR: ":9103"
       DATABASE_URL: postgres://svp_engagement_app:${SVP_ENGAGEMENT_APP_DB_PASSWORD:?run make env}@host.docker.internal:5432/svp_engagement?sslmode=disable
-      # Produces to and consumes engagement.views.v1 (ADR-0009, sections 3, 4 and 11).
+      # Produces to and consumes engagement.views.v1: a view only produces an event on the request,
+      # and the counts are written in batches, so no request waits on a counter row
+      # (ADR-0009, sections 3, 4 and 11).
       KAFKA_BROKERS: redpanda:9092
     mem_limit: 256m
     healthcheck: *healthcheck
@@ -331,9 +335,12 @@ services:
       <<: *telemetry-app-env
       LISTEN_ADDR: ":9104"
       DATABASE_URL: postgres://svp_feed_app:${SVP_FEED_APP_DB_PASSWORD:?run make env}@host.docker.internal:5432/svp_feed?sslmode=disable
-      # Consumes user.follows.v1 and video.lifecycle.v1 (ADR-0009, sections 7 and 11).
+      # Consumes user.follows.v1 and video.lifecycle.v1: the timeline is built on write, so a follow
+      # backfills the followee's last 30 days and a ready video fans out to its followers
+      # (ADR-0009, sections 7 and 11).
       KAFKA_BROKERS: redpanda:9092
-      # Explore feed cache (ADR-0010, section 3).
+      # Explore feed cache: explore has no freshness target, so its first page is cached in Redis for
+      # 5 s and the database is read once per burst (ADR-0010, section 3).
       REDIS_URL: redis://host.docker.internal:6379/14
     mem_limit: 256m
     healthcheck: *healthcheck
@@ -367,8 +374,10 @@ services:
       # Public keys only: the gateway verifies tokens, it cannot sign them.
       JWT_VERIFY_KEYS: ${JWT_VERIFY_KEYS:?run make env}
       MEDIA_PUBLIC_BASE_URL: http://127.0.0.1:9000/media
-      # Rate limits (ADR-0010, section 2). SVP_GATEWAY_REDIS_URL exists only for the Redis-down
-      # drill, which points it at an unresolvable .invalid host (ADR-0010, section 7).
+      # Rate limits are counted in Redis so all gateway instances share one count; if Redis is down
+      # the gateway falls back to in-memory counters (ADR-0010, section 2). SVP_GATEWAY_REDIS_URL
+      # exists only for the Redis-down drill, which points it at an unresolvable .invalid host
+      # (ADR-0010, section 7).
       REDIS_URL: ${SVP_GATEWAY_REDIS_URL:-redis://host.docker.internal:6379/10}
     ports:
       - "127.0.0.1:8080:8080"
@@ -437,7 +446,8 @@ services:
     command: ["--config=/etc/otelcol/config.yaml"]
     volumes:
       - ../observability/otelcol/config.yaml:/etc/otelcol/config.yaml:ro
-    # The memory_limiter processor keeps the heap at 192 MiB of this (ADR-0011, sections 1 and 13).
+    # The memory_limiter processor keeps the heap at 192 MiB of this, so a burst of telemetry makes
+    # the Collector refuse data rather than run out of memory (ADR-0011, sections 1 and 13).
     mem_limit: 256m
     # `default` for the services and LGTM, `worker` for media-worker. No published port.
     networks: [default, worker]
@@ -454,11 +464,14 @@ services:
       # The lab keeps its data on the machine, as with the local error tracker (ADR-0011, section 7):
       # Grafana, Tempo, Loki and Pyroscope do not report usage to stats.grafana.org, and Grafana does
       # not ask grafana.com for new versions. Grafana installs no plugin at run time either: no
-      # preinstall (the image asks for grafana-llm-app, Grafana itself for its Drilldown and advisor
-      # apps, all unpinned), no update of the ones a volume already holds, and the plugin signing
-      # key stays the one built in. A new lgtm-data volume has no Drilldown apps; the bundled
-      # datasources (Prometheus, Tempo, Loki, Pyroscope) are not plugins Grafana downloads (ADR-0011,
-      # section 9). The image's run scripts append *_EXTRA_ARGS to their binary's command line.
+      # preinstall (by default Grafana downloads a list of unpinned plugins at every start, among
+      # them the Prometheus, Tempo, Loki and Pyroscope datasources, the Drilldown and advisor apps,
+      # and the image adds grafana-llm-app), no update of the ones a volume already holds, and the
+      # plugin signing key stays the one built in. A new lgtm-data volume uses the datasources built
+      # into the image's Grafana and has no Drilldown apps. A volume that already holds downloaded
+      # copies keeps them, frozen at that version, and Grafana loads them instead of the built-in
+      # ones (ADR-0011, section 9). The image's run scripts append *_EXTRA_ARGS to their binary's
+      # command line.
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
       GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
@@ -468,6 +481,13 @@ services:
       TEMPO_EXTRA_ARGS: -reporting.enabled=false
       LOKI_EXTRA_ARGS: -reporting.enabled=false
       PYROSCOPE_EXTRA_ARGS: -usage-stats.enabled=false
+      # Prometheus is not published, so the "Source" link of an alert (its generatorURL) would name
+      # the container and not open from the host. The external URL points it at Grafana's datasource
+      # proxy on the published 127.0.0.1:3000 instead, with no eighth published port. The route
+      # prefix stays /, so everything inside the container and the compose network (Grafana's
+      # datasource, the image's healthcheck, OTLP and remote write) still reaches Prometheus at the
+      # root (ADR-0011, section 8).
+      PROMETHEUS_EXTRA_ARGS: --web.external-url=http://127.0.0.1:3000/api/datasources/proxy/uid/prometheus --web.route-prefix=/
     mem_limit: 1536m
     volumes:
       - lgtm-data:/data
@@ -544,8 +564,9 @@ services:
     mem_limit: 512m
     restart: "no"
 
-  # GlitchTip web and task worker in one process (all-in-one, ADR-0011, sections 7 and 13). Its
-  # init commands are skipped: glitchtip-init ran them. On `default` only: media-worker, on
+  # GlitchTip web and task worker in one process, with no Valkey: one container to run instead of
+  # several, within the RAM budget (ADR-0011, sections 7 and 13). Its init commands are skipped:
+  # glitchtip-init ran them. On `default` only: media-worker, on
   # `worker`, reports no errors. No core service depends on it.
   glitchtip:
     <<: *host-services

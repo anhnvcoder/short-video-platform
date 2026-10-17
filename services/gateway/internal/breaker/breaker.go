@@ -37,7 +37,9 @@ type thresholds struct {
 	openFor time.Duration
 }
 
-// adr are the thresholds of ADR-0010 section 4.
+// adr are the thresholds of ADR-0010 section 4: a streak of five failures, or a failure ratio of
+// half over at least 20 calls in the 10 s window, opens the breaker for 5 s; then one trial call
+// decides whether it closes.
 var adr = thresholds{
 	consecutive: 5,
 	minCalls:    20,

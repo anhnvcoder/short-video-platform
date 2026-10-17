@@ -248,7 +248,8 @@ func TestTranscodeFailedAfterReadyIsIgnored(t *testing.T) {
 	wantDeletes(t, storage)
 }
 
-// A newer media-worker may send an event type this service does not know: skip it (ADR-0006).
+// A newer media-worker may send an event type this service does not know: skip it, since adding
+// a oneof branch is a compatible change within v1 (ADR-0006).
 func TestTranscodeUnknownEventIsSkipped(t *testing.T) {
 	needDB(t)
 	s, storage, _ := newServerWithStorage()

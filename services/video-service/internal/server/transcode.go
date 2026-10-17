@@ -28,12 +28,15 @@ import (
 	"github.com/anhnvcoder/short-video-platform/services/video-service/internal/store"
 )
 
-// Topic and consumer group of the transcode results (ADR-0008 section 5).
+// Topic and consumer group of the transcode results. The topic must be one redpanda-init creates,
+// since the broker does not create topics on first use (ADR-0008 section 5).
 const (
 	TopicMediaTranscodes = "media.transcodes.v1"
 	TranscodeGroup       = "video-service"
 	// transcodeHandlerTimeout bounds one attempt at a transcode event, its Postgres work and S3
-	// deletes included (docs/adr/0011-observability-stage3.md, section 11).
+	// deletes included. An attempt past it is a temporary error that kafkax retries, so a held row
+	// lock or a hung S3 call cannot stall the partition (docs/adr/0011-observability-stage3.md,
+	// section 11).
 	transcodeHandlerTimeout = 10 * time.Second
 )
 
@@ -79,7 +82,8 @@ func (s *Server) HandleTranscode(ctx context.Context, r *kgo.Record, _ kafkax.At
 		}
 		return s.transcodeFailed(transcodeContext(ctx, &ev, id), id, e.TranscodeFailed)
 	}
-	// An unknown branch decodes as nil: skip it (ADR-0006).
+	// An unknown branch decodes as nil: skip it. Adding a branch is a compatible change within v1,
+	// so a newer media-worker may send one this service does not know yet (ADR-0006).
 	return nil
 }
 

@@ -1,4 +1,6 @@
-// Package ids creates and checks the UUIDv7 ids of the platform's entities
+// Package ids creates and checks the UUIDv7 ids of the platform's entities. Ids are made here, in
+// the service that owns the entity, not by Postgres: its uuidv7() exists only from version 18, and
+// the outbox needs an event id before the transaction commits
 // (docs/adr/0006-contract-ids-and-event-envelope.md, section 2).
 package ids
 

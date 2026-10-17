@@ -1,6 +1,8 @@
 // Package objstore talks to the S3-compatible object storage (MinIO locally, S3 later) shared by
 // video-service and media-worker: presigned POST forms for uploads and the HEAD, GET, PUT and
-// DELETE calls on the uploads and media buckets (ADR-0004, ADR-0008 sections 2, 3 and 4).
+// DELETE calls on the uploads and media buckets. Clients send the file straight to storage with a
+// presigned POST whose signed policy fixes the key and caps the size, so storage enforces the
+// limit and the file never passes through a service (ADR-0004, ADR-0008 sections 2, 3 and 4).
 //
 // A key is the contract key verbatim, and its prefix picks the bucket: "uploads/<video_id>" lives
 // in the uploads bucket, "media/<video_id>/..." in the media bucket.
@@ -70,7 +72,8 @@ func notKeyChar(r rune) bool {
 	return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '.' && r != '_' && r != '-'
 }
 
-// Config holds what New needs; the services fill it from the S3_* variables (ADR-0008
+// Config holds what New needs; the services fill it from the S3_* variables, so the same image runs
+// under compose, Kubernetes and the cloud with only the environment changing (ADR-0008
 // section 11).
 type Config struct {
 	// Endpoint is the URL the service calls, e.g. http://minio:9000.

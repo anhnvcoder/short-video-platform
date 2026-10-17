@@ -132,10 +132,10 @@ Số dòng cấu hình đã viết (không tính dòng trống và comment):
 | Backend | Loki 45, datasource Grafana 51 (liên kết trace ↔ log ↔ metric, service map) | APM Server 5, Kibana 7 |
 | Service compose | `otelcol` 8, `lgtm` 31 | ES 18, Kibana 18, APM 17, Collector 13 |
 | **Tổng tới UI có trace ↔ log** | **220** | **194** |
+| Ngoài phạm vi so | Prometheus 45 (rule, Alertmanager), rule SLO/cảnh báo và 4 dashboard (5 247 dòng sinh/viết), Alertmanager, GlitchTip | — |
 
 Bảng đếm lại sau khi Collector `obs` thêm metric tự thân (13 dòng), `lgtm` thêm ba biến tắt tải plugin và file Collector
 Elastic thành file ghép; lúc đo RAM, hai file Collector là hai bản 72 dòng chép tay và tổng là 204 / 149.
-| Ngoài phạm vi so | Prometheus 45 (rule, Alertmanager), rule SLO/cảnh báo và 4 dashboard (5 247 dòng sinh/viết), Alertmanager, GlitchTip | — |
 
 ## 4. Truy vấn mẫu
 

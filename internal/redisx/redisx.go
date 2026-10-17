@@ -15,7 +15,8 @@ import (
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
-// Timeouts of ADR-0010, section 1.
+// Timeouts short enough that a slow Redis costs a request a few tens of milliseconds before the
+// caller's fallback takes over, instead of holding it (ADR-0010, section 1).
 const (
 	DialTimeout  = 100 * time.Millisecond
 	ReadTimeout  = 50 * time.Millisecond

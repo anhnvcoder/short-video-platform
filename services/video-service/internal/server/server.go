@@ -44,9 +44,12 @@ const (
 
 	maxMediaTypeLen = len("video/") + 127
 
-	// uploadFormTTL is how long a presigned upload form is accepted (ADR-0004, UP-2).
+	// uploadFormTTL is how long a presigned upload form is accepted: long enough for a slow mobile
+	// upload, short because anyone holding a leaked form can write to its key until then
+	// (ADR-0004, UP-2).
 	uploadFormTTL = 15 * time.Minute
-	// MaxOpenUploads is how many videos one author may have UPLOADING with a form still valid
+	// MaxOpenUploads is how many videos one author may have UPLOADING with a form still valid, so
+	// one account holds at most 1.5 GB of open upload forms
 	// (UP-7, docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 5).
 	MaxOpenUploads = 3
 	// TopicVideoLifecycle carries svp.video.v1.VideoEvent, keyed by video_id.
@@ -57,6 +60,7 @@ const (
 )
 
 // readyBuckets are the V buckets of docs/adr/0011-observability-stage3.md, section 5, in seconds.
+// 120 is a boundary because the video-ready SLO counts a sample at or under 120 s as good.
 var readyBuckets = []float64{10, 20, 30, 45, 60, 90, 120, 180, 300, 600}
 
 // ErrorInfo reasons returned by the service.

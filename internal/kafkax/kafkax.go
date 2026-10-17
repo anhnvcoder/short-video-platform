@@ -1,6 +1,8 @@
 // Package kafkax builds the franz-go clients every service uses, produces records carrying the
 // request's traceparent, and runs group consumers with manual commits, in-process retries and a
-// dead-letter topic (ADR-0003, ADR-0008 section 8).
+// dead-letter topic. A record is committed only after its handler returns, and one that keeps
+// failing goes to the dead-letter topic instead of blocking its partition, so none is lost or
+// stuck (ADR-0003, ADR-0008 section 8).
 package kafkax
 
 import (

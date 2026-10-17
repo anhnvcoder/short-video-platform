@@ -902,7 +902,8 @@ func TestPruneTimelineDeletesOnlyExpired(t *testing.T) {
 }
 
 // A run whose deadline passes between two batches fails, and the batch it finished before that
-// was reported (docs/adr/0011-observability-stage3.md, section 5).
+// was reported, so a run working through a backlog does not look stalled
+// (docs/adr/0011-observability-stage3.md, section 5).
 func TestPruneTimelineReportsBatchesOfARunCutShort(t *testing.T) {
 	needDB(t)
 	p := newProjector()

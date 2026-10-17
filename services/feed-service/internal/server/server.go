@@ -38,7 +38,8 @@ const (
 	MaxPageSize     = 50
 )
 
-// Explore cache (ADR-0010, section 3).
+// Explore cache. Every new user reads the same first explore page, a hot key that would otherwise
+// cost a Postgres query per request (ADR-0010, section 3).
 const (
 	// ExploreCacheTTL is how long a cached first explore page is served; nothing deletes it
 	// earlier, so a new video reaches the explore feed at most this late.

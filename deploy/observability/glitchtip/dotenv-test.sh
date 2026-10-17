@@ -138,6 +138,57 @@ refused_by "rule.env:1:" "a name with [ ]" "OTHER[1]='s3cr3t" "SVP_T=" "suffix'"
 refused_by "rule.env:1:" "a name with ." "OTHER.X=s3cr3t" "SVP_T=v1"
 refused_by "rule.env:2:" "a line with no =" "SVP_T=v1" "s3cr3t"
 
+# nul_case <expected FILE:LINE: and variable> <description> <printf format>: a file with a NUL byte
+# (awk stops reading a line there, compose does not) is refused by dotenv_value and by dotenv_fill,
+# naming the first line that has one, never a value; dotenv_fill prints nothing.
+nul_case() {
+  local who=$1 what=$2 got err status=0
+  # shellcheck disable=SC2059 # the format is the fixture
+  printf "$3" > "$work/rule.env"
+  got=$(dotenv_value "$work/rule.env" SVP_T 2> "$work/rule.err") || status=$?
+  err=$(cat "$work/rule.err")
+  if [[ $status -ne 0 && $err == *"$who"* && $err != *s3cr3t* && -z $got ]]; then
+    ok "rule: $what is refused, naming $who"
+  else
+    fail "rule: $what: want refused naming $who, got status $status"
+  fi
+  printf 'SVP_T=v1\n' > "$work/rule.add"
+  status=0
+  dotenv_fill "$work/rule.env" "$work/rule.add" > "$work/rule.out" 2> "$work/rule.err" || status=$?
+  err=$(cat "$work/rule.err")
+  if [[ $status -ne 0 && $err == *"$who"* && $err != *s3cr3t* && ! -s $work/rule.out ]]; then
+    ok "fill: $what is refused, naming $who"
+  else
+    fail "fill: $what: want refused naming $who, got status $status"
+  fi
+}
+nul_case "rule.env:1: SVP_T" "a NUL at the start of a value" 'SVP_T=\000s3cr3t\n'
+nul_case "rule.env:2: OTHER" "a NUL after a closed quote" 'SVP_T=v1\nOTHER="a"\000 s3cr3t\n'
+nul_case "rule.env:1: SVP_T" "a NUL at the end of a value" 'SVP_T=s3cr3t\000\nOTHER=1\n'
+nul_case "rule.env:3: the line" "a NUL in a comment" 'SVP_T=v1\n\n# s3cr3t\000x\n'
+nul_case "rule.env:2: the line" "a NUL on a blank line" 'SVP_T=v1\n \000\nOTHER=1\n'
+nul_case "rule.env:1: the line" "a NUL in a name" 'SVP\000_T=s3cr3t\n'
+nul_case "rule.env:2: OTHER" "a NUL as the last byte, no newline" 'SVP_T=v1\nOTHER=s3cr3t\000'
+nul_case "rule.env:2: OTHER" "the first of two lines with a NUL" 'SVP_T=v1\nOTHER=\000s3cr3t\nSVP_T=\000\n'
+nul_case "rule.env:3: NOTE" "a NUL after a line that breaks the rule otherwise" 'SVP_T=v1\nOTHER=$HOME\nNOTE=\000s3cr3t\n'
+
+# A missing file fails with awk's own error naming it, as before the NUL check, also under
+# `set -o pipefail` (this script's, and that of init.sh, bootstrap.sh and the drills).
+status=0
+got=$(dotenv_value "$work/missing.env" SVP_T 2> "$work/rule.err") || status=$?
+if [[ $status -ne 0 && $(cat "$work/rule.err") == *missing.env* && -z $got ]]; then
+  ok "rule: a missing file fails, naming it"
+else
+  fail "rule: a missing file: want a failure naming it, got status $status"
+fi
+status=0
+dotenv_fill "$work/missing.env" "$work/rule.add" > "$work/rule.out" 2> "$work/rule.err" || status=$?
+if [[ $status -ne 0 && $(cat "$work/rule.err") == *missing.env* ]]; then
+  ok "fill: a missing file fails, naming it"
+else
+  fail "fill: a missing file: want a failure naming it, got status $status"
+fi
+
 # --- init.sh: fills in SENTRY_* or stops, naming the variable, with the env file untouched. ---
 cat > "$work/fake-compose" <<'EOF'
 #!/usr/bin/env bash
@@ -276,8 +327,12 @@ make_env_fills() {
 # make_env_refuses <variable> <description> <sed script>: make env exits non-zero, names the
 # variable, prints no value and leaves .env as it was.
 make_env_refuses() {
-  local name=$1 what=$2
   sed "$3" "$m/fresh" > "$m/.env"
+  make_env_refused "$1" "$2"
+}
+# make_env_refused <variable> <description>: the same check on the .env already in place.
+make_env_refused() {
+  local name=$1 what=$2
   cp -p "$m/.env" "$m/.env.before"
   if run_make_env; then
     fail "make env: $what: exit status 0"
@@ -320,6 +375,12 @@ MY-NOTE='s3cr3t\\
 GLITCHTIP_SECRET_KEY=\\
 suffix'
 "
+# A NUL byte (sed cannot write one portably, so printf does): awk would read the first value as
+# empty and make env would replace it, the second as a, which compose refuses.
+{ grep -v '^GLITCHTIP_SECRET_KEY=' "$m/fresh"; printf 'GLITCHTIP_SECRET_KEY=\000s3cr3t\n'; } > "$m/.env"
+make_env_refused ".env:$(wc -l < "$m/fresh" | tr -d ' '): GLITCHTIP_SECRET_KEY" "a NUL at the start of GLITCHTIP_SECRET_KEY"
+{ printf 'NOTE="a"\000 s3cr3t\n'; cat "$m/fresh"; } > "$m/.env"
+make_env_refused ".env:1: NOTE" "a NUL after the closed quote of NOTE"
 
 # --- make db-bootstrap, make test-stack and the profile check of make up, with fake commands. ---
 fake=$work/fakebin

@@ -113,7 +113,8 @@ var backends = []backend{userBackend, videoBackend, feedBackend, engagementBacke
 
 func TestServiceConfig(t *testing.T) {
 	type name struct{ Service, Method string }
-	// The idempotent methods of ADR-0010 section 4.
+	// The idempotent methods of ADR-0010 section 4: only these are retried, as a second try of
+	// any other would repeat its effect.
 	want := map[string][]name{
 		"user-service": {
 			{"svp.user.v1.UserService", "Follow"},

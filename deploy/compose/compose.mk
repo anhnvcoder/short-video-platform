@@ -38,7 +38,8 @@ DB_PASSWORD_VARS := SVP_USER_MIGRATOR_DB_PASSWORD SVP_USER_APP_DB_PASSWORD SVP_V
 # MinIO root password and per-service secret keys (deploy/minio/init.sh). MinIO caps secret keys at
 # 40 characters, hence 20 random bytes in hex.
 S3_SECRET_VARS := SVP_MINIO_ROOT_PASSWORD SVP_VIDEO_S3_SECRET_KEY SVP_MEDIA_WORKER_S3_SECRET_KEY
-# GlitchTip's Django secret key and its admin password (ADR-0011, section 7).
+# GlitchTip's Django secret key and its admin password: random per clone like the S3 secrets above, so no fixed
+# credential is committed (ADR-0011, section 7).
 GLITCHTIP_SECRET_VARS := GLITCHTIP_SECRET_KEY GLITCHTIP_ADMIN_PASSWORD
 # Login of GlitchTip's admin user: a fixed local address, not anyone's real mailbox.
 GLITCHTIP_ADMIN_EMAIL := admin@svp.local

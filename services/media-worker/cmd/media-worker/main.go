@@ -10,7 +10,9 @@
 // S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY (required), S3_REGION (default us-east-1),
 // S3_UPLOADS_BUCKET (default uploads), S3_MEDIA_BUCKET (default media) and WORK_DIR (default
 // /work). The OTEL_* variables of docs/adr/0011-observability-stage3.md send traces, metrics and
-// logs to the Collector; the worker has no profiler and no error tracker (sections 6 and 7).
+// logs to the Collector; the worker has no profiler and no error tracker, since its network
+// reaches only Redpanda, MinIO and the Collector, and ffmpeg runs as a child process the
+// profiler would not see (sections 6 and 7).
 package main
 
 import (

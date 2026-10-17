@@ -41,7 +41,8 @@ import (
 	"github.com/anhnvcoder/short-video-platform/services/media-worker/internal/transcode"
 )
 
-// Topics and consumer group (ADR-0008 section 5).
+// Topics and consumer group. The topics must be ones redpanda-init creates, since the broker does
+// not create topics on first use (ADR-0008 section 5).
 const (
 	InputTopic  = "video.lifecycle.v1"
 	OutputTopic = "media.transcodes.v1"
@@ -81,7 +82,8 @@ const (
 const instrumentationName = "github.com/anhnvcoder/short-video-platform/services/media-worker/internal/worker"
 
 // transcodeBuckets are the V buckets of docs/adr/0011-observability-stage3.md, section 5, in
-// seconds.
+// seconds, the same as svp.video.ready.duration of video-service; this histogram feeds dashboards
+// only, no SLO.
 var transcodeBuckets = []float64{10, 20, 30, 45, 60, 90, 120, 180, 300, 600}
 
 // Storage is the part of objstore.Store the worker uses. Errors follow objstore: ErrNotFound,
@@ -203,8 +205,9 @@ func (w *Worker) Handle(ctx context.Context, r *kgo.Record, a kafkax.Attempt) er
 	return nil
 }
 
-// decode returns the video.uploaded carried by r, nil for any other event (skipped and
-// committed, ADR-0006), or a permanent error for a record that breaks the contract.
+// decode returns the video.uploaded carried by r, nil for any other event (the topic carries the
+// whole video lifecycle; skipped and committed, ADR-0006), or a permanent error for a record that
+// breaks the contract.
 func decode(r *kgo.Record) (*videov1.VideoUploaded, error) {
 	var ev videov1.VideoEvent
 	if err := proto.Unmarshal(r.Value, &ev); err != nil {

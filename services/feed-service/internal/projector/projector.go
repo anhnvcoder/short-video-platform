@@ -32,7 +32,8 @@ import (
 	"github.com/anhnvcoder/short-video-platform/services/feed-service/internal/store"
 )
 
-// Topics and consumer group of the feed read model (ADR-0009 section 11).
+// Topics and consumer group of the feed read model. One group reads both topics; their three
+// partitions let up to three replicas share the work (ADR-0009 section 11).
 const (
 	TopicUserFollows    = "user.follows.v1"
 	TopicVideoLifecycle = "video.lifecycle.v1"
@@ -63,7 +64,8 @@ const (
 	rollbackTimeout = 5 * time.Second
 )
 
-// freshnessBuckets are the bucket bounds of svp.feed.freshness, in seconds (ADR-0011, section 5).
+// freshnessBuckets are the bucket bounds of svp.feed.freshness, in seconds, with a bound at 10 s,
+// the p95 freshness target (ADR-0011, section 5).
 var freshnessBuckets = []float64{0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60}
 
 // Projector applies events to the read model.
@@ -145,7 +147,8 @@ func (p *Projector) handleFollow(ctx context.Context, r *kgo.Record) error {
 		}
 		return p.unfollow(edgeContext(ctx, &ev, follower, followee), follower, followee)
 	}
-	// An unknown or empty branch decodes as nil: skip it (ADR-0006).
+	// An unknown or empty branch decodes as nil: skip it, as v1 may gain branches this consumer
+	// does not know yet (ADR-0006).
 	return nil
 }
 
@@ -214,7 +217,8 @@ func (p *Projector) handleVideo(ctx context.Context, r *kgo.Record) error {
 	}
 	ready := ev.GetVideoReady()
 	if ready == nil {
-		// video.uploaded is media-worker's; an unknown or empty branch is skipped (ADR-0006).
+		// video.uploaded is media-worker's; an unknown or empty branch is skipped, as v1 may gain
+		// branches this consumer does not know yet (ADR-0006).
 		return nil
 	}
 	v, err := checkVideoReady(ready)

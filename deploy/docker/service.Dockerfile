@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
-# One Dockerfile for every Go service; pick it with --build-arg SERVICE=<directory under services/>
+# One Dockerfile for every Go service, so the toolchain pin, static build and distroless runtime are defined once; pick
+# the service with --build-arg SERVICE=<directory under services/>
 # (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 7). No secret goes into the
 # build: configuration and keys are environment variables given at run time.
 

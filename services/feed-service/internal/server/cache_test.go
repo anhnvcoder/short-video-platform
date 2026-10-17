@@ -123,7 +123,9 @@ func cachedServer(t *testing.T) (*Server, *redis.Client, string, *loadLog) {
 	return s, client, prefix, log
 }
 
-// Production keeps the cache budget of ADR-0010: 50 ms per Redis command, pages cached 5 s.
+// Production keeps the cache budget of ADR-0010: 50 ms per Redis command, so a slow Redis costs
+// little before the Postgres read, and pages cached 5 s, the most a new video waits to reach the
+// explore feed.
 func TestCacheDefaults(t *testing.T) {
 	s := New(nil, nil, "svp:feed:", slog.New(slog.DiscardHandler))
 	if s.cacheTimeout != 50*time.Millisecond || s.exploreCacheTTL != 5*time.Second {

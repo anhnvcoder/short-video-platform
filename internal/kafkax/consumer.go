@@ -50,7 +50,9 @@ const DLQSuffix = ".dlq"
 // the handler finished is still committed when shutdown starts at that moment.
 const commitTimeout = 10 * time.Second
 
-// deadLetterTimeout bounds the produce of one record to its dead-letter topic
+// deadLetterTimeout bounds the produce of one record to its dead-letter topic, so a broker that
+// never answers cannot hold the consumer on one record for good. The source record is not
+// committed until the dead-letter topic has acknowledged the copy
 // (docs/adr/0011-observability-stage3.md, section 11).
 const deadLetterTimeout = 10 * time.Second
 

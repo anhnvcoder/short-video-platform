@@ -51,7 +51,9 @@ type Class struct {
 	Fallback Limit
 }
 
-// The classes of ADR-0010 section 2. Fallback limits are half of the Redis ones.
+// The classes of ADR-0010 section 2, each sized so that a real user never reaches the limit
+// while password guessing, mass sign-ups and junk writes slow down. Fallback limits are half of
+// the Redis ones.
 var (
 	Register   = Class{Name: "register", Limit: Limit{60, time.Hour, 20}, Fallback: Limit{30, time.Hour, 10}}
 	LoginIP    = Class{Name: "login-ip", Limit: Limit{60, time.Minute, 30}, Fallback: Limit{30, time.Minute, 15}}

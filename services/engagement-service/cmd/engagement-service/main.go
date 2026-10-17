@@ -1,7 +1,8 @@
 // Command engagement-service serves svp.engagement.v1.EngagementService over gRPC: likes, view
 // events and the counters of each video (docs/adr/0009-engagement-feed-stage2b.md).
 //
-// Subcommands (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 7):
+// Subcommands, in the service binary because its distroless image has no shell, curl or migration
+// tool (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 7):
 //
 //	serve        run the service (default when no subcommand is given)
 //	migrate      apply the database migrations, then exit

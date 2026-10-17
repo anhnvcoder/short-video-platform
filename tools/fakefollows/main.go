@@ -1,5 +1,7 @@
 // Command fakefollows produces fake follow events for the freshness measurement
-// (deploy/compose/drills/measure-freshness.sh, ADR-0009 section 10). For the local stack only.
+// (deploy/compose/drills/measure-freshness.sh). It feeds feed-service's real consumer, which is
+// what the measurement is about, and does it without registering thousands of users (Register is
+// slow by design); the matching unfollow undoes it (ADR-0009 section 10). For the local stack only.
 //
 // It impersonates user-service: it writes svp.user.v1.FollowEvent records straight to
 // user.follows.v1, which nothing stops it from doing until the broker has ACLs (threat model IN-4,

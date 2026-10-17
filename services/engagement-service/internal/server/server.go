@@ -31,7 +31,8 @@ import (
 )
 
 const (
-	// MaxStatsVideoIDs is the most video ids one GetStats call accepts (ADR-0009, section 5).
+	// MaxStatsVideoIDs is the most video ids one GetStats call accepts: a whole feed page, at most
+	// 50 videos, in one call (ADR-0009, section 5).
 	MaxStatsVideoIDs = 50
 	// TopicViews carries svp.engagement.v1.ViewEvent, keyed by video_id.
 	TopicViews = "engagement.views.v1"

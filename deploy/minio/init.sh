@@ -1,6 +1,8 @@
 #!/bin/sh
 # Creates the buckets, the anonymous read policy of `media` and one user per service on the
-# compose MinIO (docs/adr/0008-async-upload-pipeline-stage2a.md, section 6; threat model UP-4,
+# compose MinIO. Each service gets its own user and policy limited to the prefixes it needs, and never the root
+# credential, so a compromised service cannot read or write the other's objects, and `media` allows anonymous
+# GetObject only, never listing (docs/adr/0008-async-upload-pipeline-stage2a.md, section 6; threat model UP-4,
 # UP-5, UP-6, FF-4). Run by the one-shot minio-init container with the root password and the two
 # service secret keys in its environment. Idempotent: running it again keeps the buckets and their
 # objects, and resets the users' secret keys and policies to what this script and the .env say.

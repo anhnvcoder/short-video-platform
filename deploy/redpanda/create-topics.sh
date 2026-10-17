@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Creates the stage 2 topics and their dead-letter topics on the compose Redpanda
+# Creates the stage 2 topics and their dead-letter topics on the compose Redpanda. Topics are created here, not by
+# auto-create or by the services, so the topology lives in one place in the repo and a mistyped name fails
 # (docs/adr/0008-async-upload-pipeline-stage2a.md, section 5;
 # docs/adr/0009-engagement-feed-stage2b.md, section 11). Run by the one-shot redpanda-init
 # container; the broker comes from RPK_BROKERS, the Admin API from RPK_ADMIN_HOSTS. Idempotent:

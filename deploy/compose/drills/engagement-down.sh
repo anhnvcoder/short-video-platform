@@ -24,7 +24,8 @@ source "$(dirname "$0")/common.sh"
 # A feed page without stats must still answer within this many seconds (the gateway gives
 # GetStats 100 ms).
 max_feed_seconds=${max_feed_seconds:-1}
-# With the breaker open a like must be refused within this many seconds (ADR-0010, section 4).
+# With the breaker open a like must be refused within this many seconds: it fails fast from the breaker instead of
+# waiting out the 3 s call timeout (ADR-0010, section 4).
 max_open_seconds=0.1
 # Seconds after engagement-service is healthy again within which a like must succeed.
 close_timeout=30

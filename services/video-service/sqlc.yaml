@@ -11,7 +11,8 @@ sql:
         # Nullable columns become pointers (nil = NULL) instead of pgtype.Int8, pgtype.Text, ...
         emit_pointers_for_null_types: true
         overrides:
-          # Ids use the standard library uuid package, as internal/ids does (ADR-0007, section 3).
+          # Ids use the standard library uuid package, as internal/ids does, rather than adding a
+          # third-party uuid module as a dependency (ADR-0007, section 3).
           - db_type: uuid
             go_type:
               import: uuid

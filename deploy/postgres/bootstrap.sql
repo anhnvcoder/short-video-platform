@@ -1,4 +1,5 @@
--- Roles and database of one service (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md,
+-- Roles and database of one service: a migrator that owns the schema and an app role limited to DML, so a running
+-- service that is compromised cannot change its schema (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md,
 -- section 6). Idempotent: run it as the local superuser any number of times. bootstrap.sh runs it
 -- once per service with
 --   psql -v db=<database> -v migrator=<role> -v app=<role>

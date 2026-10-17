@@ -29,7 +29,8 @@ import (
 )
 
 const (
-	// callTimeout is the deadline of every gRPC call a request makes (ADR-0002).
+	// callTimeout is the deadline of every gRPC call a request makes, so no request waits on a
+	// service for longer; the services pass it on and never set a longer one (ADR-0002).
 	callTimeout = 3 * time.Second
 	// readyTimeout bounds the health checks of /readyz.
 	readyTimeout = 1 * time.Second

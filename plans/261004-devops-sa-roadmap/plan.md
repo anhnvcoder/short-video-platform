@@ -232,11 +232,15 @@ Tổng ước lượng: khoảng 8–10 tháng làm cuối tuần, đã tính ch
 - **Chạy compose theo profile** (`make up OBS=lgtm|elastic|off`, số đo ngày 2026-10-17, `docker stats` lúc nghỉ):
   - `core`: 6 service + Redpanda + MinIO, 680–955 MiB khi telemetry tắt và 720–745 MiB khi SDK bật (trung vị 6 mẫu sau
     60 s nghỉ và 3 lượt smoke, ba lượt đo mỗi trạng thái), 951 MiB sau mọi diễn tập giai đoạn 2; Redpanda 365–513, MinIO
-    256–337, mỗi service Go 7–22 MiB lúc nghỉ và tới 48 MiB (feed-service, gateway) sau diễn tập;
-  - `obs`: `otelcol` (Collector riêng, 64–100 MiB; một lượt đo 255 MiB, số của Collector Go dao động theo GC và bộ nhớ
-    trang), `lgtm` (`grafana/otel-lgtm`: Grafana, Prometheus, Loki, Tempo, Pyroscope trong một container, 735–740 MiB
-    sau 3 lượt smoke, 1 245 MiB sau mọi diễn tập), `alertmanager` (17–42 MiB), `glitchtip` (185–232 MiB); cả stack
-    `core` + `obs` 1 746–1 975 MiB (1,71–1,93 GiB) sau smoke, 2 244 MiB (2,19 GiB) sau mọi diễn tập của giai đoạn 3;
+    256–337, mỗi service Go 7–27 MiB lúc nghỉ (cao nhất gateway 25,5 và media-worker 27,3 ở lượt đo tắt telemetry của
+    bảng overhead) và tới 48 MiB (feed-service, gateway) sau diễn tập;
+  - `obs`: `otelcol` (Collector riêng, 64–255 MiB: trung vị 246 và 255,3 MiB ở hai lượt đo, sát giới hạn 256 MiB; số của
+    Collector Go dao động theo GC và bộ nhớ trang), `lgtm` (`grafana/otel-lgtm`: Grafana, Prometheus, Loki, Tempo,
+    Pyroscope trong một container, 730–750 MiB lúc nghỉ, 1 203 MiB sau smoke trên stack cuối, 1 245 MiB sau mọi diễn
+    tập), `alertmanager` (17–42 MiB), `glitchtip` (185–232 MiB); cả stack `core` + `obs` 1 746–2 676 MiB (1,71–2,61 GiB):
+    1 746 và 1 975 MiB sau smoke ở lượt đo overhead, 2 659 MiB (2,60 GiB) sau một smoke trên stack cuối, 2 276 MiB nghỉ
+    và 2 676 MiB lúc smoke ở lượt so với Elastic ([ADR-0012](../../docs/adr/0012-elastic-vs-grafana-stage3.md)), 2 244
+    MiB (2,19 GiB) sau mọi diễn tập của giai đoạn 3;
   - `obs-elastic`: Elasticsearch (heap 1 GB, 1 712 MiB ≈ 1,67 GiB), Kibana (1 167 MiB ≈ 1,14 GiB), APM Server, Collector
     riêng; cả stack 3 585 MiB ≈ 3,50 GiB,
     chỉ bật trong bài so sánh ([ADR-0012](../../docs/adr/0012-elastic-vs-grafana-stage3.md)).
@@ -541,4 +545,8 @@ Tổng ước lượng: khoảng 8–10 tháng làm cuối tuần, đã tính ch
 
 - Giữ file gốc bao lâu (50 hay ~25 TB/năm): chốt ở giai đoạn 7 (lifecycle S3) và giai đoạn 9 (mô hình chi phí).
 - Trên cloud dùng chung một instance Postgres hay tách: chốt ở giai đoạn 7.
+- Hạ `MetadataMinAge` của franz-go để produce hết hạn sát deadline khi broker mất kết nối (hiện trễ tới khoảng 5 s): việc để
+  sau, cần ADR mới.
+- `measure-explore-cache` chập chờn ở trạng thái "SDK bật, không Collector" (một GET Redis > 50 ms làm đọc Postgres lần
+  hai): xem lại ở giai đoạn 6 khi có k6.
 - Chi tiết ở [`docs/architecture.md`](../../docs/architecture.md) §10.

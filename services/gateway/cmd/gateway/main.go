@@ -1,5 +1,6 @@
 // Command gateway runs the REST gateway (serve, the default) or checks a running instance's
-// health (healthcheck). Configuration comes from environment variables
+// health (healthcheck). Configuration comes from environment variables only, so the same image
+// runs in compose, Kubernetes and the cloud with just the variables changed
 // (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 4).
 package main
 
@@ -47,7 +48,8 @@ const (
 	defaultFeedServiceAddr  = "127.0.0.1:9104"
 	// defaultRedisURL is the gateway's Redis db (CLAUDE.md); it holds the rate limits.
 	defaultRedisURL = "redis://127.0.0.1:6379/10"
-	// redisKeyPrefix starts every key the gateway writes (ADR-0010 section 1).
+	// redisKeyPrefix starts every key the gateway writes, so its keys are told apart from other
+	// services' and an ACL by prefix can be added on the cloud (ADR-0010 section 1).
 	redisKeyPrefix = "svp:gw:"
 	// shutdownTimeout bounds the wait for in-flight requests after SIGINT or SIGTERM.
 	shutdownTimeout = 10 * time.Second
@@ -60,8 +62,9 @@ type backend struct {
 	// name names the service's circuit breaker in the log.
 	name          string
 	addrVar, addr string
-	// retry are the full names of the idempotent methods retried on UNAVAILABLE (ADR-0010
-	// section 4); no other method is retried.
+	// retry are the full names of the idempotent methods retried on UNAVAILABLE; no other method
+	// is retried, as a second try would repeat its effect (a new video from InitUpload, one more
+	// view from RecordView) or cost a password hash again (ADR-0010 section 4).
 	retry []string
 	// ignoreDeadline are the methods whose DEADLINE_EXCEEDED the breaker does not count.
 	ignoreDeadline []string
@@ -89,8 +92,10 @@ var (
 	}
 )
 
-// retryConfig is the service config of every connection (ADR-0010 section 4), with %s the
-// methods it retries. Every attempt runs within the call's one deadline.
+// retryConfig is the service config of every connection, with %s the methods it retries. Every
+// attempt runs within the call's one deadline. The retry throttling makes retries stop after a
+// few failed calls to a service that is down, instead of tripling the load on it (ADR-0010
+// section 4).
 const retryConfig = `{
   "methodConfig": [{
     "name": %s,
@@ -155,10 +160,12 @@ func main() {
 }
 
 // run runs the subcommand cmd and logs its error. Error reporting, telemetry and profiling start
-// for serve only, never for healthcheck (docs/adr/0011-observability-stage3.md, section 10), and
-// stop after the error is logged, so a failure that stops the gateway still reaches the error
-// tracker and the log pipeline (section 7). On shutdown the HTTP server stops first (in serve),
-// then the connections, then telemetry is flushed, and the error tracker last.
+// for serve only, never for healthcheck, which a container runtime runs every few seconds and
+// which would otherwise add thousands of metric instances and probe error events a day
+// (docs/adr/0011-observability-stage3.md, section 10). They stop after the error is logged, so a
+// failure that stops the gateway still reaches the error tracker and the log pipeline (section
+// 7). On shutdown the HTTP server stops first (in serve), then the connections, then telemetry
+// is flushed, and the error tracker last.
 func run(ctx context.Context, logger *slog.Logger, cmd string) error {
 	var err error
 	stopTelemetry := func() {}

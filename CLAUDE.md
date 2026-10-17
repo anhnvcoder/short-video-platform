@@ -39,6 +39,8 @@ hoãn lại; học lại sau, dùng chính code của project làm tài liệu.
 - **Ngôn ngữ lập trình:** Go, ưu tiên thư viện chuẩn; thêm dependency phải có lý do.
 - **Ngôn ngữ viết:** file `.md` viết tiếng Việt; mọi thứ trong code (comment, log, tên test, error
   message, `.env.example`) viết tiếng Anh.
+- **Comment trong code** tự đủ nghĩa: nói lý do ngay tại chỗ, người đọc không cần mở ADR mới hiểu. Tham chiếu ADR chỉ là phần
+  phụ để đọc sâu hơn (comment vẫn viết tiếng Anh).
 - **Monorepo:** `services/<tên>/`, `proto/`, `deploy/`, `docs/`. Thư mục nào tạo khi tới giai đoạn cần nó.
 - **ADR** ở `docs/adr/NNNN-<slug>.md`, theo mẫu trong [`docs/adr/README.md`](docs/adr/README.md). Đảo một quyết
   định cũ thì viết ADR mới và đánh dấu ADR cũ là "Bị thay bởi".
@@ -107,8 +109,8 @@ liệt kê target):
   `make glitchtip-init`, bootstrap Postgres và script diễn tập): mỗi dòng là dòng trống, comment `#` ở cột 1, hoặc
   `KEY=value` với `KEY` ở cột 1 và `=` ngay sau; giá trị trơn (ASCII in được, không khoảng trắng, nháy, `\`, `$`) hoặc nằm
   trong đúng một cặp nháy `"..."`/`'...'` bao ngoài, bỏ nháy khi đọc (`KEY=""` là rỗng). Dòng có `$`/`${`, khoảng trắng
-  đầu dòng hay `export`, khoá lặp, giá trị nhiều dòng, CRLF → dừng, nêu `FILE:dòng:` và tên biến, không in giá trị, không
-  ghi gì.
+  đầu dòng hay `export`, khoá lặp, giá trị nhiều dòng, CRLF, byte NUL → dừng, nêu `FILE:dòng:` và tên biến, không in giá
+  trị, không ghi gì.
 - `make up` / `make smoke` / `make down`: dựng stack compose profile `core` (bootstrap Postgres, Redpanda + tạo topic,
   MinIO + bucket/user/policy, migrate, gateway, user-service, video-service, media-worker, engagement-service,
   feed-service), chạy luồng đầu-cuối qua gateway ở `127.0.0.1:8080` (gồm follow, upload video bằng presigned POST lên

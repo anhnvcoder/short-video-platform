@@ -1,6 +1,8 @@
 # Build, generate, lint and test entry point for the monorepo. `make help` lists the targets.
 
-# Pinned tool versions (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 3).
+# Pinned tool versions, installed by `make tools` rather than as `tool` directives in go.mod: sqlc and golangci-lint
+# would pull hundreds of modules into the application's dependency graph, and `go install` builds each of them with
+# this machine's Go (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 3).
 PROTOC_GEN_GO_VERSION      := v1.36.12
 PROTOC_GEN_GO_GRPC_VERSION := v1.6.2
 SQLC_VERSION               := v1.31.1
@@ -19,7 +21,8 @@ PKGS ?= ./...
 
 # Local dev Postgres superuser DSN, published in CLAUDE.md; integration tests create their own databases from it.
 SVP_TEST_POSTGRES_URL ?= postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
-# Local Redis, db 15: the project's test database (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 1).
+# Local Redis, db 15: the project's test database, used by no service or other project, so tests never touch their data
+# and never need FLUSHDB (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 1).
 SVP_TEST_REDIS_URL ?= redis://127.0.0.1:6379/15
 
 .DEFAULT_GOAL := help

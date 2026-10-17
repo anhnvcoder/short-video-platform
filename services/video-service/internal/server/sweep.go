@@ -27,7 +27,8 @@ const (
 	sweepBatchTimeout = 30 * time.Second
 )
 
-// UploadSweeper moves videos left UPLOADING for too long to FAILED and deletes their upload
+// UploadSweeper moves videos left UPLOADING for too long to FAILED and deletes their upload:
+// without it, an upload never completed would keep its object in the uploads bucket for good
 // (ADR-0004 rule 4, docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 5).
 type UploadSweeper struct {
 	pool    *pgxpool.Pool

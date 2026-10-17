@@ -145,13 +145,32 @@ func TestProduceRequestTimedOutThenConnectionLost(t *testing.T) {
 func TestProduceBatchOfTracesExpiresInFlight(t *testing.T) {
 	recorder, _ := traceTelemetry(t)
 	c, brokers := fakeCluster(t, "out")
-	held := holdProduce(c)
-	// The linger gathers the three records into one request.
-	cl, err := NewClient(brokers, "test-producer", kgo.ProducerLinger(100*time.Millisecond))
+	// Manual flushing keeps the records buffered until the test flushes, so the three share one
+	// request whatever the scheduler does in between.
+	cl, err := NewClient(brokers, "test-producer", kgo.ManualFlushing())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(cl.Close)
+	// Once a topic's partitions are known, Produce buffers a record on its partition synchronously.
+	// A first produce, acknowledged before the broker starts holding requests, loads them.
+	primeCtx, primeCancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer primeCancel()
+	var primed sync.WaitGroup
+	primed.Add(1)
+	var primeErr error
+	cl.Produce(primeCtx, &kgo.Record{Topic: "out", Value: []byte("v")}, func(_ *kgo.Record, err error) {
+		primeErr = err
+		primed.Done()
+	})
+	if err := cl.Flush(primeCtx); err != nil {
+		t.Fatal(err)
+	}
+	primed.Wait()
+	if primeErr != nil {
+		t.Fatal(primeErr)
+	}
+	held := holdProduce(c)
 	parents := []string{
 		"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
 		"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
@@ -164,6 +183,18 @@ func TestProduceBatchOfTracesExpiresInFlight(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
+
+	// Flush only once all three records are buffered; it blocks until they are acknowledged or
+	// failed, so it runs in the background and stops with the test.
+	go func() {
+		for deadline := time.Now().Add(5 * time.Second); cl.BufferedProduceRecords() < int64(len(rs)); {
+			if time.Now().After(deadline) {
+				return // nothing is flushed, so the test fails below on the missing request
+			}
+			time.Sleep(time.Millisecond)
+		}
+		_ = cl.Flush(t.Context())
+	}()
 
 	err = produceWithin(t, 10*time.Second, ctx, cl, rs...)
 	if !errors.Is(err, context.DeadlineExceeded) {

@@ -669,7 +669,8 @@ func TestPostgresErrorRetriesTheBatch(t *testing.T) {
 	}
 }
 
-// Each batch attempt has a deadline of its own (ADR-0011, section 11).
+// Each batch attempt has a deadline of its own, so a stuck lock or a slow broker fails it and the
+// batch is retried (ADR-0011, section 11).
 func TestViewsConsumerConfigBoundsEachAttempt(t *testing.T) {
 	s, _ := newServerWithoutDB(nil)
 	if cfg := s.ViewsConsumerConfig("127.0.0.1:19092"); cfg.HandlerTimeout != 30*time.Second {

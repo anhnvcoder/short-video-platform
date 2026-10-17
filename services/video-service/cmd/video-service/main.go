@@ -1,7 +1,9 @@
 // Command video-service serves svp.video.v1.VideoService over gRPC and consumes the transcode
 // results of media.transcodes.v1.
 //
-// Subcommands (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 7):
+// Subcommands keep migrations and the health check in the service binary, since the distroless
+// image has no shell, curl or migration tool
+// (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 7):
 //
 //	serve        run the service (default when no subcommand is given)
 //	migrate      apply the database migrations, then exit

@@ -628,6 +628,21 @@ Silence và notification log của Alertmanager nằm ở volume có tên `alert
 ẩn danh của image: restart không quên silence, không gửi lại cảnh báo đang firing trước `repeat_interval`; `make down`
 giữ volume, `make clean-data` xoá nó cùng các volume khác của stack.
 
+**Link "Source" của cảnh báo đi qua Grafana.** Template Telegram mặc định của Alertmanager v0.34.1 chỉ có một link,
+`Source: {{ .GeneratorURL }}`, do Prometheus ghép từ external URL của nó; mặc định là `http://<container id>:9090/...`,
+không mở được trên máy vì Prometheus không publish cổng. Compose đặt cho Prometheus trong `lgtm` (qua
+`PROMETHEUS_EXTRA_ARGS`, `run-prometheus.sh` của image nối vào dòng lệnh)
+`--web.external-url=http://127.0.0.1:3000/api/datasources/proxy/uid/prometheus` và `--web.route-prefix=/`. Link đi qua
+datasource proxy của Grafana đã publish ở `127.0.0.1:3000` (anonymous Admin, chỉ loopback, OPS-2), không thêm cổng publish
+thứ tám (OPS-1, `drill-obs-threats` kiểm đúng 7 cổng). Route prefix giữ `/` nên mọi đường dẫn trong container và mạng compose
+không đổi: datasource Grafana `http://127.0.0.1:9090`, kiểm sẵn sàng của image, OTLP và remote write, Prometheus gửi
+`alertmanager:9093`. Alertmanager giữ external URL mặc định vì template Telegram không dùng nó. Prometheus 3 chuyển
+`/graph?...` sang `/query?...` cùng tiền tố; HTML dùng asset đường dẫn tương đối (`./assets/...`) nên tải được qua proxy.
+Cách kiểm (2026-10-18, `make up OBS=lgtm`): `/api/v1/status/flags` qua proxy có hai cờ trên; `curl -L` tới
+`<external URL>/graph?g0.expr=up&g0.tab=1` trả 200 HTML, asset JS, CSS của nó 200; `<external URL>/api/v1/query?query=up`
+trả `success`; trong `make drill-obs-threats`, `generatorURL` của `RateLimitFallbackActive` lấy từ API Alertmanager bắt đầu
+bằng external URL và `curl -L` link đó trả 200.
+
 ## 9. Stack local, image và đường dẫn cấu hình
 
 ### Các lựa chọn
@@ -691,15 +706,22 @@ Tempo **3200** (OTLP nội bộ **4417/4418**), Loki **3100**, Pyroscope **4040*
 /api/datasources/proxy/uid/pyroscope/...
 ```
 
-**Grafana không tải plugin lúc chạy.** Image gọi grafana.com mỗi lần khởi động: `run-grafana.sh` thêm
-`grafana-llm-app` vào `GF_PLUGINS_PREINSTALL`, Grafana 13 tự thêm các app Drilldown (Metrics/Logs/Traces/Profiles) và
-advisor, `preinstall_auto_update = true` cập nhật chúng lên bản mới nhất, không ghim version. Đó là lưu lượng ra ngoài
+**Grafana không tải plugin lúc chạy.** Image gọi grafana.com mỗi lần khởi động: Grafana 13 có sẵn một danh sách
+plugin preinstall mặc định, gồm cả datasource `prometheus`, `tempo`, `loki`, `grafana-pyroscope-datasource` (đi kèm bản
+Grafana của image nhưng vẫn được tải bản mới về `/data/grafana/plugins`), các app Drilldown (Metrics/Logs/Traces/Profiles),
+advisor và vài datasource khác; `run-grafana.sh` thêm `grafana-llm-app`; `preinstall_auto_update = true` cập nhật chúng lên
+bản mới nhất, không ghim version. Đó là lưu lượng ra ngoài
 ngoài danh sách được phép của lab (module Go, `go install`, pull image) và là code không ghim chạy trong Grafana
 anonymous Admin. Compose đặt `GF_PLUGINS_PREINSTALL_DISABLED=true`, `GF_PLUGINS_PREINSTALL_AUTO_UPDATE=false`,
 `GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED=true` (khoá ký plugin dùng bản có sẵn trong binary, không tải mỗi 10 ngày),
-cùng ba `GF_ANALYTICS_*=false` đã có. **Chấp nhận mất** app Drilldown và LLM trên volume `lgtm-data` mới; volume đã
-có giữ bản đã tải, không cập nhật nữa. Datasource Prometheus, Tempo, Loki, Pyroscope đi kèm bản Grafana của image,
-không phải plugin tải về; dashboard, Explore và liên kết trace ↔ log không phụ thuộc các app đó. Đã kiểm bằng
+cùng ba `GF_ANALYTICS_*=false` đã có. **Chấp nhận mất** app Drilldown và LLM trên volume `lgtm-data` mới; volume mới
+dùng datasource Prometheus, Tempo, Loki, Pyroscope đi kèm Grafana 13.2.3 của image. Volume `svp_lgtm-data` có từ
+2026-10-16 giữ 18 plugin đã tải hôm đó (17 của danh sách mặc định cùng `grafana-llm-app`), nay đóng băng, không cập nhật
+nữa, và Grafana nạp các bản đó thay cho bản đi kèm: API `/api/plugins/<id>/settings` ngày 2026-10-18 báo `tempo` 13.2.4,
+`loki` 13.2.2, `grafana-pyroscope-datasource` 13.0.7, `prometheus` 13.2.3, đúng version trong thư mục plugin của volume
+(đọc `:ro`). Khi đổi bản Grafana của image, `refresh_stale_managed_plugins` của image chỉ xoá 4 app Drilldown, không xoá
+các datasource đã tải. Không xoá volume để sửa việc này; cấu hình plugin giữ nguyên. Dashboard, Explore và liên kết
+trace ↔ log không phụ thuộc các app Drilldown. Đã kiểm bằng
 `run-grafana.sh` của image ghim, `--network none`, thư mục dữ liệu mới: mặc định `plugin.backgroundinstaller` ghi
 "Installing plugins" và lỗi gọi `https://grafana.com/api/plugins/...`; với các biến trên, sau 60 s không có dòng nào của
 installer, không lỗi tới grafana.com, API vẫn liệt kê đủ datasource. Trên stack `make up OBS=lgtm` với volume cũ
