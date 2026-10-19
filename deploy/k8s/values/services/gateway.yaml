@@ -14,7 +14,7 @@ env:
   LISTEN_ADDR: ":8080"
   USER_SERVICE_ADDR: user-service:9101
   VIDEO_SERVICE_ADDR: video-service:9102
-  FEED_SERVICE_ADDR: feed-service-missing:9104
+  FEED_SERVICE_ADDR: feed-service:9104
   ENGAGEMENT_SERVICE_ADDR: engagement-service:9103
   # Playlist and thumbnail URLs handed to clients: MinIO's media bucket through Gateway svp.
   MEDIA_PUBLIC_BASE_URL: https://s3.svp.localhost:8443/media
