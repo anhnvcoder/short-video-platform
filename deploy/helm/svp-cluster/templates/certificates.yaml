@@ -1,0 +1,56 @@
+{{- /*
+TLS of the entry point from a local CA run by cert-manager (ADR-0014 section 9): a self-signed issuer signs the CA, the
+CA issuer signs the wildcard certificate Envoy serves. Clients trust the CA alone (`make k8s-ca` writes it to
+.k8s/ca.crt), nothing is installed into the machine's trust store, and cert-manager renews both certificates as it
+would on a cloud cluster.
+*/}}
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: svp-selfsigned
+spec:
+  selfSigned: {}
+---
+# The CA lives in cert-manager's namespace: a ClusterIssuer reads its secret from the cluster resource namespace, which
+# defaults to cert-manager.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: svp-local-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: svp-local-ca
+  secretName: svp-local-ca
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: svp-selfsigned
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: svp-ca
+spec:
+  ca:
+    secretName: svp-local-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: svp-wildcard
+  namespace: svp-edge
+spec:
+  secretName: svp-wildcard-tls
+  dnsNames:
+    - {{ .Values.wildcardHost | quote }}
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: svp-ca

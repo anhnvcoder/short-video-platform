@@ -1,0 +1,106 @@
+{{- /*
+Postgres for every service, run by the CloudNativePG operator (ADR-0014 section 4; threat model IN-6, IN-9): one
+instance, several databases, each service with its own migrator and app roles. Clients reach it at
+svp-pg-rw.svp-data:5432 with sslmode=require (the operator issues the server certificate).
+
+Authentication: the operator's pg_hba allows only peer logins on the pod's own socket, certificate logins for
+replication, and `host all all all scram-sha-256` for every TCP connection. Nothing is added, so a TCP login always
+needs its SCRAM password and no rule trusts anyone (unlike the host's Postgres, which trusts loopback).
+*/}}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: svp-pg
+  namespace: {{ .Release.Namespace }}
+spec:
+  instances: 1
+  imageName: {{ .Values.postgres.image }}
+  # The superuser postgres may log in over TCP with the password of Secret pg-superuser (off by default). Only the
+  # pg-bootstrap Job below uses it; no service ever gets that Secret.
+  enableSuperuserAccess: true
+  superuserSecret:
+    name: pg-superuser
+  storage:
+    size: {{ .Values.postgres.storage }}
+  resources:
+    {{- toYaml .Values.postgres.resources | nindent 4 }}
+  inheritedMetadata:
+    labels:
+      # The instance manager (and the initdb Job) read the Cluster, its Secrets and report status through the API
+      # server: allow-kube-api of chart svp-cluster opens that egress only for pods with this label.
+      svp-kube-api: allow
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pg-bootstrap
+  namespace: {{ .Release.Namespace }}
+data:
+  # deploy/postgres/bootstrap.sql through a symlink: compose and the cluster run the same file.
+  bootstrap.sql: |-
+    {{- .Files.Get "files/bootstrap.sql" | nindent 4 }}
+  pg-bootstrap.sh: |-
+    {{- .Files.Get "files/pg-bootstrap.sh" | nindent 4 }}
+---
+# Databases and roles of the five Postgres users (four services and GlitchTip), as bootstrap.sh does for compose.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pg-bootstrap
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    {{- include "svp-data.initJobAnnotations" . | nindent 4 }}
+spec:
+  backoffLimit: 0
+  # A bound on the whole Job, beyond the script's own wait for the server.
+  activeDeadlineSeconds: {{ add .Values.initJobs.waitSeconds 120 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: svp-data-init
+        app.kubernetes.io/component: pg-bootstrap
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        # The image's postgres user.
+        {{- include "svp-data.podSecurityContext" (dict "uid" 26 "gid" 102) | nindent 8 }}
+      containers:
+        - name: pg-bootstrap
+          image: {{ .Values.postgres.image }}
+          command: ["bash", "/init/pg-bootstrap.sh"]
+          env:
+            - name: SVP_WAIT_SECONDS
+              value: {{ .Values.initJobs.waitSeconds | quote }}
+            - name: PGHOST
+              value: svp-pg-rw
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: postgres
+            - name: PGSSLMODE
+              value: require
+            - name: PGCONNECT_TIMEOUT
+              value: "5"
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef: {name: pg-superuser, key: username}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: {name: pg-superuser, key: password}
+          envFrom:
+            # SVP_<SERVICE>_{MIGRATOR,APP}_DB_PASSWORD, the names bootstrap.sh reads from .env.
+            - secretRef:
+                name: pg-roles
+          resources:
+            {{- toYaml .Values.initJobs.resources | nindent 12 }}
+          securityContext:
+            {{- include "svp-data.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: init
+              mountPath: /init
+              readOnly: true
+      volumes:
+        - name: init
+          configMap:
+            name: pg-bootstrap

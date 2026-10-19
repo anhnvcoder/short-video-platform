@@ -81,6 +81,8 @@ func TestRelayBrokerHoldingAckReleasesLockAndLeavesRowsUnsent(t *testing.T) {
 	default:
 		t.Fatal("the produce request never reached the broker")
 	}
+	// No metadata refresh term in the bound: the connection stays up, so the client cancels the
+	// held request itself once the records' deadline passes, whatever MetadataMinAge is.
 	if limit := r.produceTimeout + 2*time.Second; elapsed > limit {
 		t.Errorf("sendBatch() took %v, want at most %v", elapsed, limit)
 	}

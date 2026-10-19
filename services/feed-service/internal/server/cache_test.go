@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"os"
 	"slices"
 	"strings"
@@ -33,10 +34,13 @@ const loadMessage = "explore page loaded from database"
 // tests count Postgres reads, which a timed-out cache read adds.
 const testCacheTimeout = 5 * time.Second
 
-// loadLog is a slog.Handler keeping the page_size of every loadMessage record.
+// loadLog is a slog.Handler keeping the page_size, the cache result and the cache write result of
+// every loadMessage record.
 type loadLog struct {
-	mu    sync.Mutex
-	sizes []int64
+	mu     sync.Mutex
+	sizes  []int64
+	caches []string
+	writes []string
 }
 
 func (h *loadLog) Enabled(context.Context, slog.Level) bool { return true }
@@ -45,11 +49,16 @@ func (h *loadLog) Handle(_ context.Context, r slog.Record) error {
 	if r.Message != loadMessage {
 		return nil
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	r.Attrs(func(a slog.Attr) bool {
-		if a.Key == "page_size" {
-			h.mu.Lock()
+		switch a.Key {
+		case "page_size":
 			h.sizes = append(h.sizes, a.Value.Int64())
-			h.mu.Unlock()
+		case "cache":
+			h.caches = append(h.caches, a.Value.String())
+		case "cache_write":
+			h.writes = append(h.writes, a.Value.String())
 		}
 		return true
 	})
@@ -63,6 +72,20 @@ func (h *loadLog) logged() []int64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return slices.Clone(h.sizes)
+}
+
+// cacheResults returns the cache attribute of every loadMessage record.
+func (h *loadLog) cacheResults() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.caches)
+}
+
+// cacheWrites returns the cache_write attribute of every loadMessage record.
+func (h *loadLog) cacheWrites() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.writes)
 }
 
 // newCache returns a client to the test Redis and a key prefix of the test's own. After
@@ -423,7 +446,7 @@ func TestExploreCacheReadOfGoneRequestDoesNotWarn(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var logs bytes.Buffer
 			s := New(nil, client, prefix, slog.New(slog.NewJSONHandler(&logs, nil)))
-			if _, _, ok := s.cachedExplorePage(ctx, firstPageKey(prefix, "10")); ok {
+			if _, _, got := s.cachedExplorePage(ctx, firstPageKey(prefix, "10")); got == cacheHit {
 				t.Error("cachedExplorePage reported a hit")
 			}
 			if logs.Len() != 0 {
@@ -434,10 +457,153 @@ func TestExploreCacheReadOfGoneRequestDoesNotWarn(t *testing.T) {
 
 	var logs bytes.Buffer
 	s := New(nil, closedRedis(), "svp:test:closed:", slog.New(slog.NewJSONHandler(&logs, nil)))
-	if _, _, ok := s.cachedExplorePage(t.Context(), firstPageKey("svp:test:closed:", "10")); ok {
+	if _, _, got := s.cachedExplorePage(t.Context(), firstPageKey("svp:test:closed:", "10")); got == cacheHit {
 		t.Error("cachedExplorePage reported a hit with Redis down")
 	}
 	if !strings.Contains(logs.String(), `"msg":"read explore cache"`) {
 		t.Errorf("no WARN for Redis down; log:\n%s", &logs)
 	}
+}
+
+// The Postgres read of N concurrent requests on an empty cache is logged once, as a cache miss
+// whose page was then cached.
+func TestExploreLoadLogsCacheMiss(t *testing.T) {
+	s, _, _, log := cachedServer(t)
+	want := threeVideos(t)
+	countReads(s, 200*time.Millisecond)
+
+	for i, r := range exploreAtOnce(t, s, 50, 0) {
+		if r.err != nil || !slices.Equal(r.ids, want) {
+			t.Errorf("request %d: %v, %v; want %v", i, r.ids, r.err, want)
+		}
+	}
+	if got := log.cacheResults(); !slices.Equal(got, []string{"miss"}) {
+		t.Errorf("%q logged with cache %v, want once with miss", loadMessage, got)
+	}
+	if got := log.cacheWrites(); !slices.Equal(got, []string{"ok"}) {
+		t.Errorf("%q logged with cache_write %v, want once with ok", loadMessage, got)
+	}
+}
+
+// silentRedis returns a client to a TCP listener of the test's own that accepts connections and
+// never answers, so every command runs out of time: a Redis too slow for the cache budget.
+func silentRedis(t *testing.T) *redis.Client {
+	t.Helper()
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var conns []net.Conn
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns = append(conns, c)
+			mu.Unlock()
+		}
+	}()
+	// The production client: redisx's 50 ms timeouts, deadlines from the context, no retry.
+	client, err := redisx.New("redis://" + ln.Addr().String() + "/15")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = ln.Close()
+		<-done
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	})
+	return client
+}
+
+// With Redis too slow to answer, every request still gets the page from Postgres, and every
+// Postgres read is logged as caused by a cache timeout: one line per shared read that ran.
+func TestExploreLoadLogsCacheTimeout(t *testing.T) {
+	needDB(t)
+	want := threeVideos(t)
+	log := &loadLog{}
+	s := New(testPool, silentRedis(t), "svp:test:silent:", slog.New(log), WithCacheTimeout(20*time.Millisecond))
+	reads := countReads(s, 50*time.Millisecond)
+
+	const n = 50
+	for i, r := range exploreAtOnce(t, s, n, 0) {
+		if r.err != nil || !slices.Equal(r.ids, want) {
+			t.Errorf("request %d: %v, %v; want %v", i, r.ids, r.err, want)
+		}
+	}
+	got := log.cacheResults()
+	if len(got) == 0 || int64(len(got)) != reads() {
+		t.Errorf("%q logged %d times for %d Postgres reads, want one line per read and at least one", loadMessage, len(got), reads())
+	}
+	for i, c := range got {
+		if c != "timeout" {
+			t.Errorf("load %d logged with cache %q, want timeout", i, c)
+		}
+	}
+	t.Logf("%d concurrent requests on a silent Redis: %d shared Postgres read(s), each logged cache=timeout", n, reads())
+}
+
+// Caching the page read from Postgres on a Redis too slow to answer is logged as a write timeout
+// on the load line: the page may not be stored, so the next shared read finds none because Redis
+// was slow.
+func TestExploreLoadLogsCacheWriteTimeout(t *testing.T) {
+	needDB(t)
+	want := threeVideos(t)
+	log := &loadLog{}
+	s := New(testPool, silentRedis(t), "svp:test:silent:", slog.New(log), WithCacheTimeout(20*time.Millisecond))
+
+	resp, err := explore(t, s, ids.New(), 0, "")
+	if err != nil || !slices.Equal(videoIDs(resp.GetItems()), want) {
+		t.Fatalf("page = %v, %v; want %v", videoIDs(resp.GetItems()), err, want)
+	}
+	if got := log.cacheWrites(); !slices.Equal(got, []string{"timeout"}) {
+		t.Errorf("%q logged with cache_write %v, want once with timeout", loadMessage, got)
+	}
+}
+
+// A Redis failure other than a timeout, and cached bytes that do not decode, are logged as a
+// cache error on the Postgres read; with Redis down, caching the page fails the same way.
+func TestExploreLoadLogsCacheError(t *testing.T) {
+	t.Run("redis down", func(t *testing.T) {
+		needDB(t)
+		want := threeVideos(t)
+		log := &loadLog{}
+		s := New(testPool, closedRedis(), "svp:test:closed:", slog.New(log))
+		resp, err := explore(t, s, ids.New(), 0, "")
+		if err != nil || !slices.Equal(videoIDs(resp.GetItems()), want) {
+			t.Fatalf("page = %v, %v; want %v", videoIDs(resp.GetItems()), err, want)
+		}
+		if got := log.cacheResults(); !slices.Equal(got, []string{"error"}) {
+			t.Errorf("%q logged with cache %v, want once with error", loadMessage, got)
+		}
+		if got := log.cacheWrites(); !slices.Equal(got, []string{"error"}) {
+			t.Errorf("%q logged with cache_write %v, want once with error", loadMessage, got)
+		}
+	})
+	t.Run("corrupt page", func(t *testing.T) {
+		s, client, prefix, log := cachedServer(t)
+		want := threeVideos(t)
+		// Field 1, length 5, but one byte follows.
+		if err := client.Set(t.Context(), firstPageKey(prefix, "10"), []byte{0x0a, 0x05, 0x01}, ExploreCacheTTL).Err(); err != nil {
+			t.Fatal(err)
+		}
+		resp, err := explore(t, s, ids.New(), 0, "")
+		if err != nil || !slices.Equal(videoIDs(resp.GetItems()), want) {
+			t.Fatalf("page = %v, %v; want %v", videoIDs(resp.GetItems()), err, want)
+		}
+		if got := log.cacheResults(); !slices.Equal(got, []string{"error"}) {
+			t.Errorf("%q logged with cache %v, want once with error", loadMessage, got)
+		}
+	})
 }

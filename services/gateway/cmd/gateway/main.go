@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
@@ -230,6 +231,10 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("MEDIA_PUBLIC_BASE_URL: %w", err)
 	}
+	clientAddr, err := trustedProxies()
+	if err != nil {
+		return err
+	}
 
 	userConn, err := dial(userBackend)
 	if err != nil {
@@ -276,7 +281,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// The spans and metrics name the gateway by its service name and the port it listens on, a
 	// number even when LISTEN_ADDR names the port.
 	serverName := net.JoinHostPort(serviceName, strconv.Itoa(lis.Addr().(*net.TCPAddr).Port))
-	srv := httpx.NewServer(addr, api.New(userConn, videoConn, feedConn, engagementConn, authtoken.NewVerifier(keys), mediaBase, limits, serverName))
+	srv := httpx.NewServer(addr, api.New(userConn, videoConn, feedConn, engagementConn, authtoken.NewVerifier(keys), mediaBase, limits, clientAddr, serverName))
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(lis) }()
 	logger.InfoContext(ctx, "http server listening", slog.String("addr", lis.Addr().String()))
@@ -316,6 +321,52 @@ func parseMediaBaseURL(s string) (string, error) {
 		return "", errors.New("want a URL without query, fragment or userinfo")
 	}
 	return strings.TrimRight(s, "/"), nil
+}
+
+// trustedProxies reads TRUSTED_PROXY_HOPS and TRUSTED_PROXY_CIDRS into the ClientAddr that finds
+// each request's client address (see httpx.ClientAddr). HOPS is the number of proxies of ours in
+// front of the gateway, CIDRS the comma-separated ranges they connect from; X-Forwarded-For is
+// read only on connections from those ranges, and only its HOPS-th element from the right.
+//
+// HOPS defaults to 0, the connection's address: with no proxy in front (compose) every
+// X-Forwarded-For comes from the client, so trusting one hop there would let a client pick its
+// rate-limit bucket on every request. A wrong count fails silently at run time (one bucket for
+// everyone, or spoofed IPs, threat model RL-1), so every setting that cannot be right stops the
+// gateway instead: HOPS not a whole number >= 0, a range that does not parse, HOPS > 0 with no
+// range (no proxy would ever be trusted), or ranges with HOPS 0 (ranges that do nothing hide a
+// missing HOPS). The errors name the variable and never carry its value.
+func trustedProxies() (httpx.ClientAddr, error) {
+	hops, err := strconv.Atoi(envcfg.String("TRUSTED_PROXY_HOPS", "0"))
+	if err != nil || hops < 0 {
+		return httpx.ClientAddr{}, errors.New("TRUSTED_PROXY_HOPS: want a whole number >= 0")
+	}
+	var trusted []netip.Prefix
+	if cidrs := envcfg.String("TRUSTED_PROXY_CIDRS", ""); cidrs != "" {
+		for i, c := range strings.Split(cidrs, ",") {
+			p, err := netip.ParsePrefix(strings.TrimSpace(c))
+			if err != nil {
+				return httpx.ClientAddr{}, fmt.Errorf("TRUSTED_PROXY_CIDRS: element %d is not a CIDR like 10.42.0.0/16", i+1)
+			}
+			// Of unmaps the connection's address (::ffff:10.42.0.7 becomes 10.42.0.7) before it asks
+			// Contains, and an IPv6 prefix never contains an IPv4 address, so a range written in the
+			// mapped form would parse and never match. Store it as the IPv4 range it means; a
+			// mapped prefix shorter than 96 bits reaches beyond IPv4 and has no such form.
+			if p.Addr().Is4In6() {
+				if p.Bits() < 96 {
+					return httpx.ClientAddr{}, fmt.Errorf("TRUSTED_PROXY_CIDRS: element %d is an IPv4-mapped range shorter than /96", i+1)
+				}
+				p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+			}
+			trusted = append(trusted, p.Masked())
+		}
+	}
+	switch {
+	case hops > 0 && len(trusted) == 0:
+		return httpx.ClientAddr{}, errors.New("TRUSTED_PROXY_HOPS is above 0 but TRUSTED_PROXY_CIDRS is not set")
+	case hops == 0 && len(trusted) > 0:
+		return httpx.ClientAddr{}, errors.New("TRUSTED_PROXY_CIDRS is set but TRUSTED_PROXY_HOPS is 0")
+	}
+	return httpx.NewClientAddr(hops, trusted), nil
 }
 
 // dial returns a client connection to b at the gRPC address in its variable, with b's dial

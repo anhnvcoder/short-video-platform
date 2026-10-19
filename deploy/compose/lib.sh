@@ -34,17 +34,32 @@ fail() {
 # use up the per-IP register burst of 20 (ADR-0010, sections 2 and 7). Deletes the register
 # buckets (svp:gw:rl:register:*) in the gateway's Redis db 10 on 127.0.0.1:6379 with SCAN + DEL,
 # and no other key; the limit itself is not raised.
+#
+# With SVP_STACK=k3d (make k8s-smoke) the gateway runs in the local k3d cluster svp, behind Envoy,
+# and counts in the cluster's Valkey db 10 instead: the same SCAN + DEL of the same keys runs
+# there through `kubectl exec` (context k3d-svp only), since Valkey has no address on the host.
 reset_register_limit() {
-  local key n=0
-  command -v redis-cli >/dev/null || fail "redis-cli not found (brew install redis)"
-  redis-cli -h 127.0.0.1 -p 6379 -n 10 --scan --pattern 'svp:gw:rl:register:*' >"$work/register-keys" ||
-    fail "scan the register rate limit keys in Redis db 10"
+  local key n=0 cli where
+  case ${SVP_STACK:-compose} in
+    compose)
+      command -v redis-cli >/dev/null || fail "redis-cli not found (brew install redis)"
+      cli=(redis-cli -h 127.0.0.1 -p 6379 -n 10)
+      where="Redis db 10"
+      ;;
+    k3d)
+      cli=(kubectl --context k3d-svp -n svp-data exec deploy/valkey -c valkey -- valkey-cli -n 10)
+      where="Valkey db 10 of cluster svp"
+      ;;
+    *) fail "SVP_STACK must be compose or k3d (got ${SVP_STACK})" ;;
+  esac
+  "${cli[@]}" --scan --pattern 'svp:gw:rl:register:*' >"$work/register-keys" ||
+    fail "scan the register rate limit keys in $where"
   while IFS= read -r key; do
     [[ -n $key ]] || continue
-    redis-cli -h 127.0.0.1 -p 6379 -n 10 DEL "$key" >/dev/null || fail "delete a register rate limit key in Redis db 10"
+    "${cli[@]}" DEL "$key" >/dev/null || fail "delete a register rate limit key in $where"
     n=$((n + 1))
   done <"$work/register-keys"
-  ok "register rate limit reset for this lab run ($n keys deleted in Redis db 10)"
+  ok "register rate limit reset for this lab run ($n keys deleted in $where)"
 }
 reset_register_limit
 

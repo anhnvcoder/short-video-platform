@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"slices"
 	"strings"
@@ -90,7 +91,7 @@ func attrValue(attrs []attribute.KeyValue, key attribute.Key) (string, bool) {
 
 func TestTraceStartsNewRootIgnoringClientContext(t *testing.T) {
 	spans := recordSpans(t)
-	h := Trace(testServer)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := Trace(testServer, ClientAddr{})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		WriteProblem(w, r, http.StatusNotFound, "NOT_FOUND", "")
 	}))
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", nil)
@@ -121,7 +122,7 @@ func TestTraceClientAddressIsTheConnection(t *testing.T) {
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", nil)
 	r.RemoteAddr = "192.0.2.7:4321"
 	r.Header.Set("X-Forwarded-For", "a@example.com, 10.0.0.1")
-	Trace(testServer)(http.NotFoundHandler()).ServeHTTP(httptest.NewRecorder(), r)
+	Trace(testServer, ClientAddr{})(http.NotFoundHandler()).ServeHTTP(httptest.NewRecorder(), r)
 	ended := spans.Ended()
 	if len(ended) != 1 {
 		t.Fatalf("spans = %d, want 1", len(ended))
@@ -131,13 +132,31 @@ func TestTraceClientAddressIsTheConnection(t *testing.T) {
 	}
 }
 
+// TestTraceClientAddressBehindProxy: client.address comes from the ClientAddr Trace is given,
+// so behind a trusted proxy it is the address the proxy appended, never one the client wrote.
+func TestTraceClientAddressBehindProxy(t *testing.T) {
+	spans := recordSpans(t)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", nil)
+	r.RemoteAddr = "10.42.0.7:4321"
+	r.Header.Set("X-Forwarded-For", "203.0.113.7, 198.51.100.9")
+	clientAddr := NewClientAddr(1, []netip.Prefix{netip.MustParsePrefix("10.42.0.0/16")})
+	Trace(testServer, clientAddr)(http.NotFoundHandler()).ServeHTTP(httptest.NewRecorder(), r)
+	ended := spans.Ended()
+	if len(ended) != 1 {
+		t.Fatalf("spans = %d, want 1", len(ended))
+	}
+	if got, _ := attrValue(ended[0].Attributes(), "client.address"); got != "198.51.100.9" {
+		t.Errorf("client.address = %q, want 198.51.100.9 appended by the proxy", got)
+	}
+}
+
 // TestTraceServerIgnoresHost: server.address and server.port come from the server name, never
 // from the Host header the client sets, so a new Host adds no metric series and its value
 // reaches neither span nor metric.
 func TestTraceServerIgnoresHost(t *testing.T) {
 	reader := readMetrics(t)
 	spans := recordSpans(t)
-	h := Trace(testServer)(http.NotFoundHandler())
+	h := Trace(testServer, ClientAddr{})(http.NotFoundHandler())
 	hosts := []string{"attacker-1.example", "attacker-2.example:4444", "user@example.com", "[2001:db8::1]:8443"}
 	for _, host := range hosts {
 		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/missing", nil)
@@ -180,7 +199,7 @@ func TestRoutesNameSpanAndMetric(t *testing.T) {
 	spans := recordSpans(t)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /videos/{video_id}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	h := Trace(testServer)(Routes(mux))
+	h := Trace(testServer, ClientAddr{})(Routes(mux))
 	for _, target := range []string{"/videos/01928c6e-7b3a-7cde-8f01-111111111111", "/nope/42"} {
 		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, nil))
 	}
@@ -212,7 +231,7 @@ func TestTraceLeavesOutProbes(t *testing.T) {
 	reader := readMetrics(t)
 	spans := recordSpans(t)
 	ran := 0
-	h := Trace(testServer)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := Trace(testServer, ClientAddr{})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ran++
 		if (r.URL.Path == "/healthz" || r.URL.Path == "/readyz") && traceID(r.Context()) != "" {
 			t.Errorf("%s has a trace id", r.URL.Path)
@@ -266,7 +285,7 @@ func TestWriteGRPCErrorLogLine(t *testing.T) {
 	callErr := fmt.Errorf("get video: %w", status.Error(codes.Unavailable, "connection refused"))
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /videos/{video_id}", func(w http.ResponseWriter, r *http.Request) { WriteGRPCError(w, r, callErr) })
-	Trace(testServer)(Routes(mux)).ServeHTTP(httptest.NewRecorder(),
+	Trace(testServer, ClientAddr{})(Routes(mux)).ServeHTTP(httptest.NewRecorder(),
 		httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/videos/01928c6e-7b3a-7cde-8f01-111111111111", nil))
 	// Outside a route.
 	WriteGRPCError(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", nil), callErr)

@@ -12,3 +12,6 @@
 .terraform/
 *.tfstate
 *.tfstate.*
+
+# Local Kubernetes output: the cluster CA exported for curl, Helm cache and config of the k8s scripts
+.k8s/

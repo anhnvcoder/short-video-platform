@@ -1,0 +1,56 @@
+# Data tier in namespace svp-data (docs/adr/0014-kubernetes-local-stage4.md, sections 3, 4, 5, 8, 9 and 10). Installed
+# by deploy/k8s/install.sh as wave 4 of deploy/argocd/apps/components.json: after the CloudNativePG operator and KEDA
+# (wave 2, whose CRDs its Cluster and ClusterTriggerAuthentication need) and Redpanda (wave 3), before observability and
+# the services. Every Secret it reads is written by deploy/k8s/secrets.sh from .env before this release; none is in git.
+
+postgres:
+  # Major 15 like the host's Postgres the tests run on; minimal: no extension is needed.
+  image: ghcr.io/cloudnative-pg/postgresql:15.19-minimal-trixie@sha256:f6091200bc5e1926efea8babe8a511d091e9a253d8f33fe4e920d0e89a67b57e
+  storage: 2Gi
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 512Mi}
+
+valkey:
+  image: docker.io/valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+  # CPU limit one core, not 200m: the CFS quota is enforced per 100 ms period, and at 200m Valkey was throttled 4-14
+  # periods a minute while idle. A throttled period stalls it for longer than the gateway's 50 ms rate-limit store
+  # timeout, so a login burst left the shared bucket for each pod's fallback counter. Valkey runs commands on one
+  # thread, so one core is about the most it can use; the request stays small, it is mostly idle.
+  resources:
+    requests: {cpu: 20m, memory: 16Mi}
+    limits: {cpu: "1", memory: 128Mi}
+
+minio:
+  # Same image as compose; Chainguard's free tier publishes `latest` only, hence the digest.
+  image: cgr.dev/chainguard/minio@sha256:7df55d002b698e4494a131b848dd553361bbe58b7e19f62d9623c29af1ba9ccf
+  storage: 5Gi
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 512Mi}
+  # Presigned POST uploads and HLS playback from the host go through Gateway svp at https://<host>:8443.
+  host: s3.svp.localhost
+
+redpanda:
+  # The broker image, for rpk in the init Job.
+  image: docker.io/redpandadata/redpanda:v26.2.4@sha256:c98c2f04a751e6646012cc701bac5183252cee44c88ba1dfa412e4c7124f2e89
+  brokers: redpanda.svp-data.svc.cluster.local:9092
+  adminHosts: redpanda-0.redpanda.svp-data.svc.cluster.local:9644
+
+# The init Jobs (Postgres bootstrap, MinIO, Redpanda). waitSeconds bounds how long each waits for its server after an
+# install or upgrade before it fails.
+initJobs:
+  waitSeconds: 300
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 500m, memory: 512Mi}
+
+# Who may reach the data pods (ADR section 3, "flows opened"). Pods are chosen by label, so the policies exist before
+# their clients do: the six services and their migrate Jobs are labelled app.kubernetes.io/name=<service>.
+clients:
+  # Database of each service, by its pods and its migrate Job.
+  postgres: [user-service, video-service, engagement-service, feed-service]
+  # Rate limits (db 10) and the explore cache (db 14).
+  valkey: [gateway, feed-service]
+  kafka: [user-service, video-service, engagement-service, feed-service, media-worker]
+  minio: [video-service, media-worker]

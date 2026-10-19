@@ -61,8 +61,13 @@ dsn = key.get_dsn()
 if not dsn:
     raise SystemExit("bootstrap: GLITCHTIP_DOMAIN gives no DSN")
 
-# 4. Read-only API token of the drills. The model generates a random token.
-token, _ = APIToken.objects.get_or_create(user=admin, label=TOKEN_LABEL)
+# 4. Read-only API token of the drills, looked up by its label alone: after GLITCHTIP_ADMIN_EMAIL
+# changes, the token made for the previous admin (still a member of the organization) stays the
+# one, instead of a second one beside it. Among several (a run from before this rule), the oldest,
+# the one deploy/k8s/glitchtip-init.sh also reads. The model generates a random token.
+token = APIToken.objects.filter(label=TOKEN_LABEL).order_by("pk").first()
+if token is None:
+    token = APIToken.objects.create(user=admin, label=TOKEN_LABEL)
 token.add_permissions(TOKEN_SCOPES)
 
 out = os.environ.get("SVP_GLITCHTIP_OUT")
@@ -79,6 +84,6 @@ print(
         Team.objects.filter(organization=org, slug=SLUG).count(),
         Project.objects.filter(organization=org, slug=SLUG).count(),
         ProjectKey.objects.filter(project=project, is_active=True).count(),
-        APIToken.objects.filter(user=admin, label=TOKEN_LABEL).count(),
+        APIToken.objects.filter(label=TOKEN_LABEL).count(),
     )
 )

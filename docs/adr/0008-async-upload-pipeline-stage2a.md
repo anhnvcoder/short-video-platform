@@ -1,6 +1,6 @@
 # 0008. Luồng upload bất đồng bộ của giai đoạn 2 phần A: franz-go, aws-sdk-go-v2, outbox có khoá relay, media-worker trên alpine + ffmpeg
 
-- Trạng thái: Chấp nhận
+- Trạng thái: Chấp nhận; §9 (đúng một replica media-worker) chỉnh bởi [0014](0014-kubernetes-local-stage4.md) cho k8s
 - Ngày: 2026-10-11
 
 ## Bối cảnh

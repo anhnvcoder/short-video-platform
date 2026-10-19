@@ -1,0 +1,46 @@
+{{- /*
+TLS certificate of the CloudNativePG operator's webhook server (Service cnpg-webhook-service in cnpg-system, chart
+cloudnative-pg 0.29.1 of wave 2), issued by cert-manager instead of the operator. Left to itself, the operator makes a
+CA of its own and writes it into its MutatingWebhookConfiguration and ValidatingWebhookConfiguration, which takes patch
+on every webhook configuration of the cluster: enough to change a webhook's rules and target so that the API server
+sends it every Secret written in any namespace. Here cert-manager writes the key pair into Secret cnpg-webhook-cert, the
+one the chart mounts into the operator's pod and the operator serves from, and its cainjector writes the certificate
+into both webhook configurations (annotation cert-manager.io/inject-ca-from in deploy/k8s/values/cloudnative-pg.yaml,
+cainjector's rights are an exception noted in deploy/k8s/values/cert-manager.yaml). The operator runs with
+MANAGE_WEBHOOK_CONFIGURATIONS=false, leaves them alone, and holds no right on them (templates/cnpg-rbac.yaml).
+
+CloudNativePG 1.30.1 still reads this Secret at its start and every hour (pkg/certs/k8s.go) and signs a new certificate
+into it with its own CA when the DNS names differ from exactly cnpg-webhook-service.cnpg-system.svc or it expires within
+7 days. Hence that one DNS name below, and cert-manager's default renewal (30 days before the end of a 90-day
+certificate), always before the operator would step in. Self-signed: the API server trusts this one certificate,
+nothing else cert-manager issues. At a renewal the API server trusts the new certificate at once while the operator
+serves the old one until the kubelet refreshes the mounted Secret (about a minute); writes to CloudNativePG's resources
+are refused meanwhile (failurePolicy Fail) and retried by whoever made them, as when the operator rotates its own.
+deploy/k8s/install.sh waits for this certificate before installing the operator, so the operator never starts without
+it and makes one of its own; on the GitOps path Argo CD's health check of Certificates does the same between waves.
+*/}}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: cnpg-selfsigned
+  namespace: cnpg-system
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: cnpg-webhook
+  namespace: cnpg-system
+spec:
+  # The Secret the chart mounts at /run/secrets/cnpg.io/webhook, keys tls.crt and tls.key as the operator reads them.
+  secretName: cnpg-webhook-cert
+  dnsNames:
+    - cnpg-webhook-service.cnpg-system.svc
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    group: cert-manager.io
+    kind: Issuer
+    name: cnpg-selfsigned

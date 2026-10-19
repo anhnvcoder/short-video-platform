@@ -1,0 +1,74 @@
+{{- /*
+Default-deny in both directions for every pod of the project's namespaces (ADR-0014 section 3; IN-2, FF-5): a pod
+reaches and is reached by nothing until a policy of its own chart opens that one flow, so a compromised pod cannot
+scan the cluster or call out to the internet. Platform namespaces (cert-manager, envoy-gateway-system, ...) are not
+denied by default: their charts ship no policies, their webhooks are called by the API server from the node network,
+and they hold no project data.
+
+Not needed despite the deny: kubelet probes and kubectl port-forward come from the node the pod runs on, which a
+NetworkPolicy cannot block.
+*/}}
+{{- range .Values.namespaces }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ .name }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# Name resolution for every pod: without it a pod could not even find the Services its own policies open.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: {{ .name }}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+{{- if .kubeAPI }}
+---
+# The API server for the pods that need it (operator instances, sidecars holding leases, Prometheus discovery), opted in
+# with the label svp-kube-api=allow. Pods call Service kubernetes (10.43.0.1:443), which kube-proxy rewrites to the
+# server node's 6443 before the policy filter sees the packet, so both the address before and after that rewrite are
+# allowed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kube-api
+  namespace: {{ .name }}
+spec:
+  podSelector:
+    matchLabels:
+      svp-kube-api: allow
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ $.Values.nodeSubnet }}
+      ports:
+        - protocol: TCP
+          port: 6443
+    - to:
+        - ipBlock:
+            cidr: {{ $.Values.kubeAPIServiceIP }}/32
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}
+{{- end }}

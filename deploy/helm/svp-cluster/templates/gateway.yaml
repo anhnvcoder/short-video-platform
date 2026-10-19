@@ -1,0 +1,67 @@
+{{- /*
+The single entry point (ADR-0014 section 9): Envoy Gateway's GatewayClass svp and Gateway svp in svp-edge, one HTTPS
+listener on 443 for *.svp.localhost, published on the host at 127.0.0.1:8443 through k3d's load balancer. No route
+for any operations UI is ever attached (OPS-2): those are reached through kubectl port-forward and their own login.
+*/}}
+# Settings of the Envoy proxy fleet of this class. externalTrafficPolicy Cluster instead of Envoy Gateway's default
+# Local: k3d's load balancer spreads connections over both nodes, and with Local the servicelb pod of the node without an
+# Envoy pod would have nowhere to send them. The client address is lost on the way anyway (k3d's load balancer and
+# servicelb both proxy or masquerade), so Cluster costs nothing.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: svp
+  namespace: envoy-gateway-system
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        externalTrafficPolicy: Cluster
+      envoyDeployment:
+        container:
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              # About 150 MiB expected with the shutdown manager (ADR section 2).
+              memory: 256Mi
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: svp
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: svp
+    namespace: envoy-gateway-system
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: svp
+  namespace: svp-edge
+spec:
+  gatewayClassName: svp
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: {{ .Values.wildcardHost | quote }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: svp-wildcard-tls
+      # Routes attach only from namespaces labelled svp-gateway-routes=true (svp, svp-data): a chart in any other
+      # namespace cannot publish a backend on the entry point by itself.
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              svp-gateway-routes: "true"

@@ -60,6 +60,10 @@ hoãn lại; học lại sau, dùng chính code của project làm tài liệu.
 
   Redis db 0, db 5 và db 7 đang chứa dữ liệu của dự án khác: không dùng, không `FLUSHDB` ở đó. Lệnh luôn ghi
   rõ port (`psql -h 127.0.0.1 -p 5432`, `redis-cli -p 6379 -n 14`).
+
+  Trong cluster k3d (giai đoạn 4) cùng tên database (cả `svp_glitchtip`) nằm trên Postgres `svp-pg` của CloudNativePG
+  (`svp-pg-rw.svp-data:5432`), gateway và feed-service dùng db 10 và db 14 của Valkey `valkey.svp-data:6379`; Postgres và
+  Redis native không bị đụng.
 - **Docker, compose, k3d chỉ chạy qua `Makefile`.** Mọi target gọi `env -u DOCKER_DEFAULT_PLATFORM docker ...`:
   shell global đặt `DOCKER_DEFAULT_PLATFORM=linux/amd64` cho dự án khác, nếu không bỏ biến này thì
   container chạy amd64 qua giả lập, chậm và tốn RAM. Chạy tay ngoài Makefile cũng phải thêm tiền tố đó.
@@ -94,7 +98,7 @@ Từ giai đoạn 1, cho code Go (`services/`, `internal/`, `tools/`), mọi l�
 liệt kê target):
 
 - `make tools`: cài một lần các công cụ ghim version (`protoc-gen-go`, `protoc-gen-go-grpc`, `sqlc`, `golangci-lint`,
-  `gitleaks`, `sloth` sinh rule SLO); `buf` cài bằng Homebrew.
+  `gitleaks`, `sloth` sinh rule SLO, `k3d`); `buf` cài bằng Homebrew.
 - `make generate`: chạy sau khi sửa `proto/` hoặc SQL của `sqlc`; code sinh ra (`gen/go`, code `sqlc`) được commit.
 - `make check`: `gofmt`, `go vet`, `golangci-lint run`, `buf lint` + `buf build`, `go test -race ./...` (có integration
   test trên Postgres native `127.0.0.1:5432` qua `SVP_TEST_POSTGRES_URL` và Redis native db 15 qua `SVP_TEST_REDIS_URL`,
@@ -103,8 +107,9 @@ liệt kê target):
   `PKGS=`, xem từng dòng bằng `go tool cover -html=cover.out`.
 - `make env`: sinh `.env` local (mode 600, mật khẩu DB, mật khẩu root MinIO và secret key S3 của từng service ngẫu nhiên,
   khoá JWT mới; thêm `GLITCHTIP_SECRET_KEY`, `GLITCHTIP_ADMIN_PASSWORD`, mật khẩu hai role `svp_glitchtip_*` và
-  `GLITCHTIP_ADMIN_EMAIL=admin@svp.local`). `.env` có sẵn thì chỉ bổ sung biến còn thiếu hoặc đang rỗng, không đổi giá trị
-  đã đặt.
+  `GLITCHTIP_ADMIN_EMAIL=admin@svp.local`; cho cluster k3d, compose bỏ qua: `SVP_PG_SUPERUSER_PASSWORD`,
+  `SVP_KAFKA_ADMIN_PASSWORD`, `SVP_KAFKA_KEDA_PASSWORD`, `SVP_KAFKA_<SERVICE>_PASSWORD` cho 5 service có Kafka,
+  `SVP_GRAFANA_ADMIN_PASSWORD`). `.env` có sẵn thì chỉ bổ sung biến còn thiếu hoặc đang rỗng, không đổi giá trị đã đặt.
 - Quy tắc đọc `.env` (`deploy/observability/glitchtip/dotenv.sh`, dùng chung cho `make env`, `make test-stack`,
   `make glitchtip-init`, bootstrap Postgres và script diễn tập): mỗi dòng là dòng trống, comment `#` ở cột 1, hoặc
   `KEY=value` với `KEY` ở cột 1 và `=` ngay sau; giá trị trơn (ASCII in được, không khoảng trắng, nháy, `\`, `$`) hoặc nằm
@@ -138,8 +143,9 @@ liệt kê target):
   `SENTRY_DSN`, `SENTRY_AUTH_TOKEN`, `SENTRY_ORG`, `SENTRY_PROJECT`, `SENTRY_API_URL` vào `.env` khi còn thiếu hay rỗng;
   idempotent, không đổi giá trị đã đặt. `make up OBS=lgtm` tự gọi nó. Database `svp_glitchtip` trên Postgres native, hai
   role `svp_glitchtip_migrator`, `svp_glitchtip_app` do bootstrap Postgres của `make up` tạo.
-- `make otelcol-validate`: `validate` của Collector ghim (`--network none`) cho cấu hình `obs` và cấu hình `obs-elastic`
-  (file `deploy/observability/elastic/otelcol-config.yaml` ghép đè lên file `obs`); chạy lại sau khi sửa một trong hai.
+- `make otelcol-validate`: `validate` của Collector ghim (`--network none`) cho cấu hình `obs`, cấu hình `obs-elastic`
+  (file `deploy/observability/elastic/otelcol-config.yaml` ghép đè lên file `obs`) và cấu hình của cluster k3d
+  (`deploy/observability/otelcol/k8s-config.yaml`); chạy lại sau khi sửa một trong ba.
 - `make slo`: sinh `deploy/observability/prometheus/rules/slo-generated.yaml` từ `deploy/observability/slo/svp-slos.yaml`
   bằng Sloth; file sinh được commit, chạy lại sau khi sửa spec. `make slo-check`: promtool của image LGTM ghim, không
   mạng: `check config` cho cấu hình Prometheus và hai file rule, rồi `test rules` (`svp-alerts.test.yaml`).
@@ -163,10 +169,12 @@ liệt kê target):
 - `make drill-rate-limit`, `make measure-explore-cache N=100`, `make drill-upload-cleanup`: diễn tập phần Redis, cache và
   job dọn, cùng chỗ. Lần lượt: vượt ngưỡng thì 429 `RATE_LIMITED` có `Retry-After`, mở quá 3 form upload thì 429
   `TOO_MANY_UPLOADS`, Redis không tới được (gateway dựng lại với `REDIS_URL` trỏ tên miền `.invalid`, Redis native không
-  bị tắt) thì login vẫn bị giới hạn bằng bộ đếm dự phòng còn feed, like, lượt xem vẫn chạy; N request đồng thời (mặc định
-  100, tối đa 150) lúc cache trống chỉ đọc Postgres một lần, script xoá khoá `svp:feed:explore:*` ở db 14 trước khi đo;
-  video bỏ dở quá hạn chuyển `FAILED` và object `uploads/<id>` bị xoá (mọi video khác nằm `UPLOADING` quá 20 s cũng bị
-  dọn).
+  bị tắt) thì login vẫn bị giới hạn bằng bộ đếm dự phòng còn feed, like, lượt xem vẫn chạy; hai sóng N request đồng thời
+  (mặc định 100, tối đa 150, sóng đầu lúc cache trống) chỉ đọc Postgres một lần, không kể lần đọc do Redis quá hạn 50 ms
+  (dòng `explore page loaded from database` có `cache=timeout`, hoặc đứng ngay sau dòng có `cache_write=timeout`: SET
+  quá hạn nên lần đọc sau không thấy trang; đạt khi tổng ≥ 1 và tổng − `timeout` − số dòng sau SET quá hạn ≤ 1, in tổng,
+  `timeout`, `miss`, `error`, số dòng sau SET quá hạn), script xoá khoá `svp:feed:explore:*` ở db 14 trước khi đo; video
+  bỏ dở quá hạn chuyển `FAILED` và object `uploads/<id>` bị xoá (mọi video khác nằm `UPLOADING` quá 20 s cũng bị dọn).
 - `make drill-alert-to-sentry`, `make drill-obs-threats`: diễn tập giai đoạn 3, chỉ trên stack `make up OBS=lgtm`, cần
   GlitchTip đã khởi tạo (`SENTRY_DSN`, `SENTRY_AUTH_TOKEN` trong `.env`, do `make up OBS=lgtm` hay `make glitchtip-init`
   ghi; script chỉ nhận `SENTRY_API_URL=http://127.0.0.1:8000`, không cổng loopback nào khác). Lần lượt: tắt feed-service,
@@ -188,6 +196,75 @@ liệt kê target):
   `SVP_UPLOAD_SWEEP_INTERVAL` rồi trả về mặc định; ba biến này **chỉ dùng cho diễn tập**, không đặt trong `.env` (hạn dọn
   upload dưới 15 phút ngắn hơn hạn form upload). Hai diễn tập giai đoạn 3 đọc Prometheus, Tempo, Loki qua datasource proxy
   của Grafana, API Alertmanager và API GlitchTip bằng token chỉ đọc, không in giá trị nào của `.env`.
+- Giai đoạn 4, cluster k3d `svp` ([ADR-0014](docs/adr/0014-kubernetes-local-stage4.md)), target ở `deploy/k8s/k8s.mk`.
+  Ràng buộc chung: chỉ chạy qua Makefile (`docker`/`k3d` với `env -u DOCKER_DEFAULT_PLATFORM`, `kubectl`/`helm` luôn
+  `--context k3d-svp`, cache Helm ở `.k8s/helm`); `k3d` ghim cài bằng `make tools`. **Không chạy cùng compose:**
+  `make k8s-up`, `k8s-gitops-up`, `k8s-release` từ chối khi stack compose `svp` đang chạy; `make up` từ chối khi node của
+  cluster hay registry `k3d-svp-registry` đang chạy. Cổng chỉ trên `127.0.0.1`: API 6550, HTTPS của Envoy 8443
+  (`api.svp.localhost`, `s3.svp.localhost`, đều phân giải về loopback), registry 5111. Postgres (CloudNativePG), Valkey,
+  Redpanda (SASL + ACL), MinIO nằm trong cluster: target giai đoạn 4 không đụng Postgres/Redis native. File sinh ra nằm ở
+  `.k8s/` (gitignore). Biến chỉ đặt ở cluster: service có Kafka đăng nhập SASL SCRAM bằng `KAFKA_SASL_USERNAME`,
+  `KAFKA_SASL_PASSWORD` (đặt cả hai hay không biến nào; compose không đặt, broker không xác thực); gateway tin một hop
+  `X-Forwarded-For` từ dải pod của Envoy qua `TRUSTED_PROXY_HOPS=1`, `TRUSTED_PROXY_CIDRS=10.42.0.0/16` (compose: không
+  đặt, 0 hop; giá trị không hợp lệ thì gateway không khởi động). API server có PSA `restricted` mặc định cho mọi namespace
+  trừ `kube-system` (`deploy/k8s/pod-security-admission.yaml`, mount từ đường của repo lúc tạo cluster, đọc lại mỗi lần
+  node server khởi động): sửa `k3d.yaml` hay dời repo phải `make k8s-down && make k8s-up`, sửa file đó có hiệu lực ở lần
+  khởi động sau; `make k8s-up` từ chối cluster tạo khi chưa có cấu hình này, hay khi nguồn mount không còn là file, khác
+  file của repo hiện tại, hay version lệch `podSecurityVersion`.
+- `make k8s-up` / `make k8s-down` / `make k8s-status`: `k8s-up` tạo (hay khởi động) registry và cluster, build và push sáu
+  image tag `dev-<image ID>` (chỉ `--set`, không ghi file), cài `deploy/argocd/apps/components.json` theo wave bằng
+  `deploy/k8s/install.sh` (trong đó chạy `secrets.sh` sau `svp-cluster`, `glitchtip-init.sh` sau `svp-observability`),
+  xuất CA ra `.k8s/ca.crt`; idempotent, cần `.env` (`make env`), từ chối cluster do Argo CD quản (có Application
+  `svp-root`). Khi pod template của gateway (Argo Rollout) đổi, tức có canary, `k8s-up` tự chạy traffic diễn tập trong lúc
+  canary rồi dừng, chờ Rollout `Healthy` có hạn; abort hay inconclusive thì FAIL kèm lệnh gỡ (**LOCAL LAB ONLY**: traffic
+  xoá khoá rate limit đăng ký ở Valkey db 10 của cluster). `k8s-down` xoá cluster và registry (volume compose và Postgres
+  native không bị đụng). `k8s-status` in container, node và pod mọi namespace trừ `kube-system`.
+- `make k8s-secrets`, `make k8s-glitchtip-init`, `make k8s-ca`: `k8s-secrets` tạo/cập nhật Secret từ `.env` bằng
+  `kubectl apply` qua stdin, không in giá trị; mật khẩu superuser Redpanda đổi thì đặt vào broker đang chạy trước khi apply
+  (cần `redpanda-0` chạy; Admin API không trả lời hay không nhận mật khẩu nào thì dừng, không đổi Secret nào), MinIO hay
+  Redpanda chạy với mật khẩu khác `.env` thì restart; sau đó `make k8s-up` để Job init đặt mật khẩu mới và restart service
+  có Secret đổi (cluster GitOps: các bước tay ở đầu `deploy/k8s/gitops.sh`). `k8s-glitchtip-init` ghi DSN vào Secret
+  `svp/sentry` và token API chỉ đọc vào `svp-obs/glitchtip-api` (không vào `.env`, không in), restart service khởi động
+  khi chưa có DSN hiện tại; idempotent, `k8s-up` tự gọi, không cần `.env`. `k8s-ca` ghi CA của chứng chỉ TLS ra
+  `.k8s/ca.crt`.
+- `make k8s-images`, `make k8s-release SVC=<svc>|all`: `k8s-images` build sáu image từ working tree và push lên
+  `127.0.0.1:5111` tag `dev-<image ID>`. `k8s-release` build từ commit ở HEAD (từ chối khi code của image có thay đổi chưa
+  commit), push tag 12 ký tự hex của commit, ghi tag vào `deploy/k8s/values/services/<svc>.yaml`, in lệnh git để người
+  học commit và push, **không chạy lệnh git nào**; chỉ cần registry (tự tạo), không cần cluster.
+- `make k8s-gitops-up ARGOCD_DEPLOY_KEY=<file> [GITOPS_REV=main]`, `make measure-gitops REV=<commit>`: đường GitOps
+  (ADR-0014 §12), tạo cluster `svp` **mới** mà Argo CD dựng từ GitHub. Kiểm tag phát hành ở đúng revision (`origin/<nhánh>`
+  như lần fetch cuối, không `git fetch`) trước khi tạo gì, dựng lại image phát hành registry thiếu, tạo namespace và Secret
+  từ `.env`, cài Argo CD (namespace `argocd`, PSA `restricted`), Secret repo bằng deploy key **chỉ đọc** do người học tạo
+  trên GitHub (file mode 600, không passphrase; không in, không chép), AppProject `svp` và `default` đã khoá, root
+  `svp-root`; chờ mọi Application `Synced`, Healthy, sync cuối `Succeeded` (lỗi còn sau 180 s thì dừng). `measure-gitops`
+  đo commit phát hành từ lúc push (reflog `origin/main`, không có thì PushEvent qua `gh api`, chỉ đọc) qua sync của Argo CD
+  tới pod đầu và cuối Ready với tag mới; chỉ đọc, JSON ở `.k8s/drills/`.
+- `make k8s-traffic-start` / `make k8s-traffic-stop`: traffic diễn tập chạy nền, 4 user, ~10 request/s vào
+  `GET /feed/explore`, `/feed/following` qua `https://api.svp.localhost:8443`, mỗi request một dòng ở
+  `.k8s/drills/traffic-<time>.log`, chạy tới khi dừng (qua cả lúc push phát hành trên cluster GitOps); `stop` chỉ dừng
+  đúng pid đã ghi và in số request theo status. **LOCAL LAB ONLY:** đăng ký user mới và xoá khoá rate limit đăng ký ở
+  Valkey db 10 của cluster.
+- `make k8s-smoke`, `make drill-k8s-keda N=9`, `make drill-k8s-pdb`, `make drill-k8s-canary`, `make measure-canary`,
+  `make drill-k8s-threats`: trên cluster đang chạy, qua Envoy với `.k8s/ca.crt` (thiếu thì chạy `make k8s-ca`), script ở
+  `deploy/k8s/drills/` (`k8s-smoke` dùng `deploy/compose/smoke.sh`). Lần lượt: luồng đầu-cuối như `make smoke`; N (mặc
+  định 9, 6–12) video 60 s 1080p cùng lúc, đo KEDA scale media-worker lên 2/3 replica và về 1, lag đỉnh, mỗi `READY`,
+  CPU/RAM, scale down một pod đang transcode (ghim `paused-replicas` của KEDA thấp hơn một, pod tắt êm) rồi kiểm mọi
+  video transcode đúng một lần; cordon node và evict lần lượt hai pod gateway như drain: PDB cho pod đầu (201), từ chối
+  pod thứ hai (429) khi pod thay còn Pending, rồi uncordon; canary của gateway trên cluster dev dưới traffic diễn tập:
+  bản tốt qua 25%, 50%, 100% và được promote, bản lỗi (`FEED_SERVICE_ADDR` trỏ Service không có) bị phân tích abort,
+  trọng số về 0, pod stable không đổi, rồi trả bản tốt; `measure-canary` đọc lại lần abort canary gần nhất (chỉ đọc);
+  các dòng giai đoạn 4 của threat model, mỗi dòng có ca đối chứng (pod thử ở namespace `svp-probe` tạo rồi xoá,
+  NetworkPolicy, ACL Kafka, PSA, `pg_hba`, RL-1 với `X-Forwarded-For` giả, pprof/metrics, UI không lộ, Grafana 401,
+  RBAC: không ServiceAccount nào của `svp` đọc Secret hay pod, CloudNativePG và Envoy Gateway chỉ có quyền ở các
+  namespace đã thu hẹp, ngoại lệ còn lại in kèm lý do), log ở `.k8s/drills/threats-<time>.log` được dò các giá trị
+  Secret đã đọc. Kết quả và JSON ở `.k8s/drills/`; script trả cluster về như cũ khi kết thúc (uncordon, bỏ ghim KEDA,
+  trả bản gateway tốt). **LOCAL LAB ONLY:** trừ `measure-canary`, mọi target này xoá khoá `svp:gw:rl:register:*` ở
+  Valkey db 10 của cluster (qua `kubectl exec`).
+- `make k8s-ui-grafana`, `k8s-ui-prometheus`, `k8s-ui-alertmanager`, `k8s-ui-glitchtip`, `k8s-ui-argocd`: port-forward chỉ
+  trên `127.0.0.1` (lần lượt 3000, 9090, 9093, 8000, 8081) trong lúc target chạy (Ctrl-C để đóng); không HTTPRoute,
+  LoadBalancer hay NodePort nào cho UI (OPS-2). Grafana đăng nhập `admin` + `SVP_GRAFANA_ADMIN_PASSWORD`, GlitchTip bằng
+  `GLITCHTIP_ADMIN_EMAIL`/`GLITCHTIP_ADMIN_PASSWORD`, Argo CD (cluster GitOps, chứng chỉ tự ký) `admin` với mật khẩu đọc
+  bằng lệnh target in ra; Prometheus và Alertmanager không có đăng nhập nên chỉ mở khi forward đang chạy.
 - `make hooks`: bật git hook ở `.githooks/` một lần cho mỗi clone. `pre-commit` chạy `gofmt` trên file Go đã stage,
   `golangci-lint run`, `buf lint` và `gitleaks` trên thay đổi đã stage.
 

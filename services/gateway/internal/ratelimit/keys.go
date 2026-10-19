@@ -3,21 +3,20 @@ package ratelimit
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"net"
 	"net/http"
 	"net/netip"
 	"strings"
+
+	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/httpx"
 )
 
-// ClientIP is the id of the client's address for the IP classes: the host of the connection's
-// address (r.RemoteAddr). X-Forwarded-For, X-Real-IP, Forwarded and every other header the
-// client sets are ignored, since a client could put any address in them (threat model RL-1).
-// An IPv6 address counts as its /64, which a subscriber usually holds whole.
-func ClientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
+// ClientIP is the id of the client's address for the IP classes: the address that from, the
+// one ClientAddr the whole gateway asks, finds for r. Its zero value takes the connection's address
+// (r.RemoteAddr) and ignores X-Forwarded-For, X-Real-IP, Forwarded and every other header the
+// client sets, since a client could put any address in them (threat model RL-1). An IPv6
+// address counts as its /64, which a subscriber usually holds whole.
+func ClientIP(r *http.Request, from httpx.ClientAddr) string {
+	host := from.Of(r)
 	addr, err := netip.ParseAddr(host)
 	if err != nil {
 		return host

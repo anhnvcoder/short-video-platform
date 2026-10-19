@@ -1,0 +1,132 @@
+# Argo Rollouts v1.10.1 (chart https://argoproj.github.io/argo-helm argo-rollouts 2.43.8), release argo-rollouts in
+# namespace argo-rollouts, wave 2 of deploy/argocd/apps/components.json (docs/adr/0014-kubernetes-local-stage4.md,
+# sections 1, 3 and 13): the controller and its CRDs. The one Rollout is the gateway's (chart svp-service, wave 7), with
+# its AnalysisTemplate. The chart's pod meets Pod Security "restricted" (non-root, read-only root, drop ALL, seccomp
+# RuntimeDefault), which namespace argo-rollouts enforces: chart svp-cluster (wave 1) makes it with that label.
+#
+# Rights. By default the chart gives the controller a ClusterRole that reads every Secret of the cluster (for analysis
+# templates that name one), creates Jobs in every namespace (job metrics: a Job with envFrom of any Secret, whose
+# termination log anyone listing its pods reads), updates every pod (its image too) and patches every Service. Here the
+# controller runs namespaced instead: clusterInstall false makes the chart pass --namespaced and render its rules as a
+# Role in argo-rollouts only, and --namespace=svp below points every informer at svp, the one namespace with a Rollout.
+# Its own objects stay in argo-rollouts (lease, argo-rollouts-config with the plugin, the notification ConfigMap and
+# Secret): the controller reads those through defaults.Namespace(), the namespace of its ServiceAccount, not through
+# --namespace. In svp it gets Role argo-rollouts below, which holds what a canary of the gateway needs and nothing more.
+#
+# What a taken-over controller keeps. In argo-rollouts, the chart's rules, which no value of chart 2.43.8 narrows: it
+# reads the Secrets there, creates Jobs, updates Deployments (its own included) and pods, creates Services and
+# Ingresses. Pod Security "restricted" on that namespace bounds what those can start: a pod that runs as non-root,
+# without privilege, capabilities, hostPath or host namespaces, so the node and its files stay out of reach; such a pod
+# gets only the Secrets and ServiceAccounts of argo-rollouts, the controller's own. In svp, ReplicaSets it creates,
+# changes and deletes, and the pods of svp it lists and evicts. That much is the job of any workload controller, and it
+# reaches the Secrets of svp too (a ReplicaSet whose pods take envFrom user-service-env), as the Deployment controller
+# of the control plane does. No Secret of any other namespace, no pod, Service or route outside argo-rollouts and svp,
+# no route of svp but HTTPRoute api.
+#
+# Upgrading Argo Rollouts: render the new chart with these values, compare the controller's rules in Role argo-rollouts
+# (namespace argo-rollouts) with the old render, check that the new controller still watches only what Role
+# argo-rollouts of svp below allows (its informers: cmd/rollouts-controller/main.go and controller/controller.go of the
+# new tag), and that it logs no "forbidden" (kubectl --context k3d-svp -n argo-rollouts logs deployment/argo-rollouts |
+# grep -i forbidden) through one canary of the gateway.
+
+clusterInstall: false
+
+controller:
+  # One controller: the lab runs one canary at a time, and a second replica only waits for the lease (about 150 MiB,
+  # ADR section 2).
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  extraArgs:
+    # With --namespaced (clusterInstall false) the controller watches the namespace of its kubeconfig, which this
+    # override names: the Rollouts, ReplicaSets, Services, pods and analysis objects of svp.
+    - --namespace=svp
+  extraEnv:
+    # Job metrics would otherwise run their Jobs, and watch Jobs and their pods, in the watched namespace (svp). No
+    # analysis here uses a Job; the informers then watch argo-rollouts, where the chart's Role covers them.
+    - name: ARGO_ROLLOUTS_ANALYSIS_JOB_NAMESPACE
+      value: argo-rollouts
+  # Traffic router plugin Gateway API v0.17.0, the binary for the nodes' arm64 (amd64:
+  # .../v0.17.0/gatewayapi-plugin-linux-amd64, sha256 1904ca787d33107c140521899d61fff030ee75d99908bd175fca5a4647759061).
+  # The controller downloads it from GitHub when it starts (namespace argo-rollouts denies no egress) and refuses a file
+  # whose sha256 differs; the release publishes no checksum file, so the value was computed on the downloaded asset and
+  # matches the asset digest GitHub shows (ADR section 13). It runs as a child process of the controller, with the
+  # controller's ServiceAccount: it gets and updates HTTPRoute api (Role below), nothing else.
+  trafficRouterPlugins:
+    - name: argoproj-labs/gatewayAPI
+      location: https://github.com/argoproj-labs/rollouts-plugin-trafficrouter-gatewayapi/releases/download/v0.17.0/gatewayapi-plugin-linux-arm64
+      sha256: 5221279f7bf2c9b2c0ff6ed7ff12718ecce1d4892f1ff5e5224bb723cfd0fd92
+
+# The providers' rules (Istio, SMI, Ambassador, ..., Gateway API) would only be added to the Role in argo-rollouts,
+# which holds no route; the plugin's right on HTTPRoute api is in Role argo-rollouts of svp.
+providerRBAC:
+  enabled: false
+
+extraObjects:
+  # What the controller does in svp, by rule. Left out of the chart's rules: Secrets (no analysis here reads one),
+  # ConfigMaps, Jobs (job metrics run in argo-rollouts, see extraEnv), Deployments and pod templates (no workloadRef),
+  # pod updates (no canary or stable metadata), creating and deleting Services (experiments only), writes on Ingresses,
+  # ClusterAnalysisTemplates (a namespaced controller does not watch them) and every traffic provider but HTTPRoute api.
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: argo-rollouts
+      namespace: svp
+    rules:
+      # The Rollout itself; finalizers so that the ReplicaSets and AnalysisRuns it owns may block its deletion.
+      - apiGroups: [argoproj.io]
+        resources: [rollouts, rollouts/status, rollouts/finalizers]
+        verbs: [get, list, watch, update, patch]
+      # Background analysis: an AnalysisRun per canary from AnalysisTemplate gateway-canary.
+      - apiGroups: [argoproj.io]
+        resources: [analysisruns]
+        verbs: [create, get, list, watch, update, patch, delete]
+      - apiGroups: [argoproj.io]
+        resources: [analysistemplates, experiments]
+        verbs: [get, list, watch]
+      # The stable and canary ReplicaSets.
+      - apiGroups: [apps]
+        resources: [replicasets]
+        verbs: [create, get, list, watch, update, patch, delete]
+      # Services gateway and gateway-canary: the controller adds rollouts-pod-template-hash to their selectors.
+      - apiGroups: [""]
+        resources: [services]
+        verbs: [get, list, watch, patch]
+      # spec.restartAt (restart without a new revision) lists the Rollout's pods and evicts the old ones, through the
+      # PodDisruptionBudget.
+      - apiGroups: [""]
+        resources: [pods]
+        verbs: [list, watch]
+      - apiGroups: [""]
+        resources: [pods/eviction]
+        verbs: [create]
+      - apiGroups: [""]
+        resources: [events]
+        verbs: [create, update, patch]
+      # The controller starts an Ingress informer whatever the traffic router, and waits for it to sync.
+      - apiGroups: [networking.k8s.io]
+        resources: [ingresses]
+        verbs: [list, watch]
+      # The plugin reads HTTPRoute api by name and writes the weights of its two backendRefs (and a label while a canary
+      # runs) with an update.
+      - apiGroups: [gateway.networking.k8s.io]
+        resources: [httproutes]
+        resourceNames: [api]
+        verbs: [get, update]
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: argo-rollouts
+      namespace: svp
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: Role
+      name: argo-rollouts
+    subjects:
+      - kind: ServiceAccount
+        name: argo-rollouts
+        namespace: argo-rollouts

@@ -1,0 +1,102 @@
+{{- /*
+Scaling and disruption of the service (ADR-0014 section 10).
+
+hpa: a HorizontalPodAutoscaler on CPU, read from the metrics-server k3s ships. Utilization is a percentage of the
+container's CPU request, which every release sets, so a gateway asking 100m scales out once its pods average 70m.
+
+pdb: a PodDisruptionBudget, only where at least two replicas always run. A voluntary disruption (a node drain, an
+eviction) may then take one pod at a time, never the last one serving. It selects pods by label, so for a Rollout it
+counts the stable and the canary pods alike; Argo Rollouts' own restart (spec.restartAt) evicts through it too.
+
+keda: a KEDA ScaledObject on the lag of the service's Kafka consumer group; KEDA creates and drives the HPA
+keda-hpa-<release> itself. Its Kafka scaler logs in through ClusterTriggerAuthentication keda-kafka (Redpanda user
+svp-keda, which may only DESCRIBE), made once for the cluster by chart svp-data: the KEDA operator may read the Secrets
+of namespace keda only (deploy/k8s/values/keda.yaml), so the login cannot be a TriggerAuthentication beside the
+ScaledObject. The operator runs in namespace keda, which denies no egress; Redpanda's ingress policy in svp-data opens
+9092 to it.
+*/}}
+{{- with .Values.hpa }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $.Release.Name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "svp-service.labels" $ | nindent 4 }}
+spec:
+  scaleTargetRef:
+    {{- if $.Values.canary }}
+    # The Rollout's scale subresource: the HPA sets its replicas, the controller sizes the stable and canary
+    # ReplicaSets from them, and the CPU it reads is that of every pod of the Rollout, canary included.
+    apiVersion: argoproj.io/v1alpha1
+    kind: Rollout
+    {{- else }}
+    apiVersion: apps/v1
+    kind: Deployment
+    {{- end }}
+    name: {{ $.Release.Name }}
+  minReplicas: {{ required (printf "hpa.minReplicas is empty for release %s" $.Release.Name) .minReplicas }}
+  maxReplicas: {{ required (printf "hpa.maxReplicas is empty for release %s" $.Release.Name) .maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ required (printf "hpa.cpuUtilization is empty for release %s" $.Release.Name) .cpuUtilization }}
+{{- end }}
+{{- with .Values.pdb }}
+{{- if lt (int ($.Values.hpa.minReplicas | default 0)) 2 }}
+{{- fail (printf "release %s sets pdb without hpa.minReplicas >= 2: a budget on one replica blocks every drain or allows everything" $.Release.Name) }}
+{{- end }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $.Release.Name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "svp-service.labels" $ | nindent 4 }}
+spec:
+  minAvailable: {{ required (printf "pdb.minAvailable is empty for release %s" $.Release.Name) .minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "svp-service.selectorLabels" $ | nindent 6 }}
+{{- end }}
+{{- with .Values.keda }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ $.Release.Name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "svp-service.labels" $ | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ $.Release.Name }}
+  # No pollingInterval: with minReplicaCount 1 or more KEDA's polling only refreshes the ScaledObject's status (its
+  # admission webhook warns that the field "is not relevant for scaling"); the scaling itself follows the HPA, which
+  # asks KEDA's metrics server for the lag at every sync of the HPA controller, every 15 s.
+  minReplicaCount: {{ required (printf "keda.minReplicas is empty for release %s" $.Release.Name) .minReplicas }}
+  maxReplicaCount: {{ required (printf "keda.maxReplicas is empty for release %s" $.Release.Name) .maxReplicas }}
+  # No cooldownPeriod: KEDA applies it only when scaling to zero, and minReplicaCount is at least 1. Scaling down from
+  # several replicas follows the HPA's scale-down stabilization window, Kubernetes' default 300 s.
+  triggers:
+    - type: kafka
+      authenticationRef:
+        kind: ClusterTriggerAuthentication
+        name: keda-kafka
+      metadata:
+        bootstrapServers: {{ required (printf "env.KAFKA_BROKERS is empty for release %s" $.Release.Name) $.Values.env.KAFKA_BROKERS | quote }}
+        topic: {{ required "keda.kafka.topic is empty" .kafka.topic | quote }}
+        consumerGroup: {{ required "keda.kafka.consumerGroup is empty" .kafka.consumerGroup | quote }}
+        lagThreshold: {{ required "keda.kafka.lagThreshold is empty" .kafka.lagThreshold | quote }}
+        # A partition no member has committed on yet counts from its first record, as franz-go's consumer starts
+        # there (ConsumeResetOffset defaults to the start of the partition).
+        offsetResetPolicy: earliest
+        # Only partitions with lag count towards the replicas, and never more replicas than such partitions: a
+        # consumer beyond the partition count would get no partition and sit idle.
+        limitToPartitionsWithLag: "true"
+        allowIdleConsumers: "false"
+{{- end }}

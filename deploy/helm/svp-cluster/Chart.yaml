@@ -1,0 +1,7 @@
+apiVersion: v2
+name: svp-cluster
+description: >-
+  Cluster-wide base of the short-video platform on k3d: namespaces with Pod Security labels, default-deny
+  NetworkPolicy, the local CA and wildcard certificate, the Envoy Gateway entry point.
+type: application
+version: 0.1.0

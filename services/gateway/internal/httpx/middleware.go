@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"runtime/debug"
@@ -27,8 +26,9 @@ import (
 // baggage the client sent is neither read nor linked (ADR-0007 section 8). logx writes the
 // span's trace_id and span_id into every record logged with the request's context, and the
 // stats handler of ClientTelemetry continues the trace in the services. The span is named after
-// the method until Routes names the matched route. Its client.address is the connection's
-// address: otelhttp would take X-Forwarded-For, which the client sets (threat model RL-1).
+// the method until Routes names the matched route. Its client.address comes from clientAddr,
+// the same as the rate limits by IP: otelhttp would take the first element of X-Forwarded-For,
+// which the client writes (threat model RL-1).
 //
 // server is the gateway's host:port, with a numeric port; it gives the server.address and
 // server.port of spans and metrics. Without it otelhttp takes both from the Host header, which
@@ -37,14 +37,10 @@ import (
 //
 // The probes /healthz and /readyz, which run every few seconds, get neither span nor metric;
 // they are matched by their exact path.
-func Trace(server string) func(http.Handler) http.Handler {
+func Trace(server string, clientAddr ClientAddr) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return otelhttp.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			host, _, err := net.SplitHostPort(r.RemoteAddr)
-			if err != nil {
-				host = r.RemoteAddr
-			}
-			trace.SpanFromContext(r.Context()).SetAttributes(semconv.ClientAddress(host))
+			trace.SpanFromContext(r.Context()).SetAttributes(semconv.ClientAddress(clientAddr.Of(r)))
 			next.ServeHTTP(w, r)
 		}), "",
 			otelhttp.WithServerName(server),

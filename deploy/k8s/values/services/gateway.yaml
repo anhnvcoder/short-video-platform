@@ -1,0 +1,49 @@
+# Release gateway of chart deploy/helm/svp-service (docs/adr/0014-kubernetes-local-stage4.md, sections 9 and 10): the
+# public HTTP API behind Envoy at https://api.svp.localhost:8443. Secret gateway-env holds JWT_VERIFY_KEYS, public
+# keys only: the gateway verifies tokens, it cannot sign them (threat model JWT-10).
+image:
+  repository: k3d-svp-registry:5111/svp/gateway
+  # Written by a release; empty means "the dev tag make k8s-up passes".
+  tag: ""
+protocol: http
+port: 8080
+resources:
+  requests: {cpu: 100m, memory: 64Mi}
+  limits: {cpu: "1", memory: 256Mi}
+env:
+  LISTEN_ADDR: ":8080"
+  USER_SERVICE_ADDR: user-service:9101
+  VIDEO_SERVICE_ADDR: video-service:9102
+  FEED_SERVICE_ADDR: feed-service:9104
+  ENGAGEMENT_SERVICE_ADDR: engagement-service:9103
+  # Playlist and thumbnail URLs handed to clients: MinIO's media bucket through Gateway svp.
+  MEDIA_PUBLIC_BASE_URL: https://s3.svp.localhost:8443/media
+  # Rate limits are counted in Valkey db 10 so every gateway pod shares one count; Valkey down, the gateway falls back
+  # to in-memory counters (ADR-0010 section 2).
+  REDIS_URL: redis://valkey.svp-data:6379/10
+  # Envoy appends the address of the connection it got to X-Forwarded-For: one trusted hop, believed only when the
+  # connection comes from the pod range, which the policy below narrows to Envoy's pods (threat model RL-1).
+  TRUSTED_PROXY_HOPS: "1"
+  TRUSTED_PROXY_CIDRS: 10.42.0.0/16
+  PYROSCOPE_SERVER_ADDRESS: http://pyroscope.svp-obs:4040
+  SENTRY_ENVIRONMENT: k3d
+# SENTRY_DSN from Secret sentry (errors to GlitchTip in svp-obs).
+errorTracking: true
+ingressFrom: [envoy]
+egressTo: [user-service, video-service, engagement-service, feed-service, valkey, collector, pyroscope, glitchtip]
+httpRoute:
+  host: api.svp.localhost
+# A Rollout with an analysed canary instead of a Deployment (ADR section 13): a new revision gets 25%, then 50% of the
+# requests through Envoy before it is promoted, and a canary whose 5xx or p99 Envoy measures above the limits is aborted
+# without a person. `make k8s-up` runs drill traffic while a canary is in progress (deploy/k8s/install.sh).
+canary: true
+# Two replicas at least, on the two nodes, so a node drain or a crash leaves one serving; up to four on CPU. 70% of
+# the 100m request leaves headroom before the pods are busy, and four replicas of at most 1 CPU each stay well inside
+# the machine's 8 CPUs beside three transcoding media-workers.
+hpa:
+  minReplicas: 2
+  maxReplicas: 4
+  cpuUtilization: 70
+pdb:
+  minAvailable: 1
+spreadAcrossNodes: true

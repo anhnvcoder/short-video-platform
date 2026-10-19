@@ -56,7 +56,7 @@ func newEdge(t *testing.T) *edge {
 	mux.Handle("GET /private/{id}", RequireAuth(verifier)(record))
 	mux.Handle("GET /public", record)
 	mux.HandleFunc("GET /panic", func(http.ResponseWriter, *http.Request) { panic("boom") })
-	e.handler = Trace(testServer)(Recover(AccessLog(mux)))
+	e.handler = Trace(testServer, ClientAddr{})(Recover(AccessLog(mux)))
 	return e
 }
 

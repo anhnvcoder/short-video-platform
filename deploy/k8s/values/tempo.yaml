@@ -1,0 +1,53 @@
+# Tempo 3.1.0 (chart https://grafana-community.github.io/helm-charts tempo 3.2.0, single binary), release tempo in
+# namespace svp-obs, wave 3 of deploy/argocd/apps/components.json (docs/adr/0014-kubernetes-local-stage4.md, sections 2,
+# 3 and 11). The Collector sends traces over OTLP/gRPC to tempo.svp-obs:4317; Grafana queries tempo.svp-obs:3200.
+
+tempo:
+  # Same metrics-generator as Tempo inside grafana/otel-lgtm (/otel-lgtm/tempo-config.yaml of the image): the service
+  # graph (traces_service_graph_*) and span metrics (traces_spanmetrics_*) are written to Prometheus with exemplars,
+  # for the service graph panels and Tempo's service map. Tempo 3.1 feeds the generator in single-binary mode without
+  # Kafka.
+  metricsGenerator:
+    enabled: true
+    processor:
+      span_metrics:
+        dimensions:
+          - service_name
+          - operation
+          - status_code
+    storage:
+      path: /var/tempo/generator/wal
+      remote_write:
+        - url: http://kps-prometheus.svp-obs:9090/api/v1/write
+          send_exemplars: true
+  overrides:
+    defaults:
+      metrics_generator:
+        processors: [service-graphs, span-metrics]
+  # No usage reports to stats.grafana.org, as in compose.
+  reportingEnabled: false
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {memory: 768Mi}
+  # Pod Security "restricted" (ADR section 3): the chart sets no container securityContext.
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+  # The chart's Jaeger receivers stay (setting them to null breaks its template); its Service lists their ports, but
+  # the NetworkPolicy of chart svp-observability opens only 4317 to the Collector and 3200 to Grafana.
+
+# Pod level, for the same reason: the image's user 10001, seccomp RuntimeDefault.
+securityContext:
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# Blocks and the generator's WAL on a local volume, so traces survive a pod restart.
+persistence:
+  enabled: true
+  storageClassName: local-path
+  size: 5Gi

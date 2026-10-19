@@ -1,0 +1,73 @@
+# OpenTelemetry Collector contrib 0.162.0 (chart https://open-telemetry.github.io/opentelemetry-helm-charts
+# opentelemetry-collector 0.176.0), release otel-collector in namespace svp-obs, wave 6 of
+# deploy/argocd/apps/components.json (docs/adr/0014-kubernetes-local-stage4.md, sections 3 and 11). The six services
+# send OTLP/gRPC to otel-collector.svp-obs:4317; the Collector scrubs and forwards to Prometheus, Loki and Tempo.
+
+mode: deployment
+replicaCount: 1
+# Service otel-collector, the name every service's OTEL_EXPORTER_OTLP_ENDPOINT names.
+fullnameOverride: otel-collector
+
+# The image of compose's otelcol (deploy/compose/compose.yaml) and of `make otelcol-validate`, by the same index
+# digest; keep the three in step.
+image:
+  repository: otel/opentelemetry-collector-contrib
+  digest: sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
+command:
+  name: otelcol-contrib
+
+# The config is deploy/observability/otelcol/k8s-config.yaml, which chart svp-observability (wave 5) puts in ConfigMap
+# otel-collector-config under the key relay. Not the chart's own `config:`: that value is deep-merged with the chart's
+# defaults (Jaeger, Zipkin and Prometheus receivers, a debug exporter), so the running config would not be the file
+# in the repository. Without the chart's checksum annotation nothing rolls the pod when the ConfigMap changes:
+# deploy/k8s/install.sh passes the file's checksum as a pod annotation instead.
+configMap:
+  create: false
+  existingName: otel-collector-config
+
+# OTLP/gRPC only, as in compose; the chart opens OTLP/HTTP, Jaeger and Zipkin by default. No host port either: the
+# chart's hostPort applies to daemonset mode only, and the Service is ClusterIP.
+ports:
+  otlp:
+    enabled: true
+  otlp-http:
+    enabled: false
+  jaeger-compact:
+    enabled: false
+  jaeger-thrift:
+    enabled: false
+  jaeger-grpc:
+    enabled: false
+  zipkin:
+    enabled: false
+  metrics:
+    enabled: false
+
+# Pod Security "restricted" (ADR section 3): the image's user 10001, seccomp RuntimeDefault, no capability, a
+# read-only root (the config is mounted, nothing is written).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+# 256 MiB as compose's mem_limit. memory_limiter in the config (deploy/observability/otelcol/k8s-config.yaml) refuses
+# data on every pipeline from 144 MiB of heap (its soft limit: limit_mib 192 minus spike_limit_mib 48) and forces a GC
+# from 192 MiB. GOMEMLIMIT 140 MiB, just under the soft limit, makes the Go runtime collect harder as its memory nears
+# it, so garbage, which the limiter counts as heap until a GC frees it, is collected before it can trip the limiter;
+# the memory_limiter README of the pinned version asks for GOMEMLIMIT at 80% of limit_mib (154 MiB), which with its
+# 20% spike limit is the soft limit, and the spike limit here is 25%. Not the chart's useGOMEMLIMIT: that sets 80% of
+# the container's limit, 204 MiB, above both limits, so the runtime let garbage pile up past them.
+useGOMEMLIMIT: false
+extraEnvs:
+  - name: GOMEMLIMIT
+    value: 140MiB
+resources:
+  requests: {cpu: 50m, memory: 128Mi}
+  limits: {memory: 256Mi}

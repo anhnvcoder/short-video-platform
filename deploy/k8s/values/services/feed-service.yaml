@@ -1,0 +1,32 @@
+# Release feed-service of chart deploy/helm/svp-service (docs/adr/0014-kubernetes-local-stage4.md, section 10).
+# Secret feed-service-env holds DATABASE_URL (app role) and the Kafka login; feed-service-migrate-env the migrator
+# role's DATABASE_URL.
+image:
+  repository: k3d-svp-registry:5111/svp/feed-service
+  # Written by a release; empty means "the dev tag make k8s-up passes".
+  tag: ""
+protocol: grpc
+port: 9104
+migrate: true
+resources:
+  # Compose peaked at 82 MiB while loading 200,000 follows.
+  requests: {cpu: 100m, memory: 64Mi}
+  limits: {cpu: "1", memory: 256Mi}
+env:
+  LISTEN_ADDR: ":9104"
+  # Consumes user.follows.v1 and video.lifecycle.v1 to build the timelines on write (ADR-0009 sections 7 and 11).
+  KAFKA_BROKERS: redpanda.svp-data.svc.cluster.local:9092
+  # The first explore page is cached in Valkey db 14 for 5 s (ADR-0010 section 3).
+  REDIS_URL: redis://valkey.svp-data:6379/14
+  PYROSCOPE_SERVER_ADDRESS: http://pyroscope.svp-obs:4040
+  SENTRY_ENVIRONMENT: k3d
+# SENTRY_DSN from Secret sentry (errors to GlitchTip in svp-obs).
+errorTracking: true
+ingressFrom: [gateway]
+egressTo: [postgres, redpanda, valkey, collector, pyroscope, glitchtip]
+# One replica at rest, a second one when reads of the feeds keep it above 70% of its 100m CPU request. No
+# PodDisruptionBudget: at one replica it would block every node drain.
+hpa:
+  minReplicas: 1
+  maxReplicas: 2
+  cpuUtilization: 70

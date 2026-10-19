@@ -1,0 +1,29 @@
+{{- /*
+Its own ServiceAccount, with no Role or RoleBinding anywhere: the pod has no Kubernetes API rights, and no token is
+mounted (ADR-0014 section 10). A Service for every service with a port; media-worker has none.
+*/}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "svp-service.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+{{- if ne .Values.protocol "none" }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "svp-service.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "svp-service.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: {{ .Values.protocol }}
+      port: {{ .Values.port }}
+      targetPort: {{ .Values.protocol }}
+{{- end }}

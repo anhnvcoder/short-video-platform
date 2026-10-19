@@ -1,0 +1,47 @@
+# Envoy Gateway v1.9.2 (chart oci://docker.io/envoyproxy/gateway-helm), release envoy-gateway in namespace
+# envoy-gateway-system (docs/adr/0014-kubernetes-local-stage4.md, sections 1 and 9). The chart also brings the Gateway
+# API CRDs v1.6.1 (experimental channel). The proxy's own settings (Service, resources) are the EnvoyProxy of chart
+# svp-cluster.
+
+deployment:
+  envoyGateway:
+    resources:
+      limits:
+        # About 200 MiB expected at rest; the chart's 1 GiB would hide a leak on a machine with ~9.7 GiB for Docker
+        # (ADR section 2).
+        memory: 256Mi
+
+# By default the controller watches every namespace, with a ClusterRole that reads every Secret of the cluster
+# (svp/user-service-env, the JWT signing key, included) and patches every pod (the topology injector). Narrowed:
+config:
+  envoyGateway:
+    provider:
+      kubernetes:
+        # The controller watches these namespaces only, and the chart binds its namespaced rules (get/list/watch on
+        # Secrets, ConfigMaps, Services, EndpointSlices, Deployments, the Gateway API and Envoy Gateway kinds) in a
+        # Role in each instead of cluster-wide; what stays cluster-wide is read access to nodes and namespaces,
+        # GatewayClasses and ServiceImports, no Secret, no pod. svp-edge: Gateway svp and its certificate Secret
+        # svp-wildcard-tls. svp and svp-data: HTTPRoutes api and s3 and their backend Services (the namespaces labelled
+        # svp-gateway-routes in chart svp-cluster; a namespace given routes there must be added here, or its routes are
+        # never seen). envoy-gateway-system: EnvoyProxy svp of GatewayClass svp, the controller's own certificate
+        # Secrets and the Envoy fleet it runs there.
+        #
+        # This narrows the exception without closing it: Envoy Gateway v1.9.2 caches Secrets in every watched
+        # namespace, for the TLS and policy Secrets a Gateway, route or policy there may name, and no value narrows
+        # that by name, so the controller still reads the Secrets of svp and svp-data. Moving the routes out of those
+        # namespaces would not help: their backend Services keep them watched, with the same Role.
+        watch:
+          type: Namespaces
+          namespaces: [envoy-gateway-system, svp, svp-data, svp-edge]
+        # Off, as topologyInjector below. The chart writes its own switch one level too high (proxyTopologyInjector at
+        # the top of the EnvoyGateway config, which v1.9.2 ignores), so the controller would still serve the webhook
+        # on 9443 with nothing calling it; this is where v1.9.2 reads it.
+        proxyTopologyInjector:
+          disabled: true
+
+# The topology injector (a webhook on pod bindings in envoy-gateway-system that labels each Envoy pod with its node's
+# zone, for zone-aware routing) needs patch and update on pods: cluster-wide, or in every watched namespace once watch
+# is set. k3d's nodes have no zone, so it adds nothing here; off, the chart renders neither the webhook nor those rules,
+# and its certgen Job no ClusterRole patching webhook configurations. Nothing else in the controller reads pods.
+topologyInjector:
+  enabled: false

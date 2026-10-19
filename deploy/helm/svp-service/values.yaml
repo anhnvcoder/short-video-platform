@@ -1,0 +1,144 @@
+# Defaults shared by the six releases of svp-service (docs/adr/0014-kubernetes-local-stage4.md, sections 6, 8, 9, 10
+# and 11). Each release's own values are deploy/k8s/values/services/<service>.yaml; the release name is the service
+# name, which names the pods' label app.kubernetes.io/name, the Service, the ServiceAccount and the Secrets.
+# Installed by deploy/k8s/install.sh as wave 7 of deploy/argocd/apps/components.json, once every dependency runs.
+
+image:
+  # k3d-svp-registry:5111/svp/<service>: the local registry under the name the nodes resolve on network k3d-svp.
+  repository: ""
+  # Empty on purpose: `make k8s-up` passes the dev tag of the image it has just built with --set image.tag=..., a
+  # release writes its commit's tag into the values file. An empty tag fails the render naming the release.
+  tag: ""
+
+# http: the gateway (probes on /healthz). grpc: the four gRPC services (Kubernetes' own grpc probe on the standard
+# health service). none: media-worker (no port, no probe, no Service).
+protocol: none
+# Port the process listens on (LISTEN_ADDR) and the Service exposes; unused with protocol none.
+port: 0
+
+# Replica count of a workload without an autoscaler. With hpa or keda set the chart renders no spec.replicas at all:
+# a count in the manifest would be put back by every helm upgrade and by Argo CD's selfHeal each time the autoscaler
+# changes it, the two fighting over the field (ADR section 10). Such a workload starts with Kubernetes' default of 1
+# and its autoscaler raises it to its minimum.
+replicas: 1
+
+# HorizontalPodAutoscaler on CPU (metrics-server of k3s): {minReplicas, maxReplicas, cpuUtilization}. The utilization
+# is a percentage of the container's CPU request, so resources.requests.cpu must be set (it always is, see below).
+hpa: {}
+# PodDisruptionBudget {minAvailable}: only for a workload that always runs at least two replicas (hpa.minReplicas >= 2).
+# With one replica a budget either blocks every node drain for good (minAvailable: 1) or allows everything (0), so a
+# single-replica service has none.
+pdb: {}
+# Spread the replicas over the nodes (topologySpreadConstraints on kubernetes.io/hostname, ScheduleAnyway): with two
+# replicas on two nodes, losing one node leaves one replica serving. Soft, so a one-node cluster still schedules them.
+spreadAcrossNodes: false
+# KEDA ScaledObject on the consumer lag of a Kafka group, logged in through ClusterTriggerAuthentication keda-kafka
+# (chart svp-data; Redpanda user svp-keda): {minReplicas, maxReplicas, kafka: {topic, consumerGroup, lagThreshold}}.
+# The broker is env.KAFKA_BROKERS, the one the service consumes from.
+keda: {}
+
+# Run the service as an Argo Rollouts Rollout with an analysed canary instead of a Deployment (ADR section 13): Service
+# <release>-canary beside the stable one, HTTPRoute api split between the two, AnalysisTemplate <release>-canary on
+# Envoy's metrics of the canary backend. Only the gateway sets it: its route is the one Envoy measures per backend.
+canary: false
+
+# Annotations of the pod template. A changed value makes a new revision without a new image: the canary drill
+# (deploy/k8s/drills/canary.sh) changes one to run a canary of the code already running.
+podAnnotations: {}
+
+# A service with a database runs `migrate` with its migrator role in a Job before each install and upgrade.
+migrate: false
+
+# Every container of the project has requests and limits (threat model FF-3); the values file sets them per service.
+resources: {}
+migrateResources:
+  requests: {cpu: 50m, memory: 32Mi}
+  limits: {cpu: 500m, memory: 128Mi}
+
+# Environment of every service; a values file adds its own. Secrets are never here: they come from Secret
+# <service>-env (deploy/k8s/secrets.sh, from .env).
+env:
+  # Traces, metrics and logs go to the Collector in svp-obs; until it runs, export fails with a rate-limited WARN and
+  # the service works as before (ADR-0011 section 10).
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.svp-obs:4317
+  OTEL_EXPORTER_OTLP_INSECURE: "true"
+
+# Report errors to GlitchTip (internal/sentryx): SENTRY_DSN comes from Secret sentry, which
+# deploy/k8s/glitchtip-init.sh writes once GlitchTip runs (the DSN is GlitchTip's own, never in .env). The reference
+# is optional: a pod started before that Secret exists runs with error reporting off, and glitchtip-init.sh restarts
+# it once the DSN is there. media-worker reports no errors, as in compose.
+errorTracking: false
+
+# Writable directories of a container whose root filesystem is read-only: name -> {mountPath, sizeLimit, medium}.
+scratch: {}
+
+# terminationGracePeriodSeconds of the pod; empty keeps Kubernetes' 30 s.
+terminationGracePeriodSeconds: null
+
+# Pods each release may be reached from (ingressFrom) and may reach (egressTo), by name of the peers below; DNS is
+# open to every pod of svp already (chart svp-cluster). The namespace denies everything else in both directions, so
+# the lists are the whole of a service's traffic (ADR section 3, "flows opened"; IN-2, FF-5). Ingress is opened on
+# the service's own port only.
+ingressFrom: []
+egressTo: []
+
+# The pods of each peer, by namespace and labels, and the pod ports a client reaches them on (NetworkPolicy sees the
+# packet after a Service has been translated to a pod). The labels of svp-data are the ones its chart sets; those of
+# svp-obs are the labels of the pinned upstream charts there (helm template).
+peers:
+  envoy:
+    namespace: envoy-gateway-system
+    labels:
+      app.kubernetes.io/name: envoy
+      gateway.envoyproxy.io/owning-gateway-name: svp
+  gateway:
+    namespace: svp
+    labels: {app.kubernetes.io/name: gateway, app.kubernetes.io/component: server}
+  user-service:
+    namespace: svp
+    labels: {app.kubernetes.io/name: user-service, app.kubernetes.io/component: server}
+    ports: [9101]
+  video-service:
+    namespace: svp
+    labels: {app.kubernetes.io/name: video-service, app.kubernetes.io/component: server}
+    ports: [9102]
+  engagement-service:
+    namespace: svp
+    labels: {app.kubernetes.io/name: engagement-service, app.kubernetes.io/component: server}
+    ports: [9103]
+  feed-service:
+    namespace: svp
+    labels: {app.kubernetes.io/name: feed-service, app.kubernetes.io/component: server}
+    ports: [9104]
+  postgres:
+    namespace: svp-data
+    labels: {cnpg.io/cluster: svp-pg}
+    ports: [5432]
+  valkey:
+    namespace: svp-data
+    labels: {app.kubernetes.io/name: valkey}
+    ports: [6379]
+  redpanda:
+    namespace: svp-data
+    labels: {app.kubernetes.io/name: redpanda, app.kubernetes.io/instance: redpanda}
+    ports: [9092]
+  minio:
+    namespace: svp-data
+    labels: {app.kubernetes.io/name: minio}
+    ports: [9000]
+  collector:
+    namespace: svp-obs
+    labels: {app.kubernetes.io/name: opentelemetry-collector, app.kubernetes.io/instance: otel-collector}
+    ports: [4317]
+  pyroscope:
+    namespace: svp-obs
+    labels: {app.kubernetes.io/name: pyroscope, app.kubernetes.io/instance: pyroscope}
+    ports: [4040]
+  glitchtip:
+    namespace: svp-obs
+    labels: {app.kubernetes.io/name: glitchtip, app.kubernetes.io/component: server}
+    ports: [8000]
+
+# HTTPRoute on Gateway svp (svp-edge) to this release's Service; only the gateway sets a host.
+httpRoute:
+  host: ""

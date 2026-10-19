@@ -1,0 +1,58 @@
+# Pyroscope 2.4.0 (chart https://grafana.github.io/helm-charts pyroscope 2.4.0; compose runs 2.3.1 inside
+# grafana/otel-lgtm), release pyroscope in namespace svp-obs, wave 3 of deploy/argocd/apps/components.json
+# (docs/adr/0014-kubernetes-local-stage4.md, sections 2, 3 and 11). One single-binary pod (-target=all) on a local
+# volume. The five services but media-worker push profiles to http://pyroscope.svp-obs:4040, as in compose; Grafana
+# reads there too.
+
+pyroscope:
+  # The single binary finds its own metastore through the API server (-metastore.address=kubernetes:///..., Role
+  # pyroscope-discovery of the chart): allow-kube-api of chart svp-cluster opens that egress for pods with this label
+  # only. The chart puts these labels on every object it renders, the pod included.
+  extraLabels:
+    svp-kube-api: allow
+  # The chart's default is debug.
+  extraArgs:
+    log.level: info
+    # No usage reports to stats.grafana.org, as in compose.
+    usage-stats.enabled: "false"
+  # Profiles on the volume mounted at /data, as Pyroscope inside grafana/otel-lgtm keeps them in /data/pyroscope/shared.
+  structuredConfig:
+    storage:
+      backend: filesystem
+      filesystem:
+        dir: /data/shared
+  persistence:
+    enabled: true
+    storageClassName: local-path
+    size: 5Gi
+  # Pod Security "restricted" (ADR section 3): the chart sets neither seccomp nor a container securityContext. The
+  # image's user is 10001.
+  podSecurityContext:
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+  # With the root filesystem read-only, the compaction worker's scratch directory /tmp/pyroscope-compactor needs a
+  # volume of its own (Pyroscope fails to start without it).
+  extraVolumes:
+    - name: tmp
+      emptyDir:
+        sizeLimit: 512Mi
+  extraVolumeMounts:
+    - name: tmp
+      mountPath: /tmp
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {memory: 512Mi}
+
+# The chart's Alloy agent scrapes pods for profiles and its pod does not pass Pod Security "restricted"; the services
+# push their profiles themselves.
+alloy:
+  enabled: false

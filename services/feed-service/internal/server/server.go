@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -165,7 +166,7 @@ func (s *Server) GetExploreFeed(ctx context.Context, req *feedv1.GetExploreFeedR
 // the others; each caller still waits only as long as its own context allows.
 func (s *Server) firstExplorePage(ctx context.Context, p page) (*feedv1.GetExploreFeedResponse, error) {
 	key := s.cachePrefix + "explore:v1:first:" + strconv.Itoa(int(p.size))
-	if resp, _, ok := s.cachedExplorePage(ctx, key); ok {
+	if resp, _, got := s.cachedExplorePage(ctx, key); got == cacheHit {
 		return resp, nil
 	}
 	loaded := s.firstPages.DoChan(key, func() (any, error) {
@@ -173,19 +174,27 @@ func (s *Server) firstExplorePage(ctx context.Context, p page) (*feedv1.GetExplo
 		defer cancel()
 		// A request that missed the cache just before an earlier read filled it gets here once
 		// that read has ended: look again rather than read Postgres a second time.
-		if _, b, ok := s.cachedExplorePage(ctx, key); ok {
+		_, b, got := s.cachedExplorePage(ctx, key)
+		if got == cacheHit {
 			return b, nil
 		}
 		resp, err := s.explorePage(ctx, p)
 		if err != nil {
 			return nil, err
 		}
-		s.logger.InfoContext(ctx, "explore page loaded from database", slog.Int("page_size", int(p.size)))
-		b, err := proto.Marshal(resp)
+		b, err = proto.Marshal(resp)
 		if err != nil {
 			return nil, err
 		}
-		s.cacheExplorePage(ctx, key, b)
+		wrote := s.cacheExplorePage(ctx, key, b)
+		// The line carries why the cache did not serve this read, so the Postgres reads a slow
+		// Redis caused can be counted: the cache WARNs are logged at most once a minute and do
+		// not count them. The look just above is the one that decides whether Postgres is read.
+		// It also carries how caching the page ended: a write past the budget may leave no page,
+		// so the next shared read finds none (cache=miss) because Redis was slow, not because the
+		// page expired.
+		s.logger.InfoContext(ctx, "explore page loaded from database", slog.Int("page_size", int(p.size)),
+			slog.String("cache", string(got)), slog.String("cache_write", string(wrote)))
 		return b, nil
 	})
 	var r singleflight.Result
@@ -205,36 +214,69 @@ func (s *Server) firstExplorePage(ctx context.Context, p page) (*feedv1.GetExplo
 	return resp, nil
 }
 
-// cachedExplorePage returns the page cached under key, decoded and as stored. A miss, a Redis
-// error or timeout, and bytes that do not decode all report false: the caller reads Postgres
-// instead. A read that fails because the request of ctx was cancelled or ran out of time is not
-// a cache failure and is not logged.
-func (s *Server) cachedExplorePage(ctx context.Context, key string) (*feedv1.GetExploreFeedResponse, []byte, bool) {
+// cacheResult is how a read or a write of the explore cache ended.
+type cacheResult string
+
+const (
+	cacheHit cacheResult = "hit"
+	// cacheStored: a write Redis acknowledged.
+	cacheStored cacheResult = "ok"
+	// cacheMiss: no page under the key.
+	cacheMiss cacheResult = "miss"
+	// cacheTimeout: Redis did not answer within cacheTimeout.
+	cacheTimeout cacheResult = "timeout"
+	// cacheError: any other Redis failure, or cached bytes that do not decode.
+	cacheError cacheResult = "error"
+)
+
+// cachedExplorePage returns the page cached under key, decoded and as stored, and cacheHit. On a
+// miss, a Redis error or timeout, and bytes that do not decode it returns why: the caller reads
+// Postgres instead. A read that fails because the request of ctx was cancelled or ran out of time
+// is not a cache failure and is not logged.
+func (s *Server) cachedExplorePage(ctx context.Context, key string) (*feedv1.GetExploreFeedResponse, []byte, cacheResult) {
 	getCtx, cancel := context.WithTimeout(ctx, s.cacheTimeout)
 	defer cancel()
 	b, err := s.cache.Get(getCtx, key).Bytes()
 	if err != nil {
-		if !errors.Is(err, redis.Nil) && ctx.Err() == nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, nil, cacheMiss
+		}
+		if ctx.Err() == nil {
 			s.warnCache(ctx, "read explore cache", err)
 		}
-		return nil, nil, false
+		return nil, nil, cacheFailure(err)
 	}
 	resp := new(feedv1.GetExploreFeedResponse)
 	if err := proto.Unmarshal(b, resp); err != nil {
 		s.warnCache(ctx, "decode explore cache", err)
-		return nil, nil, false
+		return nil, nil, cacheError
 	}
-	return resp, b, true
+	return resp, b, cacheHit
 }
 
-// cacheExplorePage stores page b under key for ExploreCacheTTL. A failure is only logged: the
-// next request reads Postgres again.
-func (s *Server) cacheExplorePage(ctx context.Context, key string, b []byte) {
+// cacheFailure tells a Redis command that ran out of time from one that failed otherwise. With
+// the context deadline of redisx, go-redis reports running out of time three ways: the socket's
+// read, write or dial deadline (a net.Error whose Timeout is true), the context's own
+// context.DeadlineExceeded while it waits for a pooled connection (also a net.Error with Timeout
+// true), or redis.ErrPoolTimeout when the pool's wait of PoolTimeout ends first.
+func cacheFailure(err error) cacheResult {
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() || errors.Is(err, redis.ErrPoolTimeout) {
+		return cacheTimeout
+	}
+	return cacheError
+}
+
+// cacheExplorePage stores page b under key for ExploreCacheTTL and returns how the write ended. A
+// failure is only logged: the next request reads Postgres again.
+func (s *Server) cacheExplorePage(ctx context.Context, key string, b []byte) cacheResult {
 	ctx, cancel := context.WithTimeout(ctx, s.cacheTimeout)
 	defer cancel()
 	if err := s.cache.Set(ctx, key, b, s.exploreCacheTTL).Err(); err != nil {
 		s.warnCache(ctx, "write explore cache", err)
+		return cacheFailure(err)
 	}
+	return cacheStored
 }
 
 // warnCache logs a cache failure at most once per cacheWarnInterval.

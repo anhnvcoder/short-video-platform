@@ -1,0 +1,89 @@
+# Observability of the project in namespace svp-obs (docs/adr/0014-kubernetes-local-stage4.md, sections 3, 7 and 11).
+# Installed by deploy/k8s/install.sh as wave 5 of deploy/argocd/apps/components.json: after kube-prometheus-stack
+# (wave 2, whose CRDs the PrometheusRules need, and whose Grafana sidecars load the ConfigMaps below) and Loki, Tempo,
+# Pyroscope (wave 3), before the Collector (wave 6), which mounts the ConfigMap made here.
+
+# The pods of svp-obs and the pods elsewhere that talk to them, by namespace and labels: the labels the pinned upstream
+# charts put on their pods (helm template, then checked on the cluster), and those chart svp-service puts on the
+# services' pods. The NetworkPolicies choose pods by these, so a pod added later without them reaches nothing.
+pods:
+  prometheus: {app.kubernetes.io/name: prometheus, app.kubernetes.io/instance: kps-prometheus}
+  alertmanager: {app.kubernetes.io/name: alertmanager, alertmanager: kps-alertmanager}
+  grafana: {app.kubernetes.io/name: grafana, app.kubernetes.io/instance: kube-prometheus-stack}
+  kubeStateMetrics: {app.kubernetes.io/name: kube-state-metrics, app.kubernetes.io/instance: kube-prometheus-stack}
+  operator: {app: kube-prometheus-stack-operator, app.kubernetes.io/instance: kube-prometheus-stack}
+  loki: {app.kubernetes.io/name: loki, app.kubernetes.io/instance: loki}
+  tempo: {app.kubernetes.io/name: tempo, app.kubernetes.io/instance: tempo}
+  pyroscope: {app.kubernetes.io/name: pyroscope, app.kubernetes.io/instance: pyroscope}
+  collector: {app.kubernetes.io/name: opentelemetry-collector, app.kubernetes.io/instance: otel-collector}
+  # Chart svp-observability's own: the GlitchTip server (component init is its init Job).
+  glitchtip: {app.kubernetes.io/name: glitchtip, app.kubernetes.io/component: server}
+
+# The services in svp that send telemetry: all six send OTLP to the Collector; all but media-worker push profiles to
+# Pyroscope, as in compose (media-worker has no profiler and no error tracker).
+services:
+  otlp: [gateway, user-service, video-service, engagement-service, feed-service, media-worker]
+  profiles: [gateway, user-service, video-service, engagement-service, feed-service]
+  # Errors to GlitchTip, the same five (media-worker reports none, as in compose).
+  errors: [gateway, user-service, video-service, engagement-service, feed-service]
+
+# Docker network of the k3d nodes (subnet in deploy/k8s/k3d.yaml): Prometheus scrapes each node's kubelet (cAdvisor,
+# probes) on 10250.
+nodeSubnet: 10.200.0.0/24
+
+# GlitchTip, the error tracker of stage 3 in the cluster (ADR-0014 sections 3, 8 and 11; ADR-0011 section 7): the image
+# of compose (same digest), one pod running web and task worker, its database svp_glitchtip on Postgres svp-pg (roles
+# made by the pg-bootstrap Job of chart svp-data). Its Secrets glitchtip-env and glitchtip-admin come from .env
+# (deploy/k8s/secrets.sh); the DSN and the drills' API token go into Secrets by deploy/k8s/glitchtip-init.sh.
+glitchtip:
+  image: glitchtip/glitchtip:6.2.6@sha256:a3d8eb1b36c1e1603d55ab32711ea3dd8115874742a781a57391a62a16e0dff6
+  # The user the image declares by name only (app:app); the kubelet needs the numbers to check runAsNonRoot
+  # (`useradd -u 5000 app` in its Dockerfile; `id` in the image prints uid=5000 gid=5000).
+  uid: 5000
+  gid: 5000
+  # Compose gives it 512 MiB (mem_limit), the init Job too: the first migrate needs the most.
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 512Mi}
+  initResources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 500m, memory: 512Mi}
+  # The safe settings of x-glitchtip-env in deploy/compose/compose.yaml (keep the two in step): no self-registration,
+  # uptime checks, log ingest, DuckDB cold storage, metrics API or SMTP, and no SENTRY_DSN, so GlitchTip does not report
+  # on itself. Secrets (SECRET_KEY and the two database URLs) are in Secret glitchtip-env, never here.
+  env:
+    VALKEY_URL: ""
+    # DSNs it hands out name the address `make k8s-ui-glitchtip` forwards to; deploy/k8s/glitchtip-init.sh rewrites the
+    # one the services get to glitchtip.svp-obs:8000. Django compares the Host header without its port: the
+    # services' glitchtip.svp-obs, the short Service name, the port-forward's 127.0.0.1 and the probes' localhost are
+    # the only hosts it answers.
+    GLITCHTIP_DOMAIN: http://127.0.0.1:8000
+    ALLOWED_HOSTS: glitchtip.svp-obs,glitchtip,127.0.0.1,localhost
+    DEBUG: "false"
+    ENABLE_USER_REGISTRATION: "false"
+    EMAIL_URL: consolemail://
+    GLITCHTIP_ENABLE_UPTIME: "false"
+    GLITCHTIP_ENABLE_LOGS: "false"
+    GLITCHTIP_ENABLE_DUCKDB: "false"
+    ENABLE_OBSERVABILITY_API: "false"
+    SENTRY_DSN: ""
+    GLITCHTIP_RETENTION_DAYS: "14"
+    VTASKS_CONCURRENCY: "2"
+    DATABASE_POOL_MAX_SIZE: "4"
+
+# The canary of the gateway (ADR-0014 section 13): Prometheus scrapes the Envoy proxy of Gateway svp (PodMonitor
+# envoy-svp, on its metrics port), and the Argo Rollouts controller queries Prometheus for each AnalysisRun. Labels of
+# the pods Envoy Gateway and the argo-rollouts chart make (checked on the cluster).
+envoy:
+  namespace: envoy-gateway-system
+  labels: {app.kubernetes.io/name: envoy, gateway.envoyproxy.io/owning-gateway-name: svp}
+  port: 19001
+rolloutsController:
+  namespace: argo-rollouts
+  labels: {app.kubernetes.io/name: argo-rollouts, app.kubernetes.io/component: rollouts-controller}
+
+# Postgres svp-pg in svp-data, the only peer outside svp-obs that GlitchTip and its init Job call.
+postgres:
+  namespace: svp-data
+  labels: {cnpg.io/cluster: svp-pg}
+  port: 5432

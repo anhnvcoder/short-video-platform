@@ -1,0 +1,271 @@
+{{- /*
+GlitchTip in svp-obs (ADR-0014 sections 3, 8 and 11; ADR-0011 section 7): the error tracker the five services report
+to, as in compose. Two parts, as there:
+
+- Job glitchtip-init migrates database svp_glitchtip (migrator role, MAINTENANCE_DATABASE_URL), creates the cache
+  table and the partitions, then runs deploy/observability/glitchtip/bootstrap.py (symlink files/): the admin user,
+  organization, team and project svp with its DSN, the drills' read-only API token. Every step is idempotent, so it
+  runs before each install and upgrade. It is a pre-install/pre-upgrade hook (Argo CD reads it as PreSync), so the
+  server below never starts on a schema older than its code. Hooks run before the release's ordinary resources, in a
+  namespace that denies everything by default: its ConfigMap, ServiceAccount and egress policy are hooks of a lower
+  weight, so they exist before the Job on a new cluster too. bootstrap.py prints counts only; the DSN and the token
+  are read later by deploy/k8s/glitchtip-init.sh, straight into Secrets.
+- Deployment glitchtip: web and task worker in one process (GLITCHTIP_EMBED_WORKER), no Valkey, its init steps
+  skipped (the Job ran them). Reached by the five services on 8000 and from the host by `make k8s-ui-glitchtip`
+  only (port-forward to 127.0.0.1:8000, login required; threat model OPS-2).
+
+Secret glitchtip-env (SECRET_KEY, DATABASE_URL with the app role, MAINTENANCE_DATABASE_URL with the migrator role)
+and glitchtip-admin come from .env through deploy/k8s/secrets.sh; deploy/k8s/install.sh restarts the server when
+glitchtip-env changes, since it reads its environment only when it starts.
+*/}}
+{{- define "svp-observability.glitchtipEnv" -}}
+{{- range $name, $value := .Values.glitchtip.env }}
+- name: {{ $name }}
+  value: {{ $value | quote }}
+{{- end }}
+{{- end }}
+{{- define "svp-observability.glitchtipPodSecurityContext" -}}
+runAsNonRoot: true
+runAsUser: {{ .Values.glitchtip.uid }}
+runAsGroup: {{ .Values.glitchtip.gid }}
+seccompProfile:
+  type: RuntimeDefault
+{{- end }}
+{{- define "svp-observability.glitchtipContainerSecurityContext" -}}
+allowPrivilegeEscalation: false
+readOnlyRootFilesystem: true
+capabilities:
+  drop: [ALL]
+{{- end }}
+{{- define "svp-observability.postgresPeer" -}}
+- to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .Values.postgres.namespace }}
+      podSelector:
+        matchLabels:
+          {{- toYaml .Values.postgres.labels | nindent 10 }}
+  ports:
+    - {protocol: TCP, port: {{ .Values.postgres.port }}}
+{{- end }}
+{{- define "svp-observability.glitchtipInitHook" -}}
+helm.sh/hook: pre-install,pre-upgrade
+helm.sh/hook-weight: "-10"
+helm.sh/hook-delete-policy: before-hook-creation
+{{- end }}
+{{- $bootstrap := .Files.Get "files/glitchtip-bootstrap.py" }}
+{{- if not $bootstrap }}
+{{- fail "files/glitchtip-bootstrap.py is empty: the symlink to deploy/observability/glitchtip/bootstrap.py is broken?" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: glitchtip-init
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    {{- include "svp-observability.glitchtipInitHook" . | nindent 4 }}
+data:
+  bootstrap.py: |-
+    {{- $bootstrap | nindent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: glitchtip-init
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    {{- include "svp-observability.glitchtipInitHook" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+# The init Job reaches its database and nothing else (DNS is open to every pod of svp-obs already); Postgres's policy
+# in svp-data opens 5432 to pods labelled app.kubernetes.io/name=glitchtip in svp-obs, the server and this Job.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: glitchtip-init
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    {{- include "svp-observability.glitchtipInitHook" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: glitchtip
+      app.kubernetes.io/component: init
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    {{- include "svp-observability.postgresPeer" . | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: glitchtip-init
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  # A new pod's address reaches Postgres only once k3s's network policy controller has added it to the policy of
+  # svp-data, about 2 s after the pod starts, and Django fails at once on a refused connection. The container is
+  # restarted in the same pod (OnFailure keeps the pod and its address): the same bound as the services' migrate Jobs.
+  backoffLimit: 3
+  # The first migrate of an empty database takes the longest (a few minutes on this machine at most).
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: glitchtip
+        app.kubernetes.io/component: init
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: glitchtip-init
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "svp-observability.glitchtipPodSecurityContext" . | nindent 8 }}
+      containers:
+        - name: glitchtip-init
+          image: {{ .Values.glitchtip.image }}
+          # The commands of compose's glitchtip-init. migrate and createcachetable go through the migrator role: the
+          # app role cannot create tables.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              python manage.py migrate --no-input --database maintenance
+              python manage.py createcachetable --database maintenance
+              python manage.py maintain_partitions
+              python manage.py shell < /init/bootstrap.py
+          env:
+            {{- include "svp-observability.glitchtipEnv" . | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: glitchtip-env
+            # GLITCHTIP_ADMIN_EMAIL and GLITCHTIP_ADMIN_PASSWORD, for bootstrap.py only: the server never gets them.
+            - secretRef:
+                name: glitchtip-admin
+          resources:
+            {{- toYaml .Values.glitchtip.initResources | nindent 12 }}
+          securityContext:
+            {{- include "svp-observability.glitchtipContainerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: init
+              mountPath: /init
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: init
+          configMap:
+            name: glitchtip-init
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: glitchtip
+  namespace: {{ .Release.Namespace }}
+# GlitchTip never calls the Kubernetes API: no token in its pod (no Role is bound either).
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: glitchtip
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- toYaml .Values.pods.glitchtip | nindent 4 }}
+spec:
+  replicas: 1
+  # The old pod goes before the new one starts: two GlitchTip pods at once would need another 512 MiB on a machine
+  # without it, and a minute without the tracker loses nothing the SDKs do not retry or drop anyway.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- toYaml .Values.pods.glitchtip | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- toYaml .Values.pods.glitchtip | nindent 8 }}
+    spec:
+      serviceAccountName: glitchtip
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "svp-observability.glitchtipPodSecurityContext" . | nindent 8 }}
+      containers:
+        - name: glitchtip
+          image: {{ .Values.glitchtip.image }}
+          env:
+            {{- include "svp-observability.glitchtipEnv" . | nindent 12 }}
+            - name: GLITCHTIP_EMBED_WORKER
+              value: "true"
+            - name: SKIP_INIT
+              value: "true"
+            - name: GRANIAN_WORKERS
+              value: "1"
+          envFrom:
+            - secretRef:
+                name: glitchtip-env
+          ports:
+            - name: http
+              containerPort: 8000
+          # The image's own health check (healthcheck.py: GET http://localhost:8000/_health/ answers 200). The Host
+          # header names localhost: the kubelet would send the pod's address, which ALLOWED_HOSTS refuses.
+          startupProbe:
+            httpGet:
+              path: /_health/
+              port: http
+              httpHeaders:
+                - {name: Host, value: localhost}
+            periodSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /_health/
+              port: http
+              httpHeaders:
+                - {name: Host, value: localhost}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /_health/
+              port: http
+              httpHeaders:
+                - {name: Host, value: localhost}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.glitchtip.resources | nindent 12 }}
+          securityContext:
+            {{- include "svp-observability.glitchtipContainerSecurityContext" . | nindent 12 }}
+          # The root filesystem is read-only; what the server writes goes to these (temporary files, uploaded
+          # source maps and debug files, which the Go services never send).
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: uploads
+              mountPath: /code/uploads
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: uploads
+          emptyDir:
+            sizeLimit: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: glitchtip
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    {{- toYaml .Values.pods.glitchtip | nindent 4 }}
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

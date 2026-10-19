@@ -1,0 +1,10 @@
+apiVersion: v2
+name: svp-observability
+description: >-
+  The project's side of observability on k3d, namespace svp-obs: the SLO and alert rules of stage 3 as PrometheusRules,
+  its four Grafana dashboards, the Grafana datasources (the UIDs of compose), the Collector's config, the error tracker
+  GlitchTip with its init Job, the PodMonitor of the Envoy proxy whose metrics judge the gateway's canary, and the
+  NetworkPolicies of every pod in svp-obs. The rules, dashboards, Collector config
+  and GlitchTip's bootstrap script are the repository's own files, reached through symlinks under files/, never copies.
+type: application
+version: 0.1.0

@@ -1,0 +1,178 @@
+{{- /*
+MinIO in place of compose's (ADR-0014 section 4; threat model UP-4, UP-5, UP-6): same image, same buckets, users and
+policies, created by the same deploy/minio/init.sh. Services reach it at minio.svp-data:9000; the host reaches it at
+https://s3.svp.localhost:8443 through Gateway svp (presigned POST uploads, HLS playback). The console (9001) has no
+route and no policy: it is reached with kubectl port-forward only.
+*/}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  serviceName: minio
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minio
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minio
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        # The image's nonroot user; fsGroup makes the new volume writable by it.
+        {{- include "svp-data.podSecurityContext" (dict "uid" 65532 "gid" 65532 "fsGroup" true) | nindent 8 }}
+      containers:
+        - name: minio
+          image: {{ .Values.minio.image }}
+          args: ["server", "/data", "--console-address", ":9001"]
+          env:
+            # The root credential exists only here and in the minio-init Job; services get their own users (UP-5).
+            # Read at start only: deploy/k8s/secrets.sh restarts MinIO when the password in Secret minio-root changes.
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef: {name: minio-root, key: MINIO_ROOT_USER}
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: minio-root, key: MINIO_ROOT_PASSWORD}
+          ports:
+            - name: s3
+              containerPort: 9000
+            - name: console
+              containerPort: 9001
+          # MinIO's unauthenticated health endpoints.
+          readinessProbe:
+            httpGet: {path: /minio/health/ready, port: s3}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /minio/health/live, port: s3}
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.minio.resources | nindent 12 }}
+          securityContext:
+            {{- include "svp-data.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: {{ .Values.minio.storage }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app.kubernetes.io/name: minio
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: s3
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: s3
+  namespace: {{ .Release.Namespace }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: svp
+      namespace: svp-edge
+      sectionName: https
+  hostnames:
+    - {{ .Values.minio.host | quote }}
+  rules:
+    - backendRefs:
+        - name: minio
+          port: 9000
+      # Without a timeout Envoy Gateway sets none on the route and Envoy cuts every request at 15 s, too short for an
+      # upload of up to 500 MiB.
+      timeouts:
+        request: 10m
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: minio-init
+  namespace: {{ .Release.Namespace }}
+data:
+  # deploy/minio/init.sh and its policy files through a symlink: compose and the cluster run the same files.
+  {{- (.Files.Glob "files/minio/*").AsConfig | nindent 2 }}
+---
+# Buckets, the anonymous read policy of media and the users svp-video-service and svp-media-worker, as compose's
+# minio-init container does.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-init
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    {{- include "svp-data.initJobAnnotations" . | nindent 4 }}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ add .Values.initJobs.waitSeconds 120 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: svp-data-init
+        app.kubernetes.io/component: minio-init
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "svp-data.podSecurityContext" (dict "uid" 65532 "gid" 65532) | nindent 8 }}
+      containers:
+        - name: minio-init
+          image: {{ .Values.minio.image }}
+          # mc ready asks the unauthenticated health endpoint until the server answers; init.sh itself does not wait.
+          command:
+            - sh
+            - -c
+            - |
+              if ! MC_HOST_minio=http://minio:9000 timeout "$SVP_WAIT_SECONDS" mc ready minio >/dev/null; then
+                echo "minio-init: MinIO at minio:9000 not ready within ${SVP_WAIT_SECONDS}s" >&2
+                exit 1
+              fi
+              exec sh /init/init.sh
+          env:
+            - name: SVP_WAIT_SECONDS
+              value: {{ .Values.initJobs.waitSeconds | quote }}
+            # mc keeps its configuration here; the root filesystem is read-only.
+            - name: MC_CONFIG_DIR
+              value: /tmp/mc
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: minio-root, key: MINIO_ROOT_PASSWORD}
+          envFrom:
+            # SVP_VIDEO_S3_SECRET_KEY and SVP_MEDIA_WORKER_S3_SECRET_KEY, the names init.sh reads.
+            - secretRef:
+                name: minio-users
+          resources:
+            {{- toYaml .Values.initJobs.resources | nindent 12 }}
+          securityContext:
+            {{- include "svp-data.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: init
+              mountPath: /init
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: init
+          configMap:
+            name: minio-init
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi

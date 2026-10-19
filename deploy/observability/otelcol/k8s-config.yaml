@@ -1,0 +1,164 @@
+# Collector of the local Kubernetes cluster svp (docs/adr/0014-kubernetes-local-stage4.md, section 11):
+# release otel-collector in namespace svp-obs, Service otel-collector.svp-obs:4317. Chart
+# svp-observability puts this file in ConfigMap otel-collector-config (key relay) through a symlink,
+# so the file is the config itself, with no Helm templating.
+#
+# Same receivers, scrubbing processors and self-telemetry as config.yaml of the compose `obs`
+# profile; only the destinations differ. Compose forwards everything to the Collector inside
+# grafana/otel-lgtm, which splits it; in the cluster each backend is its own Deployment, so this
+# Collector sends each signal straight to its backend's OTLP endpoint, the ones LGTM's inner
+# Collector uses: Prometheus and Loki over OTLP/HTTP, Tempo over OTLP/gRPC. Metric names and labels
+# therefore come out of Prometheus' own OTLP translation exactly as in compose, and the dashboards and
+# rules run unchanged. Keep this file in step with config.yaml; `make otelcol-validate` checks both.
+# Only the exporter queues differ on purpose: capped in bytes here, where three exporters share one
+# memory_limiter (comment above exporters).
+
+extensions:
+  # The chart's liveness and readiness probes call :13133 on the pod's address (from the node, which
+  # no NetworkPolicy blocks); no policy opens it to any pod.
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+  # Consumer group lag and broker metrics, as in compose. /public_metrics of Redpanda's Admin API needs
+  # no login even though the Admin API requires one (ADR-0014, section 5), so this Collector holds no
+  # Redpanda credential. enable_consumer_group_metrics is set by the redpanda-init Job of chart
+  # svp-data (deploy/redpanda/create-topics.sh).
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: redpanda
+          scrape_interval: 15s
+          metrics_path: /public_metrics
+          static_configs:
+            - targets: ["redpanda-0.redpanda.svp-data.svc.cluster.local:9644"]
+
+processors:
+  # In a 256 MiB container (the chart's resources.limits.memory): refuses data from 144 MiB of heap
+  # (the soft limit, limit_mib minus spike_limit_mib) and forces a GC from 192 MiB, instead of being
+  # OOM-killed. One instance serves the three pipelines and measures the heap of the whole process,
+  # so once it is over the soft limit every receiver is refused, whichever signal filled it; the
+  # bounded exporter queues below keep a slow backend from getting it there. GOMEMLIMIT (140 MiB,
+  # deploy/k8s/values/otel-collector.yaml) sits just under the soft limit so that the Go runtime
+  # collects garbage before the limiter counts it.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 192
+    spike_limit_mib: 48
+  # A second line of defence only: services must not record these in the first place (JWT-8).
+  # Signal attributes (span, log record, data point) and resource attributes are both scrubbed.
+  attributes/scrub:
+    actions:
+      - key: http.request.header.authorization
+        action: delete
+      - key: http.request.header.cookie
+        action: delete
+      - key: user.email
+        action: delete
+      - key: user.name
+        action: delete
+  resource/scrub:
+    attributes:
+      - key: http.request.header.authorization
+        action: delete
+      - key: http.request.header.cookie
+        action: delete
+      - key: user.email
+        action: delete
+      - key: user.name
+        action: delete
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+# Bounded in-memory queue on every exporter (no disk queue, ADR-0011 section 1): when a backend is
+# down or slow, its telemetry is dropped once its queue is full or a batch has been retried for a
+# minute. A full queue drops what the batch processor hands it rather than blocking, so the other
+# exporters keep sending; but every queued batch, retried ones included, stays on the heap that the
+# one memory_limiter measures, and a queue that grew past the soft limit would make the limiter refuse
+# all three signals at the receivers. So each queue is capped in bytes of serialized data
+# (sizer: bytes; counted in requests, as compose's 256, a queue holds 256 batches of any size):
+# 4 MiB each, many batches of 1024 items, and the three together, decoded on the heap at a few
+# times their serialized size, stay well under the 144 MiB soft limit. The services' SDKs drop on
+# export errors.
+exporters:
+  otlp_http/prometheus:
+    # Prometheus' OTLP receiver (enableOTLPReceiver of kube-prometheus-stack); the exporter appends
+    # /v1/metrics.
+    endpoint: http://kps-prometheus.svp-obs:9090/api/v1/otlp
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: true
+      sizer: bytes
+      queue_size: 4194304
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 10s
+      max_elapsed_time: 60s
+  otlp_http/loki:
+    # Loki's native OTLP endpoint; the exporter appends /v1/logs.
+    endpoint: http://loki.svp-obs:3100/otlp
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: true
+      sizer: bytes
+      queue_size: 4194304
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 10s
+      max_elapsed_time: 60s
+  otlp_grpc/tempo:
+    endpoint: tempo.svp-obs:4317
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: true
+      sizer: bytes
+      queue_size: 4194304
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 10s
+      max_elapsed_time: 60s
+
+service:
+  extensions: [health_check]
+  # The Collector's own metrics (queue size and capacity, refused, failed and dropped data), pushed by
+  # OTLP every 15 s like the services' metrics, straight to Prometheus rather than through this
+  # Collector's own pipeline, so they still arrive while that pipeline refuses data. Setting a reader
+  # replaces the default Prometheus endpoint on :8888, which nothing scrapes. service.name is the one
+  # of compose's obs Collector, which the USE dashboard selects.
+  telemetry:
+    resource:
+      service.name: otelcol
+    metrics:
+      level: normal
+      readers:
+        - periodic:
+            interval: 15000
+            exporter:
+              otlp:
+                protocol: http/protobuf
+                endpoint: http://kps-prometheus.svp-obs:9090/api/v1/otlp/v1/metrics
+                insecure: true
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/scrub, resource/scrub, batch]
+      exporters: [otlp_grpc/tempo]
+    metrics:
+      receivers: [otlp, prometheus]
+      processors: [memory_limiter, attributes/scrub, resource/scrub, batch]
+      exporters: [otlp_http/prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/scrub, resource/scrub, batch]
+      exporters: [otlp_http/loki]

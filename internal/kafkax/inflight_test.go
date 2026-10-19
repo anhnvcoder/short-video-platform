@@ -101,7 +101,7 @@ func produceWithin(t *testing.T, wait time.Duration, ctx context.Context, cl *kg
 // The broker answers REQUEST_TIMED_OUT, then every retry loses its connection: Produce returns
 // the deadline error, within a bound, and the record's span is ended. The bound is past the
 // deadline: the client fails a record whose connection died only at its next metadata refresh,
-// which franz-go spaces by MetadataMinAge (5 s by default).
+// which franz-go spaces by MetadataMinAge, set to 1 s by NewClient (the franz-go default is 5 s).
 func TestProduceRequestTimedOutThenConnectionLost(t *testing.T) {
 	recorder, _ := traceTelemetry(t)
 	c, brokers := fakeCluster(t, "out")
@@ -117,7 +117,7 @@ func TestProduceRequestTimedOutThenConnectionLost(t *testing.T) {
 		return nil, errors.New("connection lost"), true // kfake closes the connection
 	})
 	cl := producer(t, brokers)
-	const deadline, metadataMinAge = time.Second, 5 * time.Second
+	const deadline = time.Second
 	ctx, cancel := context.WithTimeout(t.Context(), deadline)
 	defer cancel()
 

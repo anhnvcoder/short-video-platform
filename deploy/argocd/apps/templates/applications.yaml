@@ -1,0 +1,145 @@
+{{- /*
+One Application per component of components.json, the single list the dev path (deploy/k8s/install.sh) installs from
+too, so both paths install the same charts, versions and values in the same order (ADR-0014 section 7):
+- the release name is the component's name, as on the dev path;
+- argocd.argoproj.io/sync-wave is the component's wave, so a policy or CRD exists before what needs it. The root
+  Application moves to the next wave only once every Application of this one has finished its sync, hooks included,
+  and reports Healthy (the health check for Applications in deploy/k8s/values/argo-cd.yaml), as helm --wait does on
+  the dev path;
+- an upstream chart (repo + chart + version) and an in-repository chart (path) read their values file from this
+  repository through a second source with ref "values". Helm OCI repositories are written oci://<registry>/<path> in
+  components.json, the form helm takes; Argo CD wants them without the scheme;
+- every targetRevision is quoted: a branch named 2026 or true, or a chart version such as 1.10, would otherwise be read
+  as a number or a boolean (1.10 as 1.1), and the Application CRD wants a string.
+Nothing here names the Secrets deploy/k8s/secrets.sh and deploy/k8s/glitchtip-init.sh make: no chart renders them, so
+no Application tracks them and pruning never deletes them.
+*/}}
+{{- $components := (.Files.Get "components.json" | fromJson).components }}
+{{- /*
+The Collector reads ConfigMap otel-collector-config (chart svp-observability) only when it starts, and its own chart
+cannot checksum a ConfigMap it does not render: the checksum of the file that ConfigMap holds goes into the pod
+template, so a changed config rolls the pod and an unchanged one does not. files/otelcol-k8s-config.yaml is a symlink
+to that file; deploy/k8s/install.sh sets the same annotation to the same sha256 on the dev path.
+*/}}
+{{- $collectorSum := .Files.Get "files/otelcol-k8s-config.yaml" | sha256sum }}
+{{- /*
+The Pod Security Standard version chart svp-cluster pins (podSecurityVersion of its values;
+files/svp-cluster-values.yaml is a symlink to that file), for the namespaces of wave 0 below.
+*/}}
+{{- $svpCluster := .Files.Get "files/svp-cluster-values.yaml" | fromYaml }}
+{{- $podSecurityVersion := required "podSecurityVersion missing in files/svp-cluster-values.yaml" $svpCluster.podSecurityVersion }}
+{{- range $components }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ .name }}
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: {{ .wave | quote }}
+  # Removing a component from components.json deletes its Application (the root prunes) and, through this finalizer,
+  # what the Application had deployed; without it those workloads would keep running unmanaged.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: {{ $.Values.project }}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ .namespace }}
+  sources:
+    {{- if .path }}
+    - repoURL: {{ $.Values.repoURL }}
+      targetRevision: {{ $.Values.targetRevision | quote }}
+      path: {{ .path }}
+    {{- else }}
+    - repoURL: {{ trimPrefix "oci://" .repo }}
+      chart: {{ .chart }}
+      targetRevision: {{ .version | quote }}
+    {{- end }}
+      helm:
+        releaseName: {{ .name }}
+        {{- if .values }}
+        valueFiles:
+          - $values/{{ .values }}
+        {{- end }}
+        {{- if eq .name "otel-collector" }}
+        parameters:
+          - name: podAnnotations.svp-config-sha256
+            value: {{ $collectorSum | quote }}
+            forceString: true
+        {{- end }}
+    {{- if .values }}
+    - repoURL: {{ $.Values.repoURL }}
+      targetRevision: {{ $.Values.targetRevision | quote }}
+      ref: values
+    {{- end }}
+  {{- if eq .name "gateway" }}
+  # Argo Rollouts writes into two objects of the gateway's chart (ADR-0014 section 13): its Gateway API plugin moves the
+  # weights of the two backendRefs of HTTPRoute api during a canary, then puts them back to 100/0, and the controller
+  # adds rollouts-pod-template-hash to the selectors of Services gateway and gateway-canary. Ignored here, selfHeal does
+  # not set the weights back in the middle of a canary. RespectIgnoreDifferences also keeps the live values when a sync
+  # applies these objects: Argo CD applies server-side with --force-conflicts, so without it every sync of this
+  # Application (a new release tag) would strip the hash from both selectors, sending each request to stable and canary
+  # pods alike until the controller sets it again, and reset the weights.
+  # The price, read in controller/sync.go of Argo CD v3.5.5 (normalizeTargetResources): the live values reach the
+  # applied manifest through a JSON merge patch, which replaces a list whole, so the whole spec.rules of the live route
+  # is applied, not only its weights. A change of the rules in git (a match, a filter, a timeout) is therefore not
+  # applied while the route exists: delete HTTPRoute svp/api once no canary runs (kubectl --context k3d-svp -n svp
+  # delete httproute api) and selfHeal creates it again from git within seconds, the API unreachable meanwhile.
+  ignoreDifferences:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: api
+      namespace: {{ .namespace }}
+      jqPathExpressions:
+        - .spec.rules[].backendRefs[].weight
+    - group: ""
+      kind: Service
+      namespace: {{ .namespace }}
+      jqPathExpressions:
+        - .spec.selector["rollouts-pod-template-hash"]
+  {{- end }}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    {{- if eq (int .wave) 0 }}
+    # Pod Security "restricted" on the namespace of a component of wave 0 (cert-manager, envoy-gateway-system) from its
+    # chart's first pod on: Argo CD creates the namespace with these labels (CreateNamespace below) in phase PreSync,
+    # ahead of every object of the chart in it, hooks included, and sets them again at every sync. Chart svp-cluster
+    # labels the namespaces of every later wave, but comes after these charts, whose CRDs it needs. The same labels as
+    # svp-cluster's.
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: restricted
+        pod-security.kubernetes.io/enforce-version: {{ $podSecurityVersion }}
+        pod-security.kubernetes.io/warn: restricted
+        pod-security.kubernetes.io/warn-version: {{ $podSecurityVersion }}
+        pod-security.kubernetes.io/audit: restricted
+        pod-security.kubernetes.io/audit-version: {{ $podSecurityVersion }}
+    {{- end }}
+    syncOptions:
+      # A namespace no earlier wave made: wave 0's (with the labels above). Chart svp-cluster (wave 1) makes the
+      # project's and the later platform charts' namespaces, which this then leaves alone (Argo CD only touches an
+      # existing namespace when managedNamespaceMetadata is set).
+      - CreateNamespace=true
+      # Several CRDs (Envoy Gateway's httproutes, KEDA's scaledjobs, CloudNativePG's clusters) exceed the 262144-byte
+      # annotation client-side apply needs.
+      - ServerSideApply=true
+      {{- if gt (int .wave) 0 }}
+      # Kinds whose CRD an earlier wave installs are unknown at dry-run time on a new cluster.
+      - SkipDryRunOnMissingResource=true
+      {{- end }}
+      {{- if eq .name "gateway" }}
+      - RespectIgnoreDifferences=true
+      {{- end }}
+    # An automated sync that failed is not tried again for the same revision unless retries are set. On a new
+    # cluster a sync can fail for a moment (a webhook of the previous wave not answering yet), and the root's next wave
+    # would then wait for good.
+    retry:
+      limit: 10
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+{{- end }}

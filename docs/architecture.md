@@ -1,6 +1,7 @@
 # Kiến trúc short-video platform
 
-> Trạng thái: giai đoạn 0, 1, 2 (2026-10-11) và 3 (2026-10-17) xong. ADR 0001–0012, contract ở [`proto/`](../proto/)
+> Trạng thái: giai đoạn 0, 1, 2 (2026-10-11) và 3 (2026-10-17) xong; giai đoạn 4 (Kubernetes local) đang làm, đường dev
+> đã chạy và đã kiểm, phần GitOps push → sync còn chờ kiểm. ADR 0001–0014, contract ở [`proto/`](../proto/)
 > ([§8](#8-contract)), threat model ở [`threat-model.md`](threat-model.md). `make up` chạy luồng đồng bộ (đăng ký, đăng
 > nhập, tạo và đọc video, follow), luồng upload bất đồng bộ (presigned POST lên MinIO, outbox → Redpanda, media-worker
 > transcode ra HLS, video `READY` hoặc `FAILED`, job dọn upload bỏ dở), luồng feed (follow qua outbox, feed-service
@@ -8,7 +9,9 @@
 > engagement-service), rate limit ở gateway bằng Redis, retry và circuit breaker cho lời gọi gRPC của gateway. Mọi
 > service đẩy trace, metric, log qua OpenTelemetry tới Collector; `make up OBS=lgtm` thêm Grafana LGTM, Alertmanager và
 > GlitchTip với SLO, cảnh báo burn rate và dashboard ([ADR-0011](adr/0011-observability-stage3.md),
-> [§5](#5-c4-mức-container)). Phần còn lại của tài liệu (CDN, k8s, cloud) là thiết kế đích.
+> [§5](#5-c4-mức-container)). `make k8s-up` chạy cùng hệ thống trên cluster k3d với dữ liệu trong cluster, Envoy Gateway,
+> observability tách thành từng thành phần và canary của gateway ([ADR-0014](adr/0014-kubernetes-local-stage4.md),
+> [§5.1](#51-triển-khai-trên-k3d-giai-đoạn-4)). Phần còn lại của tài liệu (CDN, cloud) là thiết kế đích.
 
 Tài liệu này mô tả hệ thống sẽ được xây và lý do. Mỗi quyết định lớn có một ADR trong [`adr/`](adr/); ở đây chỉ tóm tắt
 và trỏ tới.
@@ -218,6 +221,92 @@ CDN (client đọc thẳng MinIO). Redpanda và MinIO chạy trong compose profi
   CPU dưới tải smoke, p50/p95 trang khám phá +12/+12 ms (số đo và cách đo ở
   [plan](../plans/261004-devops-sa-roadmap/plan.md), Tiến độ giai đoạn 3). Profile `obs-elastic` (Elasticsearch, Kibana
   `127.0.0.1:5601`, APM Server, `otelcol-elastic` cùng alias `otelcol`) chỉ để so sánh, không chạy cùng `obs`.
+
+### 5.1 Triển khai trên k3d (giai đoạn 4)
+
+Cùng 6 service, cùng image và cùng biến môi trường như compose, chạy trên cluster k3d `svp` (1 server + 1 agent, k3s
+v1.36.5, node arm64) theo [ADR-0014](adr/0014-kubernetes-local-stage4.md). Compose vẫn là đường dev chính; hai đường không
+chạy cùng lúc (máy 16 GB). Cổng chỉ trên `127.0.0.1`: API 6550, HTTPS 8443, registry 5111. Lệnh ở
+[`CLAUDE.md`](../CLAUDE.md) mục Kiểm tra.
+
+```mermaid
+flowchart LR
+    client["Client trên máy<br/>curl, smoke, k6"]
+    subgraph k3d["cluster k3d svp"]
+        subgraph edge["envoy-gateway-system, svp-edge"]
+            envoy["Envoy proxy<br/>Gateway svp, TLS *.svp.localhost"]
+        end
+        subgraph app["svp"]
+            gw["gateway<br/>Argo Rollout, 2 replica"]
+            svc["user-, video-,<br/>engagement-, feed-service"]
+            mw["media-worker<br/>KEDA 1–3"]
+        end
+        subgraph data["svp-data"]
+            pg[("Postgres svp-pg<br/>CloudNativePG")]
+            vk[("Valkey")]
+            rp[["Redpanda<br/>SASL + ACL"]]
+            minio[("MinIO")]
+        end
+        subgraph obs["svp-obs"]
+            col["Collector"]
+            prom["Prometheus, Loki,<br/>Tempo, Pyroscope"]
+            ui["Grafana, Alertmanager,<br/>GlitchTip"]
+        end
+    end
+    client -->|"127.0.0.1:8443<br/>api.svp.localhost"| envoy
+    client -->|"s3.svp.localhost<br/>presigned POST, HLS"| envoy
+    envoy -->|"HTTPRoute api<br/>stable / canary"| gw
+    envoy -->|"HTTPRoute s3"| minio
+    gw -->|gRPC| svc
+    gw --> vk
+    svc --> pg
+    svc --> rp
+    mw --> rp
+    mw --> minio
+    app -.->|OTLP| col
+    col --> prom
+    ui --> prom
+```
+
+- **Namespace:** `svp` (6 service), `svp-data` (Postgres, Valkey, Redpanda, MinIO), `svp-obs` (observability, GlitchTip),
+  `svp-edge` (`Gateway`, chứng chỉ wildcard); công cụ ở `cert-manager`, `envoy-gateway-system`, `cnpg-system`, `keda`,
+  `argo-rollouts` và `argocd` (chỉ đường GitOps). Mọi namespace trừ `kube-system` chạy Pod Security `restricted`; bốn
+  namespace của project có NetworkPolicy chặn mặc định hai chiều, mỗi luồng ở bảng ADR-0014 §3 một policy theo label pod
+  (threat model FF-5, IN-2).
+- **Luồng vào:** client gọi `https://api.svp.localhost:8443` (tên `*.localhost` phân giải về loopback), qua load balancer
+  của k3d và `svclb` tới Envoy proxy do Envoy Gateway dựng từ `Gateway` `svp`; TLS dùng chứng chỉ wildcard do cert-manager
+  ký bằng CA local (`make k8s-ca` xuất CA ra `.k8s/ca.crt`). HTTPRoute `api` chia traffic giữa Service `gateway` và
+  `gateway-canary`; HTTPRoute `s3` (`s3.svp.localhost`) đưa presigned POST và GET HLS tới MinIO, nên URL ký có host công khai
+  thay `127.0.0.1:9000`. Gateway tin đúng một hop `X-Forwarded-For` từ dải pod `10.42.0.0/16` (threat model RL-1); mọi
+  client trên máy đi ra cùng địa chỉ node nên rơi vào tối đa hai bucket rate limit (ADR-0014 §9).
+- **Dữ liệu trong cluster** (ADR-0014 §4, §5), không đụng Postgres/Redis native: Postgres `svp-pg` một instance do
+  CloudNativePG quản, cùng tên database `svp_<svc>` và cặp role migrator/app như compose, đăng nhập `scram-sha-256`;
+  Valkey không persistence, gateway db 10, feed-service db 14; Redpanda một broker, SASL SCRAM mỗi service một user, ACL
+  theo bảng của ADR-0014 §5 (compose không SASL); MinIO cùng bucket, user và policy như compose. Mật khẩu sinh bằng
+  `make env`, đưa vào Secret bằng `deploy/k8s/secrets.sh`, không nằm trong git.
+- **Workload** (ADR-0014 §10): một chart chung `deploy/helm/svp-service` cho 6 service (probe, `requests`/`limits`,
+  securityContext `restricted`, không token ServiceAccount); gateway 2 replica có PDB và HPA theo CPU, feed-service HPA
+  theo CPU, media-worker 1–3 replica do KEDA scale theo lag của group `media-worker`. Node bão hoà CPU thì probe 1 s của
+  service cùng node có thể quá hạn và pod bị restart (thấy ở lượt kiểm cuối, plan Tiến độ giai đoạn 4).
+- **Observability** (ADR-0014 §11): cùng SDK và cùng file của giai đoạn 3 (rule, dashboard, SLO dùng lại bằng symlink),
+  nhưng tách thành thành phần riêng: Collector (OTLP 4317, đẩy metric sang Prometheus bằng OTLP, log sang Loki, trace sang
+  Tempo, scrape `/public_metrics` của Redpanda), kube-prometheus-stack (Prometheus, Alertmanager gửi Telegram, Grafana),
+  Loki, Tempo có metrics-generator, Pyroscope, GlitchTip trên database `svp_glitchtip` của `svp-pg`. Không UI nào có route
+  hay cổng node: chỉ `make k8s-ui-*` (port-forward trên `127.0.0.1`), Grafana và GlitchTip có đăng nhập.
+- **Cài đặt và GitOps** (ADR-0014 §7, §12): `deploy/argocd/apps/components.json` liệt kê 20 thành phần theo wave 0–7
+  (cert-manager và Envoy Gateway; namespace, CA, policy; operator; backend dữ liệu và observability; chart dữ liệu; chart
+  observability; Collector; 6 service). Đường dev `make k8s-up` cài file đó bằng Helm, image tag `dev-<image ID>` build
+  từ working tree; đường GitOps `make k8s-gitops-up` dựng cluster mới mà Argo CD (app-of-apps, root `svp-root`, AppProject
+  `svp`) đồng bộ từ GitHub, image theo tag 12 ký tự của commit do `make k8s-release` build và ghi vào values.
+- **Canary của gateway** (ADR-0014 §13): Argo Rollouts đổi trọng số HTTPRoute `api` qua plugin Gateway API: 25% → 60 s →
+  50% → 60 s → bước phân tích chặn → 100%. Phân tích đọc metric Envoy của backend canary trong Prometheus: tỉ lệ 5xx < 1%
+  và p99 < 150 ms (SLO feed), cần ít nhất 30 response không phải 4xx mỗi phút; hỏng hay Prometheus không trả lời thì
+  abort, route về 100/0, pod stable không bị đụng.
+- **Client Kafka** ([ADR-0013](adr/0013-kafka-metadata-min-age.md)): mọi client franz-go đặt `MetadataMinAge` 1 s, nên
+  produce có hạn trả về gần hạn hơn khi kết nối tới broker chết giữa chừng; áp cho cả compose và k3d.
+- **Chi phí:** RAM của cả cluster lúc nghỉ 5,9–6,8 GiB theo `docker stats` (gồm ~1–2 GiB page cache; phần anon ~3,9 GiB),
+  đỉnh ~8 GiB khi media-worker scale lên, so với 1,7–2,6 GiB của compose `core` + `obs`; số đo, thời gian dựng và kết quả
+  diễn tập ở [plan](../plans/261004-devops-sa-roadmap/plan.md), Tiến độ giai đoạn 4.
 
 ## 6. Sở hữu dữ liệu và event
 

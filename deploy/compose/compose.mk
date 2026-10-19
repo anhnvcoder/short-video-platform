@@ -45,8 +45,14 @@ GLITCHTIP_SECRET_VARS := GLITCHTIP_SECRET_KEY GLITCHTIP_ADMIN_PASSWORD
 GLITCHTIP_ADMIN_EMAIL := admin@svp.local
 # Written together by tools/jwtkey: one key pair, so they are generated all or none.
 JWT_VARS := JWT_SIGNING_KID JWT_SIGNING_KEY JWT_VERIFY_KEYS
+# Used by the k3d cluster only (deploy/k8s/secrets.sh, docs/adr/0014-kubernetes-local-stage4.md section 8): the
+# superuser of the in-cluster Postgres, Redpanda's superuser svp-admin, the Kafka user of KEDA and of each service with
+# Kafka (compose runs Redpanda without SASL), and Grafana's admin login.
+K8S_SECRET_VARS := SVP_PG_SUPERUSER_PASSWORD SVP_KAFKA_ADMIN_PASSWORD SVP_KAFKA_KEDA_PASSWORD \
+	SVP_KAFKA_USER_SERVICE_PASSWORD SVP_KAFKA_VIDEO_SERVICE_PASSWORD SVP_KAFKA_ENGAGEMENT_SERVICE_PASSWORD \
+	SVP_KAFKA_FEED_SERVICE_PASSWORD SVP_KAFKA_MEDIA_WORKER_PASSWORD SVP_GRAFANA_ADMIN_PASSWORD
 
-.PHONY: env env-required obs-valid obs-exclusive db-bootstrap glitchtip-init up down clean-data ps logs compose-config compose-hash slo-check smoke test-stack drill-kill-worker drill-duplicates measure-ready \
+.PHONY: env env-required obs-valid obs-exclusive k3d-exclusive db-bootstrap glitchtip-init up down clean-data ps logs compose-config compose-hash slo-check smoke test-stack drill-kill-worker drill-duplicates measure-ready \
 	drill-duplicates-feed drill-engagement-down measure-freshness drill-rate-limit measure-explore-cache drill-upload-cleanup \
 	drill-alert-to-sentry drill-obs-threats
 
@@ -60,6 +66,7 @@ env: ## Create .env (mode 600) with random secrets and a new JWT key, or fill in
 	    for v in $(DB_PASSWORD_VARS); do pw=$$(openssl rand -hex 24); echo "$$v=$$pw"; done; \
 	    for v in $(S3_SECRET_VARS); do pw=$$(openssl rand -hex 20); echo "$$v=$$pw"; done; \
 	    for v in $(GLITCHTIP_SECRET_VARS); do pw=$$(openssl rand -hex 32); echo "$$v=$$pw"; done; \
+	    for v in $(K8S_SECRET_VARS); do pw=$$(openssl rand -hex 24); echo "$$v=$$pw"; done; \
 	    echo "GLITCHTIP_ADMIN_EMAIL=$(GLITCHTIP_ADMIN_EMAIL)"; \
 	    go run ./tools/jwtkey; } > "$$tmp"; \
 	  chmod 600 "$$tmp"; mv -n "$$tmp" .env; \
@@ -71,6 +78,7 @@ env: ## Create .env (mode 600) with random secrets and a new JWT key, or fill in
 	for v in $(DB_PASSWORD_VARS); do has $$v || { pw=$$(openssl rand -hex 24); echo "$$v=$$pw" >> "$$tmp"; added="$$added $$v"; }; done; \
 	for v in $(S3_SECRET_VARS); do has $$v || { pw=$$(openssl rand -hex 20); echo "$$v=$$pw" >> "$$tmp"; added="$$added $$v"; }; done; \
 	for v in $(GLITCHTIP_SECRET_VARS); do has $$v || { pw=$$(openssl rand -hex 32); echo "$$v=$$pw" >> "$$tmp"; added="$$added $$v"; }; done; \
+	for v in $(K8S_SECRET_VARS); do has $$v || { pw=$$(openssl rand -hex 24); echo "$$v=$$pw" >> "$$tmp"; added="$$added $$v"; }; done; \
 	has GLITCHTIP_ADMIN_EMAIL || { echo "GLITCHTIP_ADMIN_EMAIL=$(GLITCHTIP_ADMIN_EMAIL)" >> "$$tmp"; added="$$added GLITCHTIP_ADMIN_EMAIL"; }; \
 	jwt_missing=; for v in $(JWT_VARS); do has $$v || jwt_missing="$$jwt_missing $$v"; done; \
 	if [ "$$jwt_missing" = " $(JWT_VARS)" ]; then go run ./tools/jwtkey >> "$$tmp"; added="$$added$$jwt_missing"; \
@@ -95,6 +103,14 @@ obs-exclusive: env-required
 	@running=$$($(COMPOSE_ALL) ps -q $(OBS_OTHER_$(OBS))); \
 	  if [ -n "$$running" ]; then echo "make up$(if $(OBS), OBS=$(OBS)): a container of an observability profile it does not start is running (one of: $(OBS_OTHER_$(OBS))); run 'make down' first" >&2; exit 1; fi
 
+# Compose and the k3d cluster svp never run together on the 16 GB machine (CLAUDE.md,
+# docs/adr/0014-kubernetes-local-stage4.md section 2): no node of the cluster (label k3d.cluster=svp) and not its
+# registry may be running. `make k8s-up` refuses the other way round (deploy/k8s/k8s.mk).
+k3d-exclusive:
+	@running=$$(env -u DOCKER_DEFAULT_PLATFORM docker ps -q --filter label=k3d.cluster=svp; \
+	  env -u DOCKER_DEFAULT_PLATFORM docker ps -q --filter name=^k3d-svp-registry$$); \
+	  if [ -n "$$running" ]; then echo "make up: the k3d cluster svp or its registry is running; run 'make k8s-down' first" >&2; exit 1; fi
+
 # The DSN and API token exist only once GlitchTip is initialized, and compose reads .env when it
 # creates a container: `make up OBS=lgtm` writes them to .env first, so even the first run starts
 # the Go services with SENTRY_DSN set (deploy/observability/glitchtip/init.sh).
@@ -103,7 +119,7 @@ GLITCHTIP_INIT = COMPOSE='$(COMPOSE_UP_lgtm)' deploy/observability/glitchtip/ini
 glitchtip-init: env-required db-bootstrap ## Migrate and bootstrap GlitchTip (admin, org/project svp, drill token), add SENTRY_* to .env; idempotent, never changes a set value
 	$(GLITCHTIP_INIT)
 
-up: env-required obs-valid obs-exclusive db-bootstrap ## Bootstrap Postgres, build, migrate and start the core stack; OBS=lgtm adds Grafana LGTM (127.0.0.1:3000) and GlitchTip (127.0.0.1:8000), OBS=elastic adds Elasticsearch, Kibana (127.0.0.1:5601) and APM Server instead, OBS=off turns telemetry off (drills keep it off); refuses while a container of a profile not chosen runs (make down first)
+up: k3d-exclusive env-required obs-valid obs-exclusive db-bootstrap ## Bootstrap Postgres, build, migrate and start the core stack; OBS=lgtm adds Grafana LGTM (127.0.0.1:3000) and GlitchTip (127.0.0.1:8000), OBS=elastic adds Elasticsearch, Kibana (127.0.0.1:5601) and APM Server instead, OBS=off turns telemetry off (drills keep it off); refuses while a container of a profile not chosen runs (make down first)
 	$(if $(filter lgtm,$(OBS)),$(GLITCHTIP_INIT))
 	$(COMPOSE_UP_$(OBS)) up -d --build --wait
 

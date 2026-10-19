@@ -1,0 +1,210 @@
+{{- /*
+Flows into and out of svp-data (ADR-0014 section 3, "flows opened"; threat model IN-2, IN-4, IN-9). Chart svp-cluster
+already denies every pod of the namespace in both directions and opens DNS, and opens the API server for pods
+labelled svp-kube-api=allow (the Postgres instance, Redpanda's sidecar). Each policy below opens one server port to
+the pods that use it, chosen by label, so a pod elsewhere in the cluster (or a client added later without its label)
+reaches nothing. Clients in svp and svp-obs also need their own egress policy there; KEDA, the CloudNativePG operator
+and Envoy live in platform namespaces, which deny nothing outbound.
+
+Ports are the pods' ports: NetworkPolicy sees the packet after a Service has been translated to a pod.
+*/}}
+{{- define "svp-data.svpPods" -}}
+- namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: svp
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: {{ toJson . }}
+{{- end }}
+{{- define "svp-data.initJob" -}}
+- podSelector:
+    matchLabels:
+      app.kubernetes.io/name: svp-data-init
+      app.kubernetes.io/component: {{ . }}
+{{- end }}
+# Postgres: the database of each service (its pods and its migrate Job), GlitchTip's (its pod and its init Job), the
+# bootstrap Job; the operator reads each instance's status on 8000.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: svp-pg
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- include "svp-data.svpPods" .Values.clients.postgres | nindent 8 }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: svp-obs
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: glitchtip
+        {{- include "svp-data.initJob" "pg-bootstrap" | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 5432
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: cnpg-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cloudnative-pg
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+# Valkey: rate limits of the gateway, the explore cache of feed-service.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: valkey
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: valkey
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- include "svp-data.svpPods" .Values.clients.valkey | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+# Redpanda: the Kafka API for the five services with Kafka, KEDA's lag reader and the init Job; the Admin API for the
+# init Job and the Collector, which scrapes /public_metrics. The schema registry (8081, unauthenticated) and the HTTP
+# proxy (8082) are open to no one.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redpanda
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: redpanda
+      app.kubernetes.io/instance: redpanda
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- include "svp-data.svpPods" .Values.clients.kafka | nindent 8 }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: keda
+          podSelector:
+            matchLabels:
+              app: keda-operator
+        {{- include "svp-data.initJob" "redpanda-init" | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 9092
+    - from:
+        {{- include "svp-data.initJob" "redpanda-init" | nindent 8 }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: svp-obs
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: opentelemetry-collector
+              app.kubernetes.io/instance: otel-collector
+      ports:
+        - protocol: TCP
+          port: 9644
+---
+# MinIO: video-service and media-worker with their own users, Envoy for presigned uploads and playback from the host,
+# the init Job.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: minio
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: minio
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- include "svp-data.svpPods" .Values.clients.minio | nindent 8 }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: envoy-gateway-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: envoy
+              gateway.envoyproxy.io/owning-gateway-name: svp
+        {{- include "svp-data.initJob" "minio-init" | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 9000
+---
+# The init Jobs reach only the server each one sets up.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pg-bootstrap
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: svp-data-init
+      app.kubernetes.io/component: pg-bootstrap
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: svp-pg
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: minio-init
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: svp-data-init
+      app.kubernetes.io/component: minio-init
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: minio
+      ports:
+        - protocol: TCP
+          port: 9000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redpanda-init
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: svp-data-init
+      app.kubernetes.io/component: redpanda-init
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redpanda
+              app.kubernetes.io/instance: redpanda
+      ports:
+        - protocol: TCP
+          port: 9092
+        - protocol: TCP
+          port: 9644

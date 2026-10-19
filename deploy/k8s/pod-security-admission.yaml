@@ -1,0 +1,30 @@
+# Admission configuration of the API server of cluster svp (docs/adr/0014-kubernetes-local-stage4.md, section 3):
+# Pod Security "restricted" on every namespace without its own pod-security.kubernetes.io labels. The namespaces of the
+# lab carry the labels already; this default covers the rest (default, kube-public, kube-node-lease, any namespace made
+# later), where a controller allowed to create pods everywhere (cert-manager's ACME solver role) could otherwise start
+# a privileged pod with a hostPath of the node, root on the node, which holds k3s's admin kubeconfig.
+#
+# Mounted read-only into the server node by deploy/k8s/k3d.yaml and passed to the API server with
+# --kube-apiserver-arg=admission-control-config-file (k3s has no PSA flag of its own and writes no such file). Read only
+# when the API server starts: a change here takes effect on a new cluster (make k8s-down && make k8s-up).
+apiVersion: apiserver.config.k8s.io/v1
+kind: AdmissionConfiguration
+plugins:
+  - name: PodSecurity
+    configuration:
+      apiVersion: pod-security.admission.config.k8s.io/v1
+      kind: PodSecurityConfiguration
+      # The three versions must equal podSecurityVersion of deploy/helm/svp-cluster/values.yaml, the version every
+      # labelled namespace enforces; ensure_cluster (deploy/k8s/lib.sh) refuses to create the cluster when they differ.
+      defaults:
+        enforce: restricted
+        enforce-version: v1.36
+        audit: restricted
+        audit-version: v1.36
+        warn: restricted
+        warn-version: v1.36
+      exemptions:
+        # k3s's own pods run here and need more than restricted: servicelb's svclb-* (NET_ADMIN), the helper pods of
+        # local-path-provisioner (a hostPath on the node for every PersistentVolume; the provisioner creates them in
+        # its own namespace, POD_NAMESPACE), coredns, metrics-server and helm-controller's jobs.
+        namespaces: [kube-system]

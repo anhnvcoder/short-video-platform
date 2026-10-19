@@ -73,6 +73,17 @@ func newLogger() (*slog.Logger, *lockedBuffer) {
 	return slog.New(logx.NewHandler(slog.NewJSONHandler(logs, nil))), logs
 }
 
+// defaultLogs sends the default slog logger, the one NewClient's clients log to, into a JSON
+// buffer until the test ends. A test using it must not run in parallel.
+func defaultLogs(t *testing.T) *lockedBuffer {
+	t.Helper()
+	logs := &lockedBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return logs
+}
+
 // cluster starts an in-memory Kafka with topics of the given partition count and returns its
 // broker list.
 func cluster(t *testing.T, partitions int32, topics ...string) string {
@@ -252,6 +263,37 @@ func TestNewClientEmptyBrokers(t *testing.T) {
 		if _, err := NewClient(brokers, "svc"); err == nil {
 			t.Errorf("NewClient(%q) = nil error, want an error", brokers)
 		}
+	}
+}
+
+// A client whose broker is gone logs a WARN through the default slog logger for each connection
+// attempt, at franz-go's retry backoff rather than in a tight loop.
+func TestNewClientLogsUnreachableBroker(t *testing.T) {
+	c, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(1, "out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := c.ListenAddrs()[0]
+	c.Close()
+	logs := defaultLogs(t)
+	cl := producer(t, addr)
+	const deadline = 2 * time.Second
+	ctx, cancel := context.WithTimeout(t.Context(), deadline)
+	defer cancel()
+
+	if err := Produce(ctx, cl, &kgo.Record{Topic: "out", Value: []byte("v")}); err == nil {
+		t.Fatal("Produce() = nil error with the broker gone")
+	}
+	n := 0
+	for _, rec := range logs.records(t, "kafka client: unable to open connection to broker") {
+		if rec["level"] == "WARN" && rec["addr"] == addr {
+			n++
+		}
+	}
+	// Measured: 6 in 10 s for this client; a group consumer that loses its broker logs ~25 in the
+	// first 5 s, then 1 to 1.5 a second. A client retrying in a tight loop would log thousands.
+	if n == 0 || n > 20 {
+		t.Errorf("%d connection warnings in %v, want some, at most 20", n, deadline)
 	}
 }
 

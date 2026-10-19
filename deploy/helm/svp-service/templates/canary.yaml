@@ -1,0 +1,168 @@
+{{- /*
+Canary of a release with canary set, the gateway (ADR-0014 section 13): the Rollout's strategy, Service
+<release>-canary, and AnalysisTemplates <release>-canary (background) and <release>-canary-gate (the step before 100%)
+that decide from Envoy's metrics whether the canary is promoted or aborted. HTTPRoute api splits the traffic between
+the two Services (templates/httproute.yaml).
+
+The canary backend has an Envoy cluster of its own, httproute/<namespace>/api/rule/0/backend/1, only because each
+backendRef of the route carries a filter (Envoy Gateway otherwise puts both Services in one cluster, which no metric
+can tell apart). Its counters exist while the canary's weight is above 0.
+*/}}
+{{- define "svp-service.canaryCluster" -}}
+httproute/{{ .Release.Namespace }}/api/rule/0/backend/1
+{{- end }}
+
+{{- /*
+spec of the Rollout beside selector and template. Each new revision:
+- setWeight 25: the controller scales the canary ReplicaSet to 25% of the replicas (rounded up, so one pod of two) and,
+  once it is ready, has the Gateway API plugin set HTTPRoute api to 75/25; pause 60 s; setWeight 50 (still one pod),
+  pause 60 s; the gate (an analysis step, below); then 100%: the canary becomes stable, the route goes back to 100/0
+  and the old ReplicaSet is scaled down 30 s later.
+- The analysis runs in the background from the first step to the end, and catches a broken canary early. The background
+  run alone cannot keep a canary from 100%: the steps do not wait for it, and when the Rollout completes it is stopped
+  and ends Successful whatever it has measured (none at all if every query so far timed out). The gate is what
+  promotes: its AnalysisRun measures once more over the last minute at 50%, and the step completes only when that run is
+  Successful, so the canary reaches 100% only after a valid measurement of each metric.
+- A failed or errored AnalysisRun (background or gate) aborts the Rollout: the route goes back to 100/0 at once and the
+  canary pods go 30 s later, the stable pods are never touched. An inconclusive one (too few responses to judge)
+  pauses the Rollout until someone resumes or aborts it: it never promotes.
+- A step that cannot complete (a canary pod that never gets ready) aborts the Rollout after 600 s
+  (progressDeadlineAbort). The deadline runs neither while the Rollout is paused nor during the gate (Rollouts counts an
+  analysis step as indefinite); the gate ends on its own within 50 s (AnalysisTemplate below).
+A new template equal to the stable one (a release put back after an abort) is the stable revision again: the Rollout
+goes back to Healthy without a canary.
+*/}}
+{{- define "svp-service.canaryStrategy" -}}
+progressDeadlineSeconds: 600
+progressDeadlineAbort: true
+strategy:
+  canary:
+    stableService: {{ .Release.Name }}
+    canaryService: {{ .Release.Name }}-canary
+    trafficRouting:
+      plugins:
+        argoproj-labs/gatewayAPI:
+          httpRoute: api
+          namespace: {{ .Release.Namespace }}
+    analysis:
+      templates:
+        - templateName: {{ .Release.Name }}-canary
+      startingStep: 0
+    steps:
+      - setWeight: 25
+      - pause: {duration: 60s}
+      - setWeight: 50
+      - pause: {duration: 60s}
+      - analysis:
+          templates:
+            - templateName: {{ .Release.Name }}-canary-gate
+{{- end }}
+
+{{- /*
+Two metrics of the canary backend over the last minute, in two AnalysisTemplates that differ only in when they measure:
+- <release>-canary, the background analysis: every 30 s from 60 s after the canary starts (by then a full window of
+  traffic at 25% has reached it; measured at once, the first window would always be short of responses). failureLimit 1
+  lets one bad measurement pass, the second fails the run.
+- <release>-canary-gate, the gate step before 100%: one measurement of each metric (count 1). failureLimit 0: with a
+  single measurement there is no stray one to let pass.
+inconclusiveLimit stays 0 in both, so the first inconclusive measurement stops the Rollout.
+
+Each query answers -1 while the canary has had fewer than 30 responses that are not 4xx in the window: neither
+condition holds, the measurement is Inconclusive and the canary is not promoted. The drill traffic, about 10 requests/s
+(deploy/k8s/drills/traffic.sh), brings about 150 a minute at 25%; traffic that is mostly 401 or 429 (expired tokens,
+rate limited) does not reach 30, so a broken canary cannot pass on broken traffic. 4xx are left out of the ratio's
+denominator so they do not dilute the 5xx.
+
+A query that Prometheus does not answer, or answers with an error, is a measurement in Error, retried 10 s after it
+ends; Errors count neither as successes nor as failures, and consecutiveErrorLimit 2 makes the third in a row error the
+whole run, which aborts the Rollout. timeout 10 gives up a hanging query after 10 s instead of the provider's default
+30 s, so in seconds from the start of each run:
+- background, Prometheus hanging: Errors at 70, 90 and 110 (queries from 60, 80, 100): aborted at about 110, before
+  the two pauses end (at least 120 after the start, the canary pod's start-up added); refusing at once: aborted at
+  about 80. With the default 30 s and 4 errors, the first two errors came only at about 90 and 130: the steps had run
+  out first and the background run was stopped Successful without a single measurement.
+- gate, Prometheus hanging: Errors at 10, 30 and 50: aborted at about 50, never promoted; one that recovers in time is
+  judged on its first answer, at most 50 s after the gate starts (two Errors, then a query of up to 10 s).
+- a good canary, Prometheus up: the background run measures at 60 and 90 (and 120 when the pod was slow to start); the
+  gate measures at once and promotes as soon as the query returns, a second or so later than the two pauses alone.
+
+The latency limit is the SLO of the feed, p99 150 ms (deploy/observability/slo/svp-slos.yaml); Envoy's default
+histogram buckets around it are 100 and 250 ms, so the p99 is a coarse interpolation and the 5xx ratio is the main
+criterion. 1% of 5xx is the 99.9% availability SLO loosened for a sample of about a hundred responses.
+*/}}
+{{- define "svp-service.canaryCadence" -}}
+{{- if . }}
+count: 1
+failureLimit: 0
+{{- else }}
+interval: 30s
+initialDelay: 60s
+failureLimit: 1
+{{- end }}
+consecutiveErrorLimit: 2
+{{- end }}
+
+{{- /* The metrics of both AnalysisTemplates; dict "ctx" (the chart's root context) and "gate" (true for the gate). */}}
+{{- define "svp-service.canaryMetrics" -}}
+{{- $c := include "svp-service.canaryCluster" .ctx }}
+{{- $prom := "http://kps-prometheus.svp-obs:9090" }}
+# 5xx among the canary's responses that are not 4xx.
+- name: canary-5xx-ratio
+  {{- include "svp-service.canaryCadence" .gate | nindent 2 }}
+  successCondition: result[0] >= 0 && result[0] < 0.01
+  failureCondition: result[0] >= 0.01
+  provider:
+    prometheus:
+      address: {{ $prom }}
+      timeout: 10
+      query: |
+        (
+          (sum(increase(envoy_cluster_upstream_rq_xx{envoy_cluster_name="{{ $c }}",envoy_response_code_class="5"}[1m])) or on() vector(0))
+          / sum(increase(envoy_cluster_upstream_rq_xx{envoy_cluster_name="{{ $c }}",envoy_response_code_class!="4"}[1m]))
+        )
+        and on() (sum(increase(envoy_cluster_upstream_rq_xx{envoy_cluster_name="{{ $c }}",envoy_response_code_class!="4"}[1m])) >= 30)
+        or on() vector(-1)
+# p99 of the time Envoy waited for the canary's response, in ms.
+- name: canary-p99-ms
+  {{- include "svp-service.canaryCadence" .gate | nindent 2 }}
+  successCondition: result[0] >= 0 && result[0] < 150
+  failureCondition: result[0] >= 150
+  provider:
+    prometheus:
+      address: {{ $prom }}
+      timeout: 10
+      query: |
+        histogram_quantile(0.99, sum by (le) (rate(envoy_cluster_upstream_rq_time_bucket{envoy_cluster_name="{{ $c }}"}[1m])))
+        and on() (sum(increase(envoy_cluster_upstream_rq_xx{envoy_cluster_name="{{ $c }}",envoy_response_code_class!="4"}[1m])) >= 30)
+        or on() vector(-1)
+{{- end }}
+
+{{- if .Values.canary }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-canary
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "svp-service.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "svp-service.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: {{ .Values.protocol }}
+      port: {{ .Values.port }}
+      targetPort: {{ .Values.protocol }}
+{{- range $gate := list false true }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: {{ $.Release.Name }}-canary{{ if $gate }}-gate{{ end }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "svp-service.labels" $ | nindent 4 }}
+spec:
+  metrics:
+    {{- include "svp-service.canaryMetrics" (dict "ctx" $ "gate" $gate) | nindent 4 }}
+{{- end }}
+{{- end }}

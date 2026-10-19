@@ -1,0 +1,54 @@
+# k3d cluster `svp` for stage 4 (docs/adr/0014-kubernetes-local-stage4.md, section 2). Created by `make k8s-up`
+# through deploy/k8s/lib.sh (ensure_cluster), which also creates the registry this file points at.
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: svp
+# One server and one agent, the server still running workloads: with a second node a PodDisruptionBudget, the spread of
+# the gateway's two replicas and a node drain mean something; a third node only costs RAM on a 16 GB machine.
+servers: 1
+agents: 1
+# Pinned by digest (multi-arch index): v1.36 is the newest minor every component supports and within kubectl 1.37's
+# skew (ADR section 1).
+image: rancher/k3s:v1.36.5-k3s1@sha256:057cfd5a9d51b89f1f0ee139c28d5d5fdd5aa7ddeac2742a0ba90c6dbc0329bb
+# A fixed node subnet: NetworkPolicy opens egress to the API server and the kubelet by this range. It overlaps neither
+# k3s's pods (10.42.0.0/16) and services (10.43.0.0/16) nor Docker's default pools (172.17-172.31, 192.168).
+subnet: 10.200.0.0/24
+# k3d binds the API to 0.0.0.0 unless told otherwise; every port of the lab is published on loopback only.
+kubeAPI:
+  hostIP: 127.0.0.1
+  hostPort: "6550"
+ports:
+  # HTTPS of Envoy Gateway: host 127.0.0.1:8443 to port 443 of k3d's load balancer, then servicelb on either node.
+  - port: 127.0.0.1:8443:443
+    nodeFilters: [loadbalancer]
+# The local registry (k3d-svp-registry, pushed to from the host at 127.0.0.1:5111); k3d writes the containerd mirror
+# for this name into every node.
+registries:
+  use: [k3d-svp-registry:5111]
+# Pod Security "restricted" by default in every namespace but kube-system (deploy/k8s/pod-security-admission.yaml).
+# k3d expands environment variables in this file before reading it, and Docker refuses a relative bind source:
+# ensure_cluster (deploy/k8s/lib.sh) exports SVP_REPO_ROOT as the absolute path of the repository. No other dollar
+# sign may appear in this file.
+volumes:
+  - volume: ${SVP_REPO_ROOT}/deploy/k8s/pod-security-admission.yaml:/etc/rancher/k3s/pod-security-admission.yaml:ro
+    nodeFilters: ["server:*"]
+options:
+  k3s:
+    extraArgs:
+      # Envoy Gateway is the only ingress: Traefik would be a second controller competing for ports 80 and 443.
+      - arg: --disable=traefik
+        nodeFilters: ["server:*"]
+      # The file mounted above (volumes); ensure_cluster checks an existing cluster has this argument.
+      - arg: --kube-apiserver-arg=admission-control-config-file=/etc/rancher/k3s/pod-security-admission.yaml
+        nodeFilters: ["server:*"]
+      # FF-3: a fork bomb in any pod stops at 512 processes. The kubelet applies it to every pod of the node, so it sits
+      # above what Postgres (one process per connection, about 110 when full) and Envoy need, twice media-worker's
+      # pids_limit of 256 in compose.
+      - arg: --kubelet-arg=pod-max-pids=512
+        nodeFilters: ["server:*", "agent:*"]
+  kubeconfig:
+    # Merged into ~/.kube/config without switching the current context, which may be another cluster: every command
+    # names --context k3d-svp.
+    updateDefaultKubeconfig: true
+    switchCurrentContext: false

@@ -1,0 +1,33 @@
+{{- /*
+Envoy's metrics for the canary of the gateway (ADR-0014 section 13): Prometheus scrapes the proxy of Gateway svp on
+its metrics port, /stats/prometheus, and AnalysisTemplate gateway-canary (chart svp-service) reads the canary
+backend's 5xx and latency from them. Envoy exposes a few thousand series; only the three families the analysis and
+the drills read are kept, for the clusters of HTTPRoute api (svp): responses by class, all responses, and the
+response time histogram (ms).
+
+The PodMonitor lives in svp-obs although the pods are in envoy-gateway-system: the Prometheus operator watches svp-obs
+only (deploy/k8s/values/kube-prometheus-stack.yaml), and a PodMonitor elsewhere would never be picked up, with no error
+anywhere. Prometheus finds the pods itself, with its own cluster-wide right to list pods; policy prometheus opens the
+port.
+*/}}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: envoy-svp
+  namespace: {{ .Release.Namespace }}
+spec:
+  namespaceSelector:
+    matchNames: [{{ .Values.envoy.namespace }}]
+  selector:
+    matchLabels:
+      {{- toYaml .Values.envoy.labels | nindent 6 }}
+  podMetricsEndpoints:
+    - port: metrics
+      path: /stats/prometheus
+      metricRelabelings:
+        - sourceLabels: [__name__]
+          regex: envoy_cluster_upstream_rq_xx|envoy_cluster_upstream_rq_total|envoy_cluster_upstream_rq_time_bucket
+          action: keep
+        - sourceLabels: [envoy_cluster_name]
+          regex: httproute/svp/api/.*
+          action: keep

@@ -18,7 +18,7 @@ import (
 // requestWithTrace returns the request a handler behind Trace sees, and its trace-id.
 func requestWithTrace(t *testing.T) (*http.Request, string) {
 	var seen *http.Request
-	Trace(testServer)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { seen = r })).
+	Trace(testServer, ClientAddr{})(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { seen = r })).
 		ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
 	return seen, traceID(seen.Context())
 }
@@ -158,7 +158,7 @@ func TestWriteRateLimited(t *testing.T) {
 
 func TestAccessLogNamesRateLimit(t *testing.T) {
 	logs := captureLog(t)
-	h := Trace(testServer)(AccessLog(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := Trace(testServer, ClientAddr{})(AccessLog(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		WriteRateLimited(w, r, "register", time.Minute)
 	})))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/auth/register", nil))

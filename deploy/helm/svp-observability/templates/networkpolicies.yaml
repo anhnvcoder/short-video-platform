@@ -1,0 +1,324 @@
+{{- /*
+Flows into and out of svp-obs (ADR-0014 section 3, "flows opened"; threat model IN-2, FF-5, OPS-2). Chart svp-cluster
+already denies every pod of the namespace in both directions, opens DNS, and opens the API server for pods labelled
+svp-kube-api=allow (Prometheus, its operator, kube-state-metrics, Grafana's sidecars, Pyroscope). Each pod below gets
+one policy listing every port it serves and every peer it calls, so the policy of a pod is the whole of its traffic;
+the one exception is Alertmanager's egress to the internet, kept apart in allow-alertmanager-telegram so the widest
+rule of the namespace stands on its own.
+
+Nothing opens a UI to any pod: Grafana, Prometheus and the rest are reached from the host only by `kubectl
+port-forward`, which comes in from the node and no NetworkPolicy blocks. A pod calling itself (memberlist, the
+single binaries' own gRPC) stays inside the pod. Ports are the pods' ports: NetworkPolicy sees the packet after a
+Service has been translated to a pod (Grafana's 3000 behind Service kps-grafana:80).
+*/}}
+{{- define "svp-observability.peer" -}}
+- podSelector:
+    matchLabels:
+      {{- toYaml (index .root.Values.pods .name) | nindent 6 }}
+{{- end }}
+{{- define "svp-observability.services" -}}
+- namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: svp
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: {{ toJson . }}
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [server]
+{{- end }}
+{{- define "svp-observability.selector" -}}
+podSelector:
+  matchLabels:
+    {{- toYaml (index .root.Values.pods .name) | nindent 4 }}
+{{- end }}
+# The Collector: OTLP from the six services, out to the three backends, and Redpanda's /public_metrics (no login is
+# needed or held; ADR section 5).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: collector
+  namespace: {{ .Release.Namespace }}
+spec:
+  {{- include "svp-observability.selector" (dict "root" . "name" "collector") | nindent 2 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- include "svp-observability.services" .Values.services.otlp | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 4317}
+  egress:
+    - to:
+        {{- include "svp-observability.peer" (dict "root" . "name" "prometheus") | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 9090}
+    - to:
+        {{- include "svp-observability.peer" (dict "root" . "name" "loki") | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 3100}
+    - to:
+        {{- include "svp-observability.peer" (dict "root" . "name" "tempo") | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 4317}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: svp-data
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redpanda
+              app.kubernetes.io/instance: redpanda
+      ports:
+        - {protocol: TCP, port: 9644}
+---
+# Prometheus: OTLP from the Collector, remote write from Tempo's metrics-generator, queries from Grafana and from the
+# Argo Rollouts controller (the AnalysisRuns of the gateway's canary). Out: alerts to Alertmanager, the scrapes of the
+# stack's ServiceMonitors (Grafana, kube-state-metrics, Alertmanager and its config reloader, the operator), of each
+# node's kubelet (cAdvisor and probe metrics) and of the Envoy proxy (PodMonitor envoy-svp). Prometheus scraping its
+# own pod stays inside the pod. Neither argo-rollouts nor envoy-gateway-system denies traffic by default, so the policy
+# here is the only one either flow needs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus
+  namespace: {{ .Release.Namespace }}
+spec:
+  {{- include "svp-observability.selector" (dict "root" . "name" "prometheus") | nindent 2 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- include "svp-observability.peer" (dict "root" . "name" "collector") | nindent 8 }}
+        {{- include "svp-observability.peer" (dict "root" . "name" "tempo") | nindent 8 }}
+        {{- include "svp-observability.peer" (dict "root" . "name" "grafana") | nindent 8 }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.rolloutsController.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.rolloutsController.labels | nindent 14 }}
+      ports:
+        - {protocol: TCP, port: 9090}
+  egress:
+    - to:
+        {{- include "svp-observability.peer" (dict "root" . "name" "alertmanager") | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 9093}
+        - {protocol: TCP, port: 8080}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.envoy.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.envoy.labels | nindent 14 }}
+      ports:
+        - {protocol: TCP, port: {{ .Values.envoy.port }}}
+    - to:
+        {{- include "svp-observability.peer" (dict "root" . "name" "grafana") | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 3000}
+    - to:
+        {{- include "svp-observability.peer" (dict "root" . "name" "kubeStateMetrics") | nindent 8 }}
+        {{- include "svp-observability.peer" (dict "root" . "name" "operator") | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 8080}
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.nodeSubnet }}
+      ports:
+        - {protocol: TCP, port: 10250}
+---
+# Alertmanager: alerts from Prometheus, which also scrapes it and its config reloader (8080); Grafana's datasource.
+# Its one call out, to Telegram, is policy allow-alertmanager-telegram below.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: alertmanager
+  namespace: {{ .Release.Namespace }}
+spec:
+  {{- include "svp-observability.selector" (dict "root" . "name" "alertmanager") | nindent 2 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- include "svp-observability.peer" (dict "root" . "name" "prometheus") | nindent 8 }}
+        {{- include "svp-observability.peer" (dict "root" . "name" "grafana") | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 9093}
+    - from:
+        {{- include "svp-observability.peer" (dict "root" . "name" "prometheus") | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 8080}
+  egress: []
+---
+# Grafana: no pod but Prometheus (its scrape) reaches it; people come in by port-forward only, and log in (OPS-2). Out:
+# its five datasources.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: grafana
+  namespace: {{ .Release.Namespace }}
+spec:
+  {{- include "svp-observability.selector" (dict "root" . "name" "grafana") | nindent 2 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- include "svp-observability.peer" (dict "root" . "name" "prometheus") | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 3000}
+  egress:
+    - to:
+        {{- include "svp-observability.peer" (dict "root" . "name" "prometheus") | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 9090}
+    - to:
+        {{- include "svp-observability.peer" (dict "root" . "name" "loki") | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 3100}
+    - to:
+        {{- include "svp-observability.peer" (dict "root" . "name" "tempo") | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 3200}
+    - to:
+        {{- include "svp-observability.peer" (dict "root" . "name" "pyroscope") | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 4040}
+    - to:
+        {{- include "svp-observability.peer" (dict "root" . "name" "alertmanager") | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 9093}
+---
+# kube-state-metrics and the Prometheus operator: scraped by Prometheus; they call the API server only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kube-state-metrics
+  namespace: {{ .Release.Namespace }}
+spec:
+  {{- include "svp-observability.selector" (dict "root" . "name" "kubeStateMetrics") | nindent 2 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- include "svp-observability.peer" (dict "root" . "name" "prometheus") | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 8080}
+  egress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus-operator
+  namespace: {{ .Release.Namespace }}
+spec:
+  {{- include "svp-observability.selector" (dict "root" . "name" "operator") | nindent 2 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- include "svp-observability.peer" (dict "root" . "name" "prometheus") | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 8080}
+  egress: []
+---
+# Loki: logs from the Collector, queries from Grafana. It calls out to nothing.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: loki
+  namespace: {{ .Release.Namespace }}
+spec:
+  {{- include "svp-observability.selector" (dict "root" . "name" "loki") | nindent 2 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- include "svp-observability.peer" (dict "root" . "name" "collector") | nindent 8 }}
+        {{- include "svp-observability.peer" (dict "root" . "name" "grafana") | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 3100}
+  egress: []
+---
+# Tempo: traces over OTLP/gRPC from the Collector, queries from Grafana; the other receivers its Service lists (Jaeger,
+# Zipkin, OTLP/HTTP) are open to no pod. Out: the metrics-generator's remote write to Prometheus.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tempo
+  namespace: {{ .Release.Namespace }}
+spec:
+  {{- include "svp-observability.selector" (dict "root" . "name" "tempo") | nindent 2 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- include "svp-observability.peer" (dict "root" . "name" "collector") | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 4317}
+    - from:
+        {{- include "svp-observability.peer" (dict "root" . "name" "grafana") | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 3200}
+  egress:
+    - to:
+        {{- include "svp-observability.peer" (dict "root" . "name" "prometheus") | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 9090}
+---
+# Pyroscope: profiles from the five services that push them (not media-worker), queries from Grafana. It calls out to
+# nothing but the API server.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pyroscope
+  namespace: {{ .Release.Namespace }}
+spec:
+  {{- include "svp-observability.selector" (dict "root" . "name" "pyroscope") | nindent 2 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- include "svp-observability.services" .Values.services.profiles | nindent 8 }}
+        {{- include "svp-observability.peer" (dict "root" . "name" "grafana") | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 4040}
+  egress: []
+---
+# Alertmanager to Telegram (api.telegram.org:443), for alerts of severity=page when .env has a bot (ADR-0014 section 3,
+# "egress of Alertmanager to Telegram"). A NetworkPolicy cannot name a host, only pods and IP blocks, so this opens TCP
+# 443 to every public IPv4 address: 0.0.0.0/0 except the private, link-local and shared ranges, which hold the pods
+# (10.42.0.0/16), the Services (10.43.0.0/16), the nodes (10.200.0.0/24) and the machine's own networks, so nothing
+# inside the cluster or on the host is opened. Telegram's published ranges would be narrower, but they change without
+# notice, and alerts would then stop with no error to show it. The policy stays when Telegram is off: Alertmanager
+# sends nothing then. The price: a compromised Alertmanager can reach any public address on 443 (compose does not
+# limit it either).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-alertmanager-telegram
+  namespace: {{ .Release.Namespace }}
+spec:
+  {{- include "svp-observability.selector" (dict "root" . "name" "alertmanager") | nindent 2 }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10]
+      ports:
+        - {protocol: TCP, port: 443}
+---
+# GlitchTip: errors from the five services that report them (not media-worker), on 8000; people come in by
+# port-forward only (`make k8s-ui-glitchtip`), and log in (OPS-2). Out: its database on Postgres svp-pg, nothing else
+# (the policy of its init Job is a hook in templates/glitchtip.yaml).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: glitchtip
+  namespace: {{ .Release.Namespace }}
+spec:
+  {{- include "svp-observability.selector" (dict "root" . "name" "glitchtip") | nindent 2 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- include "svp-observability.services" .Values.services.errors | nindent 8 }}
+      ports:
+        - {protocol: TCP, port: 8000}
+  egress:
+    {{- include "svp-observability.postgresPeer" . | nindent 4 }}

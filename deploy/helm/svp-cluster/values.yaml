@@ -1,0 +1,48 @@
+# Base of the cluster (docs/adr/0014-kubernetes-local-stage4.md, sections 2, 3 and 9). Installed by deploy/k8s/install.sh
+# (wave 1 of deploy/argocd/apps/components.json), after cert-manager and Envoy Gateway brought their CRDs.
+
+# The project's namespaces. Every one gets Pod Security "restricted", a default-deny NetworkPolicy and allow-dns.
+# routes: HTTPRoutes of this namespace may attach to Gateway svp. kubeAPI: pods labelled svp-kube-api=allow may reach the
+# API server (operators and sidecars that need it live in svp-data and svp-obs only). deploy/k8s/install.sh and
+# deploy/k8s/gitops.sh create them before wave 0 from templates/namespaces.yaml, labels included (Envoy Gateway binds a
+# Role in each one it watches); this chart then takes them over and adds the rest.
+namespaces:
+  - name: svp
+    routes: true
+    kubeAPI: false
+  - name: svp-data
+    routes: true
+    kubeAPI: true
+  - name: svp-obs
+    routes: false
+    kubeAPI: true
+  - name: svp-edge
+    routes: false
+    kubeAPI: false
+
+# Namespaces of platform charts made here, before their chart (a later wave), only so that Pod Security "restricted" is
+# enforced on their first pod: no NetworkPolicy, no routes. Without the label, whoever may create pods in such a
+# namespace (its controller, taken over) could start a privileged pod with a hostPath of the node there and read every
+# Secret of the cluster from it. argo-rollouts: the chart's own Role there (which no value of chart 2.43.8 narrows) lets
+# the controller create Jobs, update Deployments and pods. Every pod the pinned charts render with the project's values
+# meets "restricted" (helm template, checked rule by rule), and their controllers start no pod of their own here:
+# CloudNativePG runs its instances and Jobs in svp-data, KEDA starts Jobs only for a ScaledJob (none), Argo Rollouts the
+# gateway's pods in svp. The namespaces of wave 0 (cert-manager, envoy-gateway-system) must exist before this chart,
+# which needs their CRDs: deploy/k8s/install.sh and their Argo CD Applications label them; deploy/k8s/gitops.sh labels
+# argocd. Both scripts make the project's namespaces above too.
+platformNamespaces:
+  - name: argo-rollouts
+  - name: cnpg-system
+  - name: keda
+
+# Pod Security Standard version the admission controller checks against, pinned so a k3s upgrade does not tighten or
+# loosen it silently: the minor of the node image in deploy/k8s/k3d.yaml.
+podSecurityVersion: v1.36
+
+# Docker network of the k3d nodes (subnet in deploy/k8s/k3d.yaml): the API server listens on the server node's 6443.
+nodeSubnet: 10.200.0.0/24
+# ClusterIP of Service kubernetes (first address of k3s's service range 10.43.0.0/16).
+kubeAPIServiceIP: 10.43.0.1
+
+# Hostnames served by the single HTTPS listener; *.localhost resolves to loopback on the host.
+wildcardHost: "*.svp.localhost"

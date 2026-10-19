@@ -1,0 +1,130 @@
+# Argo CD v3.5.5 (chart https://argoproj.github.io/argo-helm argo-cd 10.10.5), release argocd in namespace argocd: the
+# GitOps path (docs/adr/0014-kubernetes-local-stage4.md, section 12). Installed by deploy/k8s/gitops.sh before
+# everything else; it is not in components.json, it builds the rest of the cluster from GitHub.
+#
+# Minimal: the application controller, repo-server, server and Redis only. Logins are the local admin user (password
+# in Secret argocd-initial-admin-secret, read by the command `make k8s-ui-argocd` prints); the server stays a ClusterIP
+# Service reached only through a port-forward on 127.0.0.1 (threat model OPS-2).
+
+dex:
+  # No single sign-on: the local admin user is the only login.
+  enabled: false
+notifications:
+  enabled: false
+applicationSet:
+  # The chart has no switch to leave the ApplicationSet controller out; zero replicas leave its Deployment without a
+  # pod. One components.json already lists every Application.
+  replicas: 0
+
+configs:
+  cm:
+    # Argo CD polls GitHub: a cluster on this machine cannot take GitHub's webhooks. Every 60 s with no jitter: the
+    # chart's default jitter of 60 s makes the controller delay each periodic refresh by a random 0-60 s more, so the
+    # real period would be 60-120 s. The repo-server caches the repository's refs for the same 60 s and shares them
+    # between every Application of the repository, so a push is seen within about 60 s, about 120 s at worst.
+    timeout.reconciliation: 60s
+    timeout.reconciliation.jitter: 0s
+    # Since 1.8 Argo CD no longer assesses the health of an Application, so an app-of-apps would start each sync wave
+    # as soon as the previous wave's Applications are applied, not once their operators, CRDs and databases are
+    # ready (helm --wait does that on the dev path). This restores it, starting from the Lua of
+    # docs/operator-manual/health.md at v3.5.5 (section "Argocd App"), which only passes status.health on. That is not
+    # enough: status.health leaves out hooks (controller/health.go), so an Application whose PostSync Job (svp-data's
+    # pg-bootstrap, which makes the databases and roles) still runs or has failed would already count as Healthy and
+    # let the next wave start. So a child Application is:
+    #   Progressing  while it has no status yet, while a sync runs (hooks included; retries of a failed sync run too),
+    #                or while it is OutOfSync at revisions no finished sync was made for (its automated sync has not
+    #                started yet). Only OutOfSync counts here: Argo CD syncs automatically only an OutOfSync
+    #                Application, so one that stays Synced at a new revision keeps the sync result of an older one;
+    #   Degraded     when its last sync Failed or ended in Error once the retries were spent (the root's sync fails
+    #                with the message, instead of waiting);
+    #   otherwise    its own status.health, as in the documented Lua.
+    resource.customizations.health.argoproj.io_Application: |
+      hs = {}
+      hs.status = "Progressing"
+      hs.message = ""
+      if obj.status == nil then
+        return hs
+      end
+      local op = obj.status.operationState
+      if op ~= nil and op.phase ~= "Succeeded" and op.phase ~= "Failed" and op.phase ~= "Error" then
+        hs.message = "sync " .. tostring(op.phase) .. ": " .. (op.message or "")
+        return hs
+      end
+      local sync = obj.status.sync
+      if sync ~= nil and sync.status == "OutOfSync" then
+        local want = sync.revisions or {sync.revision}
+        local got = nil
+        if op ~= nil and op.syncResult ~= nil then
+          got = op.syncResult.revisions or {op.syncResult.revision}
+        end
+        local same = got ~= nil and #want == #got
+        if same then
+          for i = 1, #want do
+            if want[i] ~= got[i] then
+              same = false
+            end
+          end
+        end
+        if not same then
+          hs.message = "OutOfSync: waiting for the automated sync of the new revision"
+          return hs
+        end
+      end
+      if op ~= nil and op.phase ~= "Succeeded" then
+        hs.status = "Degraded"
+        hs.message = "sync " .. op.phase .. ": " .. (op.message or "")
+        return hs
+      end
+      if obj.status.health ~= nil then
+        hs.status = obj.status.health.status
+        if obj.status.health.message ~= nil then
+          hs.message = obj.status.health.message
+        end
+      end
+      return hs
+    # Argo CD v3.5.5 ships a health check for Prometheus (resource_customizations/monitoring.coreos.com/Prometheus)
+    # but none for Alertmanager, so Application kube-prometheus-stack would report Healthy while Alertmanager's pod still
+    # starts; deploy/k8s/install.sh waits for its condition Available on the dev path. The operator sets the same two
+    # conditions on both: Available from the ready pods of the StatefulSet, Reconciled from its last reconcile of the
+    # resource. An Alertmanager is:
+    #   Progressing  without conditions yet, while a condition is of an older generation, or while Available is not
+    #                True (its pods start: StatefulSetNotFound, NoPodReady, SomePodsNotReady). Not Degraded, as the
+    #                Prometheus check has it for NoPodReady: a Degraded resource fails the sync wave waiting on it, and
+    #                every new Alertmanager starts with no pod ready. A pod that never gets ready keeps it here until
+    #                deploy/k8s/gitops.sh's deadline;
+    #   Degraded     when Reconciled is False: the operator could not apply the resource (a config Secret it cannot
+    #                read or that does not parse);
+    #   Healthy      when Available is True.
+    resource.customizations.health.monitoring.coreos.com_Alertmanager: |
+      hs = {}
+      hs.status = "Progressing"
+      hs.message = "waiting for the operator's first status"
+      if obj.status == nil or obj.status.conditions == nil then
+        return hs
+      end
+      local available = nil
+      for _, c in ipairs(obj.status.conditions) do
+        if c.observedGeneration ~= nil and c.observedGeneration < obj.metadata.generation then
+          hs.message = c.type .. " is of generation " .. c.observedGeneration .. ", not " .. obj.metadata.generation
+          return hs
+        end
+        if c.type == "Reconciled" and c.status == "False" then
+          hs.status = "Degraded"
+          hs.message = "Reconciled False: " .. (c.message or c.reason or "")
+          return hs
+        end
+        if c.type == "Available" then
+          available = c
+        end
+      end
+      if available == nil then
+        return hs
+      end
+      if available.status == "True" then
+        hs.status = "Healthy"
+        hs.message = "all instances are available"
+      else
+        hs.message = "Available " .. tostring(available.status) .. ": " .. (available.reason or "") .. " " ..
+          (available.message or "")
+      end
+      return hs

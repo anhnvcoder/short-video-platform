@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	engagementv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/engagement/v1"
 	"github.com/anhnvcoder/short-video-platform/internal/redistest"
 	"github.com/anhnvcoder/short-video-platform/internal/redisx"
+	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/httpx"
 	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/ratelimit"
 )
 
@@ -238,18 +240,51 @@ func TestLoginIPLimitIgnoresForwardedHeaders(t *testing.T) {
 	wantRateLimited(t, e.send(t, ip, http.MethodPost, "/auth/login", "{", "", nil), "1")
 }
 
+// TestLoginIPLimitBehindProxy: behind one trusted proxy the IP limit counts the address the
+// proxy appended to X-Forwarded-For. A client that writes another element before it on every
+// request stays in one bucket, which leaves another client behind the same proxy unlimited; a
+// client reaching the gateway directly is counted by its connection, whatever element it writes
+// last (threat model RL-1).
+func TestLoginIPLimitBehindProxy(t *testing.T) {
+	// Fallback limits: login-ip burst 15, one every 2 s.
+	e := newEnvBehind(t, httpx.NewClientAddr(1, []netip.Prefix{netip.MustParsePrefix("10.42.0.0/16")}), downLimits(t))
+	const envoy, direct = "10.42.0.7:5000", "192.0.2.1:5000"
+	login := func(remote, xff string, i int) *httptest.ResponseRecorder {
+		body := fmt.Sprintf(`{"email":"user%d@example.com","password":"correct horse"}`, i)
+		return e.send(t, remote, http.MethodPost, "/auth/login", body, "", map[string]string{"X-Forwarded-For": xff})
+	}
+
+	// The in-memory limiter answers T less the time since the first request, rounded up, so a slow
+	// burst can lower Retry-After from 2 to 1; wantRateLimitedSince accepts that range.
+	start := time.Now()
+	wantRateLimitedSince(t, untilLimited(t, 15, 2*time.Second, func(i int) *httptest.ResponseRecorder {
+		return login(envoy, fmt.Sprintf("203.0.113.%d, 198.51.100.9", i), i)
+	}), 2*time.Second, start)
+	wantStatus(t, login(envoy, "203.0.113.1, 198.51.100.10", 100), http.StatusOK)
+
+	start = time.Now()
+	wantRateLimitedSince(t, untilLimited(t, 15, 2*time.Second, func(i int) *httptest.ResponseRecorder {
+		return login(direct, fmt.Sprintf("198.51.100.%d", 20+i), i)
+	}), 2*time.Second, start)
+}
+
 func TestLoginBadJSONCountsOnlyIP(t *testing.T) {
 	e := newEnv(t) // fallback limits: login-ip burst 15, login-email burst 3
 	const ip = "192.0.2.1:5000"
+	// The in-memory limiter answers T less the time since the first request that counted, so each
+	// refusal below is checked against a range that follows the clock, not a fixed value.
+	ipStart := time.Now()
 	for range 3 {
 		wantStatus(t, e.send(t, ip, http.MethodPost, "/auth/login", `{"email":`, "", nil), http.StatusBadRequest)
 	}
+	emailStart := time.Now()
 	for i := range 3 {
 		if rec := e.send(t, ip, http.MethodPost, "/auth/login", credentialsBody, "", nil); rec.Code != http.StatusOK {
 			t.Fatalf("login %d after bad JSON: status %d; bad JSON must not count against the email", i+1, rec.Code)
 		}
 	}
-	wantRateLimited(t, e.send(t, ip, http.MethodPost, "/auth/login", credentialsBody, "", nil), "720")
+	// login-email fallback: 5 an hour, one every 12 minutes.
+	wantRateLimitedSince(t, e.send(t, ip, http.MethodPost, "/auth/login", credentialsBody, "", nil), 12*time.Minute, emailStart)
 	// 7 of the IP's 15 are spent; 8 more logins with other emails pass, the next one does not.
 	for i := range 8 {
 		body := fmt.Sprintf(`{"email":"user%d@example.com","password":"correct horse"}`, i)
@@ -257,18 +292,19 @@ func TestLoginBadJSONCountsOnlyIP(t *testing.T) {
 			t.Fatalf("login %d with another email: status %d", i+1, rec.Code)
 		}
 	}
-	wantRateLimited(t, e.send(t, ip, http.MethodPost, "/auth/login", `{"email":"z@example.com","password":"x"}`, "", nil), "2")
+	wantRateLimitedSince(t, e.send(t, ip, http.MethodPost, "/auth/login", `{"email":"z@example.com","password":"x"}`, "", nil), 2*time.Second, ipStart)
 }
 
 func TestIPv6ClientsShareTheir64(t *testing.T) {
-	e := newEnv(t) // fallback register: burst 10
+	e := newEnv(t) // fallback register: burst 10, one every 2 minutes
+	start := time.Now()
 	for i := range 10 {
 		addr := fmt.Sprintf("[2001:db8::%x]:5000", i+1)
 		if rec := e.send(t, addr, http.MethodPost, "/auth/register", credentialsBody, "", nil); rec.Code != http.StatusCreated {
 			t.Fatalf("register %d: status %d", i+1, rec.Code)
 		}
 	}
-	wantRateLimited(t, e.send(t, "[2001:db8::ffff]:6000", http.MethodPost, "/auth/register", credentialsBody, "", nil), "120")
+	wantRateLimitedSince(t, e.send(t, "[2001:db8::ffff]:6000", http.MethodPost, "/auth/register", credentialsBody, "", nil), 2*time.Minute, start)
 	if rec := e.send(t, "[2001:db8:0:1::1]:5000", http.MethodPost, "/auth/register", credentialsBody, "", nil); rec.Code != http.StatusCreated {
 		t.Errorf("another /64: status %d, want 201", rec.Code)
 	}
@@ -403,13 +439,14 @@ func TestRedisDownPerClass(t *testing.T) {
 			token := e.token(t, userA)
 
 			// Soft-closed: login stays limited, by the fallback's burst of 15 per IP.
+			start := time.Now()
 			for i := range 15 {
 				body := fmt.Sprintf(`{"email":"user%d@example.com","password":"correct horse"}`, i)
 				if rec := e.send(t, ip, http.MethodPost, "/auth/login", body, "", nil); rec.Code != http.StatusOK {
 					t.Fatalf("login %d: status %d", i+1, rec.Code)
 				}
 			}
-			wantRateLimited(t, e.send(t, ip, http.MethodPost, "/auth/login", credentialsBody, "", nil), "2")
+			wantRateLimitedSince(t, e.send(t, ip, http.MethodPost, "/auth/login", credentialsBody, "", nil), 2*time.Second, start)
 
 			// Open: past every Redis burst, feed, like and view still go through, and every
 			// view is forwarded.

@@ -1,0 +1,102 @@
+{{- /*
+Schema migration of a service with a database (ADR-0014 section 10): a Job runs `migrate` with the service's migrator
+role before every install and upgrade, once, not in each replica; the long-running pods hold the app role only. goose
+applies only what is missing, so a run with nothing new does nothing. A failed migration fails the release: Helm (and
+Argo CD, which reads pre-install/pre-upgrade as PreSync) stops before the new pods replace the old ones, so no service
+runs against a schema older than its code.
+
+Hooks run before every ordinary resource of the release, in a namespace that denies everything by default: the Job's
+ServiceAccount and its egress policy are hooks of the same kind with a lower weight, so they exist before the Job on
+a new cluster too. before-hook-creation replaces each one at the next run, so a Job that completed keeps its pod and
+log until then. One that fails does not: the Job controller deletes its pod, and the log with it, when the Job fails;
+deploy/k8s/install.sh copies the log of each failed attempt while the pod is there and prints it then.
+The Job's pods carry the service's name (the label Postgres's policy in svp-data opens 5432 to) with component
+migrate, so neither the Service nor the service's own policy selects them.
+*/}}
+{{- if .Values.migrate }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-migrate
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "svp-service.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+automountServiceAccountToken: false
+---
+# The migrate Job reaches its database and nothing else (DNS is open to every pod of svp already).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-migrate
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "svp-service.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Release.Name }}
+      app.kubernetes.io/component: migrate
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - to:
+        {{- include "svp-service.peerSelector" .Values.peers.postgres | nindent 8 }}
+      ports:
+        {{- range .Values.peers.postgres.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-migrate
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "svp-service.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  # A new pod's address reaches Postgres only once k3s's network policy controller has added it to the policy of
+  # svp-data, about 2 s after the pod starts (measured), and `migrate` fails at once on a refused connection. The
+  # container is therefore restarted in the same pod (OnFailure keeps the pod and its address; a new pod would race
+  # again): at once, then after the kubelet's back-off of 10 s and 20 s. The Job fails as the container restarts the
+  # third time, about 40 s after it started (measured); three restarts leave room for a short outage of Postgres too,
+  # and a migration still failing then is a real error that fails the release.
+  backoffLimit: 3
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        {{- include "svp-service.labels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ .Release.Name }}-migrate
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "svp-service.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "svp-service.image" . }}
+          args: ["migrate"]
+          env:
+            # DATABASE_URL with the migrator role, which owns the schema; the service's own pods never get it.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: {name: {{ .Release.Name }}-migrate-env, key: DATABASE_URL}
+          resources:
+            {{- toYaml .Values.migrateResources | nindent 12 }}
+          securityContext:
+            {{- include "svp-service.containerSecurityContext" . | nindent 12 }}
+{{- end }}

@@ -1,0 +1,29 @@
+{{- /*
+Namespaces by role (ADR-0014 section 3): svp (the six services), svp-data (Postgres, Valkey, Redpanda, MinIO), svp-obs
+(observability, GlitchTip), svp-edge (Gateway and wildcard certificate). Pod Security Admission enforces "restricted":
+pods must run as non-root, drop every capability, use seccomp RuntimeDefault and forbid privilege escalation; a chart
+that cannot is fixed in its values, the namespace is not loosened. warn and audit use the same level so kubectl and
+the audit log name what enforce rejected. The platform namespaces of values.yaml get the same Pod Security labels and
+nothing else. deploy/k8s/install.sh and deploy/k8s/gitops.sh render this template alone (no release) for the
+namespaces they make before this chart, so those carry the same labels: both make the project's namespaces before wave
+0, Envoy Gateway binding a Role in each one it watches; install.sh also those of wave 0 (platformNamespaces set to
+them), gitops.sh argocd. This chart then takes the project's over.
+*/}}
+{{- range concat .Values.namespaces .Values.platformNamespaces }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .name }}
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: {{ $.Values.podSecurityVersion }}
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: {{ $.Values.podSecurityVersion }}
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: {{ $.Values.podSecurityVersion }}
+    {{- if .routes }}
+    # Gateway svp accepts HTTPRoutes only from namespaces with this label (ADR section 9).
+    svp-gateway-routes: "true"
+    {{- end }}
+{{- end }}

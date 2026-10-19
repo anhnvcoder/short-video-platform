@@ -11,6 +11,11 @@ GITLEAKS_VERSION           := v8.30.1
 # SLO rule generator (docs/adr/0011-observability-stage3.md, section 8). `go install` leaves the
 # version empty and Sloth would then write "dev" in the header of the file it generates.
 SLOTH_VERSION              := v0.16.0
+# Local Kubernetes (docs/adr/0014-kubernetes-local-stage4.md, section 1). Without both -X flags k3d reports v5-dev and
+# pulls its proxy and tools images as :latest, and its default node image is an older k3s; the node image itself is
+# pinned by digest in deploy/k8s/k3d.yaml.
+K3D_VERSION                := v5.9.0
+K3S_IMAGE_TAG              := v1.36.5-k3s1
 
 # Tools installed by `go install` land here; the PATH of the caller is not assumed to contain it.
 GOBIN ?= $(shell go env GOPATH)/bin
@@ -30,9 +35,9 @@ SVP_TEST_REDIS_URL ?= redis://127.0.0.1:6379/15
 .PHONY: help tools generate slo otelcol-validate fmt-check vet lint buf-lint test cover check hooks
 
 help: ## List the targets
-	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
+	@grep -hE '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
 
-tools: ## Install the pinned code generators, linter, secret scanner and SLO generator into GOBIN
+tools: ## Install the pinned code generators, linter, secret scanner, SLO generator and k3d into GOBIN
 	GOBIN=$(GOBIN) go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
 	GOBIN=$(GOBIN) go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
 	GOBIN=$(GOBIN) go install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
@@ -40,6 +45,8 @@ tools: ## Install the pinned code generators, linter, secret scanner and SLO gen
 	GOBIN=$(GOBIN) go install github.com/zricethezav/gitleaks/v8@$(GITLEAKS_VERSION)
 	GOBIN=$(GOBIN) go install -ldflags='-X github.com/slok/sloth/internal/info.Version=$(SLOTH_VERSION)' \
 		github.com/slok/sloth/cmd/sloth@$(SLOTH_VERSION)
+	GOBIN=$(GOBIN) go install -ldflags='-X github.com/k3d-io/k3d/v5/version.Version=$(K3D_VERSION) \
+		-X github.com/k3d-io/k3d/v5/version.K3sVersion=$(K3S_IMAGE_TAG)' github.com/k3d-io/k3d/v5@$(K3D_VERSION)
 
 generate: ## Generate Go code from proto/ (buf) and from SQL (sqlc, per service)
 	buf generate
@@ -48,17 +55,20 @@ generate: ## Generate Go code from proto/ (buf) and from SQL (sqlc, per service)
 slo: ## Generate the SLO recording and burn-rate alert rules from deploy/observability/slo/svp-slos.yaml (Sloth)
 	sloth generate --no-color -i deploy/observability/slo/svp-slos.yaml -o deploy/observability/prometheus/rules/slo-generated.yaml
 
-# The Collector image of `otelcol` and `otelcol-elastic` in deploy/compose/compose.yaml (keep the
-# three in step), run with no network and the config files at the paths compose mounts them.
+# The Collector image of `otelcol` and `otelcol-elastic` in deploy/compose/compose.yaml and of
+# deploy/k8s/values/otel-collector.yaml (keep the four in step), run with no network and the config
+# files at the paths compose mounts them.
 OTELCOL_IMAGE := otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
 OTELCOL := env -u DOCKER_DEFAULT_PLATFORM docker run --rm --network none \
 	-v $(CURDIR)/deploy/observability/otelcol/config.yaml:/etc/otelcol/config.yaml:ro \
 	-v $(CURDIR)/deploy/observability/elastic/otelcol-config.yaml:/etc/otelcol/elastic.yaml:ro \
+	-v $(CURDIR)/deploy/observability/otelcol/k8s-config.yaml:/etc/otelcol/k8s.yaml:ro \
 	$(OTELCOL_IMAGE)
 
-otelcol-validate: ## Validate the Collector configs with the pinned Collector: obs, and obs-elastic (the obs file with the Elastic file merged over it)
+otelcol-validate: ## Validate the Collector configs with the pinned Collector: obs, obs-elastic (the obs file with the Elastic file merged over it) and the cluster's (k8s-config.yaml)
 	$(OTELCOL) validate --config=/etc/otelcol/config.yaml
 	$(OTELCOL) validate --config=/etc/otelcol/config.yaml --config=/etc/otelcol/elastic.yaml
+	$(OTELCOL) validate --config=/etc/otelcol/k8s.yaml
 
 fmt-check: ## Fail and list the files that gofmt would change (generated code excluded)
 	@out=$$(find . -name '*.go' -not -path './gen/*' -not -path './.roster/*' -print0 \
@@ -91,3 +101,5 @@ hooks: ## Point git at .githooks (run once per clone)
 
 # Docker and compose targets live in their own file (stage 1, compose card).
 -include deploy/compose/compose.mk
+# Local Kubernetes targets (k3d cluster svp, stage 4).
+-include deploy/k8s/k8s.mk

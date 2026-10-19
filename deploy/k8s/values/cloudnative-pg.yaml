@@ -1,0 +1,61 @@
+# CloudNativePG 1.30.1 (chart https://cloudnative-pg.github.io/charts cloudnative-pg 0.29.1), release cloudnative-pg in
+# namespace cnpg-system, wave 2 of deploy/argocd/apps/components.json (docs/adr/0014-kubernetes-local-stage4.md,
+# sections 1 and 4). The operator and its CRDs only; the Cluster svp-pg is in chart svp-data (wave 4). The chart's pod
+# already meets Pod Security "restricted" (non-root, read-only root, drop ALL, seccomp RuntimeDefault).
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    # About 150 MiB expected at rest (ADR section 2); without a limit a leak would only show once the node is short.
+    memory: 256Mi
+
+# By default (config.clusterWide true, rbac.create true) the chart binds the operator a ClusterRole that creates,
+# reads and deletes Secrets, pods, pods/exec, Deployments, Jobs, Roles and RoleBindings in every namespace: whoever
+# takes its token reads svp/user-service-env (the JWT signing key) or execs into any pod. The project's only Cluster,
+# svp-pg, is in svp-data, so the operator watches that namespace alone and holds rights there and in its own namespace
+# only.
+#
+# The chart's own namespaced mode (clusterWide false) cannot give that: it binds its Role in the release namespace
+# (cnpg-system) only, and sets env WATCH_NAMESPACE to that namespace, which the operator reads before anything else.
+# CloudNativePG 1.30.1 builds its watch cache from the environment and reads its ConfigMap only afterwards
+# (internal/cmd/manager/controller/controller.go), so WATCH_NAMESPACE in config.data would watch cnpg-system and never
+# see svp-pg. Hence: clusterWide stays true, so the chart sets no WATCH_NAMESPACE of its own and the one below is the
+# only one; rbac.create false, so the chart renders the ServiceAccount but no Role, ClusterRole or binding (nor its
+# aggregated -view/-edit ClusterRoles, which bind nobody); and chart svp-cluster (wave 1, before this one) renders the
+# chart's own rules (templates/_helpers.tpl of chart 0.29.1) as templates/cnpg-rbac.yaml: its cluster-wide rules
+# (nodes, ClusterImageCatalogs; no Secret, no pod) in a ClusterRole, and its namespaced rules in a Role in cnpg-system
+# (the operator's ConfigMap, webhook certificate Secret, leader election Lease) and in svp-data. A namespace added below
+# must be added to that template's list too.
+#
+# The chart's cluster-wide rules also grant get and patch on every MutatingWebhookConfiguration and
+# ValidatingWebhookConfiguration, which the operator uses only to write the CA it makes into its own two: a stolen token
+# could as well rewrite a webhook to receive every Secret written in the cluster. MANAGE_WEBHOOK_CONFIGURATIONS=false
+# makes the operator leave them alone, and that rule is left out of templates/cnpg-rbac.yaml: cert-manager issues the
+# webhook's certificate into Secret cnpg-webhook-cert, which the chart mounts and the operator serves from, and its
+# cainjector writes the certificate into both webhook configurations, as the annotation below asks
+# (templates/cnpg-webhook-certificate.yaml of chart svp-cluster says why it is self-signed and why the operator keeps
+# it). The chart annotates the MutatingWebhookConfiguration with commonAnnotations and the
+# ValidatingWebhookConfiguration with rbac.annotations, so the annotation goes in both; commonAnnotations also lands on
+# the Deployment, Service, ServiceAccount and ConfigMaps, kinds cainjector does not read. MANAGE_WEBHOOK_CONFIGURATIONS
+# is set in the environment beside WATCH_NAMESPACE, and the chart's ConfigMap stays empty.
+#
+# Upgrading the chart: diff templates/_helpers.tpl (commonRules, clusterwideRules), templates/rbac.yaml and the two
+# webhook templates of the new version against the old one, take every change into templates/cnpg-rbac.yaml of chart
+# svp-cluster, check that the new operator still builds its cache from the environment and still honours
+# MANAGE_WEBHOOK_CONFIGURATIONS and Secret cnpg-webhook-cert, and that it logs no "forbidden" (kubectl --context
+# k3d-svp -n cnpg-system logs deployment/cloudnative-pg | grep -i forbidden) while svp-pg becomes ready.
+config:
+  clusterWide: true
+rbac:
+  create: false
+  annotations:
+    cert-manager.io/inject-ca-from: cnpg-system/cnpg-webhook
+commonAnnotations:
+  cert-manager.io/inject-ca-from: cnpg-system/cnpg-webhook
+additionalEnv:
+  - name: WATCH_NAMESPACE
+    value: svp-data
+  - name: MANAGE_WEBHOOK_CONFIGURATIONS
+    value: "false"

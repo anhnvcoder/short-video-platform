@@ -1,0 +1,135 @@
+{{- /*
+The service itself (ADR-0014 section 10). Configuration is environment variables only, as in compose: the plain ones
+from the values, the secret ones from Secret <service>-env, which deploy/k8s/secrets.sh writes from .env
+(deploy/k8s/install.sh restarts this Deployment when that Secret has changed, since a process reads its environment
+only when it starts).
+
+With canary set (the gateway) it is an Argo Rollouts Rollout instead (ADR-0014 section 13): the same pod template, and
+a new revision goes out as a canary behind Envoy rather than as a rolling update. Each revision's ReplicaSet gets the
+label rollouts-pod-template-hash, which the controller adds to the selectors of Services <release> (stable) and
+<release>-canary.
+*/}}
+{{- if .Values.canary }}
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+{{- else }}
+apiVersion: apps/v1
+kind: Deployment
+{{- end }}
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "svp-service.labels" . | nindent 4 }}
+spec:
+  {{- if and .Values.hpa .Values.keda }}
+  {{- fail (printf "release %s sets both hpa and keda: KEDA makes its own HPA, two would fight over the replicas" .Release.Name) }}
+  {{- end }}
+  {{- if not (or .Values.hpa .Values.keda) }}
+  replicas: {{ .Values.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "svp-service.selectorLabels" . | nindent 6 }}
+  {{- if .Values.canary }}
+  {{- include "svp-service.canaryStrategy" . | nindent 2 }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "svp-service.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/part-of: svp
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ .Release.Name }}
+      # No service calls the Kubernetes API: no token in the pod for an attacker to use (no Role is bound either).
+      automountServiceAccountToken: false
+      {{- with .Values.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- include "svp-service.podSecurityContext" . | nindent 8 }}
+      {{- if .Values.spreadAcrossNodes }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "svp-service.selectorLabels" . | nindent 14 }}
+      {{- end }}
+      containers:
+        - name: {{ .Release.Name }}
+          image: {{ include "svp-service.image" . }}
+          env:
+            {{- range $name, $value := .Values.env }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- if .Values.errorTracking }}
+            - name: SENTRY_DSN
+              valueFrom:
+                secretKeyRef: {name: sentry, key: SENTRY_DSN, optional: true}
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ .Release.Name }}-env
+          {{- if ne .Values.protocol "none" }}
+          ports:
+            - name: {{ .Values.protocol }}
+              containerPort: {{ .Values.port }}
+          {{- end }}
+          {{- if eq .Values.protocol "http" }}
+          # /healthz, not /readyz: /readyz fails when a gRPC service behind the gateway is down, and taking every
+          # gateway pod out of the Service then would turn one service's outage into a full one, while the gateway
+          # is built to degrade route by route behind its circuit breakers. It answers as soon as the process
+          # listens, so a gateway started before the gRPC services is ready and stays up.
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+            failureThreshold: 3
+          {{- else if eq .Values.protocol "grpc" }}
+          # The standard gRPC health service, SERVING from the moment the server listens until shutdown starts; it
+          # does not depend on the database. The startup probe gives a slow start (a database or broker still coming
+          # up) 60 s before liveness may restart the container.
+          startupProbe:
+            grpc: {port: {{ .Values.port }}}
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            grpc: {port: {{ .Values.port }}}
+            periodSeconds: 5
+          livenessProbe:
+            grpc: {port: {{ .Values.port }}}
+            periodSeconds: 10
+            failureThreshold: 3
+          {{- end }}
+          resources:
+            {{- $resources := required (printf "resources are empty for release %s" .Release.Name) .Values.resources }}
+            {{- toYaml $resources | nindent 12 }}
+          securityContext:
+            {{- include "svp-service.containerSecurityContext" . | nindent 12 }}
+          {{- with .Values.scratch }}
+          volumeMounts:
+            {{- range $name, $dir := . }}
+            - name: {{ $name }}
+              mountPath: {{ $dir.mountPath }}
+            {{- end }}
+          {{- end }}
+      {{- with .Values.scratch }}
+      volumes:
+        {{- range $name, $dir := . }}
+        - name: {{ $name }}
+          emptyDir:
+            {{- with $dir.medium }}
+            medium: {{ . }}
+            {{- end }}
+            sizeLimit: {{ $dir.sizeLimit }}
+        {{- end }}
+      {{- end }}

@@ -1,0 +1,46 @@
+{{- /*
+Traffic of the service's pods (ADR-0014 section 3; threat model IN-2, FF-5). Chart svp-cluster denies every pod of
+svp in both directions and opens DNS; this policy opens the rest, by pod labels: ingress on the service's own port
+from the peers in ingressFrom only (Envoy for the gateway, the gateway for a gRPC service), egress to the peers in
+egressTo only, so a compromised pod reaches only what its service really talks to, never the internet. A service
+with an empty ingressFrom (media-worker) is reached by no pod at all. The servers in svp-data and svp-obs have their
+own ingress policies for these pods.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "svp-service.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "svp-service.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  {{- if .Values.ingressFrom }}
+  ingress:
+    - from:
+        {{- range .Values.ingressFrom }}
+        {{- if not (hasKey $.Values.peers .) }}{{ fail (printf "ingressFrom: unknown peer %q" .) }}{{ end }}
+        {{- include "svp-service.peerSelector" (index $.Values.peers .) | nindent 8 }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.port }}
+  {{- else }}
+  ingress: []
+  {{- end }}
+  egress:
+    {{- range .Values.egressTo }}
+    {{- if not (hasKey $.Values.peers .) }}{{ fail (printf "egressTo: unknown peer %q" .) }}{{ end }}
+    {{- $peer := index $.Values.peers . }}
+    # {{ . }}
+    - to:
+        {{- include "svp-service.peerSelector" $peer | nindent 8 }}
+      ports:
+        {{- range $peer.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}

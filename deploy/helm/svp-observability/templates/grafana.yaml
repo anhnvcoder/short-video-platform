@@ -1,0 +1,104 @@
+{{- /*
+What Grafana of kube-prometheus-stack loads from ConfigMaps (its sidecars watch svp-obs for these labels; ADR-0014
+section 11). Grafana keeps no state of its own (no volume), so this is all of its configuration besides grafana.ini.
+*/}}
+{{- $dashboards := .Files.Glob "files/dashboards/*.json" }}
+{{- if not $dashboards }}
+{{- fail "files/dashboards/*.json matches nothing: the symlink into deploy/observability/grafana/dashboards/ is broken?" }}
+{{- end }}
+# The four dashboards of stage 3, the files compose provisions (symlink files/dashboards), in folder svp as there. They
+# are edited in the repository, not in the UI (the sidecar's provider forbids UI updates and deletion).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: svp-dashboards
+  namespace: {{ .Release.Namespace }}
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: svp
+data:
+  {{- $dashboards.AsConfig | nindent 2 }}
+---
+# The datasources of deploy/observability/grafana/provisioning/datasources/grafana-datasources.yaml with the same
+# UIDs and settings (trace <-> log links, service map, exemplars), so the dashboards and the drills' queries run
+# unchanged; only the URLs name the Services of the cluster. Alertmanager is added, the stack's own. Keep the two
+# files in step. `$$` is a literal `$` in Grafana provisioning.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: svp-datasources
+  namespace: {{ .Release.Namespace }}
+  labels:
+    grafana_datasource: "1"
+data:
+  datasources.yaml: |
+    apiVersion: 1
+
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        uid: prometheus
+        url: http://kps-prometheus.{{ .Release.Namespace }}:9090
+        isDefault: true
+        editable: true
+        jsonData:
+          # The services' metric export interval and Prometheus' scrape interval.
+          timeInterval: 15s
+          exemplarTraceIdDestinations:
+            - name: trace_id
+              datasourceUid: tempo
+              urlDisplayLabel: "Trace: $${__value.raw}"
+
+      - name: Tempo
+        type: tempo
+        uid: tempo
+        url: http://tempo.{{ .Release.Namespace }}:3200
+        editable: true
+        jsonData:
+          # Trace -> logs: {service_name="<service>"} | trace_id = "<trace id>"; trace_id is structured metadata in
+          # Loki, not a label.
+          tracesToLogsV2:
+            customQuery: true
+            datasourceUid: "loki"
+            query: '{$${__tags}} | trace_id = "$${__trace.traceId}"'
+            tags:
+              - key: "service.name"
+                value: "service_name"
+          # Service graph from Tempo's metrics generator, written to Prometheus.
+          serviceMap:
+            datasourceUid: "prometheus"
+          search:
+            hide: false
+          nodeGraph:
+            enabled: true
+          lokiSearch:
+            datasourceUid: "loki"
+
+      - name: Loki
+        type: loki
+        uid: loki
+        url: http://loki.{{ .Release.Namespace }}:3100
+        editable: true
+        jsonData:
+          # Log -> trace: the trace_id field of a log line opens that trace in Tempo.
+          derivedFields:
+            - name: "trace_id"
+              matcherType: "label"
+              matcherRegex: "trace_id"
+              url: "$${__value.raw}"
+              datasourceUid: "tempo"
+              urlDisplayLabel: "Trace: $${__value.raw}"
+
+      - name: Pyroscope
+        type: grafana-pyroscope-datasource
+        uid: pyroscope
+        url: http://pyroscope.{{ .Release.Namespace }}:4040
+
+      - name: Alertmanager
+        type: alertmanager
+        uid: alertmanager
+        url: http://kps-alertmanager.{{ .Release.Namespace }}:9093
+        jsonData:
+          handleGrafanaManagedAlerts: false
+          implementation: prometheus

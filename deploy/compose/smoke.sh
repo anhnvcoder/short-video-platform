@@ -11,6 +11,11 @@
 # 127.0.0.1:6379 (lib.sh resets the register rate limit there).
 #
 # Usage: deploy/compose/smoke.sh [base-url]   (default http://127.0.0.1:8080)
+#
+# The same steps run against the local k3d cluster svp with `make k8s-smoke`: base
+# https://api.svp.localhost:8443, CURL_CA_BUNDLE=.k8s/ca.crt so curl trusts the cluster's CA for
+# the API and the storage alike, and SVP_STACK=k3d so lib.sh resets the limit in the cluster's
+# Valkey (kubectl, context k3d-svp) instead of the host's Redis.
 set -euo pipefail
 
 base=${1:-http://127.0.0.1:8080}

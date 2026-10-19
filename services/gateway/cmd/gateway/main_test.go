@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"slices"
 	"strings"
@@ -330,5 +332,70 @@ func TestSlowStatsDoNotOpenBreaker(t *testing.T) {
 		if got := f.count(m); got != 1 {
 			t.Errorf("%s reached engagement-service %d times, want 1", m, got)
 		}
+	}
+}
+
+func TestTrustedProxies(t *testing.T) {
+	for _, tc := range []struct {
+		name, hops, cidrs string
+		// wantErr names the variables the error must name; empty when the setting is valid.
+		wantErr []string
+		// remote, xff and want check the ClientAddr of a valid setting.
+		remote, want string
+	}{
+		{name: "unset trusts no proxy", remote: "10.42.0.7:5000", want: "10.42.0.7"},
+		{name: "zero trusts no proxy", hops: "0", remote: "10.42.0.7:5000", want: "10.42.0.7"},
+		{name: "one hop from the pod range", hops: "1", cidrs: "10.42.0.0/16", remote: "10.42.0.7:5000", want: "198.51.100.9"},
+		{name: "ranges with spaces, not masked", hops: "1", cidrs: " 192.0.2.0/24 , 10.42.3.4/16 ", remote: "10.42.0.7:5000", want: "198.51.100.9"},
+		{name: "ipv6 range", hops: "1", cidrs: "fd00:42::/56", remote: "[fd00:42::7]:5000", want: "198.51.100.9"},
+		{name: "ipv4-mapped range", hops: "1", cidrs: "::ffff:10.42.0.0/112", remote: "10.42.0.7:5000", want: "198.51.100.9"},
+		{name: "ipv4-mapped connection", hops: "1", cidrs: "10.42.0.0/16", remote: "[::ffff:10.42.0.7]:5000", want: "198.51.100.9"},
+		{name: "ipv4-mapped range and connection", hops: "1", cidrs: "::ffff:10.42.0.0/112", remote: "[::ffff:10.42.0.7]:5000", want: "198.51.100.9"},
+		{name: "ipv4-mapped range, connection outside", hops: "1", cidrs: "::ffff:10.42.0.0/112", remote: "192.0.2.1:5000", want: "192.0.2.1"},
+		{name: "ipv4-mapped range of everything", hops: "1", cidrs: "::ffff:0.0.0.0/96", remote: "192.0.2.1:5000", want: "198.51.100.9"},
+		{name: "ipv6 range of everything", hops: "1", cidrs: "::/0", remote: "[fd00:42::7]:5000", want: "198.51.100.9"},
+		{name: "ipv4-mapped range shorter than 96", hops: "1", cidrs: "::ffff:10.42.0.0/64", wantErr: []string{"TRUSTED_PROXY_CIDRS"}},
+		{name: "connection outside the range", hops: "1", cidrs: "10.42.0.0/16", remote: "192.0.2.1:5000", want: "192.0.2.1"},
+		{name: "negative hops", hops: "-1", cidrs: "10.42.0.0/16", wantErr: []string{"TRUSTED_PROXY_HOPS"}},
+		{name: "hops not a number", hops: "abc", cidrs: "10.42.0.0/16", wantErr: []string{"TRUSTED_PROXY_HOPS"}},
+		{name: "hops with a fraction", hops: "1.5", cidrs: "10.42.0.0/16", wantErr: []string{"TRUSTED_PROXY_HOPS"}},
+		{name: "prefix too long", hops: "1", cidrs: "10.0.0.0/33", wantErr: []string{"TRUSTED_PROXY_CIDRS"}},
+		{name: "address without prefix", hops: "1", cidrs: "10.42.0.7", wantErr: []string{"TRUSTED_PROXY_CIDRS"}},
+		{name: "empty element", hops: "1", cidrs: "10.42.0.0/16,", wantErr: []string{"TRUSTED_PROXY_CIDRS"}},
+		{name: "hops without ranges", hops: "1", wantErr: []string{"TRUSTED_PROXY_HOPS", "TRUSTED_PROXY_CIDRS"}},
+		{name: "ranges with hops zero", hops: "0", cidrs: "10.42.0.0/16", wantErr: []string{"TRUSTED_PROXY_HOPS", "TRUSTED_PROXY_CIDRS"}},
+		{name: "ranges with hops unset", cidrs: "10.42.0.0/16", wantErr: []string{"TRUSTED_PROXY_HOPS", "TRUSTED_PROXY_CIDRS"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TRUSTED_PROXY_HOPS", tc.hops)
+			t.Setenv("TRUSTED_PROXY_CIDRS", tc.cidrs)
+			clientAddr, err := trustedProxies()
+			if len(tc.wantErr) > 0 {
+				if err == nil {
+					t.Fatal("trustedProxies succeeded, want an error")
+				}
+				for _, name := range tc.wantErr {
+					if !strings.Contains(err.Error(), name) {
+						t.Errorf("error %q does not name %s", err, name)
+					}
+				}
+				// A one-character value such as 0 or 1 is too short to tell apart from the text.
+				for _, value := range []string{tc.hops, tc.cidrs} {
+					if len(value) > 1 && strings.Contains(err.Error(), value) {
+						t.Errorf("error %q carries the value %q", err, value)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", nil)
+			r.RemoteAddr = tc.remote
+			r.Header.Set("X-Forwarded-For", "203.0.113.7, 198.51.100.9")
+			if got := clientAddr.Of(r); got != tc.want {
+				t.Errorf("client address = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

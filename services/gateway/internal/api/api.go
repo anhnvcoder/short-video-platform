@@ -45,6 +45,8 @@ type server struct {
 	feeds      feedv1.FeedServiceClient
 	engagement engagementv1.EngagementServiceClient
 	limits     *ratelimit.Limiter
+	// clientAddr finds the client's address for the rate limits by IP.
+	clientAddr httpx.ClientAddr
 	deps       []dependency
 	// mediaBaseURL is the public base of media object keys, without a trailing slash.
 	mediaBaseURL string
@@ -62,12 +64,15 @@ type dependency struct {
 // login by client IP, the others by the authenticated user, after RequireAuth. A request
 // that matches no route gets a problem response too. userConn, videoConn, feedConn and engagementConn reach
 // user-service, video-service, feed-service and engagement-service. mediaBaseURL is the public
-// base that media object keys are appended to, without a trailing slash. serverName is the
-// gateway's host:port, with a numeric port, named in its HTTP spans and metrics (see httpx.Trace).
-func New(userConn, videoConn, feedConn, engagementConn grpc.ClientConnInterface, verifier *authtoken.Verifier, mediaBaseURL string, limits *ratelimit.Limiter, serverName string) http.Handler {
+// base that media object keys are appended to, without a trailing slash. clientAddr finds the
+// client's address, for the rate limits by IP and the client.address of spans alike. serverName
+// is the gateway's host:port, with a numeric port, named in its HTTP spans and metrics (see
+// httpx.Trace).
+func New(userConn, videoConn, feedConn, engagementConn grpc.ClientConnInterface, verifier *authtoken.Verifier, mediaBaseURL string, limits *ratelimit.Limiter, clientAddr httpx.ClientAddr, serverName string) http.Handler {
 	s := &server{
 		mediaBaseURL: mediaBaseURL,
 		limits:       limits,
+		clientAddr:   clientAddr,
 		users:        userv1.NewUserServiceClient(userConn),
 		videos:       videov1.NewVideoServiceClient(videoConn),
 		feeds:        feedv1.NewFeedServiceClient(feedConn),
@@ -105,7 +110,7 @@ func New(userConn, videoConn, feedConn, engagementConn grpc.ClientConnInterface,
 	mux.Handle("GET /feed/explore", authed(ratelimit.Read, s.exploreFeed))
 	mux.HandleFunc("GET /healthz", healthz)
 	mux.HandleFunc("GET /readyz", s.readyz)
-	return httpx.Trace(serverName)(httpx.Recover(httpx.AccessLog(httpx.ValidUTF8(httpx.Routes(mux)))))
+	return httpx.Trace(serverName, clientAddr)(httpx.Recover(httpx.AccessLog(httpx.ValidUTF8(httpx.Routes(mux)))))
 }
 
 // allow counts the request in class c under id and, when the class refuses it, writes the 429
@@ -146,7 +151,7 @@ type registerResponse struct {
 }
 
 func (s *server) register(w http.ResponseWriter, r *http.Request) {
-	if !s.allow(w, r, ratelimit.Register, ratelimit.ClientIP(r)) {
+	if !s.allow(w, r, ratelimit.Register, ratelimit.ClientIP(r, s.clientAddr)) {
 		return
 	}
 	var req credentials
@@ -172,7 +177,7 @@ type loginResponse struct {
 // login checks the client IP before reading the body, and the (IP, email) pair once the body
 // decodes (threat model JWT-4).
 func (s *server) login(w http.ResponseWriter, r *http.Request) {
-	ip := ratelimit.ClientIP(r)
+	ip := ratelimit.ClientIP(r, s.clientAddr)
 	if !s.allow(w, r, ratelimit.LoginIP, ip) {
 		return
 	}

@@ -1,0 +1,101 @@
+{{- /*
+Topics, Kafka users and ACLs of the Redpanda release (wave 3) (ADR-0014 section 5; threat model IN-4, FF-6). One Job
+as the superuser svp-admin: deploy/redpanda/create-topics.sh, the file compose's redpanda-init runs, then
+kafka-users.sh. It lives in this chart rather than Redpanda's because the NetworkPolicies that let it reach the
+broker are here too.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redpanda-init
+  namespace: {{ .Release.Namespace }}
+data:
+  create-topics.sh: |-
+    {{- .Files.Get "files/create-topics.sh" | nindent 4 }}
+  kafka-users.sh: |-
+    {{- .Files.Get "files/kafka-users.sh" | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: redpanda-init
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    {{- include "svp-data.initJobAnnotations" . | nindent 4 }}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ add .Values.initJobs.waitSeconds 120 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: svp-data-init
+        app.kubernetes.io/component: redpanda-init
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        # The image's redpanda user.
+        {{- include "svp-data.podSecurityContext" (dict "uid" 101 "gid" 101) | nindent 8 }}
+      containers:
+        - name: redpanda-init
+          image: {{ .Values.redpanda.image }}
+          # Waits until the broker answers an authenticated metadata request, for a bounded time.
+          command:
+            - bash
+            - -c
+            - |
+              set -euo pipefail
+              deadline=$((SECONDS + SVP_WAIT_SECONDS))
+              until err=$(rpk cluster info 2>&1 >/dev/null); do
+                if ((SECONDS >= deadline)); then
+                  echo "redpanda-init: no authenticated answer from $RPK_BROKERS within ${SVP_WAIT_SECONDS}s; last error: $err" >&2
+                  exit 1
+                fi
+                sleep 3
+              done
+              bash /init/create-topics.sh
+              bash /init/kafka-users.sh
+          env:
+            - name: SVP_WAIT_SECONDS
+              value: {{ .Values.initJobs.waitSeconds | quote }}
+            # rpk reads the broker, the Admin API and the SASL login from these; the password stays off the command line.
+            - name: RPK_BROKERS
+              value: {{ .Values.redpanda.brokers }}
+            - name: RPK_ADMIN_HOSTS
+              value: {{ .Values.redpanda.adminHosts }}
+            - name: RPK_SASL_MECHANISM
+              value: SCRAM-SHA-256
+            - name: RPK_USER
+              value: svp-admin
+            - name: RPK_PASS
+              valueFrom:
+                secretKeyRef: {name: redpanda-bootstrap, key: password}
+            - name: KAFKA_USERS_DIR
+              value: /etc/kafka-users
+            # rpk looks for its configuration under HOME; the root filesystem is read-only.
+            - name: HOME
+              value: /tmp
+          resources:
+            {{- toYaml .Values.initJobs.resources | nindent 12 }}
+          securityContext:
+            {{- include "svp-data.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: init
+              mountPath: /init
+              readOnly: true
+            # One file per Kafka user, named after it, holding its password.
+            - name: kafka-users
+              mountPath: /etc/kafka-users
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: init
+          configMap:
+            name: redpanda-init
+        - name: kafka-users
+          secret:
+            secretName: kafka-users
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi

@@ -1,0 +1,125 @@
+{{- /*
+RBAC of the CloudNativePG operator (ServiceAccount cnpg-system/cloudnative-pg, chart cloudnative-pg 0.29.1 of wave 2),
+rendered here because deploy/k8s/values/cloudnative-pg.yaml turns the chart's own off: the chart can bind its
+namespaced rules either cluster-wide or in its release namespace only, and the project's only Cluster, svp-pg, is in
+svp-data. The rules are the chart's (templates/_helpers.tpl of chart 0.29.1): clusterwideRules in the ClusterRole
+(nodes, ClusterImageCatalogs; no Secret, no pod) but for its get and patch on webhook configurations, and commonRules,
+unchanged, in a Role in each namespace below. The operator patches its webhook configurations only to write its own CA
+into them, and patch on them would let a stolen token point a webhook at the operator's pod for every Secret written in
+the cluster: it runs with MANAGE_WEBHOOK_CONFIGURATIONS=false (deploy/k8s/values/cloudnative-pg.yaml), and
+cert-manager's cainjector writes the CA instead (templates/cnpg-webhook-certificate.yaml). cnpg-system: the operator's
+ConfigMap, the webhook certificate Secret it checks, its own CA (made at start, unused) and its leader election Lease.
+svp-data: the namespace it watches (WATCH_NAMESPACE in deploy/k8s/values/cloudnative-pg.yaml, the same list minus the
+operator's own namespace), where it runs svp-pg's pods and Jobs and makes their Secrets, ServiceAccount, Role and
+RoleBinding. The names differ from the chart's (cloudnative-pg), so a cluster installed before keeps nothing of the
+chart's: the chart's release deletes its ClusterRole and ClusterRoleBinding at its next upgrade, after this chart has
+made these. Written in wave 1 for an operator of wave 2: a RoleBinding may name a ServiceAccount that does not exist
+yet.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: svp-cloudnative-pg
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch]
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [clusterimagecatalogs]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: svp-cloudnative-pg
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: svp-cloudnative-pg
+subjects:
+  - kind: ServiceAccount
+    name: cloudnative-pg
+    namespace: cnpg-system
+{{- range list "cnpg-system" "svp-data" }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: svp-cloudnative-pg
+  namespace: {{ . }}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps, secrets, services]
+    verbs: [create, delete, get, list, patch, update, watch]
+  - apiGroups: [""]
+    resources: [configmaps/status, secrets/status]
+    verbs: [get, patch, update]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims, pods, pods/exec]
+    verbs: [create, delete, get, list, patch, watch]
+  - apiGroups: [""]
+    resources: [pods/status]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [serviceaccounts]
+    verbs: [create, get, list, patch, update, watch]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [create, delete, get, list, patch, update, watch]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [create, delete, get, list, patch, watch]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [create, get, list, update, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+  - apiGroups: [monitoring.coreos.com]
+    resources: [podmonitors]
+    verbs: [create, delete, get, list, patch, watch]
+  - apiGroups: [policy]
+    resources: [poddisruptionbudgets]
+    verbs: [create, delete, get, list, patch, update, watch]
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [backups, clusters, databaseroles, databases, poolers, publications, scheduledbackups, subscriptions]
+    verbs: [create, delete, get, list, patch, update, watch]
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [failoverquorums]
+    verbs: [create, delete, get, list, watch]
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [backups/status, databases/status, publications/status, scheduledbackups/status, subscriptions/status]
+    verbs: [get, patch, update]
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [imagecatalogs]
+    verbs: [get, list, watch]
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [clusters/finalizers, databaseroles/finalizers, poolers/finalizers]
+    verbs: [update]
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [clusters/status, databaseroles/status, poolers/status, failoverquorums/status]
+    verbs: [get, patch, update, watch]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings, roles]
+    verbs: [create, get, list, patch, update, watch]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshots]
+    verbs: [create, get, list, patch, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: svp-cloudnative-pg
+  namespace: {{ . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: svp-cloudnative-pg
+subjects:
+  - kind: ServiceAccount
+    name: cloudnative-pg
+    namespace: cnpg-system
+{{- end }}

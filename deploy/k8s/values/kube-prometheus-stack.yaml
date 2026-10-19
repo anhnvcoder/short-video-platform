@@ -1,0 +1,464 @@
+# kube-prometheus-stack 92.10.1 (chart https://prometheus-community.github.io/helm-charts), release kube-prometheus-stack
+# in namespace svp-obs, wave 2 of deploy/argocd/apps/components.json (docs/adr/0014-kubernetes-local-stage4.md,
+# sections 2, 3 and 11): the Prometheus operator and its CRDs, Prometheus v3.15.0, Alertmanager v0.34.1, Grafana
+# 13.2.4 and kube-state-metrics. Prometheus takes the place of the one inside grafana/otel-lgtm in compose, set up the
+# same way (deploy/observability/prometheus/prometheus.yaml), so the dashboards, rules and promtool tests of stage 3
+# run unchanged. The project's rules, dashboards and Grafana datasources other than Prometheus and Alertmanager come
+# from chart svp-observability (wave 5), the NetworkPolicies of svp-obs too.
+
+# Short, fixed names (Services kps-prometheus:9090, kps-alertmanager:9093, kps-grafana:80, kps-kube-state-metrics:8080,
+# kps-operator:8080), which the Collector's config, the datasources and the policies name. The subcharts do not
+# inherit the parent's fullnameOverride.
+fullnameOverride: kps
+
+global:
+  rbac:
+    # Off for the operator and Prometheus only (the Grafana and kube-state-metrics subcharts have their own switch):
+    # the chart's ClusterRole for the operator grants get, list, watch, create, update and delete on every Secret, and
+    # create on StatefulSets, in every namespace. extraManifests below holds that RBAC instead, narrowed to svp-obs.
+    #
+    # Upgrading the chart: render the new version with its RBAC (helm template kube-prometheus-stack
+    # kube-prometheus-stack --repo https://prometheus-community.github.io/helm-charts --version <new> --namespace
+    # svp-obs --values deploy/k8s/values/kube-prometheus-stack.yaml --set global.rbac.create=true --set-json
+    # 'extraManifests=null'), compare ClusterRoles kps-operator and kps-prometheus with extraManifests, take every
+    # change while keeping the operator's namespaced rules in its Role, and check that the operator logs no "forbidden"
+    # (kubectl --context k3d-svp -n svp-obs logs deployment/kps-operator | grep -i forbidden) for 5 minutes.
+    create: false
+
+# Pod Security "restricted" forbids node-exporter (hostNetwork, hostPID, hostPath); a node here is a container in the
+# Docker VM the whole machine shares, so its "host" metrics would not describe the lab anyway.
+nodeExporter:
+  enabled: false
+
+# k3s runs the control plane in one process with no separate metrics endpoints for etcd, the scheduler, the
+# controller manager or kube-proxy, so those scrapes would only report targets down. The API server's metrics are tens
+# of thousands of histogram series nothing here uses yet; CoreDNS's are not needed either. kubelet (cAdvisor: CPU and
+# memory per container) and kube-state-metrics stay.
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeProxy:
+  enabled: false
+kubeApiServer:
+  enabled: false
+coreDns:
+  enabled: false
+
+defaultRules:
+  rules:
+    # Groups about the components switched off above; they would never have data, or alert on its absence. The node
+    # and network groups are not switched off by nodeExporter.enabled and must be listed here.
+    etcd: false
+    kubeApiserverAvailability: false
+    kubeApiserverBurnrate: false
+    kubeApiserverHistogram: false
+    kubeApiserverSlos: false
+    kubeControllerManager: false
+    kubeProxy: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+    # Needs the API server's metrics.
+    kubernetesSystem: false
+    node: false
+    nodeExporterAlerting: false
+    nodeExporterRecording: false
+    kubePrometheusNodeRecording: false
+    network: false
+    windows: false
+
+# The operator watches namespace svp-obs only, where every PrometheusRule, ServiceMonitor and PodMonitor of the lab
+# lives (a PodMonitor here may still select pods of another namespace: Prometheus, not the operator, discovers them).
+# The kubelet Service and Endpoints the operator keeps for the kubelet scrape are in svp-obs too (the chart puts them
+# in kube-system), so the operator needs no object of another namespace; its RBAC, narrowed to match, is in
+# extraManifests below.
+kubelet:
+  namespace: svp-obs
+
+prometheusOperator:
+  namespaces:
+    releaseNamespace: true
+  kubeletService:
+    namespace: svp-obs
+  # The admission webhook would be the only webhook in a namespace that denies traffic by default, so the API server
+  # (calling from the node network) would need its own policy; the project's rules are checked by promtool
+  # (make slo-check) before they reach the repository. Without the webhook the operator needs no TLS either, and
+  # listens on plain 8080.
+  admissionWebhooks:
+    enabled: false
+  tls:
+    enabled: false
+  podLabels:
+    # The operator watches and writes its CRDs, StatefulSets and Secrets through the API server: allow-kube-api of
+    # chart svp-cluster opens that egress for pods with this label only.
+    svp-kube-api: allow
+  resources:
+    requests: {cpu: 20m, memory: 32Mi}
+    limits: {memory: 128Mi}
+
+kube-state-metrics:
+  fullnameOverride: kps-kube-state-metrics
+  # The secrets collector needs list and watch on every Secret of the cluster, the JWT signing key in
+  # svp/user-service-env included; the chart's ClusterRole then drops that rule. No rule or dashboard here reads
+  # kube_secret_*.
+  collectorsExclude: [secrets]
+  customLabels:
+    # Lists and watches the cluster's objects through the API server.
+    svp-kube-api: allow
+  resources:
+    requests: {cpu: 10m, memory: 32Mi}
+    limits: {memory: 128Mi}
+
+prometheus:
+  prometheusSpec:
+    # As compose (deploy/observability/prometheus/prometheus.yaml and the command line of the image's
+    # run-prometheus.sh): the OTLP receiver every metric arrives through (the Collector, and the Collector's own
+    # telemetry), the resource attributes promoted to labels, the identifying ones kept, out-of-order samples within
+    # 10 minutes, native histograms, exemplars. Same metric names and labels as compose, so the dashboards and rules
+    # need no change.
+    enableOTLPReceiver: true
+    otlp:
+      keepIdentifyingResourceAttributes: true
+      # The list of prometheus.yaml, in its order; keep the two in step.
+      promoteResourceAttributes:
+        - service.instance.id
+        - service.name
+        - service.namespace
+        - service.version
+        - cloud.availability_zone
+        - cloud.region
+        - container.name
+        - deployment.environment
+        - deployment.environment.name
+        - k8s.cluster.name
+        - k8s.container.name
+        - k8s.cronjob.name
+        - k8s.daemonset.name
+        - k8s.deployment.name
+        - k8s.job.name
+        - k8s.namespace.name
+        - k8s.node.name
+        - k8s.pod.name
+        - k8s.replicaset.name
+        - k8s.statefulset.name
+        - host.name
+        - postgresql.database.name
+        - postgresql.schema.name
+        - postgresql.table.name
+        - postgresql.index.name
+        - database
+        - kafka.cluster.alias
+    tsdb:
+      outOfOrderTimeWindow: 10m
+    scrapeNativeHistograms: true
+    enableFeatures: [exemplar-storage]
+    # Tempo's metrics-generator writes the service graph and span metrics to /api/v1/write.
+    enableRemoteWriteReceiver: true
+    # Rules run every 15 s, the services' export interval (ADR-0011, sections 5 and 8); the cluster's own scrapes
+    # (kubelet, kube-state-metrics, the stack itself) every 15 s too.
+    evaluationInterval: 15s
+    scrapeInterval: 15s
+    # The SLOs are computed over 30 days (slo:sli_error:ratio_rate30d); a shorter retention would drop errors still
+    # inside that window. The size cap keeps the 5 Gi volume from filling: past it the oldest blocks go first.
+    retention: 30d
+    retentionSize: 4GB
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 5Gi
+    # Prometheus has no route from the host, so the "Source" link of an alert (its generatorURL) points at Grafana's
+    # datasource proxy on 127.0.0.1:3000 (make k8s-ui-grafana), as in compose; the route prefix stays /, so everything
+    # inside the cluster (Grafana's datasource, OTLP, remote write, Alertmanager) reaches Prometheus at the root.
+    externalUrl: http://127.0.0.1:3000/api/datasources/proxy/uid/prometheus
+    routePrefix: /
+    # An empty selector picks every object of the namespaces the operator watches, which is svp-obs only (see
+    # prometheusOperator.namespaces): the PrometheusRules and PodMonitor envoy-svp of chart svp-observability carry no
+    # label of this release. A PodMonitor or ServiceMonitor in any other namespace is never read, and nothing reports
+    # it; one for pods of another namespace lives in svp-obs and names that namespace in its namespaceSelector (as
+    # envoy-svp does for envoy-gateway-system). With true the chart would select only objects labelled
+    # release=kube-prometheus-stack.
+    ruleSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    scrapeConfigSelectorNilUsesHelmValues: false
+    podMetadata:
+      labels:
+        # Service discovery of the ServiceMonitors and PodMonitors goes through the API server.
+        svp-kube-api: allow
+    resources:
+      requests: {cpu: 100m, memory: 384Mi}
+      limits: {memory: 1Gi}
+
+alertmanager:
+  alertmanagerSpec:
+    # The routing of compose (severity=page to Telegram when .env has a bot, everything else only in the UI), from
+    # Secret alertmanager-svp, which deploy/k8s/secrets.sh writes from .env before this chart is installed (key
+    # alertmanager.yaml; the operator reads no other key, and a config without receivers would drop every alert).
+    # useExistingSecret keeps the chart from rendering its own config Secret beside it. The bot token is never in that
+    # config: Secret alertmanager-telegram (empty while Telegram is off) is mounted at
+    # /etc/alertmanager/secrets/alertmanager-telegram/ and the config names the file (bot_token_file). The only way out
+    # of the cluster is TCP 443 to public addresses (policy allow-alertmanager-telegram of chart svp-observability).
+    configSecret: alertmanager-svp
+    useExistingSecret: true
+    secrets: [alertmanager-telegram]
+    # Neither Alertmanager nor its config-reloader calls the API server: the reloader watches the mounted config and
+    # Secret files and calls /-/reload on 127.0.0.1 (cmd/prometheus-config-reloader of operator v0.94.1 has no
+    # Kubernetes client). So the pod mounts no ServiceAccount token, and a taken-over Alertmanager, the only pod of the
+    # project's namespaces let out to the internet, holds no credential of the cluster.
+    automountServiceAccountToken: false
+    resources:
+      requests: {cpu: 10m, memory: 24Mi}
+      limits: {memory: 64Mi}
+
+grafana:
+  fullnameOverride: kps-grafana
+  # Login only (threat model OPS-2): the admin user and password come from Secret grafana-admin, which
+  # deploy/k8s/secrets.sh writes from .env (SVP_GRAFANA_ADMIN_PASSWORD). Grafana has no route from outside the
+  # cluster either: make k8s-ui-grafana port-forwards it to 127.0.0.1:3000.
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  grafana.ini:
+    auth.anonymous:
+      enabled: false
+    # As compose: the lab's data stays on the machine. No usage reports, no version checks, no plugin downloaded at
+    # run time (by default Grafana fetches a list of unpinned plugins at every start), the built-in signing key.
+    analytics:
+      reporting_enabled: false
+      check_for_updates: false
+      check_for_plugin_updates: false
+    plugins:
+      preinstall_disabled: true
+      preinstall_auto_update: false
+      public_key_retrieval_disabled: true
+  # No persistence: dashboards and datasources are provisioned from ConfigMaps at every start, and the chart's
+  # init container that chowns a volume would not pass Pod Security "restricted".
+  persistence:
+    enabled: false
+  # The chart's test pod runs only on `helm test`; nothing here runs it.
+  testFramework:
+    enabled: false
+  podLabels:
+    # The sidecars list and watch the dashboard and datasource ConfigMaps through the API server.
+    svp-kube-api: allow
+  # The chart's own RBAC lets the sidecars get, list and watch ConfigMaps and Secrets in every namespace, and its
+  # namespaced Role keeps Secrets. Instead the chart only binds Role kps-grafana (extraManifests below): ConfigMaps of
+  # svp-obs, nothing else. The sidecars below read ConfigMaps only.
+  rbac:
+    namespaced: true
+    useExistingRole: kps-grafana
+  # Only the two sidecars talk to the API server, so only they get the ServiceAccount token: the pod mounts none, and
+  # the sidecars mount the same projected volume the kubelet would (token, CA, namespace) at the usual path. Grafana
+  # itself, the container users log in to, holds no token.
+  automountServiceAccountToken: false
+  extraContainerVolumes:
+    - name: sidecar-kube-api-access
+      projected:
+        sources:
+          # 3607 s, as the kubelet's own: the kubelet rotates the file before it expires.
+          - serviceAccountToken:
+              path: token
+              expirationSeconds: 3607
+          - configMap:
+              name: kube-root-ca.crt
+              items:
+                - {key: ca.crt, path: ca.crt}
+          - downwardAPI:
+              items:
+                - path: namespace
+                  fieldRef: {fieldPath: metadata.namespace}
+  # Grafana 13 alone used 286 MiB at rest with the dashboards loaded (kubectl top, working set), above the 250 MiB the
+  # ADR planned for Grafana and both sidecars; the limit leaves room for queries over a wide time range.
+  resources:
+    requests: {cpu: 50m, memory: 256Mi}
+    limits: {memory: 448Mi}
+  sidecar:
+    # Each sidecar (k8s-sidecar, Python) was OOM-killed at 48 MiB while loading its first list of ConfigMaps.
+    resources:
+      requests: {cpu: 10m, memory: 48Mi}
+      limits: {memory: 128Mi}
+    dashboards:
+      # ConfigMaps labelled grafana_dashboard=1 in svp-obs only: chart svp-observability's four dashboards and the
+      # stack's own. A ConfigMap's annotation grafana_folder puts its dashboards in that folder (svp, as in compose).
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: svp-obs
+      resource: configmap
+      extraMounts:
+        - name: sidecar-kube-api-access
+          mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+          readOnly: true
+      # Each sidecar starts a health server on HEALTH_PORT, 8080 unless set, and this chart sets it for neither: the
+      # second to start then fails with "Address in use". Nothing probes it; distinct ports keep both running clean.
+      env:
+        HEALTH_PORT: "8081"
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: true
+        allowUiUpdates: false
+        disableDelete: true
+    datasources:
+      # Every datasource, Prometheus and Alertmanager included, comes from one ConfigMap of chart svp-observability
+      # (label grafana_datasource=1), with the UIDs and settings of compose's
+      # deploy/observability/grafana/provisioning/datasources/grafana-datasources.yaml. The stack's own two are off:
+      # its template writes the exemplar link's label unquoted, and compose's "Trace: ..." is then not valid YAML.
+      defaultDatasourceEnabled: false
+      alertmanager:
+        enabled: false
+      resource: configmap
+      extraMounts:
+        - name: sidecar-kube-api-access
+          mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+          readOnly: true
+      env:
+        HEALTH_PORT: "8082"
+
+# The RBAC the chart would render for the operator and Prometheus with global.rbac.create, plus Grafana's Role. Nothing
+# here reads a Secret outside svp-obs.
+#
+# What a taken-over operator keeps: everything it does to run Prometheus and Alertmanager, in svp-obs only (read,
+# write and delete their custom resources, StatefulSets, Services, Endpoints, ConfigMaps and Secrets, the Secrets of
+# Grafana, Alertmanager and GlitchTip included; delete pods); list nodes and namespaces, get storage classes, and
+# write (not read) events in any namespace. Among those Secrets is kps-prometheus-token, the token (it never expires)
+# of ServiceAccount kps-prometheus that the chart renders for the kubelet scrape: with it, the cluster-wide reads of
+# ClusterRole kps-prometheus below (pods, Services, Endpoints, EndpointSlices, Ingresses, nodes and their metrics),
+# still no Secret outside svp-obs.
+extraManifests:
+  # Cluster-wide, what has no namespace: nodes for the kubelet Endpoints (one address per node), namespaces for the
+  # Prometheus' rule and monitor namespace selectors, the storage class of Prometheus' volume. And events: the operator
+  # checks create and patch on them for all namespaces, whatever it watches, and without that emits none (an event
+  # on a rejected rule, for one).
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: kps-operator
+      labels: &operator-labels
+        app: kube-prometheus-stack-operator
+        app.kubernetes.io/instance: kube-prometheus-stack
+        app.kubernetes.io/part-of: kube-prometheus-stack
+        app.kubernetes.io/component: prometheus-operator
+        release: kube-prometheus-stack
+    rules:
+      - apiGroups: [""]
+        resources: [nodes]
+        verbs: [list, watch]
+      - apiGroups: [""]
+        resources: [namespaces]
+        verbs: [get, list, watch]
+      - apiGroups: [storage.k8s.io]
+        resources: [storageclasses]
+        verbs: [get]
+      - apiGroups: ["", events.k8s.io]
+        resources: [events]
+        verbs: [patch, create]
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: kps-operator
+      labels: *operator-labels
+    roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: kps-operator}
+    subjects:
+      - {kind: ServiceAccount, name: kps-operator, namespace: svp-obs}
+  # Every other rule of the chart's ClusterRole, unchanged, in svp-obs only (the namespace the operator watches).
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: kps-operator
+      namespace: svp-obs
+      labels: *operator-labels
+    rules:
+      - apiGroups: [monitoring.coreos.com]
+        resources: [alertmanagers, prometheusagents, prometheuses, thanosrulers]
+        verbs: [patch]
+      - apiGroups: [monitoring.coreos.com]
+        resources: [alertmanagers/status, podmonitors/status, probes/status, prometheuses/status,
+          prometheusagents/status, prometheusrules/status, scrapeconfigs/status, servicemonitors/status,
+          thanosrulers/status]
+        verbs: [create, update, patch, delete]
+      - apiGroups: [monitoring.coreos.com]
+        resources: [alertmanagers/finalizers, prometheusagents/finalizers, prometheuses/finalizers,
+          thanosrulers/finalizers]
+        verbs: [update]
+      - apiGroups: [monitoring.coreos.com]
+        resources: [alertmanagers, alertmanagerconfigs, podmonitors, probes, prometheusagents, prometheuses,
+          prometheusrules, servicemonitors, scrapeconfigs, thanosrulers]
+        verbs: [get, list, watch]
+      - apiGroups: [apps]
+        resources: [statefulsets]
+        verbs: [get, list, watch, create, update, patch, delete]
+      - apiGroups: [""]
+        resources: [configmaps, secrets]
+        verbs: [get, list, watch, create, update, delete]
+      - apiGroups: [""]
+        resources: [pods]
+        verbs: [list, delete]
+      - apiGroups: [""]
+        resources: [services, services/finalizers, endpoints]
+        verbs: [get, create, update, delete]
+      - apiGroups: [networking.k8s.io]
+        resources: [ingresses]
+        verbs: [get, list, watch]
+      - apiGroups: [discovery.k8s.io]
+        resources: [endpointslices]
+        verbs: [get, create, list, watch, update, delete]
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: kps-operator
+      namespace: svp-obs
+      labels: *operator-labels
+    roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: kps-operator}
+    subjects:
+      - {kind: ServiceAccount, name: kps-operator, namespace: svp-obs}
+  # Prometheus' ClusterRole as the chart renders it: service discovery and the kubelet's metrics. No Secrets.
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: kps-prometheus
+      labels: &prometheus-labels
+        app: kube-prometheus-stack-prometheus
+        app.kubernetes.io/instance: kube-prometheus-stack
+        app.kubernetes.io/part-of: kube-prometheus-stack
+        release: kube-prometheus-stack
+    rules:
+      - apiGroups: [""]
+        resources: [nodes, nodes/metrics, services, endpoints, pods]
+        verbs: [get, list, watch]
+      - apiGroups: [discovery.k8s.io]
+        resources: [endpointslices]
+        verbs: [get, list, watch]
+      - apiGroups: [networking.k8s.io]
+        resources: [ingresses]
+        verbs: [get, list, watch]
+      - nonResourceURLs: [/metrics, /metrics/cadvisor]
+        verbs: [get]
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: kps-prometheus
+      labels: *prometheus-labels
+    roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: kps-prometheus}
+    subjects:
+      - {kind: ServiceAccount, name: kps-prometheus, namespace: svp-obs}
+  # Grafana's sidecars: the dashboard and datasource ConfigMaps of svp-obs. The Grafana chart binds it (RoleBinding
+  # kps-grafana, rbac.useExistingRole above).
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: kps-grafana
+      namespace: svp-obs
+      labels:
+        app.kubernetes.io/name: grafana
+        app.kubernetes.io/instance: kube-prometheus-stack
+    rules:
+      - apiGroups: [""]
+        resources: [configmaps]
+        verbs: [get, list, watch]

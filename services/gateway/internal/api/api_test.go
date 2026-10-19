@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -159,6 +160,19 @@ func startBackend(t *testing.T, register func(*grpc.Server), opts ...grpc.DialOp
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
+	// grpc.NewClient connects lazily, on the first RPC, which then pays for the bufconn dial and
+	// the HTTP/2 handshake inside its own deadline. Under a loaded -race run of the whole repo
+	// that can exceed statsTimeout (100 ms), so GetStats would fail before reaching the fake.
+	// Connecting here keeps setup out of every call's deadline; tests that stop a backend still
+	// see it unreachable, as the connection to it breaks.
+	conn.Connect()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	for state := conn.GetState(); state != connectivity.Ready; state = conn.GetState() {
+		if !conn.WaitForStateChange(ctx, state) {
+			t.Fatalf("connection to the fake backend not ready: %v", state)
+		}
+	}
 	return b, conn
 }
 
@@ -365,8 +379,14 @@ func downLimits(t *testing.T) *ratelimit.Limiter {
 }
 
 // newEnvWithLimits returns an env with limits, whose connection to engagement-service is
-// dialed with engagementOpts added.
+// dialed with engagementOpts added. It trusts no proxy: the client is the connection.
 func newEnvWithLimits(t *testing.T, limits *ratelimit.Limiter, engagementOpts ...grpc.DialOption) *env {
+	t.Helper()
+	return newEnvBehind(t, httpx.ClientAddr{}, limits, engagementOpts...)
+}
+
+// newEnvBehind is newEnvWithLimits finding the client's address with clientAddr.
+func newEnvBehind(t *testing.T, clientAddr httpx.ClientAddr, limits *ratelimit.Limiter, engagementOpts ...grpc.DialOption) *env {
 	t.Helper()
 	key, err := authtoken.GenerateKey()
 	if err != nil {
@@ -379,7 +399,7 @@ func newEnvWithLimits(t *testing.T, limits *ratelimit.Limiter, engagementOpts ..
 	engagement, engagementConn := startBackend(t, func(s *grpc.Server) { engagementv1.RegisterEngagementServiceServer(s, stats) }, engagementOpts...)
 	verifier := authtoken.NewVerifier(map[string]ed25519.PublicKey{testKID: key.Public().(ed25519.PublicKey)})
 	return &env{
-		handler:    New(userConn, videoConn, feedConn, engagementConn, verifier, mediaBase, limits, "gateway:8080"),
+		handler:    New(userConn, videoConn, feedConn, engagementConn, verifier, mediaBase, limits, clientAddr, "gateway:8080"),
 		users:      users,
 		videos:     videos,
 		feeds:      feeds,
