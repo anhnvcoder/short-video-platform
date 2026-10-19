@@ -1,6 +1,6 @@
 // Command gateway runs the REST gateway (serve, the default) or checks a running instance's
 // health (healthcheck). Configuration comes from environment variables only, so the same image
-// runs in compose, Kubernetes and the cloud with just the variables changed
+// runs in compose, in Kubernetes (k3d) and in the cloud with just the variables changed
 // (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 4).
 package main
 
