@@ -4,7 +4,7 @@
 image:
   repository: k3d-svp-registry:5111/svp/user-service
   # Written by a release; empty means "the dev tag make k8s-up passes".
-  tag: ""
+  tag: "1b6f2c88672a"
 protocol: grpc
 port: 9101
 migrate: true
