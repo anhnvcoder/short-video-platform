@@ -17,6 +17,22 @@ applicationSet:
   replicas: 0
 
 configs:
+  params:
+    # Server-side diff for every Application but the root (below): the controller compares the live object with the
+    # result of a dry-run server-side apply of the manifest, so the defaults the API server fills in (Gateway API's
+    # backendRefs group, kind and weight and a route's default match, a StatefulSet's volumeClaimTemplates apiVersion
+    # and kind, a port's protocol) are in both sides. The default diff compares the manifest itself, which lacks them:
+    # Applications svp-cluster, redpanda, svp-data and gateway stayed OutOfSync on a new cluster and selfHeal synced
+    # them again forever. ignoreDifferences still applies to both sides (gitops-engine pkg/diff/diff.go,
+    # serverSideDiff); hooks are never dry-run applied (they are left out of the comparison). The dry run needs no
+    # other permission: the controller's ClusterRole already allows everything. The cost: one dry-run apply per
+    # resource and comparison, cached until a refresh, a new revision, a changed Application spec or a changed
+    # resourceVersion of the live object. Read as ARGOCD_APPLICATION_CONTROLLER_SERVER_SIDE_DIFF by the controller's
+    # StatefulSet.
+    # The root svp-root turns it off with annotation argocd.argoproj.io/compare-options: ServerSideDiff=false
+    # (deploy/k8s/lib.sh, argocd_root_app): it applies its child Applications client-side, and a server-side dry run
+    # would not see a field deleted from them. The children apply their own objects server-side.
+    controller.diff.server.side: "true"
   cm:
     # Argo CD polls GitHub: a cluster on this machine cannot take GitHub's webhooks. Every 60 s with no jitter: the
     # chart's default jitter of 60 s makes the controller delay each periodic refresh by a random 0-60 s more, so the

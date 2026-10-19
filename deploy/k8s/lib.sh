@@ -232,11 +232,24 @@ secret() {
 # it makes (its value targetRevision). Built by jq from --arg values, so the revision is always a JSON string: a
 # branch named 2026, true or 1e3 written into YAML as it is would be read as a number or a boolean, which the
 # Application CRD refuses (targetRevision is a string).
+#
+# The root compares with Argo CD's default diff, not with the server-side diff the controller uses for every other
+# Application (deploy/k8s/values/argo-cd.yaml): the root applies its child Applications client-side (no
+# ServerSideApply=true), so their fields belong to a field manager of operation Update. A server-side dry run is an
+# Apply, which never removes a field another manager entry owns: a field deleted from chart deploy/argocd/apps (an
+# ignoreDifferences, a retry block, managedNamespaceMetadata) would stay in the predicted and the live Application
+# alike, so the root would stay Synced and the child keep the field for good. The default diff compares with the
+# kubectl.kubernetes.io/last-applied-configuration annotation of a client-side apply and sees the deletion. The
+# children apply their own objects server-side (ServerSideApply=true), for which the server-side diff is right.
 argocd_root_app() {
   jq -n --arg repo "$1" --arg rev "$2" '{
     apiVersion: "argoproj.io/v1alpha1",
     kind: "Application",
-    metadata: {name: "svp-root", namespace: "argocd"},
+    metadata: {
+      name: "svp-root",
+      namespace: "argocd",
+      annotations: {"argocd.argoproj.io/compare-options": "ServerSideDiff=false"}
+    },
     spec: {
       project: "svp",
       source: {

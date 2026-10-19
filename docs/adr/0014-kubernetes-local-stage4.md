@@ -1288,6 +1288,65 @@ giá: không phát hiện được Valkey treo mà cổng vẫn mở, lab chấp
   của annotation client-side apply), `SkipDryRunOnMissingResource=true` khi CRD đến từ wave trước; tên release = `name` (như
   đường dev). `targetRevision` luôn là chuỗi: root do `jq --arg` sinh thành JSON, chart `apps` quote mọi `targetRevision`;
   nhánh tên `2026`, `true`, `1e3` viết trần vào YAML thành số hay boolean và CRD Application từ chối. **Sửa 2026-10-19.**
+- **Server-side diff cho các Application con:** `configs.params."controller.diff.server.side": "true"` trong
+  `deploy/k8s/values/argo-cd.yaml` (ConfigMap `argocd-cmd-params-cm`; StatefulSet controller của chart 10.10.5 đọc qua env
+  `ARGOCD_APPLICATION_CONTROLLER_SERVER_SIDE_DIFF`, `cmd/argocd-application-controller/commands/argocd_application_controller.go`
+  cờ `--server-side-diff-enabled`, `controller/state.go` `CompareAppState` của v3.5.5). **Sửa 2026-10-20.**
+  - **Vì sao:** diff mặc định so manifest của chart với object sống, mà object sống có các field API server tự điền mặc
+    định chart không ghi (`certificateRefs[].group` của Gateway, `backendRefs[].group/kind/weight` và `matches` mặc định của
+    HTTPRoute, `volumeClaimTemplates[].apiVersion/kind` của StatefulSet, `ports[].protocol` của Rollout). Trên cluster GitOps
+    sạch `svp-cluster`, `redpanda`, `svp-data`, `gateway` OutOfSync vĩnh viễn, selfHeal sync lại mãi (backoff tới 3 phút) và
+    `make k8s-gitops-up` hết 1800 s. Server-side diff so object sống với kết quả **dry-run server-side apply** của manifest,
+    nên default có ở cả hai phía. Không ghi tay các default vào chart: nhiều chỗ, dễ sót khi nâng chart.
+  - **`ignoreDifferences` vẫn có hiệu lực:** `serverSideDiff` (`gitops-engine/pkg/diff/diff.go@v3.5.5`) chạy normalizer (gồm
+    `ignoreDifferences` của Application) lên cả predicted live lẫn live trước khi so, nên `jqPathExpressions` trọng số
+    HTTPRoute `api` và hash selector của Service ở `svp` (mục 13) giữ nguyên, không đổi sang `managedFieldsManagers`. Dry run
+    áp với `--force-conflicts` như sync thật (`ForceConflicts = serverSideApply`, `pkg/utils/kube/resource_ops.go`), nên field
+    do plugin Rollouts ghi không làm lần so sánh lỗi conflict. `RespectIgnoreDifferences` thuộc đường sync
+    (`normalizeTargetResources`, `controller/sync.go`), không phụ thuộc chiến lược diff.
+  - **Hook không bị dry-run:** `Reconcile` (`gitops-engine/pkg/sync/reconcile.go`) tách hook (annotation `helm.sh/hook` hay
+    `argocd.argoproj.io/hook`) khỏi danh sách so sánh; Job hook còn lại sau sync (`before-hook-creation`: migrate PreSync,
+    `pg-bootstrap`, `minio-init`, `redpanda-init` PostSync) là live không có target, đi nhánh diff tạo/xoá không gọi API server
+    và được đánh dấu hook nên không tính vào sync status. Không có dry-run apply nào chạm `spec.template` bất biến của Job.
+  - **Quyền:** dry-run apply dùng cùng ClusterRole `*` của application-controller (đoạn "Quyền của Argo CD" ở trên), không
+    thêm quyền nào.
+  - **Root `svp-root` giữ diff cũ:** `argocd_root_app` (`deploy/k8s/lib.sh`) đặt annotation
+    `argocd.argoproj.io/compare-options: ServerSideDiff=false` lên root; `CompareAppState` (`controller/state.go@v3.5.5`) đọc
+    annotation này trên chính Application và nó thắng cờ của controller. Lý do: root apply các Application con bằng
+    client-side apply (không `ServerSideApply=true`), nên field của chúng thuộc manager `argocd-controller` operation
+    `Update`. Dry run của server-side diff là một SSA `Apply` (`gitops-engine/pkg/diff/diff_options.go`), không bao giờ xoá
+    field mà entry manager khác sở hữu; bước chuyển quyền sở hữu từ client-side sang server-side của kubectl
+    (`migrateToSSAIfNecessary`, `k8s.io/kubectl/pkg/cmd/apply/apply.go@v0.36.1`) cũng chỉ là dry run, không lưu lại. Field
+    bị xoá khỏi chart `deploy/argocd/apps` (một `ignoreDifferences`, khối `retry`, `managedNamespaceMetadata` khi component
+    rời wave 0) vì vậy nằm cả trong predicted live lẫn live: root vẫn `Synced`, Application con giữ field cũ mãi. Diff cũ là
+    3-way với annotation `kubectl.kubernetes.io/last-applied-configuration` của client-side apply (`Diff` ở
+    `pkg/diff/diff.go` khi không có SSA) nên thấy field bị xoá. Các Application con apply object của chúng bằng SSA
+    (`ServerSideApply=true`), server-side diff đúng với chúng. Không đổi root sang `ServerSideApply=true`: đổi cả cách apply
+    lẫn cách so một lúc, trong khi root đã `Synced` ổn với diff cũ.
+  - **Cái giá** (`docs/user-guide/diff-strategies.md@v3.5.5`): mỗi resource một dry-run apply mỗi lần so sánh; kết quả được
+    cache, dry-run mới chỉ khi refresh hay hard refresh, revision mới, spec Application đổi hay `resourceVersion` của object
+    sống đổi (`useDiffCache` ở `controller/state.go`, `diffArrayCached` ở `util/argo/diff/diff.go`). Resource tạo lần đầu (chưa
+    có live) vẫn dùng diff cũ, không dry-run, nên webhook không tham gia diff lúc tạo.
+  - **Đã kiểm trên cluster** (Argo CD cài từ values này, root từ `deploy/k8s/lib.sh`, các Application con từ GitHub
+    `befe998`): env có trong process controller, chỉ `svp-root` mang `ServerSideDiff=false`; `make k8s-gitops-up` xong trong
+    640 s với 21 Application `Synced`, Healthy, sync cuối `Succeeded` (vài Application con Degraded vài giây lúc khởi động,
+    root retry tới lần thứ 3, như ở lần dựng trước khi bật server-side diff; lần dựng với server-side diff cả ở root: 398 s).
+    10 phút sau đó không Application nào OutOfSync, kể cả trong Event `Updated sync status` của controller (bắt được lệch
+    1 s), không sync mới; trọng số HTTPRoute `api` đặt tay 75/25 giữ qua bốn chu kỳ làm mới và một hard refresh, `gateway`
+    vẫn `Synced`; một nhãn do `argocd-controller` sở hữu bị sửa tay thì selfHeal của `media-worker` trả về trong < 5 s mà root
+    không OutOfSync lúc nào (lần dựng với server-side diff cả ở root: root OutOfSync khoảng 1 s ở đúng phép thử này rồi sync
+    `media-worker`, kết quả "unchanged"). Field bị xoá khỏi chart `apps` (giả bằng một nhãn có trong
+    `last-applied-configuration` của Application `media-worker`, manager `argocd-controller` `Update`): root với diff cũ thấy
+    và selfHeal xoá trong khoảng 2 s; cùng root bỏ annotation (server-side diff) thì không thấy qua 240 s và một hard refresh,
+    nhãn ở lại; đặt lại annotation thì root xoá trong 5 s.
+  - **Còn lại, đã rõ nguyên nhân, chưa sửa:** mỗi lần Application `gateway` bắt đầu một sync (bản phát hành mới, selfHeal),
+    `svp-root` OutOfSync 1–4 s rồi tự sync đúng `gateway`, kết quả "configured". Controller ghi `operation` vào Application
+    bằng một Update kiểu Go (`SetAppOperation`, `util/argo/argo.go@v3.5.5`), mà `group` của `ResourceIgnoreDifferences` là
+    `json:"group,omitempty"` (`pkg/apis/application/v1alpha1/types.go`), nên `group: ""` của mục Service trong
+    `ignoreDifferences` của `gateway` (chart `apps`) mất khỏi object sống; diff của root thấy thiếu và apply lại (đo: key
+    `group` mất lúc `gateway` bắt đầu sync, root apply lại và key có lại sau 0,7 s). Bỏ dòng `group: ""` khỏi
+    `deploy/argocd/apps/templates/applications.yaml` thì hết: `""` và không có key là cùng một giá trị Go, cùng khớp nhóm
+    core (`util/argo/normalizers/diff_normalizer.go`). Chưa làm vì chỉ kiểm được sau push.
 - **Health của Application con:** từ 1.8 Argo CD không còn đánh giá health của `argoproj.io/Application`
   (`docs/operator-manual/health.md@v3.5.5`, mục "Argocd App"), nên sync wave của app-of-apps không chờ thành phần trước
   Healthy. Values của Argo CD thêm `configs.cm."resource.customizations.health.argoproj.io_Application"`, dựa trên đoạn Lua
