@@ -4,7 +4,7 @@
 image:
   repository: k3d-svp-registry:5111/svp/gateway
   # Written by a release; empty means "the dev tag make k8s-up passes".
-  tag: "1b6f2c88672a"
+  tag: "8e7a6d80812b"
 protocol: http
 port: 8080
 resources:
