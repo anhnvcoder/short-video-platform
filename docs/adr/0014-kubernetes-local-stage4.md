@@ -214,7 +214,7 @@ cuối. Cột "Giới hạn" là `limits.memory` đặt trong values (mục 10).
 | Observability | GlitchTip | 250 MiB | 512 MiB |
 | **Tổng lúc nghỉ** | node 0,9 + platform 1,05 + dữ liệu 0,95 + service 0,3 + observability 2,4 | **~5,6 GiB** | |
 | Đỉnh | 3 media-worker transcode cùng lúc, ~0,75 GiB mỗi replica (compose đo 728–734 MiB) | **~7,9 GiB** | 2 GiB mỗi replica |
-| Đường GitOps | Argo CD tối giản (server, repo-server, application-controller, redis) thêm | ~0,4 GiB | |
+| Đường GitOps | Argo CD tối giản (server, repo-server, application-controller, redis) thêm | ~0,4 GiB (đo: 0,93–1,09 GiB, bên dưới) | |
 
 Ở compose, riêng container LGTM đã 0,73–1,25 GiB, Collector 0,25, GlitchTip 0,23; tách thành khoảng 10 tiến trình còn thêm
 operator, kube-state-metrics và phần nền Go của từng tiến trình, nên observability lấy 2,4 GiB thay vì cộng số compose.
@@ -255,6 +255,12 @@ không cắt; thiếu một trong hai thì áp bước cắt như trên:
 Cách đo thêm: cạnh MEM USAGE, ghi `anon`, `active_file` và `kernel` của từng node đọc từ cgroup v2 ngay sau 6 mẫu
 (`env -u DOCKER_DEFAULT_PLATFORM docker exec k3d-svp-server-0 cat /sys/fs/cgroup/memory.current
 /sys/fs/cgroup/memory.stat`, tương tự với `k3d-svp-agent-0`). Hai ngưỡng không đổi; ngưỡng đỉnh vẫn tính cả page cache.
+
+**Đo trên đường GitOps (2026-10-20):** Argo CD dùng 953 MiB lúc nghỉ và 1 119 MiB sau diễn tập KEDA
+(`argocd-application-controller` 740–902 MiB, giữ cache mọi resource của 21 Application), gấp ~2,5 lần ~0,4 GiB dự kiến.
+Cluster GitOps nghỉ 7,03 GiB, trên ngưỡng 6,5 nhưng đủ (b) (tổng pod 3,30 GiB kể cả Argo CD, MEM USAGE trừ `active_file`
+6,21 GiB) và (a) theo số đỉnh có được (cửa sổ 6 mẫu có 3 replica 7,94 GiB, mẫu cao nhất 8,10 GiB, kèm chú thích ở mục Kiểm
+chứng); không áp bước cắt.
 
 ## 3. Namespace, Pod Security, NetworkPolicy
 
@@ -1374,6 +1380,24 @@ giá: không phát hiện được Valkey treo mà cổng vẫn mở, lab chấp
   generation cũ hay `Available` khác True (không Degraded như health Prometheus khi `NoPodReady`: Degraded làm wave đang chờ
   thất bại, mà Alertmanager mới nào cũng bắt đầu không pod Ready); **Degraded** khi `Reconciled` False (operator không áp được
   CR, như Secret cấu hình không đọc hay không parse được); **Healthy** khi `Available` True. **Sửa 2026-10-19.**
+
+  **Giới hạn đo được (2026-10-20):** cổng này chỉ chặn wave khi CR `Alertmanager` đã có trong cache của controller. Argo CD
+  v3.5.5 không tính resource chưa có trong cache vào health của app (`controller/health.go`, "Missing resources should not
+  affect parent app health"). Trên cluster sạch, CR được tạo cùng sync với CRD của nó: cache thấy CR sau khi lần so sánh đã
+  bắt đầu, nên Application `kube-prometheus-stack` Healthy (18:50:26Z) khi Alertmanager chưa `Available` (18:50:42Z). Lần
+  đo đó wave 3 vẫn tạo sau `Available` (18:50:50Z) chỉ vì `keda` Healthy muộn hơn. Cách chặn chắc hơn (Lua của Application
+  `kube-prometheus-stack` đòi resource `Alertmanager` có trong `status.resources` với health Healthy) để người học quyết
+  sau.
+
+  **Giới hạn đo được thứ hai (2026-10-20), cho mọi Application con:** root chỉ chờ mỗi con Healthy **một lần** trong sync
+  của root. Sync engine của Argo CD xét health của một resource chỉ khi task của nó còn chạy; thấy Healthy là task xong và
+  không xét lại trong cùng sync (`gitops-engine/pkg/sync/sync_context.go@v3.5.5`, hàm `Sync`). Con tụt khỏi Healthy sau đó
+  (một sync mới hay lần thử lại, Lua ở trên cho Progressing) không giữ wave sau. Đo trên cluster sạch:
+  `kube-prometheus-stack` Healthy lần đầu lúc 18:50:26Z (sau sync đầu 18:50:06–18:50:19Z), rồi OutOfSync, health Degraded
+  với một sync khác đang chạy ở hai lần poll ngay trước và ngay sau khi wave 3 được tạo (18:50:50Z); root lúc đó chỉ còn
+  chờ `keda`. Sync cuối của nó chạy 18:51:15–18:51:21Z, Healthy lại từ 18:51:26Z. `cloudnative-pg` cũng Healthy lúc wave 3
+  tạo rồi về Progressing tới 18:51:53Z. Lần đó wave 3 vẫn lên Synced/Healthy. Cách chặn để người học quyết sau, cùng lỗ
+  trên.
 - **Hai đường cài:** **dev** `make k8s-up` (helm từ working tree theo `components.json`, mọi bước dựng dùng) và **GitOps**
   `make k8s-gitops-up` (cluster mới; chỉ cài Argo CD, Secret, repo, `AppProject`, root app; Argo CD dựng phần còn lại từ
   GitHub). Không chạy hai đường trên một cluster: `k8s-up` từ chối khi có Application `svp-root`.
@@ -1572,7 +1596,8 @@ giá: không phát hiện được Valkey treo mà cổng vẫn mở, lab chấp
     svp delete httproute api`), selfHeal dựng lại từ git trong vài giây, API không tới được trong lúc đó (ghi ở comment
     `deploy/argocd/apps/templates/applications.yaml`).
   - **Giữ `RespectIgnoreDifferences`:** sync giữa canary không được trả trọng số về 100/0, còn đổi rule của route hiếm hơn
-    nhiều so với phát hành. Đường GitOps với Rollout chưa chạy: kiểm ở bước diễn tập GitOps.
+    nhiều so với phát hành. Đường GitOps với Rollout đã chạy ở diễn tập GitOps (mục Kiểm chứng, 2026-10-20); chưa có sync
+    nào giữa lúc canary để thử `RespectIgnoreDifferences`.
   - **Sửa 2026-10-19:** trước chỉ bỏ qua trọng số và ghi "có thể chép cả `spec.rules`", nay đã đọc mã nguồn và thêm hash của
     selector.
 - **"Bản lỗi" cho diễn tập:** gateway với `FEED_SERVICE_ADDR` trỏ Service không tồn tại: pod vẫn Ready (probe `/healthz`) nhưng
@@ -1749,7 +1774,8 @@ hơn 2 giờ, cùng code trừ script diễn tập threat model), chỉ đườn
   thu `cnpg_*`; lượt kiểm đọc thẳng endpoint metric của instance. Dòng mục 12 ở trên đã bỏ chữ PodMonitor.
 - **Đạt theo quyết định của người học (sửa 2026-10-20):**
   - RAM thật (mục 2, cách đo và điều kiện (a), (b) ở đó): nghỉ 5,87 GiB ở lượt đầu (dưới ngưỡng); 6,69 và 6,78 GiB ở lượt
-    sau, trên ngưỡng 6,5 GiB nhưng đủ (a) và (b): đỉnh có đủ 3 worker transcode 7,95 GiB (lượt đầu, mẫu cao nhất 8,25 GiB,
+    sau, trên ngưỡng 6,5 GiB nhưng đủ (a) và (b), riêng (a) theo số đỉnh lệch cách đo mục 2 (hai chỗ ghi ngay dưới): đỉnh
+    có đủ 3 worker transcode 7,95 GiB (lượt đầu, mẫu cao nhất 8,25 GiB,
     dưới 8,7), tổng pod 2,36 và 2,44 GiB, MEM USAGE trừ `active_file` 4,68 và 4,77 GiB (hai node cộng lại: `anon` 3,84
     GiB, `active_file` 2,01 GiB, `kernel` 0,35 GiB; VM Docker còn `MemAvailable` 4,5 GiB, swap không dùng). Không áp bước
     cắt nào. Sau mọi diễn tập 6,24 và 6,30 GiB.
@@ -1770,15 +1796,61 @@ hơn 2 giờ, cùng code trừ script diễn tập threat model), chỉ đườn
     với Low Power Mode và một lần khi máy bị giới hạn nhiệt ngay sau lần đạt, tính là lỗi môi trường: node bão hoà CPU thì
     probe 1 s quá hạn, API server chậm (`kubectl` gặp TLS handshake timeout), controller có leader election mất lease và
     restart, Envoy trả 503; cluster tự hồi sau ~3 phút.
-- **Còn chưa kiểm:** phần cần đường GitOps (hook Helm trong PreSync trên cluster sạch, phần GitOps của canary, Application
-  `keda` với `kube-system`, độ trễ push → Argo CD, AppProject `default` sau restart `argocd-server`, health Alertmanager chặn
-  wave, `managedNamespaceMetadata`, symlink qua repo-server, `measure-gitops`, PSA của namespace `argocd`: pod privileged
-  `--dry-run=server` bị từ chối, pod Argo CD vẫn Running); `install.sh` và `ensure_cluster` trên cluster tạo trước khi có
-  nhãn PSA của namespace công cụ hay cấu hình PSA mặc định (không còn cluster cũ để thử); nhánh rpk quá hạn (egress của
-  broker trả "connection refused" cả cho địa chỉ không định tuyến); pg_rewind và slot `streaming_replica` (`instances` 1);
-  đổi `GLITCHTIP_ADMIN_EMAIL` (phải đổi `.env`); gate `Inconclusive` thật; đỉnh RAM đủ 3 worker transcode đo đúng cách
-  mục 2 (6 mẫu cách 10 s, giờ ghi lúc `docker stats`, kèm `anon`, `active_file`, `kernel` từng node) trên cluster dựng
-  mới, máy cắm sạc, Low Power Mode tắt: làm ở lượt diễn tập GitOps.
+- **Còn chưa kiểm** (cập nhật 2026-10-20: phần cần đường GitOps đã kiểm, đoạn ngay dưới): `install.sh` và `ensure_cluster`
+  trên cluster tạo trước khi có nhãn PSA của namespace công cụ hay cấu hình PSA mặc định (không còn cluster cũ để thử);
+  nhánh rpk quá hạn (egress của broker trả "connection refused" cả cho địa chỉ không định tuyến); pg_rewind và slot
+  `streaming_replica` (`instances` 1); đổi `GLITCHTIP_ADMIN_EMAIL` (phải đổi `.env`); gate `Inconclusive` thật;
+  `RespectIgnoreDifferences` trong một sync giữa lúc canary; đỉnh RAM đủ 3 worker **cùng transcode** đo đúng cách mục 2
+  (diễn tập KEDA không tạo được trạng thái đó, đoạn dưới; cần cách đo khác, ví dụ ghim media-worker 3 replica trước khi
+  upload để mỗi worker giữ một partition từ đầu, không scale down giữa chừng).
+
+**Sửa 2026-10-20, diễn tập GitOps** trên cluster dựng mới bằng `make k8s-gitops-up` từ GitHub (2026-10-19 16:35–19:47Z,
+máy cắm sạc, Low Power Mode tắt); số đo ở [plan](../../plans/261004-devops-sa-roadmap/plan.md), Tiến độ giai đoạn 4. Trạng
+thái các dòng "Chưa kiểm" của đường GitOps:
+
+- **Sai, đã sửa trước khi đo:** diff phía client của Argo CD làm 4 Application OutOfSync mãi trên cluster sạch (field mặc
+  định do API server điền: `group: ""`, `weight: 1`, `protocol: TCP`, `volumeClaimTemplates[].apiVersion/kind`), selfHeal
+  sync lại không dừng; sửa bằng server-side diff cho Application con (mục 12).
+- **Đã kiểm, đúng như các mục trên:**
+  - `make k8s-gitops-up` 474 s, 21 Application Synced/Healthy, sync cuối Succeeded; mỗi wave tạo sau khi mọi Application
+    wave trước xong sync đầu (7/7 wave) và đã Healthy ít nhất một lần trong sync của root. Không phải lúc nào cũng còn
+    Healthy khi wave sau tạo: wave 3 tạo khi `kube-prometheus-stack` chưa Healthy (lỗ thứ hai, mục "Có lỗ" dưới).
+  - Hook Helm trong PreSync trên cluster sạch (mục 12): 4 Job migrate `Succeeded` (mỗi Job restart một lần vì Postgres chưa
+    nhận kết nối, như đường dev). `operationState` chỉ giữ sync cuối, nên hook PreSync có ở 3 Application; của
+    `feed-service` là sync thứ hai 18:54:27–18:54:28Z không có hook, Job của nó chạy một lần 18:54:19–18:54:25Z trong sync
+    đầu (18:54:16–18:54:26Z), không tạo lại dù `before-hook-creation`.
+  - `managedNamespaceMetadata` (mục 3, 12): nhãn PSA của namespace công cụ do `argocd-controller` gắn trước pod đầu: lúc
+    tạo namespace, trừ `keda` (`secrets.sh` tạo trơn lúc 18:48:02Z để đặt Secret `keda-kafka`, nhãn có lúc sync
+    `svp-cluster` 18:49:44Z, pod đầu 18:50:04Z; khoảng giữa đã có PSA `restricted` mặc định của cluster); 0 event
+    PodSecurity. PSA của `argocd`: pod privileged `--dry-run=server` bị từ chối (`restricted:v1.36`,
+    cùng 5 namespace công cụ), 4 pod Argo CD Running.
+  - AppProject `default` (mục 12): rỗng, Application `project: default` bị từ chối `InvalidSpecError`; sau restart
+    `argocd-server`, `argocd-repo-server`, `argocd-application-controller` vẫn rỗng, 21 Application không đổi trạng thái hay
+    lịch sử. Application `keda` với `kube-system` trong `destinations` Synced (RoleBinding `keda-operator-auth-reader`).
+  - Symlink qua repo-server (mục 7): root (`svp-cluster-values.yaml`), `svp-data`, `svp-observability` dựng từ GitHub
+    Synced/Healthy; Job của `svp-data` dùng `bootstrap.sql`, `create-topics.sh` xong (database và topic có: smoke sạch).
+  - Secret DSN GlitchTip có trước pod của 5 service; event GlitchTip của gateway trên cluster GitOps có `environment` `k3d`
+    và `trace_id` tìm thấy trong Tempo.
+  - Độ trễ push → Argo CD bắt đầu sync (mục 12): 109 s, 30 s, 84 s ở ba push, trong cận ~120 s; một lần trên mức "thường ≤
+    60 s". `measure-gitops` với lịch sử Argo CD thật: push → sync +109 s → pod canary đầu Ready +119 s → pod cuối Ready
+    +240 s (hai pause 60 s của canary).
+  - Phần GitOps của canary (mục 13): bản tốt promote dưới Argo CD; bản lỗi đến bằng git bị phân tích abort 124 s sau push,
+    87,9 s sau khi canary nhận traffic, backend stable 0 5xx, pod stable không đổi; Application `gateway` Synced suốt lúc
+    canary 25%/50% và sau abort (bỏ qua trọng số và hash selector có hiệu lực), health theo Rollout (Suspended lúc pause,
+    Degraded sau abort tới khi revert, Healthy sau revert); một lần sync, selfHeal không đánh nhau với abort. Revert về
+    Healthy 91 s sau push, không canary mới.
+  - `make drill-k8s-threats` 10/10 PASS trên cluster GitOps: Argo CD không HTTPRoute, Service đều ClusterIP; API Argo CD
+    không token 401 (đăng nhập bắt buộc).
+- **Có lỗ, ghi giới hạn** (mục 12, "Giới hạn đo được"):
+  - health Alertmanager chặn wave chỉ khi CR đã có trong cache của controller;
+  - root chỉ chờ mỗi Application con Healthy một lần trong sync của root: wave 3 tạo lúc 18:50:50Z khi
+    `kube-prometheus-stack` đang chạy thêm một sync và health Degraded (Healthy lại từ 18:51:26Z); `cloudnative-pg` Healthy
+    lúc đó rồi về Progressing tới 18:51:53Z.
+- **Đạt theo quyết định (2026-10-20), kèm chú thích:** RAM đỉnh (mục 2, điều kiện (a)): diễn tập KEDA trên cluster GitOps
+  (6 mẫu nhịp 10–11 s, giờ ghi lúc `docker stats`) cho cửa sổ có 3 replica Ready 7,94 GiB, mẫu cao nhất 8,10 GiB, dưới 8,7;
+  nhưng không mẫu nào có 3 worker cùng transcode: ~105 s đầu chỉ một worker transcode (worker mới chờ rebalance,
+  `BlockRebalance` giữ rebalance tới khi record đang làm xong), rồi diễn tập ghim scale down, sau đó chỉ 2 worker song song.
+  Đỉnh 3 worker cùng transcode giữ ở "Còn chưa kiểm". `make drill-k8s-keda` PASS (máy cắm sạc).
 
 ## Hệ quả
 
