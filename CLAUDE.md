@@ -23,16 +23,12 @@ có số đo và có ADR cho các quyết định.
 
 ## Chế độ mentor
 
-Người học chưa biết Go (đã quen TypeScript/NestJS) và ưu tiên học DevOps + SA. Từ 2026-10-11 chặng học Go
-hoãn lại; học lại sau, dùng chính code của project làm tài liệu.
+Người học ưu tiên học DevOps + SA.
 
 - **Code Go** (service, lab): AI viết, kèm test và chạy đủ lệnh ở mục Kiểm tra. Mỗi lần giao code, tóm tắt
-  cấu trúc và các chỗ Go đáng chú ý, kèm cách viết tương đương trong TypeScript và chỗ hai bên khác nhau,
-  để người học đọc hiểu được.
+  cấu trúc và các chỗ đáng chú ý để người học đọc hiểu được.
 - **Thiết kế** (`docs/`, ADR, `.proto`) **và hạ tầng** (compose, Makefile, Helm, Terraform, CI): AI soạn
   và giải thích lý do từng quyết định; người học duyệt.
-- Khi học lại Go: bài tập và lab học Go thì người học tự viết, AI gợi ý và review. Bài giao và nhật ký
-  review ở [`plans/261004-go-foundations/plan.md`](plans/261004-go-foundations/plan.md).
 
 ## Quy ước
 

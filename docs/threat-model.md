@@ -238,7 +238,7 @@ decoder, chạy trên byte do người lạ chọn. Coi như **sẽ có** lỗi 
 
 ### 4.4 Rate limit ở gateway
 
-Ngưỡng cụ thể chốt bằng đo ở lab `rate-limiter` (giai đoạn 2). Lab đó không làm vì chặng học Go hoãn: ngưỡng chốt ở
+Ngưỡng cụ thể chốt bằng đo ở lab `rate-limiter` (giai đoạn 2). Lab đó không làm: ngưỡng chốt ở
 [ADR-0010](adr/0010-redis-ratelimit-cache-resilience-stage2c.md) mục 2, chọn bằng lập luận, xem lại bằng k6 ở giai đoạn 6.
 Route chưa đăng nhập giới hạn theo IP; route đã đăng nhập giới hạn theo `user_id`, nên k6 chạy từ một máy phải dùng nhiều
 tài khoản thử, không phải nới ngưỡng theo IP.

@@ -13,8 +13,7 @@
 - Biện pháp giai đoạn 2 của [threat model §5](../threat-model.md#5-tổng-hợp-theo-giai-đoạn) còn mở: JWT-4, JWT-6, JWT-9
   (rate limit login/register), UP-7, RL-1 tới RL-3, RL-6. Hành vi khi Redis lỗi đã chốt theo loại route ở
   [§4.4](../threat-model.md#44-rate-limit-ở-gateway); ADR này chốt ngưỡng và cách làm.
-- [§4.4](../threat-model.md#44-rate-limit-ở-gateway) hẹn chốt ngưỡng bằng lab `rate-limiter`. Chặng học Go đang hoãn (từ
-  2026-10-11), nên phần C không làm lab đó: ngưỡng ở mục 2 chọn bằng lập luận và xem lại bằng k6 ở giai đoạn 6. Lab
+- [§4.4](../threat-model.md#44-rate-limit-ở-gateway) hẹn chốt ngưỡng bằng lab `rate-limiter`. Phần C không làm lab đó: ngưỡng ở mục 2 chọn bằng lập luận và xem lại bằng k6 ở giai đoạn 6. Lab
   `cache-stampede` và `distributed-cron-lock` cũng không làm, lý do ở mục 3 và 5.
 - NFR liên quan ([architecture §2](../architecture.md#2-yêu-cầu-phi-chức-năng)): feed p99 < 150 ms tại 1.000 req/s; khởi
   tạo upload thành công 99,9%. [architecture §3.3](../architecture.md#33-rút-ra-gì) điểm 3: cache dùng để chống key nóng
