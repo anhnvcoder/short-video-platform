@@ -32,7 +32,8 @@ Người học ưu tiên học DevOps + SA.
 
 ## Quy ước
 
-- **Ngôn ngữ lập trình:** Go, ưu tiên thư viện chuẩn; thêm dependency phải có lý do.
+- **Ngôn ngữ lập trình:** Go, ưu tiên thư viện chuẩn; web client ở `web/` viết TypeScript (Next.js,
+  [ADR-0016](docs/adr/0016-web-client.md)), chỉ dùng gói trong danh sách của ADR-0016 §10. Thêm dependency phải có lý do.
 - **Ngôn ngữ viết:** file `.md` viết tiếng Việt; mọi thứ trong code (comment, log, tên test, error
   message, `.env.example`) viết tiếng Anh.
 - **Comment trong code** tự đủ nghĩa: nói lý do ngay tại chỗ, người đọc không cần mở ADR mới hiểu. Tham chiếu ADR chỉ là phần
@@ -51,6 +52,7 @@ Người học ưu tiên học DevOps + SA.
   | `engagement-service` | `svp_engagement` | db 13 |
   | `feed-service` | `svp_feed` | db 14 |
   | `media-worker` | — | — |
+  | `web` | — | db 9 |
   | GlitchTip (profile `obs`, tracker lỗi) | `svp_glitchtip` | — |
   | test (`make test`) | `svp_<...>_test` | db 15 |
 
@@ -101,12 +103,29 @@ liệt kê target):
 - `make generate`: chạy sau khi sửa `proto/` hoặc SQL của `sqlc`; code sinh ra (`gen/go`, code `sqlc`) được commit.
 - `make generate-check`: chạy `make generate` trong bản sao tạm của working tree (file đã track và file chưa track không bị
   ignore, không `.env`), in file lệch và diff, exit ≠ 0 khi lệch; không bao giờ ghi vào working tree.
-- `make check`: `gofmt`, `go vet`, `golangci-lint run` (gồm gosec), `actionlint` (mọi file của `.github/workflows/`),
-  `buf lint` + `buf build`, `go test -race ./...` (có integration test trên Postgres native `127.0.0.1:5432` qua
+- `make check` = `make check-go` + `make web-check`. `make check-go`: `gofmt`, `go vet`, `golangci-lint run` (gồm gosec),
+  `actionlint` (mọi file của `.github/workflows/`), `buf lint` + `buf build`, `go test -race ./...` (có integration test trên Postgres native `127.0.0.1:5432` qua
   `SVP_TEST_POSTGRES_URL` và Redis native db 15 qua `SVP_TEST_REDIS_URL`, mặc định `redis://127.0.0.1:6379/15` trong
   `Makefile`). Thu hẹp bằng `make test PKGS=./services/user-service/...`; `TESTFLAGS` thêm cờ cho `go test` của
   `make test`, `make cover`, `make check` (`make test TESTFLAGS=-count=1` chạy lại không dùng cache, như CI), `LINTFLAGS`
   thêm cờ cho golangci-lint của `make lint`.
+- Web client (`web/`, giai đoạn 5b, [ADR-0016](docs/adr/0016-web-client.md)): cần **Node 26** (`web/.nvmrc`, cài bằng nvm)
+  và **pnpm 12** đúng version ở `packageManager` của `web/package.json` (`npm install -g pnpm@<version>`, Node 25 trở đi
+  không có Corepack). Mọi target `web-*` tự đặt Node 26 mới nhất của nvm lên đầu `PATH`, kiểm major Node và version pnpm,
+  lệch thì in lệnh cài và dừng. `make web-install`: `pnpm install --frozen-lockfile` (setting chuỗi cung ứng ở
+  `web/pnpm-workspace.yaml`). `make web-dev`: `next dev` ở `http://localhost:3002`, trỏ gateway `127.0.0.1:8080` và Redis
+  db 9. `make web-generate`: sinh `web/gen/api.d.ts` từ `services/gateway/openapi.yaml` (commit); `make generate` gồm cả
+  `generate-go` lẫn `web-generate`, còn `make generate-check` chỉ kiểm phần Go. `make web-generate-check`: so bản sinh tạm
+  với `web/gen/api.d.ts`, không ghi gì. `make web-check`: ESLint, Prettier, typecheck, Vitest (Redis db 15 qua
+  `SVP_TEST_REDIS_URL`), `next build`, ngân sách bundle size-limit (feed ≤ 200 kB trên runtime, ≤ 330 kB tải lần đầu; login
+  ≤ 80/200 kB). `make web-e2e`: Playwright trên Chromium và WebKit vào stack `make up` (`http://localhost:3001`; trình duyệt
+  cài một lần bằng `pnpm exec playwright install chromium webkit` trong `web/`). `make measure-web`: chạy toàn bộ e2e (không
+  chạy `web-e2e` riêng), in thời gian tới khung đầu sau khi vuốt (p50/p95 mỗi trình duyệt) và bộ nhớ container `web` (cgroup
+  theo `docker stats`) lúc nghỉ và sau e2e, JSON ở `web/test-results/`. `SVP_E2E_EVIDENCE=<thư mục tuyệt đối>` (với
+  `web-e2e` hay `measure-web`) bật trace và video mỗi test, ảnh cuối mỗi test chỉ trên Chromium (WebKit không chụp được, xem
+  `web/playwright.config.ts`), báo cáo HTML và JSON, và ảnh toàn trang các màn ở cỡ mobile 390×844 và desktop 1440×900
+  (`web/e2e/evidence.e2e.ts`, chạy trên cả hai trình duyệt) vào thư mục đó. **LOCAL LAB ONLY:** seed của e2e xoá khoá
+  `svp:gw:rl:register:*` ở db 10 như `make smoke`.
 - `make cover`: `go test -race` như `make test` nhưng ghi coverage vào `cover.out` (đã gitignore) và in tổng; thu hẹp bằng
   `PKGS=`, xem từng dòng bằng `go tool cover -html=cover.out`.
 - `make env`: sinh `.env` local (mode 600, mật khẩu DB, mật khẩu root MinIO và secret key S3 của từng service ngẫu nhiên,
@@ -122,11 +141,12 @@ liệt kê target):
   trị, không ghi gì.
 - `make up` / `make smoke` / `make down`: dựng stack compose profile `core` (bootstrap Postgres, Redpanda + tạo topic,
   MinIO + bucket/user/policy, migrate, gateway, user-service, video-service, media-worker, engagement-service,
-  feed-service), chạy luồng đầu-cuối qua gateway ở `127.0.0.1:8080` (gồm follow, upload video bằng presigned POST lên
+  feed-service, web client `web`), chạy luồng đầu-cuối qua gateway ở `127.0.0.1:8080` (gồm refresh token, dùng lại token
+  cũ thì cả họ bị thu hồi, logout, follow, upload video bằng presigned POST lên
   MinIO, chờ `READY`, tải HLS và thumbnail, video vào feed following và explore, like/unlike, lượt xem, unfollow), rồi
   gỡ stack (giữ volume). Gateway dùng Redis native db 10 (rate limit), feed-service db 14 (cache feed khám phá), qua
-  `host.docker.internal:6379`. Cổng publish chỉ trên `127.0.0.1`: 8080 gateway, 9000 MinIO API, 9001 MinIO console,
-  19092 Redpanda (Kafka API). `make ps` và `make logs SVC=<tên>` để xem. `make smoke` và mọi script diễn tập cần
+  `host.docker.internal:6379`; web dùng db 9 (session). Cổng publish chỉ trên `127.0.0.1`: 8080 gateway, 3001 web (mở
+  bằng `http://localhost:3001`), 9000 MinIO API, 9001 MinIO console, 19092 Redpanda (Kafka API). `make ps` và `make logs SVC=<tên>` để xem. `make smoke` và mọi script diễn tập cần
   `redis-cli` trên máy và Redis native đang chạy: trước khi chạy, script xoá khoá rate limit đăng ký theo IP
   `svp:gw:rl:register:*` ở db 10 (`SCAN` + `DEL`, không `FLUSHDB`), vì mọi request đi ra từ một IP bridge của Docker và
   vài lần chạy trong một giờ sẽ cạn burst 20. Việc xoá này **chỉ dùng ở lab local**, không trỏ script vào stack dùng
@@ -187,7 +207,7 @@ liệt kê target):
   của lần chạy trước resolve (tới khoảng 30 phút) và 31 s không có 5xx ở feed. Kiểm các dòng giai đoạn 3 của threat
   model: JWT-8 (trace, log, event GlitchTip của request login/feed/follow, cả lúc user-service tắt, không có email, mật
   khẩu, token), UP-8 (`video created`, `upload completed` có `user_id`, `video_id`, `trace_id`), OPS-1 (`/debug/pprof/`,
-  `/metrics` trả 404; project publish đúng 7 cổng loopback), RL-2 (gateway dựng lại với Redis `.invalid` thì metric
+  `/metrics` trả 404; project publish đúng 8 cổng loopback, gồm web 3001), RL-2 (gateway dựng lại với Redis `.invalid` thì metric
   `store="fallback"` > 0 và cảnh báo `RateLimitFallbackActive` trong 4 phút). **Telegram tuỳ chọn:** người học tự tạo bot
   và điền `SVP_ALERT_TELEGRAM_BOT_TOKEN`, `SVP_ALERT_TELEGRAM_CHAT_ID` vào `.env`; có đủ cả hai thì Alertmanager gửi cảnh
   báo `severity=page` tới `api.telegram.org` (ngoại lệ hẹp về mạng ngoài của lab) và `drill-alert-to-sentry` kiểm số
@@ -300,12 +320,13 @@ liệt kê target):
 - Giai đoạn 5, CI trên GitHub Actions ([ADR-0015](docs/adr/0015-cicd-devsecops-stage5.md)). Hai workflow, mọi action
   ghim SHA commit, `permissions: {}` ở đầu file và quyền khai theo job; mọi job của lượt `pull_request` (cả PR từ fork)
   chỉ có `contents: read` và không secret; không `pull_request_target`, `workflow_run`:
-  - `.github/workflows/ci.yml` (PR, push `main`, dispatch): `check` (`make check TESTFLAGS=-count=1`, Postgres và Redis
-    là service container trên `127.0.0.1`, ffmpeg), `generate` (`make generate-check`), `buf` (`buf breaking` so với
+  - `.github/workflows/ci.yml` (PR, push `main`, dispatch): `check` (`make check-go TESTFLAGS=-count=1`, Postgres và
+    Redis là service container trên `127.0.0.1`, ffmpeg), `web` (Node theo `web/.nvmrc`, pnpm theo `packageManager`, Redis
+    service container; `make web-install`, `make web-check`, `make web-generate-check`), `generate` (`make generate-check`), `buf` (`buf breaking` so với
     merge-base của PR, `main` trước push, hay merge-base với `origin/main` khi dispatch), `config`
     (`deploy/ci/scan-gate.sh --check-ignorefile`, `make slo-check`, `make otelcol-validate`, `make env` rồi
     `make compose-config`, `make helm-check`, `deploy/k8s/check-image-digests.sh`), `gitleaks` (toàn lịch sử,
-    `--redact`), `trivy-config` (chỉ báo), `sarif` (chỉ `main`), check tổng `ci-ok`.
+    `--redact`), `trivy-config` (chỉ báo), `sarif` (chỉ `main`), check tổng `ci-ok` (cần đủ 7 job, trừ `sarif`).
   - `.github/workflows/images.yml` (PR, push `main`, dispatch, lịch hằng ngày): chỉ build service đổi so với lần push
     `main` thành công cuối (`deploy/ci/changed-services.sh`; đổi `images.yml`, `deploy/ci/`, `deploy/k8s/lib.sh` hay dòng
     `TRIVY_IMAGE`/`SYFT_IMAGE`/`COSIGN_IMAGE` của `Makefile` thì cả sáu); mỗi service hai chân amd64, arm64 build native,
@@ -317,7 +338,8 @@ liệt kê target):
   - Check bắt buộc của ruleset `main`: `ci-ok`, `images-ok`, chỉ nhận từ app GitHub Actions. Ruleset, cài đặt repo
     (Actions chỉ cho action của GitHub và `sigstore/cosign-installer`, ghim SHA bắt buộc; secret scanning + push
     protection; Dependabot alerts) và package GHCR public do người học bật (ADR-0015 §5, §11): **kiểm sau push**.
-  - Chạy lại một job trên máy, từ gốc repo: `make check TESTFLAGS=-count=1`; `make generate-check`;
+  - Chạy lại một job trên máy, từ gốc repo: `make check-go TESTFLAGS=-count=1`; `make web-check`,
+    `make web-generate-check`; `make generate-check`;
     `buf breaking --against '.git#ref=<base>'`; `deploy/ci/scan-gate.sh --check-ignorefile`, `make slo-check`,
     `make otelcol-validate`, `make compose-config`, `make helm-check`, `deploy/k8s/check-image-digests.sh`;
     `gitleaks git --redact --no-banner`; `make trivy-config`; một chân image (build, quét, cổng, không push):
@@ -353,6 +375,10 @@ Quy ước test:
 - Test Redis dùng db 15 qua `SVP_TEST_REDIS_URL`; helper `internal/redistest` từ chối URL nào khác `127.0.0.1:6379` /
   `localhost:6379` db 15, cho mỗi test một tiền tố khoá ngẫu nhiên `svp:test:<hex>:` và khi xong chỉ xoá khoá của tiền tố
   đó. Không `FLUSHDB`/`FLUSHALL`, kể cả ở db 15. Thiếu biến thì test gọi `t.Skip`.
+- Test web (Vitest) theo cùng quy tắc: helper `web/server/testing/redis.ts` chỉ nhận db 15 của `127.0.0.1:6379` /
+  `localhost:6379` qua `SVP_TEST_REDIS_URL` (`make web-check` đặt), mỗi test một tiền tố ngẫu nhiên `svp:test:<hex>:` và
+  chỉ xoá khoá của tiền tố đó; thiếu biến thì nhóm test Redis bị bỏ qua (`describe.skipIf`). Request mạng không có handler
+  MSW thì test lỗi. Test e2e (`web/e2e/*.e2e.ts`, Playwright) chỉ chạy trên stack `make up`, mỗi lượt đăng ký user mới.
 - Test telemetry không cần Collector, LGTM hay GlitchTip: span, metric đọc bằng exporter và reader trong bộ nhớ của OTel
   SDK (`tracetest.NewSpanRecorder`, `tracetest.NewInMemoryExporter`, `sdkmetric.NewManualReader`); lỗi gửi tới tracker
   đọc bằng transport Sentry giả trong bộ nhớ, hoặc một server `httptest` do test tự mở làm GlitchTip giả (DSN trỏ host

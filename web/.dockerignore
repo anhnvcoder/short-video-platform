@@ -1,0 +1,14 @@
+# Build context of deploy/docker/web.Dockerfile is web/: the image is built from the sources and the lockfile only.
+# Local installs and build output would replace what the image installs and builds itself.
+node_modules
+.next
+*.tsbuildinfo
+next-env.d.ts
+# Test and coverage output.
+test-results
+playwright-report
+coverage
+# The design copy is never served or imported by the app.
+design
+# Local configuration and secrets never enter the image (next build does not read them either).
+.env*

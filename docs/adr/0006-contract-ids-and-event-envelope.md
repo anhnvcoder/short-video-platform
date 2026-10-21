@@ -1,6 +1,6 @@
 # 0006. Contract nội bộ: ID là UUIDv7, event bọc theo topic của luồng thực thể, proto đặt ở `proto/svp/<domain>/v1`
 
-- Trạng thái: Chấp nhận
+- Trạng thái: Chấp nhận; §5 (MVP không có refresh token) chỉnh bởi [0016](0016-web-client.md)
 - Ngày: 2026-10-11
 
 ## Bối cảnh

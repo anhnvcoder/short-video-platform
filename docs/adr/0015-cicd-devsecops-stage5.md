@@ -1,6 +1,6 @@
 # 0015. Giai đoạn 5: CI/CD và chuỗi cung ứng image với GitHub Actions ghim SHA, image đa kiến trúc trên GHCR, trivy chặn trước push, SBOM syft, ký keyless cosign, Kyverno chỉ nhận image đã ký và sạch, promote bằng PR GitOps, Renovate
 
-- Trạng thái: Chấp nhận
+- Trạng thái: Chấp nhận; §2 (job `web`, job `check` chạy `make check-go`, `ci-ok` bảy job) chỉnh bởi [0016](0016-web-client.md)
 - Ngày: 2026-10-20
 
 ## Bối cảnh
@@ -168,7 +168,8 @@ Trigger `pull_request` (mọi nhánh base), `push` nhánh `main`, `workflow_disp
 ubuntu-24.04`, `permissions: contents: read` trừ job SARIF. Tên job là contract của ruleset chỉ ở `ci-ok`; tên khác do file
 workflow quyết. Các job:
 
-- **`check`:** `make check TESTFLAGS=-count=1 LINTFLAGS="$LINTFLAGS"`, với `env:` của bước đặt `LINTFLAGS` là
+- **`check`:** `make check-go TESTFLAGS=-count=1 LINTFLAGS="$LINTFLAGS"` (từ giai đoạn 5b `make check` = `check-go` +
+  `web-check`; phần web chạy ở job `web` bên dưới), với `env:` của bước đặt `LINTFLAGS` là
   `--output.text.path=stdout --output.sarif.path=${{ runner.temp }}/golangci-lint.sarif` (đường dẫn đã điền sẵn: `$` còn
   lại trong giá trị sẽ bị make đọc thành biến của nó; thứ tự hiện có `fmt-check`, `vet`, `lint`, `actionlint`,
   `buf-lint`, `test`; `-count=1` để cache build của `actions/setup-go` không cho một lượt "xanh" mà không chạy test nào).
@@ -188,6 +189,10 @@ workflow quyết. Các job:
     `pkg/commands/flagsets.go@v2.14.0`). Phải đặt cả `--output.text.path=stdout`: có định dạng ra nào được đặt thì
     golangci-lint bỏ đầu ra chữ mặc định (`Print`, `pkg/printers/printer.go@v2.14.0`), log của job sẽ không có lỗi lint.
     gosec nằm trong đó (bật ở `.golangci.yml`; gosec không thuộc nhóm `standard` nên phải bật tên).
+- **`web`** (thêm ở giai đoạn 5b, [ADR-0016](0016-web-client.md) §10): Node theo `web/.nvmrc` (`actions/setup-node`), pnpm
+  bằng `npm install -g pnpm@<packageManager của web/package.json>` (không Corepack, không action bên thứ ba), cache store
+  pnpm bằng `actions/cache` khoá theo hash `web/pnpm-lock.yaml`, Redis là service container như `check` (test session
+  dùng db 15); chạy `make web-install`, `make web-check`, `make web-generate-check`. `contents: read`, không secret.
 - **`generate`:** `make generate-check` (target mới): chép file đã track và file chưa track không bị ignore
   (`git ls-files -z -co --exclude-standard`, không đọc `.env`) vào `mktemp -d`, chạy `make generate` trong bản sao, so với
   working tree (file đổi và file mới sinh), in danh sách và diff, thoát ≠ 0 khi lệch, xoá thư mục tạm bằng `trap`. Không
@@ -216,9 +221,10 @@ workflow quyết. Các job:
   (artifact), upload bằng `github/codeql-action/upload-sarif`, mỗi công cụ một `category` (`golangci-lint`, `gitleaks`,
   `trivy-config`). Chỉ job này có `security-events: write` và nó không chạy code của repo. Ở mọi PR (nhánh của repo hay
   fork) kết quả nằm trong artifact và bảng tóm tắt ở job summary; tab Security chỉ nhận kết quả của `main`.
-- **`ci-ok`:** `needs` đúng sáu job kiểm `check`, `generate`, `buf`, `config`, `gitleaks`, `trivy-config`; **không** gồm
+- **`ci-ok`:** `needs` đúng bảy job kiểm `check`, `web`, `generate`, `buf`, `config`, `gitleaks`, `trivy-config` (`web` thêm
+  ở giai đoạn 5b; trước đó sáu); **không** gồm
   `sarif` (báo cáo, không phải phép kiểm; upload lỗi vẫn làm lượt chạy đỏ và GitHub gửi thông báo). `if: always()`, đọc
-  `toJSON(needs)` qua `env:`, thoát ≠ 0 khi bất kỳ job nào khác `success`, kể cả `skipped`: sáu job này không có điều
+  `toJSON(needs)` qua `env:`, thoát ≠ 0 khi bất kỳ job nào khác `success`, kể cả `skipped`: bảy job này không có điều
   kiện, nên `skipped` ở đây chỉ có thể là `if:` viết sai. Không bao giờ có điều kiện làm chính `ci-ok` bị bỏ qua: GitHub
   tính check `skipped` là đạt ("Successful check statuses are `success`, `skipped`, and `neutral`", tài liệu
   "Troubleshooting required status checks").

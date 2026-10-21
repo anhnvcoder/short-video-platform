@@ -178,9 +178,14 @@ type LoginResponse struct {
 	// public key and does not call UserService per request.
 	AccessToken string `protobuf:"bytes,1,opt,name=access_token,json=accessToken,proto3" json:"access_token,omitempty"`
 	// When access_token stops being accepted.
-	ExpiresAt     *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ExpiresAt *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	// Opaque refresh token (43 characters, base64url of 32 random bytes) that
+	// starts a new family. The service stores only its SHA-256 hash.
+	RefreshToken string `protobuf:"bytes,3,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
+	// When refresh_token stops being accepted (14 days after the login).
+	RefreshExpiresAt *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=refresh_expires_at,json=refreshExpiresAt,proto3" json:"refresh_expires_at,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *LoginResponse) Reset() {
@@ -227,6 +232,217 @@ func (x *LoginResponse) GetExpiresAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *LoginResponse) GetRefreshToken() string {
+	if x != nil {
+		return x.RefreshToken
+	}
+	return ""
+}
+
+func (x *LoginResponse) GetRefreshExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.RefreshExpiresAt
+	}
+	return nil
+}
+
+type RefreshRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RefreshToken  string                 `protobuf:"bytes,1,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RefreshRequest) Reset() {
+	*x = RefreshRequest{}
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RefreshRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RefreshRequest) ProtoMessage() {}
+
+func (x *RefreshRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RefreshRequest.ProtoReflect.Descriptor instead.
+func (*RefreshRequest) Descriptor() ([]byte, []int) {
+	return file_svp_user_v1_user_service_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *RefreshRequest) GetRefreshToken() string {
+	if x != nil {
+		return x.RefreshToken
+	}
+	return ""
+}
+
+type RefreshResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Signed JWT for the token's user, as in LoginResponse.
+	AccessToken string `protobuf:"bytes,1,opt,name=access_token,json=accessToken,proto3" json:"access_token,omitempty"`
+	// When access_token stops being accepted.
+	ExpiresAt *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	// The refresh token that replaces the presented one, in the same family.
+	RefreshToken string `protobuf:"bytes,3,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
+	// When refresh_token stops being accepted: 14 days after this call, but
+	// never later than 30 days after the login that started the family.
+	RefreshExpiresAt *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=refresh_expires_at,json=refreshExpiresAt,proto3" json:"refresh_expires_at,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *RefreshResponse) Reset() {
+	*x = RefreshResponse{}
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RefreshResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RefreshResponse) ProtoMessage() {}
+
+func (x *RefreshResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RefreshResponse.ProtoReflect.Descriptor instead.
+func (*RefreshResponse) Descriptor() ([]byte, []int) {
+	return file_svp_user_v1_user_service_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *RefreshResponse) GetAccessToken() string {
+	if x != nil {
+		return x.AccessToken
+	}
+	return ""
+}
+
+func (x *RefreshResponse) GetExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return nil
+}
+
+func (x *RefreshResponse) GetRefreshToken() string {
+	if x != nil {
+		return x.RefreshToken
+	}
+	return ""
+}
+
+func (x *RefreshResponse) GetRefreshExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.RefreshExpiresAt
+	}
+	return nil
+}
+
+type LogoutRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RefreshToken  string                 `protobuf:"bytes,1,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LogoutRequest) Reset() {
+	*x = LogoutRequest{}
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LogoutRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LogoutRequest) ProtoMessage() {}
+
+func (x *LogoutRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LogoutRequest.ProtoReflect.Descriptor instead.
+func (*LogoutRequest) Descriptor() ([]byte, []int) {
+	return file_svp_user_v1_user_service_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *LogoutRequest) GetRefreshToken() string {
+	if x != nil {
+		return x.RefreshToken
+	}
+	return ""
+}
+
+type LogoutResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LogoutResponse) Reset() {
+	*x = LogoutResponse{}
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LogoutResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LogoutResponse) ProtoMessage() {}
+
+func (x *LogoutResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LogoutResponse.ProtoReflect.Descriptor instead.
+func (*LogoutResponse) Descriptor() ([]byte, []int) {
+	return file_svp_user_v1_user_service_proto_rawDescGZIP(), []int{7}
+}
+
 type FollowRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	FolloweeId    string                 `protobuf:"bytes,1,opt,name=followee_id,json=followeeId,proto3" json:"followee_id,omitempty"`
@@ -236,7 +452,7 @@ type FollowRequest struct {
 
 func (x *FollowRequest) Reset() {
 	*x = FollowRequest{}
-	mi := &file_svp_user_v1_user_service_proto_msgTypes[4]
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -248,7 +464,7 @@ func (x *FollowRequest) String() string {
 func (*FollowRequest) ProtoMessage() {}
 
 func (x *FollowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_svp_user_v1_user_service_proto_msgTypes[4]
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -261,7 +477,7 @@ func (x *FollowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FollowRequest.ProtoReflect.Descriptor instead.
 func (*FollowRequest) Descriptor() ([]byte, []int) {
-	return file_svp_user_v1_user_service_proto_rawDescGZIP(), []int{4}
+	return file_svp_user_v1_user_service_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *FollowRequest) GetFolloweeId() string {
@@ -279,7 +495,7 @@ type FollowResponse struct {
 
 func (x *FollowResponse) Reset() {
 	*x = FollowResponse{}
-	mi := &file_svp_user_v1_user_service_proto_msgTypes[5]
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -291,7 +507,7 @@ func (x *FollowResponse) String() string {
 func (*FollowResponse) ProtoMessage() {}
 
 func (x *FollowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_svp_user_v1_user_service_proto_msgTypes[5]
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -304,7 +520,7 @@ func (x *FollowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FollowResponse.ProtoReflect.Descriptor instead.
 func (*FollowResponse) Descriptor() ([]byte, []int) {
-	return file_svp_user_v1_user_service_proto_rawDescGZIP(), []int{5}
+	return file_svp_user_v1_user_service_proto_rawDescGZIP(), []int{9}
 }
 
 type UnfollowRequest struct {
@@ -316,7 +532,7 @@ type UnfollowRequest struct {
 
 func (x *UnfollowRequest) Reset() {
 	*x = UnfollowRequest{}
-	mi := &file_svp_user_v1_user_service_proto_msgTypes[6]
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -328,7 +544,7 @@ func (x *UnfollowRequest) String() string {
 func (*UnfollowRequest) ProtoMessage() {}
 
 func (x *UnfollowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_svp_user_v1_user_service_proto_msgTypes[6]
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -341,7 +557,7 @@ func (x *UnfollowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnfollowRequest.ProtoReflect.Descriptor instead.
 func (*UnfollowRequest) Descriptor() ([]byte, []int) {
-	return file_svp_user_v1_user_service_proto_rawDescGZIP(), []int{6}
+	return file_svp_user_v1_user_service_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *UnfollowRequest) GetFolloweeId() string {
@@ -359,7 +575,7 @@ type UnfollowResponse struct {
 
 func (x *UnfollowResponse) Reset() {
 	*x = UnfollowResponse{}
-	mi := &file_svp_user_v1_user_service_proto_msgTypes[7]
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -371,7 +587,7 @@ func (x *UnfollowResponse) String() string {
 func (*UnfollowResponse) ProtoMessage() {}
 
 func (x *UnfollowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_svp_user_v1_user_service_proto_msgTypes[7]
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -384,7 +600,7 @@ func (x *UnfollowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnfollowResponse.ProtoReflect.Descriptor instead.
 func (*UnfollowResponse) Descriptor() ([]byte, []int) {
-	return file_svp_user_v1_user_service_proto_rawDescGZIP(), []int{7}
+	return file_svp_user_v1_user_service_proto_rawDescGZIP(), []int{11}
 }
 
 var File_svp_user_v1_user_service_proto protoreflect.FileDescriptor
@@ -399,11 +615,24 @@ const file_svp_user_v1_user_service_proto_rawDesc = "" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\"@\n" +
 	"\fLoginRequest\x12\x14\n" +
 	"\x05email\x18\x01 \x01(\tR\x05email\x12\x1a\n" +
-	"\bpassword\x18\x02 \x01(\tR\bpassword\"m\n" +
+	"\bpassword\x18\x02 \x01(\tR\bpassword\"\xdc\x01\n" +
 	"\rLoginResponse\x12!\n" +
 	"\faccess_token\x18\x01 \x01(\tR\vaccessToken\x129\n" +
 	"\n" +
-	"expires_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\"0\n" +
+	"expires_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\x12#\n" +
+	"\rrefresh_token\x18\x03 \x01(\tR\frefreshToken\x12H\n" +
+	"\x12refresh_expires_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x10refreshExpiresAt\"5\n" +
+	"\x0eRefreshRequest\x12#\n" +
+	"\rrefresh_token\x18\x01 \x01(\tR\frefreshToken\"\xde\x01\n" +
+	"\x0fRefreshResponse\x12!\n" +
+	"\faccess_token\x18\x01 \x01(\tR\vaccessToken\x129\n" +
+	"\n" +
+	"expires_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\x12#\n" +
+	"\rrefresh_token\x18\x03 \x01(\tR\frefreshToken\x12H\n" +
+	"\x12refresh_expires_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x10refreshExpiresAt\"4\n" +
+	"\rLogoutRequest\x12#\n" +
+	"\rrefresh_token\x18\x01 \x01(\tR\frefreshToken\"\x10\n" +
+	"\x0eLogoutResponse\"0\n" +
 	"\rFollowRequest\x12\x1f\n" +
 	"\vfollowee_id\x18\x01 \x01(\tR\n" +
 	"followeeId\"\x10\n" +
@@ -411,10 +640,12 @@ const file_svp_user_v1_user_service_proto_rawDesc = "" +
 	"\x0fUnfollowRequest\x12\x1f\n" +
 	"\vfollowee_id\x18\x01 \x01(\tR\n" +
 	"followeeId\"\x12\n" +
-	"\x10UnfollowResponse2\xa2\x02\n" +
+	"\x10UnfollowResponse2\xab\x03\n" +
 	"\vUserService\x12G\n" +
 	"\bRegister\x12\x1c.svp.user.v1.RegisterRequest\x1a\x1d.svp.user.v1.RegisterResponse\x12>\n" +
-	"\x05Login\x12\x19.svp.user.v1.LoginRequest\x1a\x1a.svp.user.v1.LoginResponse\x12A\n" +
+	"\x05Login\x12\x19.svp.user.v1.LoginRequest\x1a\x1a.svp.user.v1.LoginResponse\x12D\n" +
+	"\aRefresh\x12\x1b.svp.user.v1.RefreshRequest\x1a\x1c.svp.user.v1.RefreshResponse\x12A\n" +
+	"\x06Logout\x12\x1a.svp.user.v1.LogoutRequest\x1a\x1b.svp.user.v1.LogoutResponse\x12A\n" +
 	"\x06Follow\x12\x1a.svp.user.v1.FollowRequest\x1a\x1b.svp.user.v1.FollowResponse\x12G\n" +
 	"\bUnfollow\x12\x1c.svp.user.v1.UnfollowRequest\x1a\x1d.svp.user.v1.UnfollowResponseB\xb7\x01\n" +
 	"\x0fcom.svp.user.v1B\x10UserServiceProtoP\x01ZDgithub.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1;userv1\xa2\x02\x03SUX\xaa\x02\vSvp.User.V1\xca\x02\vSvp\\User\\V1\xe2\x02\x17Svp\\User\\V1\\GPBMetadata\xea\x02\rSvp::User::V1b\x06proto3"
@@ -431,33 +662,44 @@ func file_svp_user_v1_user_service_proto_rawDescGZIP() []byte {
 	return file_svp_user_v1_user_service_proto_rawDescData
 }
 
-var file_svp_user_v1_user_service_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_svp_user_v1_user_service_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_svp_user_v1_user_service_proto_goTypes = []any{
 	(*RegisterRequest)(nil),       // 0: svp.user.v1.RegisterRequest
 	(*RegisterResponse)(nil),      // 1: svp.user.v1.RegisterResponse
 	(*LoginRequest)(nil),          // 2: svp.user.v1.LoginRequest
 	(*LoginResponse)(nil),         // 3: svp.user.v1.LoginResponse
-	(*FollowRequest)(nil),         // 4: svp.user.v1.FollowRequest
-	(*FollowResponse)(nil),        // 5: svp.user.v1.FollowResponse
-	(*UnfollowRequest)(nil),       // 6: svp.user.v1.UnfollowRequest
-	(*UnfollowResponse)(nil),      // 7: svp.user.v1.UnfollowResponse
-	(*timestamppb.Timestamp)(nil), // 8: google.protobuf.Timestamp
+	(*RefreshRequest)(nil),        // 4: svp.user.v1.RefreshRequest
+	(*RefreshResponse)(nil),       // 5: svp.user.v1.RefreshResponse
+	(*LogoutRequest)(nil),         // 6: svp.user.v1.LogoutRequest
+	(*LogoutResponse)(nil),        // 7: svp.user.v1.LogoutResponse
+	(*FollowRequest)(nil),         // 8: svp.user.v1.FollowRequest
+	(*FollowResponse)(nil),        // 9: svp.user.v1.FollowResponse
+	(*UnfollowRequest)(nil),       // 10: svp.user.v1.UnfollowRequest
+	(*UnfollowResponse)(nil),      // 11: svp.user.v1.UnfollowResponse
+	(*timestamppb.Timestamp)(nil), // 12: google.protobuf.Timestamp
 }
 var file_svp_user_v1_user_service_proto_depIdxs = []int32{
-	8, // 0: svp.user.v1.LoginResponse.expires_at:type_name -> google.protobuf.Timestamp
-	0, // 1: svp.user.v1.UserService.Register:input_type -> svp.user.v1.RegisterRequest
-	2, // 2: svp.user.v1.UserService.Login:input_type -> svp.user.v1.LoginRequest
-	4, // 3: svp.user.v1.UserService.Follow:input_type -> svp.user.v1.FollowRequest
-	6, // 4: svp.user.v1.UserService.Unfollow:input_type -> svp.user.v1.UnfollowRequest
-	1, // 5: svp.user.v1.UserService.Register:output_type -> svp.user.v1.RegisterResponse
-	3, // 6: svp.user.v1.UserService.Login:output_type -> svp.user.v1.LoginResponse
-	5, // 7: svp.user.v1.UserService.Follow:output_type -> svp.user.v1.FollowResponse
-	7, // 8: svp.user.v1.UserService.Unfollow:output_type -> svp.user.v1.UnfollowResponse
-	5, // [5:9] is the sub-list for method output_type
-	1, // [1:5] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	12, // 0: svp.user.v1.LoginResponse.expires_at:type_name -> google.protobuf.Timestamp
+	12, // 1: svp.user.v1.LoginResponse.refresh_expires_at:type_name -> google.protobuf.Timestamp
+	12, // 2: svp.user.v1.RefreshResponse.expires_at:type_name -> google.protobuf.Timestamp
+	12, // 3: svp.user.v1.RefreshResponse.refresh_expires_at:type_name -> google.protobuf.Timestamp
+	0,  // 4: svp.user.v1.UserService.Register:input_type -> svp.user.v1.RegisterRequest
+	2,  // 5: svp.user.v1.UserService.Login:input_type -> svp.user.v1.LoginRequest
+	4,  // 6: svp.user.v1.UserService.Refresh:input_type -> svp.user.v1.RefreshRequest
+	6,  // 7: svp.user.v1.UserService.Logout:input_type -> svp.user.v1.LogoutRequest
+	8,  // 8: svp.user.v1.UserService.Follow:input_type -> svp.user.v1.FollowRequest
+	10, // 9: svp.user.v1.UserService.Unfollow:input_type -> svp.user.v1.UnfollowRequest
+	1,  // 10: svp.user.v1.UserService.Register:output_type -> svp.user.v1.RegisterResponse
+	3,  // 11: svp.user.v1.UserService.Login:output_type -> svp.user.v1.LoginResponse
+	5,  // 12: svp.user.v1.UserService.Refresh:output_type -> svp.user.v1.RefreshResponse
+	7,  // 13: svp.user.v1.UserService.Logout:output_type -> svp.user.v1.LogoutResponse
+	9,  // 14: svp.user.v1.UserService.Follow:output_type -> svp.user.v1.FollowResponse
+	11, // 15: svp.user.v1.UserService.Unfollow:output_type -> svp.user.v1.UnfollowResponse
+	10, // [10:16] is the sub-list for method output_type
+	4,  // [4:10] is the sub-list for method input_type
+	4,  // [4:4] is the sub-list for extension type_name
+	4,  // [4:4] is the sub-list for extension extendee
+	0,  // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_svp_user_v1_user_service_proto_init() }
@@ -471,7 +713,7 @@ func file_svp_user_v1_user_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_svp_user_v1_user_service_proto_rawDesc), len(file_svp_user_v1_user_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   8,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -19,8 +19,9 @@ import (
 	"github.com/anhnvcoder/short-video-platform/services/user-service/internal/password"
 )
 
-// Register and Login on the pool serve opens (pgpool, with SQL spans) leave neither the email nor
-// the password in any span: names, attributes, events and statuses.
+// Register, Login, Refresh and Logout on the pool serve opens (pgpool, with SQL spans) leave
+// neither the email, the password nor any token in any span: names, attributes, events and
+// statuses.
 func TestSpansHoldNoSecrets(t *testing.T) {
 	if testPool == nil {
 		t.Skip(skipReason)
@@ -55,9 +56,27 @@ func TestSpansHoldNoSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
+	var tokens []string
 	for _, pw := range []string{testPassword, wrongPassword} {
 		ctx, span := otel.Tracer("test").Start(t.Context(), "svp.user.v1.UserService/Login")
-		_, _ = s.Login(ctx, &userv1.LoginRequest{Email: email, Password: pw})
+		resp, _ := s.Login(ctx, &userv1.LoginRequest{Email: email, Password: pw})
+		span.End()
+		if resp != nil {
+			tokens = append(tokens, resp.GetAccessToken(), resp.GetRefreshToken())
+		}
+	}
+	if len(tokens) == 0 {
+		t.Fatal("Login with the right password failed")
+	}
+	// Rotation, reuse of the presented token, then logout with the rotated one.
+	t0 := tokens[1]
+	for _, call := range []string{"Refresh", "Refresh", "Logout"} {
+		ctx, span := otel.Tracer("test").Start(t.Context(), "svp.user.v1.UserService/"+call)
+		if call == "Logout" {
+			_, _ = s.Logout(ctx, &userv1.LogoutRequest{RefreshToken: tokens[len(tokens)-1]})
+		} else if resp, err := s.Refresh(ctx, &userv1.RefreshRequest{RefreshToken: t0}); err == nil {
+			tokens = append(tokens, resp.GetAccessToken(), resp.GetRefreshToken())
+		}
 		span.End()
 	}
 
@@ -76,7 +95,7 @@ func TestSpansHoldNoSecrets(t *testing.T) {
 			texts = append(texts, string(a.Key), a.Value.String())
 		}
 		for _, text := range texts {
-			for _, leak := range []string{email, strings.ToLower(email), testPassword, wrongPassword} {
+			for _, leak := range append([]string{email, strings.ToLower(email), testPassword, wrongPassword}, tokens...) {
 				if strings.Contains(text, leak) {
 					t.Errorf("span %q holds %q in %q", sp.Name(), leak, text)
 				}

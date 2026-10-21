@@ -1,0 +1,33 @@
+@import "tailwindcss";
+@import "./tokens.css";
+
+/* The design copy and generated types are not app markup: keep their words out of the generated utilities. */
+@source not "../../design";
+@source not "../../gen";
+
+@layer base {
+  html {
+    background-color: var(--color-surface);
+    color: var(--color-foreground);
+  }
+  body {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  a {
+    color: var(--color-accent-text);
+  }
+  a:hover {
+    color: var(--color-foreground);
+  }
+}
+
+/* Reduced motion: no animation or transition anywhere (spinners stand still, video changes do not slide). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

@@ -55,6 +55,11 @@ const (
 	clientTraceID     = "4bf92f3577b34da6a3ce929d0e0e4736"
 	fakeAccessToken   = "fake.access.token"
 	mediaBase         = "http://127.0.0.1:9000/media"
+	// fakeRefreshToken is the refresh token fakeUsers' Login answers.
+	fakeRefreshToken = "fake-refresh-token-of-login"
+	// rotatedAccessToken and rotatedRefreshToken are what fakeUsers' Refresh answers.
+	rotatedAccessToken  = "fake.rotated.access.token" //nolint:gosec // a fake token of the tests
+	rotatedRefreshToken = "fake-refresh-token-rotated"
 	// uploadSecret stands for a presigned POST credential: it must reach the client, not the log.
 	uploadSecret = "presigned-signature-secret"
 	// noFormFields is a title fakeVideos answers with a nil form_fields map.
@@ -72,6 +77,8 @@ var (
 	publishedAt = time.Date(2026, 10, 11, 1, 5, 0, 0, time.UTC)
 	uploadUntil = time.Date(2026, 10, 11, 1, 17, 3, 0, time.UTC)
 	tokenExpiry = time.Date(2026, 10, 11, 2, 0, 0, 0, time.UTC)
+	// refreshExpiry is when the refresh tokens fakeUsers answers expire.
+	refreshExpiry = time.Date(2026, 10, 25, 1, 0, 0, 0, time.UTC)
 )
 
 // call is one RPC a fake backend received.
@@ -185,7 +192,25 @@ func (fakeUsers) Register(context.Context, *userv1.RegisterRequest) (*userv1.Reg
 }
 
 func (fakeUsers) Login(context.Context, *userv1.LoginRequest) (*userv1.LoginResponse, error) {
-	return &userv1.LoginResponse{AccessToken: fakeAccessToken, ExpiresAt: timestamppb.New(tokenExpiry)}, nil
+	return &userv1.LoginResponse{
+		AccessToken:      fakeAccessToken,
+		ExpiresAt:        timestamppb.New(tokenExpiry),
+		RefreshToken:     fakeRefreshToken,
+		RefreshExpiresAt: timestamppb.New(refreshExpiry),
+	}, nil
+}
+
+func (fakeUsers) Refresh(context.Context, *userv1.RefreshRequest) (*userv1.RefreshResponse, error) {
+	return &userv1.RefreshResponse{
+		AccessToken:      rotatedAccessToken,
+		ExpiresAt:        timestamppb.New(tokenExpiry),
+		RefreshToken:     rotatedRefreshToken,
+		RefreshExpiresAt: timestamppb.New(refreshExpiry),
+	}, nil
+}
+
+func (fakeUsers) Logout(context.Context, *userv1.LogoutRequest) (*userv1.LogoutResponse, error) {
+	return &userv1.LogoutResponse{}, nil
 }
 
 func (fakeUsers) Follow(context.Context, *userv1.FollowRequest) (*userv1.FollowResponse, error) {
@@ -541,24 +566,12 @@ func TestLogin(t *testing.T) {
 	wantStatus(t, rec, http.StatusOK)
 	wantJSON(t, rec)
 	got := decode[map[string]string](t, rec)
-	want := map[string]string{
-		"access_token": fakeAccessToken,
-		"token_type":   "Bearer",
-		"expires_at":   "2026-10-11T02:00:00Z",
-	}
-	if len(got) != len(want) {
-		t.Errorf("body = %v, want %v", got, want)
-	}
-	for k, v := range want {
-		if got[k] != v {
-			t.Errorf("%s = %q, want %q", k, got[k], v)
-		}
-	}
+	wantTokenBody(t, got, fakeAccessToken, fakeRefreshToken)
 	if req := e.users.only(t).req.(*userv1.LoginRequest); req.GetEmail() != "a@example.com" || req.GetPassword() != "correct horse" {
 		t.Errorf("request = %v", req)
 	}
-	// The response carries a token and the request a password and an email; none reaches the log.
-	for _, s := range []string{fakeAccessToken, "correct horse", "a@example.com"} {
+	// The response carries tokens and the request a password and an email; none reaches the log.
+	for _, s := range []string{fakeAccessToken, fakeRefreshToken, "correct horse", "a@example.com"} {
 		if strings.Contains(logs.String(), s) {
 			t.Errorf("log contains %q:\n%s", s, logs.String())
 		}
@@ -568,14 +581,123 @@ func TestLogin(t *testing.T) {
 	}
 }
 
+// wantTokenBody checks got is the AccessToken schema with access and refresh, and nothing else.
+func wantTokenBody(t *testing.T, got map[string]string, access, refresh string) {
+	t.Helper()
+	want := map[string]string{
+		"access_token":       access,
+		"token_type":         "Bearer",
+		"expires_at":         "2026-10-11T02:00:00Z",
+		"refresh_token":      refresh,
+		"refresh_expires_at": "2026-10-25T01:00:00Z",
+	}
+	if len(got) != len(want) {
+		t.Errorf("body = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+// refreshBody is the body of /auth/refresh and /auth/logout with fakeRefreshToken.
+const refreshBody = `{"refresh_token":"` + fakeRefreshToken + `"}`
+
+func TestRefresh(t *testing.T) {
+	e := newEnv(t)
+	rec := e.do(t, http.MethodPost, "/auth/refresh", refreshBody, "")
+	wantStatus(t, rec, http.StatusOK)
+	wantJSON(t, rec)
+	wantTokenBody(t, decode[map[string]string](t, rec), rotatedAccessToken, rotatedRefreshToken)
+	c := e.users.only(t)
+	if c.method != userv1.UserService_Refresh_FullMethodName {
+		t.Errorf("method = %s", c.method)
+	}
+	if got := c.req.(*userv1.RefreshRequest).GetRefreshToken(); got != fakeRefreshToken {
+		t.Errorf("refresh_token = %q, want %q", got, fakeRefreshToken)
+	}
+}
+
+func TestLogout(t *testing.T) {
+	e := newEnv(t)
+	rec := e.do(t, http.MethodPost, "/auth/logout", refreshBody, "")
+	wantStatus(t, rec, http.StatusNoContent)
+	if rec.Body.Len() != 0 {
+		t.Errorf("body = %q, want empty", rec.Body.String())
+	}
+	c := e.users.only(t)
+	if c.method != userv1.UserService_Logout_FullMethodName {
+		t.Errorf("method = %s", c.method)
+	}
+	if got := c.req.(*userv1.LogoutRequest).GetRefreshToken(); got != fakeRefreshToken {
+		t.Errorf("refresh_token = %q, want %q", got, fakeRefreshToken)
+	}
+}
+
+// TestRefreshAndLogoutBodies: a body that is not one JSON object of known fields is refused
+// before any call, as on login; a missing or empty refresh_token goes on to user-service, which
+// judges it like any other token.
+func TestRefreshAndLogoutBodies(t *testing.T) {
+	for _, path := range []string{"/auth/refresh", "/auth/logout"} {
+		for _, tc := range []struct {
+			name, body string
+			status     int
+			code       string
+		}{
+			{"empty", "", http.StatusBadRequest, "INVALID_JSON"},
+			{"not JSON", "refresh_token=" + fakeRefreshToken, http.StatusBadRequest, "INVALID_JSON"},
+			{"unknown field", `{"refresh_token":"x","user_id":"` + userA + `"}`, http.StatusBadRequest, "INVALID_JSON"},
+			{"not a string", `{"refresh_token":42}`, http.StatusBadRequest, "INVALID_JSON"},
+			{"too large", `{"refresh_token":"` + strings.Repeat("a", 64<<10) + `"}`, http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE"},
+		} {
+			t.Run(path+" "+tc.name, func(t *testing.T) {
+				e := newEnv(t)
+				rec := e.send(t, "192.0.2.1:5000", http.MethodPost, path, tc.body, "", map[string]string{"Content-Type": "application/json"})
+				wantStatus(t, rec, tc.status)
+				p := decodeProblem(t, rec)
+				if p.Code != tc.code {
+					t.Errorf("code = %q, want %q", p.Code, tc.code)
+				}
+				if strings.Contains(rec.Body.String(), fakeRefreshToken) {
+					t.Errorf("problem echoes the token: %s", rec.Body.String())
+				}
+				if n := e.callCount(); n != 0 {
+					t.Errorf("services got %d calls, want 0", n)
+				}
+			})
+		}
+		for _, body := range []string{`{}`, `{"refresh_token":""}`} {
+			t.Run(path+" "+body, func(t *testing.T) {
+				e := newEnv(t)
+				e.do(t, http.MethodPost, path, body, "")
+				var got string
+				switch req := e.users.only(t).req.(type) {
+				case *userv1.RefreshRequest:
+					got = req.GetRefreshToken()
+				case *userv1.LogoutRequest:
+					got = req.GetRefreshToken()
+				}
+				if got != "" {
+					t.Errorf("refresh_token = %q, want empty", got)
+				}
+			})
+		}
+	}
+}
+
 func TestPublicRoutesSendNoUserID(t *testing.T) {
 	e := newEnv(t)
-	body := `{"email":"a@example.com","password":"correct horse"}`
-	for _, path := range []string{"/auth/register", "/auth/login"} {
+	for _, rt := range []struct{ path, body string }{
+		{"/auth/register", credentialsBody},
+		{"/auth/login", credentialsBody},
+		{"/auth/refresh", refreshBody},
+		{"/auth/logout", refreshBody},
+	} {
 		// A token on a public route is ignored too.
-		rec := e.do(t, http.MethodPost, path, body, e.token(t, userA))
+		rec := e.do(t, http.MethodPost, rt.path, rt.body, e.token(t, userA))
 		if rec.Code >= 300 {
-			t.Fatalf("%s: status = %d", path, rec.Code)
+			t.Fatalf("%s: status = %d", rt.path, rec.Code)
 		}
 	}
 	for _, c := range e.users.recorded() {
@@ -966,6 +1088,24 @@ func TestServiceErrors(t *testing.T) {
 			method: http.MethodPost, path: "/auth/login", body: `{"email":"a@example.com","password":"wrong password"}`,
 			err:        grpcerr.New(codes.Unauthenticated, "INVALID_CREDENTIALS", "invalid email or password"),
 			wantStatus: http.StatusUnauthorized, wantCode: "INVALID_CREDENTIALS", wantDetail: "invalid email or password",
+		},
+		{
+			name:   "invalid refresh token",
+			method: http.MethodPost, path: "/auth/refresh", body: refreshBody,
+			err:        grpcerr.New(codes.Unauthenticated, "INVALID_REFRESH_TOKEN", "invalid refresh token"),
+			wantStatus: http.StatusUnauthorized, wantCode: "INVALID_REFRESH_TOKEN", wantDetail: "invalid refresh token",
+		},
+		{
+			name:   "refresh with user-service unavailable",
+			method: http.MethodPost, path: "/auth/refresh", body: refreshBody,
+			err:        status.Error(codes.Unavailable, "user-service is down"),
+			wantStatus: http.StatusServiceUnavailable, wantCode: "UNAVAILABLE", wantDetail: "",
+		},
+		{
+			name:   "logout with user-service unavailable",
+			method: http.MethodPost, path: "/auth/logout", body: refreshBody,
+			err:        status.Error(codes.Unavailable, "user-service is down"),
+			wantStatus: http.StatusServiceUnavailable, wantCode: "UNAVAILABLE", wantDetail: "",
 		},
 		{
 			name:   "video not found",

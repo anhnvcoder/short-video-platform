@@ -1,0 +1,32 @@
+# pnpm settings only: web/ is a single package, not a workspace (docs/adr/0016-web-client.md, section 10).
+
+# A version must be 3 days old before pnpm installs it (4320 minutes), the same wait as Renovate's minimumReleaseAge:
+# most hijacked npm releases are found and pulled within that time.
+minimumReleaseAge: 4320
+# An install fails when a dependency has a lifecycle script nobody decided on in allowBuilds.
+strictDepBuilds: true
+# Refuse a version published with weaker provenance than an earlier one (lost trusted publishing is a takeover sign).
+trustPolicy: no-downgrade
+# Exact versions that look like a downgrade only because of publish order, each checked by hand:
+trustPolicyExclude:
+  # Backport of the ReDoS fix (CVE-2023-25883) to the 6.x line, published 2023-07-10 without provenance three days
+  # after 7.5.4 had it; eslint-plugin-import (through eslint-config-next) asks for ^6.3.1.
+  - semver@6.3.1
+# A transitive dependency may come only from the registry, never from git or a tarball URL.
+blockExoticSubdeps: true
+# Lifecycle scripts, decided one by one; true only for a package that cannot work without its script.
+allowBuilds:
+  # Pulled in by next-intl (message extractor); its install script only builds from source when asked to, and the
+  # prebuilt binary comes as an optional platform package.
+  "@parcel/watcher": false
+  # Pulled in by next-intl (message extractor); postinstall only checks the native binding, which comes as an optional
+  # platform package.
+  "@swc/core": false
+  # Pulled in by eslint-config-next (import resolver); postinstall only fetches the native binding when the optional
+  # platform package is missing.
+  unrs-resolver: false
+# Optional dependencies never installed. sharp (with its ~18 MB of @img/sharp-libvips-* binaries) is next's image
+# optimizer, which images.unoptimized in next.config.ts turns off; installed, it would still be traced into the
+# standalone server of the image.
+ignoredOptionalDependencies:
+  - sharp

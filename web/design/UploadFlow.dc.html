@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><link rel="stylesheet" href="./svp-tokens.css"></helmet>
+<div style="width:100%;height:100%;box-sizing:border-box;background:var(--surface);color:var(--foreground);font-family:var(--font-sans);display:flex;flex-direction:column">
+<header style="height:56px;flex:none;display:flex;align-items:center;justify-content:center;position:relative;padding:0 16px">
+<button aria-label="Đóng" style="position:absolute;left:4px;top:6px;width:44px;height:44px;border:0;border-radius:999px;background:none;color:var(--foreground);display:flex;align-items:center;justify-content:center;cursor:pointer" style-hover="background:var(--surface-hover)"><i class="icon-x" style="font-size:22px" aria-hidden="true"></i></button>
+<h1 style="margin:0;font-size:17px;font-weight:600">Tải video lên</h1>
+<span style="position:absolute;right:16px;font-size:13px;color:var(--muted)">Bước {{ stepNo }}/3</span>
+</header>
+<ol aria-label="Các bước" style="list-style:none;margin:0;padding:4px 20px 0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px">
+<sc-for list="{{ steps }}" as="st" hint-placeholder-count="3"><li aria-current="{{ st.current }}" style="display:flex;flex-direction:column;gap:6px"><span style="height:4px;border-radius:4px;background:{{ st.bar }}"></span><span style="font-size:12px;font-weight:{{ st.weight }};color:{{ st.color }}">{{ st.label }}</span></li></sc-for>
+</ol>
+
+<div style="flex:1;min-height:0;overflow:hidden;padding:20px;display:flex;flex-direction:column;gap:16px">
+<sc-if value="{{ hasAlert }}"><div role="alert" style="display:flex;gap:12px;padding:12px 14px;border-radius:12px;background:{{ alertBg }};font-size:14px;line-height:1.45"><i class="{{ alertIcon }}" style="font-size:20px;color:{{ alertColor }};flex:none" aria-hidden="true"></i><div style="display:flex;flex-direction:column;gap:2px"><strong style="font-weight:600">{{ alertTitle }}</strong><span style="color:var(--muted)">{{ alertBody }}</span><sc-if value="{{ alertLink }}"><a href="#" style="font-weight:600;padding:8px 0 2px">Xem Video của tôi</a></sc-if></div></div></sc-if>
+
+<sc-if value="{{ isPick }}" hint-placeholder-val="{{ true }}">
+<div style="flex:1;min-height:320px;border-radius:20px;border:{{ dzBorder }};background:{{ dzBg }};opacity:{{ dzOpacity }};display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:32px 24px;text-align:center;transition:background 150ms,border-color 150ms">
+<span style="width:64px;height:64px;border-radius:999px;background:{{ dzIconBg }};color:{{ dzIconColor }};display:flex;align-items:center;justify-content:center"><i class="{{ dzIcon }}" style="font-size:28px" aria-hidden="true"></i></span>
+<div style="display:flex;flex-direction:column;gap:6px"><strong style="font-size:18px;font-weight:600">{{ dzTitle }}</strong><span style="font-size:14px;line-height:1.5;color:var(--muted)">{{ dzSub }}</span></div>
+<sc-if value="{{ showPickBtn }}" hint-placeholder-val="{{ true }}"><button disabled="{{ pickDisabled }}" style="margin-top:6px;min-height:48px;padding:0 24px;border-radius:12px;border:0;background:{{ pickBg }};color:{{ pickColor }};font:600 15px/1 var(--font-sans);display:flex;align-items:center;gap:8px;cursor:pointer"><i class="icon-folder-open" style="font-size:18px" aria-hidden="true"></i>Chọn file</button></sc-if>
+</div>
+<p style="margin:0;font-size:13px;line-height:1.5;color:var(--muted);text-align:center">{{ quotaText }}</p>
+</sc-if>
+
+<sc-if value="{{ isDetails }}">
+<div style="display:flex;gap:16px;align-items:flex-start">
+<div style="position:relative;flex:none;width:104px;height:184px;border-radius:12px;overflow:hidden;background:repeating-linear-gradient(135deg,oklch(0.31 0.035 50) 0 12px,oklch(0.27 0.035 50) 12px 24px);opacity:{{ thumbOpacity }}">
+<button aria-label="Xem trước" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:44px;height:44px;border-radius:999px;border:0;background:oklch(0 0 0 / 0.5);color:var(--on-media);display:flex;align-items:center;justify-content:center;cursor:pointer"><i class="icon-play" style="font-size:20px;margin-left:2px" aria-hidden="true"></i></button>
+<span style="position:absolute;right:6px;bottom:6px;padding:2px 6px;border-radius:6px;background:oklch(0 0 0 / 0.65);color:var(--on-media);font:500 12px/1.3 var(--font-mono)">0:42</span>
+</div>
+<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px;padding-top:4px">
+<strong style="font-size:15px;font-weight:600;overflow-wrap:anywhere">chieu-ho-guom.mp4</strong>
+<span style="font-size:14px;color:var(--muted)">19,2 MB · 0:42</span>
+<button style="align-self:flex-start;min-height:44px;padding:0;border:0;background:none;color:var(--accent-text);font:600 14px/1 var(--font-sans);display:flex;align-items:center;gap:6px;cursor:pointer"><i class="icon-refresh-cw" style="font-size:16px" aria-hidden="true"></i>Đổi file</button>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px">
+<label style="font-size:14px;font-weight:600">Tiêu đề <span style="font-weight:400;color:var(--muted)">(bắt buộc)</span></label>
+<div aria-invalid="{{ titleError }}" style="min-height:112px;box-sizing:border-box;padding:12px 14px;border-radius:12px;background:var(--surface-raised);border:{{ titleBorder }};font-size:16px;line-height:1.5;color:{{ titleColor }}">{{ titleText }}</div>
+<div style="display:flex;justify-content:space-between;gap:12px;font-size:13px;line-height:1.4">
+<sc-if value="{{ titleError }}"><span style="display:flex;gap:6px;color:var(--danger)"><i class="icon-circle-alert" style="font-size:15px;margin-top:1px" aria-hidden="true"></i>Nhập tiêu đề trước khi đăng.</span></sc-if>
+<sc-if value="{{ titleOk }}"><span style="color:var(--muted)">Tối đa 200 ký tự.</span></sc-if>
+<span style="color:var(--muted);font-family:var(--font-mono);font-size:12px">{{ titleCount }}/200</span>
+</div>
+</div>
+<div style="margin-top:auto"><button style="width:100%;min-height:52px;border-radius:12px;border:0;background:var(--accent);color:var(--accent-foreground);font:600 16px/1 var(--font-sans);display:flex;align-items:center;justify-content:center;gap:8px;cursor:pointer" style-hover="background:var(--accent-hover)"><i class="{{ detailsBtnIcon }}" style="font-size:18px" aria-hidden="true"></i>{{ detailsBtn }}</button></div>
+</sc-if>
+
+<sc-if value="{{ isProgress }}">
+<div style="display:flex;flex-direction:column;gap:10px">
+<div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:15px;font-weight:600">{{ progTitle }} <span style="font-variant-numeric:tabular-nums">(64%)</span></span></div>
+<div role="progressbar" aria-label="Tiến độ tải lên" aria-valuemin="0" aria-valuemax="100" aria-valuenow="64" style="height:6px;border-radius:6px;background:var(--skeleton);overflow:hidden"><div style="width:64%;height:100%;border-radius:6px;background:{{ barColor }}"></div></div>
+<span style="font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums">{{ progMeta }}</span>
+</div>
+<div style="display:flex;flex-direction:column;align-items:center;gap:12px;padding:16px;border-radius:16px;background:var(--surface-raised);border:1px solid var(--border)">
+<div style="position:relative;width:{{ previewW }};aspect-ratio:9/16;border-radius:12px;overflow:hidden;background:repeating-linear-gradient(135deg,oklch(0.31 0.035 50) 0 12px,oklch(0.27 0.035 50) 12px 24px)"><button aria-label="Xem trước" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:52px;height:52px;border-radius:999px;border:0;background:oklch(1 0 0);color:oklch(0.18 0 0);display:flex;align-items:center;justify-content:center;cursor:pointer"><i class="icon-play" style="font-size:22px;margin-left:3px" aria-hidden="true"></i></button><span style="position:absolute;right:8px;bottom:8px;padding:2px 6px;border-radius:6px;background:oklch(0 0 0 / 0.65);color:oklch(1 0 0);font:500 12px/1.3 var(--font-mono)">0:42</span></div>
+<div style="align-self:stretch;display:flex;flex-direction:column;gap:4px"><strong style="font-size:15px;font-weight:600;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">Chiều Hà Nội cuối thu, đi bộ một vòng hồ Hoàn Kiếm</strong><span style="font-size:13px;color:var(--muted)">chieu-ho-guom.mp4 · 19,2 MB</span></div>
+</div>
+<p style="margin:0;font-size:14px;line-height:1.5;color:var(--muted);text-wrap:pretty">Giữ trang này mở đến khi tải xong. Sau đó SVP sẽ tự xử lý video.</p>
+<div style="margin-top:auto"><button style="width:100%;min-height:52px;border-radius:12px;border:1px solid var(--border-strong);background:transparent;color:var(--foreground);font:600 16px/1 var(--font-sans);display:flex;align-items:center;justify-content:center;gap:8px;cursor:pointer" style-hover="background:var(--surface-hover)"><i class="icon-x" style="font-size:18px" aria-hidden="true"></i>Huỷ tải lên</button></div>
+</sc-if>
+
+<sc-if value="{{ isResult }}">
+<ol aria-label="Tiến trình video" style="list-style:none;margin:0;padding:8px 0 0;flex:1;display:flex;flex-direction:column">
+<sc-for list="{{ timeline }}" as="n" hint-placeholder-count="3">
+<li aria-current="{{ n.current }}" style="display:grid;grid-template-columns:56px minmax(0,1fr);column-gap:16px">
+<div style="display:flex;flex-direction:column;align-items:center">
+<span style="flex:none;width:52px;height:52px;box-sizing:border-box;border-radius:999px;border:{{ n.border }};background:{{ n.bg }};color:{{ n.color }};display:flex;align-items:center;justify-content:center"><i class="{{ n.icon }}" style="font-size:22px;display:inline-block;animation:{{ n.anim }}" aria-hidden="true"></i></span>
+<sc-if value="{{ n.line }}"><span aria-hidden="true" style="flex:1;min-height:28px;width:0;border-left:2px {{ n.lineStyle }} var(--border-strong);margin:6px 0"></span></sc-if>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px;padding:12px 0 24px">
+<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><strong style="font-size:{{ n.size }};font-weight:700;line-height:1.25;color:{{ n.titleColor }}">{{ n.title }}</strong><sc-if value="{{ n.badge }}"><span style="display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 9px;border-radius:999px;background:{{ n.badgeBg }};color:{{ n.badgeColor }};font-size:12px;font-weight:600"><i class="{{ n.badgeIcon }}" style="font-size:13px" aria-hidden="true"></i>{{ n.badge }}</span></sc-if></div>
+<sc-if value="{{ n.body }}"><p style="margin:0;font-size:14px;line-height:1.5;color:var(--muted);text-wrap:pretty">{{ n.body }}</p></sc-if>
+</div>
+</li>
+</sc-for>
+</ol>
+<div style="display:flex;flex-direction:column;gap:10px">
+<sc-if value="{{ hasPrimary }}"><button style="width:100%;min-height:52px;border-radius:12px;border:0;background:var(--accent);color:var(--accent-foreground);font:600 16px/1 var(--font-sans);cursor:pointer" style-hover="background:var(--accent-hover)">{{ primaryLabel }}</button></sc-if>
+<button style="width:100%;min-height:52px;border-radius:12px;border:1px solid var(--border-strong);background:transparent;color:var(--foreground);font:600 16px/1 var(--font-sans);cursor:pointer" style-hover="background:var(--surface-hover)">{{ secondaryLabel }}</button>
+</div>
+</sc-if>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:390,&quot;height&quot;:844},&quot;step&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;pick&quot;,&quot;dragover&quot;,&quot;too-large&quot;,&quot;not-video&quot;,&quot;too-long&quot;,&quot;quota&quot;,&quot;details&quot;,&quot;title-error&quot;,&quot;expired&quot;,&quot;uploading&quot;,&quot;retrying&quot;,&quot;processing&quot;,&quot;done&quot;,&quot;failed&quot;],&quot;default&quot;:&quot;pick&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;desktop&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const s = this.props.step ?? 'pick';
+    const desk = !!this.props.desktop;
+    const pickSet = ['pick', 'dragover', 'too-large', 'not-video', 'too-long', 'quota'];
+    const detSet = ['details', 'title-error', 'expired'];
+    const progSet = ['uploading', 'retrying'];
+    const no = pickSet.includes(s) ? 1 : detSet.includes(s) ? 2 : 3;
+    const steps = ['Chọn file', 'Chi tiết', 'Đăng'].map((l, i) => ({
+      label: l, current: i + 1 === no ? 'step' : undefined,
+      bar: i + 1 <= no ? 'var(--accent)' : 'var(--border-strong)',
+      weight: i + 1 === no ? 600 : 400, color: i + 1 === no ? 'var(--foreground)' : 'var(--muted)'
+    }));
+    const D = ['icon-circle-alert', 'var(--danger)', 'var(--danger-surface)'];
+    const W = ['icon-triangle-alert', 'var(--warning)', 'var(--warning-surface)'];
+    const alerts = {
+      'too-large': ['File quá lớn', '“vlog-da-lat.mp4” nặng 742 MB. Chọn video tối đa 500 MB.', ...D],
+      'not-video': ['File không phải video', '“bao-cao-quy-3.pdf” không phải file video. Hãy chọn một video.', ...D],
+      'too-long': ['Video quá dài', 'Video dài 4:12. Chọn clip tối đa 3 phút.', ...D],
+      'quota': ['Đã có 3 video đang tải', 'Mỗi người tải tối đa 3 video cùng lúc. Đợi một video xong rồi tải tiếp.', ...W],
+      'expired': ['Phiên tải lên đã hết hạn', 'Chọn lại file để tiếp tục. Tiêu đề bạn nhập vẫn được giữ.', ...D],
+      'retrying': ['Mất kết nối', 'Đang tự thử lại… lần 2/5', 'icon-wifi-off', 'var(--warning)', 'var(--warning-surface)']
+    };
+    const a = alerts[s];
+    const drag = s === 'dragover', quota = s === 'quota';
+    const res = {
+      processing: ['icon-loader-circle', 'var(--warning)', 'var(--warning-surface)', 'svp-spin 1s linear infinite', 'icon-loader-circle', 'Đang xử lý', 'Đang xử lý video', 'Thường mất từ vài chục giây đến vài phút. Bạn có thể rời trang này, video sẽ hiện trong Video của tôi khi sẵn sàng.', null, 'Đến Video của tôi'],
+      done: ['icon-circle-check', 'var(--success)', 'var(--success-surface)', 'none', 'icon-check', 'Sẵn sàng', 'Video đã sẵn sàng', 'Mọi người đã có thể xem video của bạn trong Khám phá.', 'Xem video', 'Tải video khác'],
+      failed: ['icon-circle-x', 'var(--danger)', 'var(--danger-surface)', 'none', 'icon-circle-alert', 'Lỗi', 'Xử lý video thất bại', 'SVP không chuyển mã được video này. Hãy thử lại với file khác.', 'Chọn file khác', 'Đến Video của tôi']
+    }[s];
+    const done = { border: '0', bg: 'var(--success-surface)', color: 'var(--success)', icon: 'icon-check', anim: 'none', titleColor: 'var(--foreground)' };
+    const pend = { border: '2px dashed var(--border-strong)', bg: 'transparent', color: 'var(--muted)', icon: 'icon-circle-play', anim: 'none', titleColor: 'var(--muted)' };
+    const cur = res ? { border: '3px solid ' + res[1], bg: res[2], color: res[1], icon: res[0], anim: res[3], titleColor: 'var(--foreground)' } : null;
+    const timeline = res ? [
+      { ...done, title: 'Đã tải lên', size: '16px', body: 'chieu-ho-guom.mp4 · 19,2 MB', line: true, lineStyle: 'solid' },
+      { ...(s === 'done' ? done : cur), current: s !== 'done' ? 'step' : undefined, title: s === 'done' ? 'Đã xử lý' : res[6], size: s === 'done' ? '16px' : '22px', body: s === 'done' ? null : res[7], badge: s === 'done' ? null : res[5], badgeIcon: res[4], badgeBg: res[2], badgeColor: res[1], line: true, lineStyle: s === 'failed' ? 'dashed' : 'solid' },
+      { ...(s === 'done' ? cur : pend), current: s === 'done' ? 'step' : undefined, title: s === 'done' ? res[6] : 'Sẵn sàng', size: s === 'done' ? '22px' : '16px', body: s === 'done' ? res[7] : s === 'failed' ? null : 'Video sẽ xuất hiện trong Khám phá.', badge: s === 'done' ? res[5] : null, badgeIcon: res[4], badgeBg: res[2], badgeColor: res[1], line: false }
+    ] : [];
+    return {
+      timeline, previewW: desk ? '200px' : '150px',
+      stepNo: no, steps,
+      hasAlert: !!a, alertTitle: a?.[0], alertBody: a?.[1], alertIcon: a?.[2], alertColor: a?.[3], alertBg: a?.[4], alertLink: quota,
+      isPick: pickSet.includes(s),
+      dzBorder: drag ? '2px solid var(--accent)' : '2px dashed var(--border-strong)',
+      dzBg: drag ? 'color-mix(in oklch,var(--accent) 10%,transparent)' : 'transparent',
+      dzOpacity: quota ? 0.55 : 1,
+      dzIconBg: drag ? 'var(--accent)' : 'var(--surface-raised)', dzIconColor: drag ? 'var(--accent-foreground)' : 'var(--foreground)',
+      dzIcon: drag ? 'icon-arrow-down-to-line' : 'icon-upload',
+      dzTitle: drag ? 'Thả để tải lên' : desk ? 'Kéo thả video vào đây' : 'Chọn video để tải lên',
+      dzSub: desk && !drag ? 'hoặc chọn file từ máy tính. Video tối đa 500 MB, dài tối đa 3 phút.' : 'Video tối đa 500 MB, dài tối đa 3 phút.',
+      showPickBtn: !drag, pickDisabled: quota,
+      pickBg: quota ? 'var(--surface-hover)' : 'var(--accent)', pickColor: quota ? 'var(--muted)' : 'var(--accent-foreground)',
+      quotaText: quota ? 'Đang tải 3/3 video' : 'Đang tải 1/3 video',
+      isDetails: detSet.includes(s),
+      thumbOpacity: s === 'expired' ? 0.5 : 1,
+      titleError: s === 'title-error', titleOk: s !== 'title-error',
+      titleBorder: s === 'title-error' ? '2px solid var(--danger)' : '1px solid var(--border-strong)',
+      titleText: s === 'title-error' ? 'Viết vài chữ về video của bạn' : 'Chiều Hà Nội cuối thu, đi bộ một vòng hồ Hoàn Kiếm',
+      titleColor: s === 'title-error' ? 'var(--muted)' : 'var(--foreground)',
+      titleCount: s === 'title-error' ? 0 : 52,
+      detailsBtn: s === 'expired' ? 'Chọn lại file' : 'Đăng video',
+      detailsBtnIcon: s === 'expired' ? 'icon-folder-open' : 'icon-arrow-up',
+      isProgress: progSet.includes(s),
+      progTitle: s === 'retrying' ? 'Đang chờ kết nối' : 'Đang tải lên',
+      barColor: s === 'retrying' ? 'var(--muted)' : 'var(--accent)',
+      progMeta: s === 'retrying' ? '12,3 / 19,2 MB · tạm dừng' : '12,3 / 19,2 MB · 2,1 MB/s · còn khoảng 4 giây',
+      isResult: !!res,
+      resIcon: res?.[0], resIconColor: res?.[1], resIconBg: res?.[2], resAnim: res?.[3], badgeIcon: res?.[4], badgeLabel: res?.[5],
+      resTitle: res?.[6], resBody: res?.[7], hasPrimary: !!res?.[8], primaryLabel: res?.[8], secondaryLabel: res?.[9]
+    };
+  }
+}
+</script>
+</body>
+</html>

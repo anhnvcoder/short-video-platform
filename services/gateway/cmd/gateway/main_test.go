@@ -115,12 +115,13 @@ var backends = []backend{userBackend, videoBackend, feedBackend, engagementBacke
 
 func TestServiceConfig(t *testing.T) {
 	type name struct{ Service, Method string }
-	// The idempotent methods of ADR-0010 section 4: only these are retried, as a second try of
-	// any other would repeat its effect.
+	// The idempotent methods of ADR-0010 section 4 and Logout (ADR-0016): only these are
+	// retried, as a second try of any other would repeat its effect.
 	want := map[string][]name{
 		"user-service": {
 			{"svp.user.v1.UserService", "Follow"},
 			{"svp.user.v1.UserService", "Unfollow"},
+			{"svp.user.v1.UserService", "Logout"},
 		},
 		"video-service": {
 			{"svp.video.v1.VideoService", "GetVideo"},
@@ -209,6 +210,7 @@ func TestRetry(t *testing.T) {
 	notIdempotent := []tc{
 		{userBackend, userv1.UserService_Register_FullMethodName},
 		{userBackend, userv1.UserService_Login_FullMethodName},
+		{userBackend, userv1.UserService_Refresh_FullMethodName},
 		{videoBackend, videov1.VideoService_InitUpload_FullMethodName},
 		{engagementBackend, engagementv1.EngagementService_RecordView_FullMethodName},
 		{engagementBackend, engagementv1.EngagementService_GetStats_FullMethodName},

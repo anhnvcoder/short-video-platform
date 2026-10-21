@@ -3,9 +3,9 @@
 // algorithm in memory for the routes that must stay limited while Redis fails.
 //
 // Each route class decides what happens when Redis fails or takes longer than storeTimeout
-// (threat model RL-2): a soft-closed class (register, login, upload) falls back to an in-memory
-// counter per instance with lower limits; an open class (write, read, view-once) lets the
-// request through.
+// (threat model RL-2): a soft-closed class (register, login, refresh, upload) falls back to an
+// in-memory counter per instance with lower limits; an open class (write, read, view-once) lets
+// the request through.
 package ratelimit
 
 import (
@@ -61,10 +61,15 @@ var (
 	Upload     = Class{Name: "upload", Limit: Limit{30, time.Hour, 10}, Fallback: Limit{15, time.Hour, 5}}
 	Write      = Class{Name: "write", Limit: Limit{120, time.Minute, 60}}
 	Read       = Class{Name: "read", Limit: Limit{600, time.Minute, 200}}
+	// Refresh covers /auth/refresh and /auth/logout by client IP (ADR-0016 section 4). A session
+	// refreshes about once an hour, so 60 a minute serves a thousand sessions behind one NAT;
+	// guessing a 256-bit token is hopeless anyway, so the limit guards user-service, which runs
+	// one transaction per call, rather than the tokens.
+	Refresh = Class{Name: "refresh", Limit: Limit{60, time.Minute, 30}, Fallback: Limit{30, time.Minute, 15}}
 )
 
 // classes are the classes above, whose decision series New creates at zero.
-var classes = []Class{Register, LoginIP, LoginEmail, Upload, Write, Read}
+var classes = []Class{Register, LoginIP, LoginEmail, Upload, Write, Read, Refresh}
 
 // gcraScript is the GCRA step, atomic in Redis. KEYS[1] holds the theoretical arrival time
 // (TAT) in Unix milliseconds; ARGV[1] is the interval T and ARGV[2] the burst. Time comes from

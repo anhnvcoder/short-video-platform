@@ -16,10 +16,10 @@
 #          completed" with user_id, video_id and trace_id (Loki), and the gateway's access log line
 #          of each trace_id has the same user_id (the gateway logs no video_id: trace_id joins them);
 #   OPS-1  GET /debug/pprof/, /debug/pprof/heap and /metrics through the gateway are 404; the
-#          project publishes exactly 127.0.0.1 ports 8080 (gateway), 9000 and 9001 (minio), 19092
-#          (redpanda), 3000 (lgtm: Grafana), 8000 (glitchtip) and 9093 (alertmanager), each to the
-#          same container port (every binding on the loopback), so the Collector, Prometheus,
-#          Tempo, Loki and Pyroscope publish nothing;
+#          project publishes exactly 127.0.0.1 ports 8080 (gateway), 3001 (web), 9000 and 9001
+#          (minio), 19092 (redpanda), 3000 (lgtm: Grafana), 8000 (glitchtip) and 9093
+#          (alertmanager), each to the same container port (every binding on the loopback), so the
+#          Collector, Prometheus, Tempo, Loki and Pyroscope publish nothing;
 #   RL-2   the gateway recreated with REDIS_URL on an unresolvable .invalid host (as in
 #          drill-rate-limit; the native Redis is never stopped): after three logins Prometheus has
 #          svp_ratelimit_decisions_total{store="fallback"} > 0 for the new gateway instance, and
@@ -48,7 +48,8 @@ glitchtip 127.0.0.1:8000->8000
 lgtm 127.0.0.1:3000->3000
 minio 127.0.0.1:9000->9000
 minio 127.0.0.1:9001->9001
-redpanda 127.0.0.1:19092->19092"
+redpanda 127.0.0.1:19092->19092
+web 127.0.0.1:3001->3001"
 
 # wrong_cred FILE: writes a new, never registered email and a random password to FILE.
 wrong_cred() {

@@ -21,7 +21,7 @@
     "semanticCommitType": "fix"
   },
   "ignorePaths": ["deploy/k8s/values/services/**", "deploy/ci/drill/**", "gen/**"],
-  "postUpdateOptions": ["gomodTidy", "gomodUpdateImportPaths"],
+  "postUpdateOptions": ["gomodTidy", "gomodUpdateImportPaths", "pnpmDedupe"],
   "helm-values": {
     "description": "Also the values files of the platform charts, which are not named values.yaml. Their image pins are repository + tag: <version>@sha256:<digest>, or an image: string with both. The services' values (deploy/k8s/values/services/) belong to the promote pull requests and are ignored above.",
     "managerFilePatterns": ["/^deploy/k8s/values/[^/]+\\.ya?ml$/"]
@@ -139,6 +139,30 @@
       "matchDepTypes": ["action"],
       "matchUpdateTypes": ["minor", "patch", "digest", "pinDigest"],
       "groupName": "github actions"
+    },
+    {
+      "description": "The web client's packages (web/package.json) stay exact versions: a range added later gets a pull request that pins it. web/pnpm-lock.yaml is updated with them and pnpm dedupe runs after (postUpdateOptions); pnpm reads web/pnpm-workspace.yaml, so its own 3-day wait also holds for the transitive packages the update pulls in. lockFileMaintenance stays off: it rewrites the whole lockfile without the 3-day wait.",
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["dependencies", "devDependencies"],
+      "rangeStrategy": "pin"
+    },
+    {
+      "description": "npm packages and pnpm itself (packageManager of web/package.json), non-major: one pull request. A major gets its own, or one per monorepo (next with eslint-config-next, react with react-dom) through config:recommended.",
+      "matchManagers": ["npm"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "npm packages"
+    },
+    {
+      "description": "Node moves in one pull request in web/.nvmrc (read by the Makefile, actions/setup-node and nvm), in engines of web/package.json and in the base images of deploy/docker/web.Dockerfile: the node builder image and the distroless Node runtime, whose digest updates come here too (this rule comes after the dockerfile one above).",
+      "matchDepNames": ["node", "gcr.io/distroless/nodejs*-debian*"],
+      "matchManagers": ["nvm", "npm", "dockerfile"],
+      "groupName": "node"
+    },
+    {
+      "description": "The Node major of the distroless runtime is part of its image name (nodejs26-debian13), which Renovate never changes: it only updates the digest of the nonroot tag.",
+      "matchDepNames": ["node"],
+      "matchUpdateTypes": ["major"],
+      "prBodyNotes": ["A new Node major: change the runtime image of deploy/docker/web.Dockerfile by hand in this pull request (gcr.io/distroless/nodejs<major>-debian13:nonroot, pinned by the digest of its index from docker buildx imagetools inspect), or the image keeps running the old major."]
     },
     {
       "description": "Pinned tools of the Makefile and of the k3d helper scripts: one pull request.",

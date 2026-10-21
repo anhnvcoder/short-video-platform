@@ -1,8 +1,10 @@
 package store
 
 import (
+	"bytes"
 	"errors"
 	"testing"
+	"time"
 	"uuid"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -33,6 +35,19 @@ func TestSchemaConstraints(t *testing.T) {
 		t.Fatalf("GetUserByEmail = %+v, want id %s and hash-a", got, alice)
 	}
 
+	now := time.Now()
+	token := func(user uuid.UUID, hash []byte) CreateRefreshTokenParams {
+		id := uuid.NewV7()
+		return CreateRefreshTokenParams{ID: id, FamilyID: id, UserID: user, TokenHash: hash,
+			CreatedAt: now, ExpiresAt: now.Add(time.Hour), FamilyExpiresAt: now.Add(2 * time.Hour)}
+	}
+	hash := bytes.Repeat([]byte{1}, 32)
+	if err := q.CreateRefreshToken(ctx, token(alice, hash)); err != nil {
+		t.Fatalf("CreateRefreshToken: %v", err)
+	}
+	pastFamily := token(alice, bytes.Repeat([]byte{2}, 32))
+	pastFamily.ExpiresAt = pastFamily.FamilyExpiresAt.Add(time.Second)
+
 	createFollow := func(arg CreateFollowParams) error {
 		_, err := q.CreateFollow(ctx, arg)
 		return err
@@ -51,6 +66,14 @@ func TestSchemaConstraints(t *testing.T) {
 			"23503", "follows_followee_id_fkey"},
 		{"unknown follower and followee", createFollow(CreateFollowParams{FollowerID: uuid.NewV7(), FolloweeID: uuid.NewV7()}),
 			"23503", "follows_follower_id_fkey"},
+		{"duplicate refresh token hash", q.CreateRefreshToken(ctx, token(bob, hash)),
+			"23505", "refresh_tokens_token_hash_key"},
+		{"refresh token hash not 32 bytes", q.CreateRefreshToken(ctx, token(alice, []byte("short"))),
+			"23514", "refresh_tokens_token_hash_length"},
+		{"refresh token outliving its family", q.CreateRefreshToken(ctx, pastFamily),
+			"23514", "refresh_tokens_expires_within_family"},
+		{"refresh token of unknown user", q.CreateRefreshToken(ctx, token(uuid.NewV7(), bytes.Repeat([]byte{3}, 32))),
+			"23503", "refresh_tokens_user_id_fkey"},
 	}
 	for _, c := range cases {
 		pgErr, ok := errors.AsType[*pgconn.PgError](c.err)

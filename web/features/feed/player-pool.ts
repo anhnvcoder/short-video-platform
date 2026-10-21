@@ -1,0 +1,298 @@
+import { loadHls, type HlsClass, type HlsConfig, type HlsInstance } from "./hls-loader";
+import { isMediaUrl } from "./media-url";
+
+// A fixed pool of three <video> elements, each with at most one hls.js instance, for the previous, current and next
+// item of the feed (docs/adr/0016-web-client.md, section 8). Moving through the feed changes a slot's source and moves
+// its element into the item's host; it never creates or drops a <video>: WebKit grows memory when media elements come
+// and go (WebKit bug 216820), and each live hls.js instance holds a MediaSource and buffers.
+//
+// Three consecutive indexes have three different remainders modulo 3, so item i always uses slot i % 3 and a slot is
+// never wanted by two items of the window at once.
+
+export const poolSize = 3;
+
+export type PlaybackState = "loading" | "playing" | "paused" | "buffering" | "error";
+
+export interface PoolSource {
+  index: number;
+  playlistUrl: string;
+  posterUrl: string | null;
+}
+
+export interface PoolCallbacks {
+  onState(index: number, state: PlaybackState): void;
+  // Every `timeupdate`, for the progress bar and the view counter.
+  onTime(index: number, video: HTMLVideoElement): void;
+  // A seek started or ended: the time across it is not playback.
+  onSeek(index: number): void;
+  // The browser refused to play with sound outside a user gesture; the pool muted every video to play.
+  onForcedMute(): void;
+}
+
+// Indexes of the items that hold a slot: the current one and its neighbours.
+export function windowIndexes(current: number, count: number): number[] {
+  return [current - 1, current, current + 1].filter((index) => index >= 0 && index < count);
+}
+
+export function slotOf(index: number): number {
+  return index % poolSize;
+}
+
+const hlsConfig: Partial<HlsConfig> = {
+  // No level above what the element shows: a phone does not fetch 1080p for a 390 px wide column.
+  capLevelToPlayerSize: true,
+  // Short clips: a few seconds ahead is enough, and three instances buffer at once.
+  maxBufferLength: 10,
+  backBufferLength: 10,
+  // The playlist and segments are public objects of the media origin: hls.js's XHR loader sends them without
+  // credentials (withCredentials stays false) and no xhrSetup adds a header or a cookie.
+};
+
+interface Slot {
+  video: HTMLVideoElement;
+  hls: HlsInstance | null;
+  index: number | null;
+  source: PoolSource | null;
+  host: HTMLElement | null;
+  // Bumped on every change of source, so an attach still waiting for hls.js to load gives up when it is stale.
+  generation: number;
+}
+
+export class PlayerPool {
+  private readonly slots: Slot[];
+  private current = -1;
+  private shouldPlay = false;
+  private muted = true;
+
+  constructor(
+    private readonly mediaOrigin: string,
+    private readonly callbacks: PoolCallbacks,
+    private readonly hlsLoader: () => Promise<HlsClass> = loadHls,
+  ) {
+    this.slots = Array.from({ length: poolSize }, () => this.createSlot());
+  }
+
+  // Number of hls.js instances alive; never more than the pool size.
+  get liveInstances(): number {
+    return this.slots.filter((slot) => slot.hls !== null).length;
+  }
+
+  // Gives the window around `current` its slots and plays the current item when `shouldPlay` (not paused by the user,
+  // page visible). `hostFor` returns the element of an item the video goes into.
+  sync(
+    current: number,
+    sources: readonly PoolSource[],
+    hostFor: (index: number) => HTMLElement | null,
+    shouldPlay: boolean,
+  ): void {
+    this.current = current;
+    this.shouldPlay = shouldPlay;
+    const wanted = windowIndexes(current, sources.length);
+    this.slots.forEach((slot, slotIndex) => {
+      const index = wanted.find((candidate) => slotOf(candidate) === slotIndex);
+      const source = index === undefined ? undefined : sources[index];
+      const host = index === undefined ? null : hostFor(index);
+      if (!source || !host) {
+        this.release(slot);
+        return;
+      }
+      if (slot.index !== source.index || slot.source?.playlistUrl !== source.playlistUrl) {
+        this.release(slot);
+        // Plays once the source is attached.
+        void this.attach(slot, source, host);
+        return;
+      }
+      if (slot.host !== host) {
+        // The item's element was replaced; the video follows it without reloading.
+        slot.host = host;
+        host.append(slot.video);
+      }
+      this.applyPlayback(slot);
+    });
+  }
+
+  setMuted(muted: boolean): void {
+    this.muted = muted;
+    for (const slot of this.slots) {
+      slot.video.muted = muted;
+    }
+  }
+
+  // Loads the item's source again after a playback error.
+  retry(index: number): void {
+    const slot = this.slots[slotOf(index)];
+    if (!slot || slot.index !== index || !slot.source || !slot.host) {
+      return;
+    }
+    const { source, host } = slot;
+    this.release(slot);
+    void this.attach(slot, source, host);
+  }
+
+  destroy(): void {
+    for (const slot of this.slots) {
+      this.release(slot);
+    }
+  }
+
+  private createSlot(): Slot {
+    const video = document.createElement("video");
+    // Autoplay is allowed only muted; the first tap turns the sound on. playsinline keeps iOS from going full screen.
+    video.muted = true;
+    video.defaultMuted = true;
+    video.playsInline = true;
+    video.setAttribute("playsinline", "");
+    video.loop = true;
+    video.preload = "metadata";
+    video.className = "absolute inset-0 size-full object-cover";
+    const slot: Slot = { video, hls: null, index: null, source: null, host: null, generation: 0 };
+    const report = (state: PlaybackState) => () => {
+      if (slot.index !== null) {
+        this.callbacks.onState(slot.index, state);
+      }
+    };
+    video.addEventListener("playing", () => {
+      video.dataset.state = "playing";
+      report("playing")();
+    });
+    video.addEventListener("pause", () => {
+      video.dataset.state = "paused";
+      report("paused")();
+    });
+    video.addEventListener("waiting", () => {
+      video.dataset.state = "buffering";
+      report("buffering")();
+    });
+    video.addEventListener("error", () => {
+      // Only the native HLS path reports through the element; hls.js reports through its ERROR event.
+      if (slot.hls === null && slot.source !== null) {
+        video.dataset.state = "error";
+        report("error")();
+      }
+    });
+    video.addEventListener("timeupdate", () => {
+      if (slot.index !== null) {
+        this.callbacks.onTime(slot.index, video);
+      }
+    });
+    const seek = () => {
+      if (slot.index !== null) {
+        this.callbacks.onSeek(slot.index);
+      }
+    };
+    video.addEventListener("seeking", seek);
+    video.addEventListener("seeked", seek);
+    return slot;
+  }
+
+  private async attach(slot: Slot, source: PoolSource, host: HTMLElement): Promise<void> {
+    const generation = ++slot.generation;
+    const { video } = slot;
+    slot.index = source.index;
+    slot.source = source;
+    slot.host = host;
+    video.muted = this.muted;
+    if (source.posterUrl && isMediaUrl(source.posterUrl, this.mediaOrigin)) {
+      video.poster = source.posterUrl;
+    } else {
+      video.removeAttribute("poster");
+    }
+    host.append(video);
+    this.callbacks.onState(source.index, "loading");
+
+    if (!isMediaUrl(source.playlistUrl, this.mediaOrigin)) {
+      this.fail(slot);
+      return;
+    }
+    let Hls: HlsClass;
+    try {
+      Hls = await this.hlsLoader();
+    } catch {
+      if (slot.generation === generation) {
+        this.fail(slot);
+      }
+      return;
+    }
+    if (slot.generation !== generation) {
+      return;
+    }
+    // MediaSource, or ManagedMediaSource on iOS 17.1+: hls.js. Only without either does the browser play HLS itself.
+    if (!Hls.isSupported()) {
+      video.src = source.playlistUrl;
+      this.applyPlayback(slot);
+      return;
+    }
+    const hls = new Hls(hlsConfig);
+    slot.hls = hls;
+    hls.on(Hls.Events.ERROR, (_event, data) => {
+      // hls.js retries what it can by itself; a fatal error ends this instance, so a broken segment never loops.
+      if (data.fatal && slot.hls === hls) {
+        this.fail(slot);
+      }
+    });
+    hls.once(Hls.Events.MEDIA_ATTACHED, () => {
+      if (slot.hls === hls) {
+        this.applyPlayback(slot);
+      }
+    });
+    hls.loadSource(source.playlistUrl);
+    hls.attachMedia(video);
+  }
+
+  private fail(slot: Slot): void {
+    slot.hls?.destroy();
+    slot.hls = null;
+    slot.video.dataset.state = "error";
+    if (slot.index !== null) {
+      this.callbacks.onState(slot.index, "error");
+    }
+  }
+
+  private applyPlayback(slot: Slot): void {
+    const { video } = slot;
+    if (slot.index !== this.current || !this.shouldPlay) {
+      if (!video.paused) {
+        video.pause();
+      }
+      return;
+    }
+    if (slot.video.dataset.state === "error" || !video.paused) {
+      return;
+    }
+    const playing = video.play();
+    // Old engines return nothing; the promise is always handled so a refused play is never an unhandled rejection.
+    void playing?.catch((error: unknown) => {
+      if (error instanceof DOMException && error.name === "NotAllowedError" && !video.muted) {
+        // Sound needs a gesture the user has not made in this page yet: play muted instead of not at all.
+        this.setMuted(true);
+        this.callbacks.onForcedMute();
+        if (slot.index === this.current && this.shouldPlay) {
+          void video.play()?.catch(() => {
+            // Still refused (low power mode, data saver): the play button stays.
+          });
+        }
+      } else if (slot.index !== null && !(error instanceof DOMException && error.name === "AbortError")) {
+        this.callbacks.onState(slot.index, "paused");
+      }
+    });
+  }
+
+  private release(slot: Slot): void {
+    slot.generation++;
+    slot.hls?.destroy();
+    slot.hls = null;
+    const { video } = slot;
+    if (slot.source !== null) {
+      video.pause();
+      video.removeAttribute("src");
+      video.removeAttribute("poster");
+      // Drops the decoder and buffered data of the old source.
+      video.load();
+    }
+    delete video.dataset.state;
+    video.remove();
+    slot.index = null;
+    slot.source = null;
+    slot.host = null;
+  }
+}

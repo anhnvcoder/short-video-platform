@@ -119,6 +119,7 @@ func (busyHasher) Verify(context.Context, secret.String, string) (bool, error) {
 func (busyHasher) VerifyDummy(context.Context, secret.String) error { return password.ErrBusy }
 
 type env struct {
+	server   *Server
 	client   userv1.UserServiceClient
 	health   healthpb.HealthClient
 	logs     *lockedBuffer
@@ -144,7 +145,8 @@ func newEnv(t *testing.T, hasher Hasher, db ...*pgxpool.Pool) *env {
 	logger := slog.New(logx.NewHandler(slog.NewJSONHandler(logs, nil)))
 
 	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(callerid.UnaryServerInterceptor(PublicMethods...)))
-	userv1.RegisterUserServiceServer(srv, New(pool, hasher, authtoken.NewIssuer("test", key), logger))
+	server := New(pool, hasher, authtoken.NewIssuer("test", key), logger)
+	userv1.RegisterUserServiceServer(srv, server)
 	healthpb.RegisterHealthServer(srv, health.NewServer())
 	lis := bufconn.Listen(1 << 20)
 	go func() { _ = srv.Serve(lis) }()
@@ -159,6 +161,7 @@ func newEnv(t *testing.T, hasher Hasher, db ...*pgxpool.Pool) *env {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	return &env{
+		server:   server,
 		client:   userv1.NewUserServiceClient(conn),
 		health:   healthpb.NewHealthClient(conn),
 		logs:     logs,
@@ -693,9 +696,19 @@ func TestLogsHoldNoSecrets(t *testing.T) {
 	}
 	_, err = e.client.Login(t.Context(), &userv1.LoginRequest{Email: email, Password: "wrong password!"})
 	wantError(t, err, codes.Unauthenticated, ReasonInvalidCredentials)
+	// Every refresh path that logs: rotation, reuse, a revoked family, logout, a malformed token.
+	t0 := resp.GetRefreshToken()
+	rotated := e.refresh(t, t0)
+	e.wantRefreshRefused(t, t0)
+	e.wantRefreshRefused(t, rotated.GetRefreshToken())
+	second := e.login(t, email).GetRefreshToken()
+	e.logout(t, second)
+	e.wantRefreshRefused(t, second)
+	e.wantRefreshRefused(t, "malformed-"+t0)
 
 	logs := e.logs.String()
-	for _, leak := range []string{email, strings.ToLower(email), testPassword, "wrong password!", resp.GetAccessToken()} {
+	for _, leak := range []string{email, strings.ToLower(email), testPassword, "wrong password!", resp.GetAccessToken(),
+		t0, rotated.GetAccessToken(), rotated.GetRefreshToken(), second} {
 		if strings.Contains(logs, leak) {
 			t.Errorf("log contains %q:\n%s", leak, logs)
 		}
@@ -720,7 +733,10 @@ func TestDatabaseErrorIsGeneric(t *testing.T) {
 	_, regErr := e.client.Register(t.Context(), &userv1.RegisterRequest{Email: newEmail(), Password: testPassword})
 	_, loginErr := e.client.Login(t.Context(), &userv1.LoginRequest{Email: newEmail(), Password: testPassword})
 	_, followErr := e.client.Follow(asCaller(t.Context(), ids.New()), &userv1.FollowRequest{FolloweeId: ids.New()})
-	for _, err := range []error{regErr, loginErr, followErr} {
+	token := newRefreshToken().value.Reveal()
+	_, refreshErr := e.client.Refresh(t.Context(), &userv1.RefreshRequest{RefreshToken: token})
+	_, logoutErr := e.client.Logout(t.Context(), &userv1.LogoutRequest{RefreshToken: token})
+	for _, err := range []error{regErr, loginErr, followErr, refreshErr, logoutErr} {
 		st := status.Convert(err)
 		if st.Code() != codes.Internal || st.Message() != "internal error" || len(st.Details()) != 0 {
 			t.Errorf("got %v with details %v, want INTERNAL \"internal error\" without details", err, st.Details())

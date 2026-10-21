@@ -176,6 +176,57 @@ func TestLoginSpansHoldNoSecrets(t *testing.T) {
 	}
 }
 
+// TestRefreshTokensStayOutOfTelemetry is threat model JWT-8 on refresh and logout: whatever
+// user-service answers, neither the presented refresh token nor the tokens of the answer reach a
+// span, a log line or a problem body.
+func TestRefreshTokensStayOutOfTelemetry(t *testing.T) {
+	for _, tc := range []struct {
+		name, path string
+		fail       error
+		want       int
+	}{
+		{"refresh", "/auth/refresh", nil, http.StatusOK},
+		{"refresh with an invalid token", "/auth/refresh", grpcerr.New(codes.Unauthenticated, "INVALID_REFRESH_TOKEN", "invalid refresh token"), http.StatusUnauthorized},
+		{"refresh failing inside user-service", "/auth/refresh", grpcerr.New(codes.Internal, "DB_DOWN", "database unavailable"), http.StatusInternalServerError},
+		{"logout", "/auth/logout", nil, http.StatusNoContent},
+		{"logout with user-service unavailable", "/auth/logout", status.Error(codes.Unavailable, "user-service is down"), http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := captureLog(t)
+			spans := recordSpans(t)
+			e := newEnv(t)
+			if tc.fail != nil {
+				e.users.fail(tc.fail)
+			}
+			rec := e.do(t, http.MethodPost, tc.path, refreshBody, "")
+			wantStatus(t, rec, tc.want)
+			if strings.Contains(rec.Body.String(), fakeRefreshToken) {
+				t.Errorf("response echoes the presented token: %s", rec.Body.String())
+			}
+
+			ended := spans.Ended()
+			if len(ended) != 3 {
+				t.Fatalf("spans = %v, want HTTP, client and service", spanNames(ended))
+			}
+			raw, err := json.Marshal(tracetest.SpanStubsFromReadOnlySpans(ended))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, secret := range []string{fakeRefreshToken, rotatedRefreshToken, rotatedAccessToken} {
+				if bytes.Contains(raw, []byte(secret)) {
+					t.Errorf("spans contain %q:\n%s", secret, raw)
+				}
+				if strings.Contains(logs.String(), secret) {
+					t.Errorf("log contains %q:\n%s", secret, logs.String())
+				}
+			}
+			if access := logLines(t, logs, "http request"); len(access) != 1 || access[0]["route"] != "POST "+tc.path {
+				t.Errorf("access log = %v, want one line for POST %s", access, tc.path)
+			}
+		})
+	}
+}
+
 // TestLoginWithUserServiceDown: a 503 from login is an ERROR line with the trace, the route and
 // the code, which the error tracker receives, and without the email.
 func TestLoginWithUserServiceDown(t *testing.T) {

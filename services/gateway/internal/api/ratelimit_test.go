@@ -268,6 +268,72 @@ func TestLoginIPLimitBehindProxy(t *testing.T) {
 	}), 2*time.Second, start)
 }
 
+// refreshOrLogout sends the i-th request of a run that alternates /auth/refresh and
+// /auth/logout from remoteAddr, which share class refresh.
+func refreshOrLogout(t *testing.T, e *env, remoteAddr string, i int) *httptest.ResponseRecorder {
+	t.Helper()
+	path := "/auth/refresh"
+	if i%2 == 1 {
+		path = "/auth/logout"
+	}
+	return e.send(t, remoteAddr, http.MethodPost, path, refreshBody, "", nil)
+}
+
+// TestRefreshAndLogoutRateLimitedByIP: refresh and logout share one bucket per client IP, a burst
+// of 30 and one a second, checked before the body is read.
+func TestRefreshAndLogoutRateLimitedByIP(t *testing.T) {
+	logs := captureLog(t)
+	e := newRedisEnv(t)
+	const ip = "192.0.2.1:5000"
+	rec := untilLimited(t, 30, time.Second, func(i int) *httptest.ResponseRecorder {
+		return refreshOrLogout(t, e.env, ip, i)
+	})
+	wantRateLimited(t, rec, "1")
+	calls := len(e.users.recorded())
+	// Redis refills the bucket by its own clock, one a second, so a slow run could see the next
+	// request let through. Moving the bucket's TAT (Unix ms, as the GCRA script stores it) an hour
+	// past Redis's now keeps it full whatever the pace: the malformed body below must then be
+	// refused before it is read, with a Retry-After of about an hour, never parsed into a 400.
+	key := e.prefix + "rl:" + ratelimit.Refresh.Name + ":192.0.2.1"
+	if n, err := e.client.Exists(t.Context(), key).Result(); err != nil || n != 1 {
+		t.Fatalf("bucket %s: exists %d, err %v; want the key the limit just used", key, n, err)
+	}
+	now, err := e.client.Time(t.Context()).Result()
+	if err != nil {
+		t.Fatalf("redis TIME: %v", err)
+	}
+	if err := e.client.Set(t.Context(), key, now.Add(time.Hour).UnixMilli(), 2*time.Hour).Err(); err != nil {
+		t.Fatalf("set bucket %s: %v", key, err)
+	}
+	late := e.send(t, ip, http.MethodPost, "/auth/logout", "{", "", nil)
+	// TAT + T - now - T*burst = 3600 + 1 - 30 s, rounded up, less the time the request took.
+	got := rateLimitedRetryAfter(t, late)
+	if n, err := strconv.Atoi(got); err != nil || n < 3500 || n > 3571 {
+		t.Errorf("Retry-After = %q, want from 3500 to 3571", got)
+	}
+	if n := len(e.users.recorded()); n != calls {
+		t.Errorf("user-service got %d calls after the limit, want 0", n-calls)
+	}
+	if rec := refreshOrLogout(t, e.env, "192.0.2.2:5000", 0); rec.Code != http.StatusOK {
+		t.Errorf("another IP: status %d, want 200", rec.Code)
+	}
+	if !strings.Contains(logs.String(), `"rate_limit":"refresh"`) {
+		t.Errorf("access log does not name the rate limit:\n%s", logs)
+	}
+	e.wantTTLs(t)
+}
+
+// TestRefreshLimitedWhileRedisDown: class refresh is soft-closed, so while Redis fails the
+// in-memory fallback still limits it, to a burst of 15 and one every 2 s.
+func TestRefreshLimitedWhileRedisDown(t *testing.T) {
+	e := newEnv(t)
+	const ip = "192.0.2.1:5000"
+	start := time.Now()
+	wantRateLimitedSince(t, untilLimited(t, 15, 2*time.Second, func(i int) *httptest.ResponseRecorder {
+		return refreshOrLogout(t, e, ip, i)
+	}), 2*time.Second, start)
+}
+
 func TestLoginBadJSONCountsOnlyIP(t *testing.T) {
 	e := newEnv(t) // fallback limits: login-ip burst 15, login-email burst 3
 	const ip = "192.0.2.1:5000"

@@ -1,0 +1,13 @@
+{
+  "navLabel": "Main navigation",
+  "home": "Home",
+  "logout": "Log out",
+  "account": "Your account",
+  "shortcuts": {
+    "title": "Keyboard shortcuts",
+    "switchVideo": "Next / previous video",
+    "space": "Space",
+    "playPause": "Pause / play",
+    "mute": "Mute / unmute"
+  }
+}
