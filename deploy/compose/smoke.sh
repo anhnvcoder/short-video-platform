@@ -6,8 +6,9 @@
 # refuses a file larger than declared (UP-1); then find the video in B's following feed and in
 # explore, like and unlike it, count views (a repeated view within 60 s is accepted but not
 # counted, RL-3), and check that unfollowing removes it from B's following feed (ADR-0009,
-# ADR-0010). Prints one ok/FAIL line per step and exits non-zero on the first
-# failure. Needs curl, jq, openssl, ffmpeg and redis-cli on the host, and the native Redis on
+# ADR-0010); last, rotate refresh tokens, check that replaying a used one revokes its whole
+# family, and that logout revokes a login's tokens (ADR-0016). Prints one ok/FAIL line per step
+# and exits non-zero on the first failure. Needs curl, jq, openssl, ffmpeg and redis-cli on the host, and the native Redis on
 # 127.0.0.1:6379 (lib.sh resets the register rate limit there).
 #
 # Usage: deploy/compose/smoke.sh [base-url]   (default http://127.0.0.1:8080)
@@ -198,5 +199,58 @@ status=$(feed_item explore "$work/b.auth" "$clip_id")
 [[ $status == 200 && $(<"$work/item") != null ]] ||
   fail "video still in explore after unfollow (status $status, $(item_summary))"
 ok "video still in explore after unfollow"
+
+# 16. Refresh tokens (ADR-0016, sections 2 and 4). Tokens stay in private files of $work, never on
+# a command line: jq reads them from the response and writes the next request body.
+
+# refresh_login NAME: logs user A in again and writes {refresh_token} of the answer to
+# $work/<NAME>.json.
+refresh_login() {
+  local status
+  status=$(request POST /auth/login "" "$work/a.cred")
+  [[ $status == 200 && -n $(field refresh_token) && -n $(field refresh_expires_at) ]] ||
+    fail "login returns refresh_token and refresh_expires_at (status $status, $(problem_summary))"
+  jq '{refresh_token}' "$work/body" >"$work/$1.json"
+  : >"$work/body"
+}
+# refresh_with NAME: POST /auth/refresh with $work/<NAME>.json; prints the HTTP status.
+refresh_with() { request POST /auth/refresh "" "$work/$1.json"; }
+
+refresh_login r1
+ok "login returns a refresh token"
+
+status=$(refresh_with r1)
+[[ $status == 200 && -n $(field access_token) && -n $(field refresh_token) ]] ||
+  fail "refresh is 200 with new tokens (status $status, $(problem_summary))"
+jq '{refresh_token}' "$work/body" >"$work/r2.json"
+jq -r '"Authorization: Bearer \(.access_token)"' "$work/body" >"$work/a2.auth"
+: >"$work/body"
+ok "refresh: 200 with new tokens"
+
+status=$(request GET "/feed/explore?page_size=1" "$work/a2.auth")
+[[ $status == 200 ]] || fail "refreshed access token reads explore (status $status, $(problem_summary))"
+ok "refreshed access token works"
+
+# Replaying the used token revokes the family, the token that replaced it included.
+status=$(refresh_with r1)
+[[ $status == 401 && $(field code) == INVALID_REFRESH_TOKEN ]] ||
+  fail "refresh with a used token is 401 INVALID_REFRESH_TOKEN (status $status, $(problem_summary))"
+ok "refresh with a used token: 401 INVALID_REFRESH_TOKEN"
+status=$(refresh_with r2)
+[[ $status == 401 && $(field code) == INVALID_REFRESH_TOKEN ]] ||
+  fail "newest token of a replayed family is 401 INVALID_REFRESH_TOKEN (status $status, $(problem_summary))"
+ok "newest token of the replayed family: 401 INVALID_REFRESH_TOKEN"
+
+# Logout revokes a fresh login's family; a second logout succeeds too (idempotent).
+refresh_login r3
+for i in 1 2; do
+  status=$(request POST /auth/logout "" "$work/r3.json")
+  [[ $status == 204 ]] || fail "logout, call $i, is 204 (status $status, $(problem_summary))"
+done
+ok "logout twice: 204"
+status=$(refresh_with r3)
+[[ $status == 401 && $(field code) == INVALID_REFRESH_TOKEN ]] ||
+  fail "refresh after logout is 401 INVALID_REFRESH_TOKEN (status $status, $(problem_summary))"
+ok "refresh after logout: 401 INVALID_REFRESH_TOKEN"
 
 echo "smoke: all steps passed"

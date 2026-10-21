@@ -1,0 +1,26 @@
+[
+  {
+    "name": "Feed (/): the route's JavaScript over Next's runtime, hls.js light included",
+    "path": ".next/size-limit/feed/*.js",
+    "gzip": true,
+    "limit": "200 kB"
+  },
+  {
+    "name": "Feed (/) first load: Next's runtime and the route's JavaScript, hls.js light included",
+    "path": [".next/size-limit/runtime/*.js", ".next/size-limit/feed/*.js"],
+    "gzip": true,
+    "limit": "330 kB"
+  },
+  {
+    "name": "Login (/login): the route's JavaScript over Next's runtime",
+    "path": ".next/size-limit/login/*.js",
+    "gzip": true,
+    "limit": "80 kB"
+  },
+  {
+    "name": "Login (/login) first load: Next's runtime and the route's JavaScript",
+    "path": [".next/size-limit/runtime/*.js", ".next/size-limit/login/*.js"],
+    "gzip": true,
+    "limit": "200 kB"
+  }
+]

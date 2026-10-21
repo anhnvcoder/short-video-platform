@@ -1,0 +1,9 @@
+# Generated from services/gateway/openapi.yaml by `make web-generate`.
+gen/
+# Verbatim copy of the Claude Design project, never edited by hand.
+design/
+pnpm-lock.yaml
+.next/
+coverage/
+test-results/
+playwright-report/

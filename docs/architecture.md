@@ -2,7 +2,8 @@
 
 > Trạng thái: giai đoạn 0, 1, 2 (2026-10-11), 3 (2026-10-17) và 4 (2026-10-20) xong; giai đoạn 5 (CI/CD và chuỗi cung ứng,
 > [§5.2](#52-cicd-và-chuỗi-cung-ứng-giai-đoạn-5)) đang làm: phần chạy được trên máy đã kiểm ngày 2026-10-21, phần chạy
-> trên GitHub và cluster GitOps kiểm sau push. ADR 0001–0015, contract ở [`proto/`](../proto/)
+> trên GitHub và cluster GitOps kiểm sau push. Giai đoạn 5b (web client, [ADR-0016](adr/0016-web-client.md)): phần A
+> (đăng nhập, feed, like, follow trên compose) đã kiểm trên máy ngày 2026-10-22; phần B, C còn làm. ADR 0001–0016, contract ở [`proto/`](../proto/)
 > ([§8](#8-contract)), threat model ở [`threat-model.md`](threat-model.md). `make up` chạy luồng đồng bộ (đăng ký, đăng
 > nhập, tạo và đọc video, follow), luồng upload bất đồng bộ (presigned POST lên MinIO, outbox → Redpanda, media-worker
 > transcode ra HLS, video `READY` hoặc `FAILED`, job dọn upload bỏ dở), luồng feed (follow qua outbox, feed-service
@@ -31,8 +32,12 @@ và trỏ tới.
 | F6 | Feed "khám phá": video mới nhất toàn hệ thống, cho người chưa follow ai |
 | F7 | Like, unlike; ghi lượt xem; hiện số lượt xem, số like và mình đã like chưa |
 
-**Ngoài phạm vi:** app client (vai trò client do k6, curl và một trang HTML thử HLS đảm nhận), comment, tìm kiếm,
-gợi ý bằng ML, thông báo, xoá/sửa video, kiểm duyệt nội dung. Thêm sau thì viết ADR.
+**Web client** (từ giai đoạn 5b, [ADR-0016](adr/0016-web-client.md)): Next.js ở `web/` phục vụ F1–F7 trong trình
+duyệt; phần A có đăng ký, đăng nhập, feed dọc phát HLS, like, lượt xem, follow; upload và trang chia sẻ ở phần B. Web là
+BFF: trình duyệt chỉ nói chuyện với web, token không bao giờ tới trình duyệt. k6 và curl vẫn gọi thẳng gateway.
+
+**Ngoài phạm vi:** app di động, comment, tìm kiếm, gợi ý bằng ML, thông báo, xoá/sửa video, kiểm duyệt nội dung. Thêm sau
+thì viết ADR.
 
 ## 2. Yêu cầu phi chức năng
 
@@ -123,7 +128,7 @@ flowchart TB
     sentry["<b>GlitchTip</b><br/>[tự host ở local, giao thức Sentry]<br/>Gom lỗi ứng dụng"]
     chat["<b>Telegram</b><br/>[SaaS, tuỳ chọn]<br/>Kênh cảnh báo page"]
 
-    user -->|"REST/JSON, tải HLS qua HTTPS"| svp
+    user -->|"trình duyệt: web; tải HLS qua HTTPS"| svp
     ops -->|"Grafana, Argo CD"| svp
     svp -->|"gửi lỗi ứng dụng"| sentry
     svp -->|"gửi cảnh báo"| chat
@@ -136,9 +141,11 @@ Nét liền là gọi đồng bộ, nét đứt là event qua Redpanda.
 
 ```mermaid
 flowchart LR
-    client["<b>Client</b><br/>[k6, curl, trang thử HLS]"]
+    browser["<b>Trình duyệt</b>"]
+    client["<b>Client</b><br/>[k6, curl]"]
 
     subgraph svp["Short-video platform"]
+        web["<b>web</b><br/>[Next.js 16, Node]<br/>Trang, BFF: session, CSRF, CSP, proxy /api/*"]
         gw["<b>gateway</b><br/>[Go, net/http]<br/>JWT, rate limit, ghép dữ liệu"]
         us["<b>user-service</b><br/>[Go, gRPC]<br/>Tài khoản, follow"]
         vs["<b>video-service</b><br/>[Go, gRPC]<br/>Metadata, vòng đời video"]
@@ -155,6 +162,10 @@ flowchart LR
         fdb[("svp_feed")]
     end
 
+    browser -->|"HTML, /api/*, cookie svp_sid"| web
+    browser -->|"GET HLS, thumbnail"| obj
+    web -->|"REST/JSON + Bearer"| gw
+    web -->|"session, khoá refresh (db 9)"| redis
     client -->|"REST/JSON"| gw
     client -->|"POST bằng presigned URL"| obj
     client -->|"GET HLS"| cdn
@@ -198,12 +209,19 @@ CDN (client đọc thẳng MinIO). Redpanda và MinIO chạy trong compose profi
   feed-service đỉnh 82 MiB khi nạp 200.000 follow.
 - **Redis** ([ADR-0010](adr/0010-redis-ratelimit-cache-resilience-stage2c.md) mục 1): bản native `127.0.0.1:6379` dùng
   chung với dự án khác, không có container; compose trỏ `REDIS_URL` tới `host.docker.internal:6379/<db>`. Gateway dùng
-  db 10, tiền tố khoá `svp:gw:` (rate limit, `svp:gw:rl:<lớp>:<định danh>`); feed-service db 14, tiền tố `svp:feed:`
+  db 10, tiền tố khoá `svp:gw:` (rate limit, `svp:gw:rl:<lớp>:<định danh>`); web db 9, tiền tố `svp:web:` (session, khoá
+  single-flight của refresh); feed-service db 14, tiền tố `svp:feed:`
   (cache trang đầu feed khám phá); test db 15, mỗi test một tiền tố `svp:test:<hex>:`. Mọi khoá có TTL (Redis local
   `maxmemory 0`, `noeviction`). Client có timeout ngắn (dial 100 ms, đọc/ghi 50 ms); service khởi động và vẫn ready khi
   Redis lỗi, vì mọi chỗ dùng Redis đều có đường lui ([§7.2](#72-đọc-feed), [§8.5](#85-rest-ở-gateway)). Đo 2026-10-11 sau
   mọi diễn tập: Redis native dùng 6,9 MB (gồm cả dữ liệu dự án khác), db 10 còn 15 khoá (trung bình 96 B), db 14
   trống.
+- **web** ([ADR-0016](adr/0016-web-client.md) §5–7): Next.js standalone trong image distroless, publish
+  `127.0.0.1:3001`, origin `http://localhost:3001`; gọi duy nhất `http://gateway:8080`; session ở Redis native db 9 (tiền
+  tố `svp:web:`, khoá là `sha256(sid)`). Container chỉ đọc, bỏ mọi capability, non-root, 256 MB, 64 pid. Nằm trong mạng
+  compose riêng `web` chỉ chung với gateway (không tới service gRPC, Redpanda, MinIO theo tên compose), nhưng có
+  `host.docker.internal` để tới Redis của máy, nên vẫn tới mọi cổng publish trên loopback của máy (threat model WEB-13,
+  chấp nhận ở compose).
 - **Mạng riêng của media-worker:** worker chạy ffmpeg trên file người dùng tải lên, nên chỉ nằm trong mạng compose `worker`
   (`internal`, không route ra ngoài) cùng Redpanda, MinIO và Collector `otelcol`; nó không tới được gateway, các service
   gRPC, Postgres hay internet. Container chỉ đọc, bỏ mọi capability, giới hạn 2 CPU, 2 GB.
@@ -528,6 +546,38 @@ user-service cấp JWT ký bằng khoá riêng; gateway kiểm chữ ký bằng 
 Gateway chuyển `user_id` xuống các service qua gRPC metadata. Bên trong cluster tạm thời tin nhau qua mạng; mTLS giữa
 các service để giai đoạn 6. Threat model đã xét lại điểm này ở
 [mục 4.5 của `threat-model.md`](threat-model.md#45-mức-tin-cậy-giữa-các-service).
+
+Từ giai đoạn 5b ([ADR-0016](adr/0016-web-client.md) §2–5), login trả thêm **refresh token** mờ (32 byte ngẫu nhiên,
+user-service chỉ lưu SHA-256 ở bảng `refresh_tokens`), xoay mỗi lần dùng; trình lại token đã dùng thì cả họ bị thu hồi.
+Luồng của web:
+
+```mermaid
+sequenceDiagram
+    participant B as Trình duyệt
+    participant W as web (BFF)
+    participant R as Redis db 9
+    participant G as gateway
+    participant U as user-service
+    B->>W: POST form đăng nhập (Server Action, kiểm CSRF)
+    W->>G: POST /auth/login
+    G->>U: Login
+    U-->>W: access token 1 giờ, refresh token (họ mới, 14 ngày trượt, trần 30 ngày)
+    W->>R: session mới sid ngẫu nhiên (khoá sha256(sid), TTL = hạn refresh)
+    W-->>B: Set-Cookie svp_sid (HttpOnly, SameSite=Lax), 303
+    Note over W: access token còn dưới 30 s
+    W->>R: SET khoá refresh NX PX 5000 (single-flight giữa replica)
+    W->>G: POST /auth/refresh (không Bearer, rate limit refresh theo IP)
+    G->>U: Refresh (một transaction, khoá theo họ)
+    U-->>W: cặp token mới, token cũ đánh dấu đã dùng
+    W->>R: compare-and-set session (ver + 1)
+    B->>W: POST /logout
+    W->>G: POST /auth/logout (thu hồi cả họ)
+    W->>R: xoá session
+    W-->>B: xoá cookie, Clear-Site-Data "cache", 303 /login
+```
+
+Refresh không rõ kết quả (timeout, 5xx) thì BFF giữ session và không thử lại trong request đó; lần sau nếu token đã bị
+xoay thì là "dùng lại", cả họ bị thu hồi và người dùng đăng nhập lại. Access token đã cấp vẫn sống tới hết 1 giờ (JWT-3).
 
 ## 8. Contract
 

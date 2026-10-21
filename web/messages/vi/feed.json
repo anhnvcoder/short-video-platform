@@ -1,0 +1,67 @@
+{
+  "tabs": {
+    "label": "Chọn feed",
+    "following": "Đang theo dõi",
+    "explore": "Khám phá"
+  },
+  "feedLabel": "Danh sách video",
+  "loading": "Đang tải video",
+  "playError": {
+    "title": "Không phát được video",
+    "body": "Có lỗi khi tải video này. Thử lại hoặc vuốt để xem video tiếp theo.",
+    "retry": "Thử lại"
+  },
+  "offline": {
+    "title": "Mất kết nối mạng",
+    "body": "Video sẽ phát tiếp khi có mạng trở lại."
+  },
+  "mute": "Tắt tiếng (M)",
+  "unmute": "Bật tiếng (M)",
+  "tapToUnmute": "Chạm để bật tiếng",
+  "paused": "Đã tạm dừng · Space để phát",
+  "play": "Phát video",
+  "pause": "Tạm dừng video",
+  "like": "Thích video",
+  "likeWithCount": "Thích video, {count}",
+  "unlikeWithCount": "Bỏ thích video, {count}",
+  "likeText": "Thích",
+  "likeCount": "{count} lượt thích",
+  "viewCount": "{count} lượt xem",
+  "follow": "Theo dõi tác giả",
+  "unfollow": "Bỏ theo dõi tác giả",
+  "author": "Tác giả",
+  "titleMore": "Xem thêm",
+  "titleLess": "Thu gọn",
+  "progress": "Tiến độ video",
+  "previous": "Video trước (↑)",
+  "next": "Video tiếp theo (↓)",
+  "empty": {
+    "followingTitle": "Bạn chưa theo dõi ai",
+    "followingBody": "Theo dõi nhà sáng tạo trong Khám phá để video mới của họ hiện ở đây.",
+    "followingAction": "Sang Khám phá",
+    "exploreTitle": "Chưa có video nào",
+    "exploreBody": "Video mới sẽ hiện ở đây khi có người đăng."
+  },
+  "end": {
+    "title": "Bạn đã xem hết video",
+    "exploreBody": "Không còn video mới trong Khám phá. Quay lại sau để xem thêm.",
+    "followingBody": "Không còn video mới từ người bạn theo dõi. Quay lại sau để xem thêm.",
+    "action": "Xem lại từ đầu"
+  },
+  "loadError": {
+    "title": "Không tải được video",
+    "body": "Có lỗi khi tải feed. Kiểm tra kết nối rồi thử lại.",
+    "rateLimited": "Bạn thao tác hơi nhanh. Thử lại sau ít giây.",
+    "retry": "Thử lại"
+  },
+  "toast": {
+    "region": "Thông báo",
+    "likeFailed": "Chưa thích được video. Đã hoàn tác.",
+    "unlikeFailed": "Chưa bỏ thích được video. Đã hoàn tác.",
+    "followFailed": "Chưa theo dõi được tác giả. Thử lại sau.",
+    "unfollowFailed": "Chưa bỏ theo dõi được tác giả. Thử lại sau.",
+    "rateLimited": "Bạn thao tác hơi nhanh. Thử lại sau ít giây.",
+    "retry": "Thử lại",
+    "dismiss": "Đóng"
+  }
+}

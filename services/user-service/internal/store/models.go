@@ -28,6 +28,18 @@ type Outbox struct {
 	PublishedAt pgtype.Timestamptz
 }
 
+type RefreshToken struct {
+	ID              uuid.UUID
+	FamilyID        uuid.UUID
+	UserID          uuid.UUID
+	TokenHash       []byte
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
+	FamilyExpiresAt time.Time
+	UsedAt          pgtype.Timestamptz
+	RevokedAt       pgtype.Timestamptz
+}
+
 type User struct {
 	ID           uuid.UUID
 	Email        string

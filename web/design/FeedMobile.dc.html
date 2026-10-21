@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><link rel="stylesheet" href="./svp-tokens.css"></helmet>
+<div data-theme="dark" style="position:relative;width:100%;height:100%;overflow:hidden;background:var(--surface);color:var(--on-media);display:flex;flex-direction:column;font-family:var(--font-sans)">
+<main style="position:relative;flex:1;min-height:0;overflow:hidden;background:{{ mainBg }}">
+<sc-if value="{{ showVideo }}" hint-placeholder-val="{{ true }}">
+<div aria-hidden="true" style="position:absolute;inset:0;background:repeating-linear-gradient(135deg,oklch(0.31 0.035 50) 0 16px,oklch(0.27 0.035 50) 16px 32px);display:flex;align-items:center;justify-content:center"><span style="font:500 11px/1 var(--font-mono);color:oklch(1 0 0 / 0.5);letter-spacing:0.04em">{{ mediaLabel }}</span></div>
+<div aria-hidden="true" style="position:absolute;left:0;right:0;top:0;height:140px;background:linear-gradient(to bottom,oklch(0 0 0 / 0.55),oklch(0 0 0 / 0))"></div>
+<div aria-hidden="true" style="position:absolute;left:0;right:0;bottom:0;height:{{ scrimHeight }};background:linear-gradient(to top,oklch(0 0 0 / 0.8),oklch(0 0 0 / 0.5) 50%,oklch(0 0 0 / 0))"></div>
+</sc-if>
+
+<header style="position:absolute;top:0;left:0;right:0;height:56px;display:flex;align-items:center;justify-content:center;z-index:5">
+<div role="tablist" aria-label="Chọn feed" style="display:flex;gap:4px">
+<sc-for list="{{ tabs }}" as="t" hint-placeholder-count="2">
+<button role="tab" aria-selected="{{ t.selected }}" style="min-height:44px;padding:0 12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;background:none;border:0;cursor:pointer;font-family:inherit;font-size:16px;font-weight:{{ t.weight }};color:{{ t.color }};text-shadow:0 1px 2px oklch(0 0 0 / 0.4)"><span>{{ t.label }}</span><span aria-hidden="true" style="width:20px;height:2px;border-radius:2px;background:currentColor;opacity:{{ t.bar }}"></span></button>
+</sc-for>
+</div>
+<sc-if value="{{ showMuteBtn }}" hint-placeholder-val="{{ true }}">
+<button aria-label="{{ muteLabel }}" style="position:absolute;right:6px;top:6px;width:44px;height:44px;border-radius:999px;border:0;background:oklch(0 0 0 / 0.35);color:var(--on-media);display:flex;align-items:center;justify-content:center;cursor:pointer" style-hover="background:oklch(0 0 0 / 0.55)"><i class="{{ muteIcon }}" style="font-size:20px" aria-hidden="true"></i></button>
+</sc-if>
+</header>
+
+<sc-if value="{{ showMuteHint }}"><button style="position:absolute;top:64px;left:50%;transform:translateX(-50%);z-index:4;display:flex;align-items:center;gap:8px;min-height:44px;padding:0 16px;border-radius:999px;border:0;background:oklch(0 0 0 / 0.55);color:var(--on-media);font:500 14px/1 var(--font-sans);white-space:nowrap;cursor:pointer"><i class="icon-volume-x" style="font-size:18px" aria-hidden="true"></i>Chạm để bật tiếng</button></sc-if>
+
+<sc-if value="{{ isOffline }}">
+<div role="status" style="position:absolute;top:60px;left:12px;right:12px;z-index:4;display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:12px;background:var(--surface-raised);border:1px solid var(--border);color:var(--foreground)"><i class="icon-wifi-off" style="font-size:20px;color:var(--warning)" aria-hidden="true"></i><div style="display:flex;flex-direction:column;gap:2px;font-size:14px;line-height:1.35"><strong style="font-weight:600">Mất kết nối mạng</strong><span style="color:var(--muted)">Video sẽ phát tiếp khi có mạng trở lại.</span></div></div>
+<div aria-hidden="true" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2;width:72px;height:72px;border-radius:999px;background:oklch(0 0 0 / 0.45);display:flex;align-items:center;justify-content:center"><i class="icon-play" style="font-size:32px;margin-left:4px"></i></div>
+</sc-if>
+
+<sc-if value="{{ isBuffering }}"><div role="status" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2;width:64px;height:64px;border-radius:999px;background:oklch(0 0 0 / 0.4);display:flex;align-items:center;justify-content:center"><i class="icon-loader-circle" style="font-size:32px;display:inline-block;animation:svp-spin 0.9s linear infinite" aria-hidden="true"></i><span style="position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)">Đang tải video</span></div></sc-if>
+
+<sc-if value="{{ isError }}"><div role="alert" style="position:absolute;inset:0;z-index:2;background:oklch(0 0 0 / 0.6);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:32px;text-align:center"><span style="width:56px;height:56px;border-radius:999px;background:oklch(1 0 0 / 0.12);display:flex;align-items:center;justify-content:center"><i class="icon-circle-alert" style="font-size:28px" aria-hidden="true"></i></span><strong style="font-size:18px;font-weight:600">Không phát được video</strong><span style="font-size:15px;line-height:1.5;color:var(--on-media-muted);max-width:260px;text-wrap:pretty">Có lỗi khi tải video này. Thử lại hoặc vuốt để xem video tiếp theo.</span><button style="margin-top:8px;min-height:44px;padding:0 20px;border-radius:999px;border:0;background:var(--on-media);color:oklch(0.18 0 0);font:600 15px/1 var(--font-sans);display:flex;align-items:center;gap:8px;cursor:pointer"><i class="icon-rotate-cw" style="font-size:18px" aria-hidden="true"></i>Thử lại</button></div></sc-if>
+
+<sc-if value="{{ isLoading }}"><div aria-busy="true" aria-label="Đang tải video" style="position:absolute;inset:0;z-index:2;background:oklch(0 0 0 / 0.35)">
+<div style="position:absolute;right:12px;bottom:28px;display:flex;flex-direction:column;align-items:center;gap:22px">
+<span style="width:48px;height:48px;border-radius:999px;background:oklch(1 0 0 / 0.16);animation:svp-pulse 1.4s ease-in-out infinite"></span>
+<span style="width:40px;height:40px;border-radius:999px;background:oklch(1 0 0 / 0.16);animation:svp-pulse 1.4s ease-in-out infinite"></span>
+<span style="width:40px;height:40px;border-radius:999px;background:oklch(1 0 0 / 0.16);animation:svp-pulse 1.4s ease-in-out infinite"></span>
+<span style="width:40px;height:40px;border-radius:999px;background:oklch(1 0 0 / 0.16);animation:svp-pulse 1.4s ease-in-out infinite"></span>
+</div>
+<div style="position:absolute;left:16px;bottom:28px;display:flex;flex-direction:column;gap:10px">
+<span style="width:140px;height:14px;border-radius:6px;background:oklch(1 0 0 / 0.16);animation:svp-pulse 1.4s ease-in-out infinite"></span>
+<span style="width:260px;height:12px;border-radius:6px;background:oklch(1 0 0 / 0.16);animation:svp-pulse 1.4s ease-in-out infinite"></span>
+<span style="width:190px;height:12px;border-radius:6px;background:oklch(1 0 0 / 0.16);animation:svp-pulse 1.4s ease-in-out infinite"></span>
+</div>
+</div></sc-if>
+
+<sc-if value="{{ showPill }}">
+<div style="position:absolute;left:16px;right:16px;bottom:14px;z-index:3;display:flex;flex-direction:column;gap:12px;text-shadow:0 1px 2px oklch(0 0 0 / 0.45)">
+<div style="display:flex;align-items:center;gap:10px">
+<a href="#" aria-hidden="true" tabindex="-1" style="flex:none;width:40px;height:40px;border-radius:999px;background:oklch(0.5 0.09 160);color:var(--on-media);display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:600;text-decoration:none;text-shadow:none">M</a>
+<div style="flex:1;min-width:0;display:flex;flex-direction:column"><a href="#" style="color:var(--on-media);text-decoration:none;font-size:15px;font-weight:600">Minh Anh</a><span style="font-size:13px;color:var(--on-media-muted)">@minhanh · 2 ngày</span></div>
+<sc-if value="{{ notFollowing }}" hint-placeholder-val="{{ true }}"><button aria-pressed="false" style="min-height:44px;padding:0 18px;border-radius:999px;border:0;background:var(--on-media);color:oklch(0.18 0 0);font:600 14px/1 var(--font-sans);cursor:pointer;text-shadow:none">Theo dõi</button></sc-if>
+<sc-if value="{{ following }}"><button aria-pressed="true" style="min-height:44px;padding:0 16px;border-radius:999px;border:1px solid oklch(1 0 0 / 0.5);background:oklch(0 0 0 / 0.3);color:var(--on-media);font:600 14px/1 var(--font-sans);display:flex;align-items:center;gap:6px;cursor:pointer"><i class="icon-check" style="font-size:16px" aria-hidden="true"></i>Đang theo dõi</button></sc-if>
+</div>
+<div style="display:flex;align-items:flex-end;gap:12px">
+<button aria-expanded="false" style="flex:1;min-width:0;padding:0;border:0;background:none;text-align:left;color:var(--on-media);font:400 15px/1.45 var(--font-sans);cursor:pointer;text-shadow:inherit"><span style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">Chiều Hà Nội cuối thu, gió heo may về trên phố cổ. Đi bộ một vòng hồ Hoàn Kiếm lúc 5 giờ, ghé quán cà phê trứng quen rồi ngồi nhìn người qua lại đến khi lên đèn. Bạn thích Hà Nội mùa nào nhất?</span></button>
+<button aria-label="{{ muteLabel }}" style="flex:none;width:44px;height:44px;border-radius:999px;border:0;background:oklch(0 0 0 / 0.45);color:var(--on-media);display:flex;align-items:center;justify-content:center;cursor:pointer"><i class="{{ muteIcon }}" style="font-size:20px" aria-hidden="true"></i></button>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<div role="slider" aria-label="Tua video" aria-valuemin="0" aria-valuemax="42" aria-valuenow="16" aria-valuetext="0:16 / 0:42" style="height:3px;border-radius:3px;background:oklch(1 0 0 / 0.28)"><div style="width:{{ progress }};height:100%;border-radius:3px;background:var(--on-media)"></div></div>
+<div style="display:flex;justify-content:space-between;font:500 12px/1 var(--font-mono);color:var(--on-media-muted)"><span>0:16</span><span>0:42</span></div>
+</div>
+<div style="align-self:center;display:flex;align-items:center;gap:4px;height:56px;padding:0 6px;border-radius:999px;background:oklch(0.12 0 0 / 0.55);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid oklch(1 0 0 / 0.14);text-shadow:none">
+<button aria-pressed="{{ liked }}" aria-label="{{ likeLabel }}" style="min-width:44px;height:44px;padding:0 14px;border-radius:999px;border:0;background:none;color:var(--on-media);display:flex;align-items:center;gap:8px;font:600 14px/1 var(--font-sans);cursor:pointer" style-hover="background:oklch(1 0 0 / 0.1)"><svg width="24" height="24" viewBox="0 0 24 24" fill="{{ heartFill }}" stroke="{{ heartStroke }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path></svg>{{ likeText }}</button>
+<sc-if value="{{ hasStats }}" hint-placeholder-val="{{ true }}"><span role="img" aria-label="1,2 triệu lượt xem" style="height:44px;padding:0 14px;display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:var(--on-media-muted)"><i class="icon-eye" style="font-size:22px" aria-hidden="true"></i>1,2 Tr</span></sc-if>
+<span aria-hidden="true" style="width:1px;height:24px;background:oklch(1 0 0 / 0.18)"></span>
+<button aria-label="Sao chép liên kết chia sẻ" style="min-width:44px;height:44px;padding:0 14px;border-radius:999px;border:0;background:none;color:var(--on-media);display:flex;align-items:center;gap:8px;font:600 14px/1 var(--font-sans);cursor:pointer" style-hover="background:oklch(1 0 0 / 0.1)"><i class="icon-share" style="font-size:22px" aria-hidden="true"></i>Chia sẻ</button>
+</div>
+</div>
+</sc-if>
+<sc-if value="{{ showRail }}" hint-placeholder-val="{{ true }}">
+<div style="position:absolute;right:4px;bottom:16px;width:64px;display:flex;flex-direction:column;align-items:center;gap:10px;z-index:3">
+<button aria-label="{{ followLabel }}" style="position:relative;width:56px;height:64px;padding:0;border:0;background:none;cursor:pointer;display:flex;justify-content:center">
+<span aria-hidden="true" style="width:48px;height:48px;border-radius:999px;background:oklch(0.5 0.09 160);border:2px solid var(--on-media);box-sizing:border-box;display:flex;align-items:center;justify-content:center;color:var(--on-media);font-size:20px;font-weight:600">M</span>
+<sc-if value="{{ notFollowing }}" hint-placeholder-val="{{ true }}"><span aria-hidden="true" style="position:absolute;left:50%;bottom:4px;transform:translateX(-50%);width:24px;height:24px;border-radius:999px;background:var(--accent);color:var(--accent-foreground);display:flex;align-items:center;justify-content:center"><i class="icon-plus" style="font-size:16px"></i></span></sc-if>
+<sc-if value="{{ following }}"><span aria-hidden="true" style="position:absolute;left:50%;bottom:4px;transform:translateX(-50%);width:24px;height:24px;border-radius:999px;background:var(--on-media);color:oklch(0.2 0 0);display:flex;align-items:center;justify-content:center"><i class="icon-check" style="font-size:15px"></i></span></sc-if>
+</button>
+<button aria-pressed="{{ liked }}" aria-label="{{ likeLabel }}" style="width:56px;min-height:56px;padding:4px 0;border:0;background:none;color:var(--on-media);display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer;transition:transform 120ms var(--ease-out)" style-active="transform:scale(0.9)"><svg width="32" height="32" viewBox="0 0 24 24" fill="{{ heartFill }}" stroke="{{ heartStroke }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="filter:drop-shadow(0 1px 2px oklch(0 0 0 / 0.5))" aria-hidden="true"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path></svg><span style="font-size:13px;font-weight:600;text-shadow:0 1px 2px oklch(0 0 0 / 0.5)">{{ likeText }}</span></button>
+<sc-if value="{{ hasStats }}" hint-placeholder-val="{{ true }}"><div role="img" aria-label="1,2 triệu lượt xem" style="width:56px;min-height:52px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;text-shadow:0 1px 2px oklch(0 0 0 / 0.5)"><i class="icon-eye" style="font-size:28px" aria-hidden="true"></i><span style="font-size:13px;font-weight:600">1,2 Tr</span></div></sc-if>
+<button aria-label="Sao chép liên kết chia sẻ" style="width:56px;min-height:56px;padding:4px 0;border:0;background:none;color:var(--on-media);display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer;text-shadow:0 1px 2px oklch(0 0 0 / 0.5)"><i class="icon-share" style="font-size:28px" aria-hidden="true"></i><span style="font-size:13px;font-weight:600">Chia sẻ</span></button>
+</div>
+<div style="position:absolute;left:16px;right:84px;bottom:18px;display:flex;flex-direction:column;gap:6px;z-index:3;text-shadow:0 1px 2px oklch(0 0 0 / 0.45)">
+<div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap"><a href="#" style="color:var(--on-media);text-decoration:none;font-size:16px;font-weight:600">Minh Anh</a><span style="font-size:14px;color:var(--on-media-muted)">@minhanh · 2 ngày</span></div>
+<sc-if value="{{ clamped }}" hint-placeholder-val="{{ true }}"><button aria-expanded="false" style="padding:0;border:0;background:none;text-align:left;color:var(--on-media);font:400 15px/1.45 var(--font-sans);cursor:pointer;text-shadow:inherit;display:flex;flex-direction:column;gap:2px"><span style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">Chiều Hà Nội cuối thu, gió heo may về trên phố cổ. Đi bộ một vòng hồ Hoàn Kiếm lúc 5 giờ, ghé quán cà phê trứng quen rồi ngồi nhìn người qua lại đến khi lên đèn. Bạn thích Hà Nội mùa nào nhất?</span><span style="font-weight:600;color:var(--on-media-muted)">Xem thêm</span></button></sc-if>
+<sc-if value="{{ expanded }}"><button aria-expanded="true" style="padding:0;border:0;background:none;text-align:left;color:var(--on-media);font:400 15px/1.45 var(--font-sans);cursor:pointer;text-shadow:inherit;display:flex;flex-direction:column;gap:2px"><span>Chiều Hà Nội cuối thu, gió heo may về trên phố cổ. Đi bộ một vòng hồ Hoàn Kiếm lúc 5 giờ, ghé quán cà phê trứng quen rồi ngồi nhìn người qua lại đến khi lên đèn. Bạn thích Hà Nội mùa nào nhất?</span><span style="font-weight:600;color:var(--on-media-muted)">Thu gọn</span></button></sc-if>
+</div>
+<div role="progressbar" aria-label="Tiến độ video" aria-valuemin="0" aria-valuemax="100" aria-valuenow="38" style="position:absolute;left:0;right:0;bottom:0;height:2px;background:oklch(1 0 0 / 0.25);z-index:3"><div style="height:100%;width:{{ progress }};background:var(--on-media)"></div></div>
+</sc-if>
+
+<sc-if value="{{ isEmpty }}"><div style="position:absolute;inset:56px 0 0 0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:32px;text-align:center;color:var(--foreground)"><span style="width:72px;height:72px;border-radius:999px;background:var(--surface-raised);display:flex;align-items:center;justify-content:center"><i class="icon-users" style="font-size:30px;color:var(--muted)" aria-hidden="true"></i></span><h2 style="margin:0;font-size:20px;font-weight:700">Bạn chưa theo dõi ai</h2><p style="margin:0;font-size:15px;line-height:1.5;color:var(--muted);max-width:280px;text-wrap:pretty">Theo dõi nhà sáng tạo trong Khám phá để video mới của họ hiện ở đây.</p><button style="margin-top:8px;min-height:48px;padding:0 24px;border-radius:12px;border:0;background:var(--accent);color:var(--accent-foreground);font:600 15px/1 var(--font-sans);display:flex;align-items:center;gap:8px;cursor:pointer" style-hover="background:var(--accent-hover)"><i class="icon-compass" style="font-size:18px" aria-hidden="true"></i>Sang Khám phá</button></div></sc-if>
+
+<sc-if value="{{ isEnd }}"><div style="position:absolute;inset:56px 0 0 0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:32px;text-align:center;color:var(--foreground)"><span style="width:72px;height:72px;border-radius:999px;background:var(--surface-raised);display:flex;align-items:center;justify-content:center"><i class="icon-circle-check" style="font-size:30px;color:var(--muted)" aria-hidden="true"></i></span><h2 style="margin:0;font-size:20px;font-weight:700">Bạn đã xem hết video</h2><p style="margin:0;font-size:15px;line-height:1.5;color:var(--muted);max-width:280px;text-wrap:pretty">Không còn video mới trong Khám phá. Quay lại sau để xem thêm.</p><button style="margin-top:8px;min-height:48px;padding:0 24px;border-radius:12px;border:1px solid var(--border-strong);background:var(--surface-raised);color:var(--foreground);font:600 15px/1 var(--font-sans);display:flex;align-items:center;gap:8px;cursor:pointer" style-hover="background:var(--surface-hover)"><i class="icon-rotate-ccw" style="font-size:18px" aria-hidden="true"></i>Xem lại từ đầu</button></div></sc-if>
+
+<sc-if value="{{ showToast }}"><div role="status" style="position:absolute;top:64px;left:12px;right:12px;z-index:6;display:flex;align-items:center;gap:12px;padding:6px 6px 6px 14px;border-radius:12px;background:var(--surface-raised);border:1px solid var(--border);box-shadow:var(--shadow-raised);color:var(--foreground)"><i class="icon-circle-alert" style="font-size:20px;color:var(--danger)" aria-hidden="true"></i><span style="flex:1;font-size:14px;line-height:1.4">Chưa thích được video. Đã hoàn tác.</span><button style="min-height:44px;padding:0 12px;border:0;border-radius:8px;background:none;color:var(--accent-text);font:600 14px/1 var(--font-sans);cursor:pointer" style-hover="background:var(--surface-hover)">Thử lại</button></div></sc-if>
+</main>
+<dc-import name="BottomNav" active="home" hint-size="100%,64px" style="flex:none"></dc-import>
+
+<sc-if value="{{ showSheet }}">
+<div aria-hidden="true" style="position:absolute;inset:0;z-index:10;background:var(--overlay)"></div>
+<div role="dialog" aria-modal="true" aria-label="Đăng nhập để thích video" style="position:absolute;left:0;right:0;bottom:0;z-index:11;background:var(--surface-raised);color:var(--foreground);border-radius:24px 24px 0 0;padding:12px 24px 28px;display:flex;flex-direction:column;align-items:center;gap:16px;text-align:center">
+<span aria-hidden="true" style="width:36px;height:4px;border-radius:4px;background:var(--border-strong)"></span>
+<span style="margin-top:8px;width:56px;height:56px;border-radius:999px;background:color-mix(in oklch,var(--accent) 20%,transparent);color:var(--accent-text);display:flex;align-items:center;justify-content:center"><svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path></svg></span>
+<div style="display:flex;flex-direction:column;gap:6px"><h2 style="margin:0;font-size:20px;font-weight:700">Đăng nhập để thích video</h2><p style="margin:0;font-size:15px;line-height:1.5;color:var(--muted);text-wrap:pretty">Có tài khoản SVP, bạn có thể thích video và theo dõi nhà sáng tạo.</p></div>
+<div style="display:flex;flex-direction:column;gap:10px;width:100%">
+<button style="min-height:52px;border-radius:12px;border:0;background:var(--accent);color:var(--accent-foreground);font:600 16px/1 var(--font-sans);cursor:pointer" style-hover="background:var(--accent-hover)">Đăng nhập</button>
+<button style="min-height:52px;border-radius:12px;border:1px solid var(--border-strong);background:transparent;color:var(--foreground);font:600 16px/1 var(--font-sans);cursor:pointer" style-hover="background:var(--surface-hover)">Tạo tài khoản</button>
+<button style="min-height:44px;border-radius:12px;border:0;background:none;color:var(--muted);font:500 15px/1 var(--font-sans);cursor:pointer" style-hover="color:var(--foreground)">Để sau</button>
+</div>
+</div>
+</sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:390,&quot;height&quot;:844},&quot;state&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;default&quot;,&quot;expanded&quot;,&quot;liked&quot;,&quot;loading&quot;,&quot;buffering&quot;,&quot;error&quot;,&quot;offline&quot;,&quot;no-stats&quot;,&quot;login-prompt&quot;,&quot;toast&quot;,&quot;empty-following&quot;,&quot;end&quot;],&quot;default&quot;:&quot;default&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;tab&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;explore&quot;,&quot;following&quot;],&quot;default&quot;:&quot;explore&quot;,&quot;tsType&quot;:&quot;'explore'|'following'&quot;},&quot;layout&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;rail&quot;,&quot;pill&quot;],&quot;default&quot;:&quot;rail&quot;,&quot;tsType&quot;:&quot;'rail'|'pill'&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const s = this.props.state ?? 'default';
+    const pill = this.props.layout === 'pill';
+    const tab = this.props.tab ?? (s === 'empty-following' ? 'following' : 'explore');
+    const noVideo = s === 'empty-following' || s === 'end';
+    const liked = s === 'liked';
+    const stats = s !== 'no-stats';
+    const expanded = s === 'expanded';
+    const unmuted = ['liked', 'expanded', 'buffering', 'no-stats'].includes(s);
+    const tabs = [['following', 'Đang theo dõi'], ['explore', 'Khám phá']].map(([k, l]) => ({
+      label: l, selected: tab === k, weight: tab === k ? 700 : 500,
+      color: tab === k ? 'var(--on-media)' : 'var(--on-media-muted)', bar: tab === k ? 1 : 0
+    }));
+    return {
+      tabs, mainBg: noVideo ? 'var(--surface)' : '#000',
+      showVideo: !noVideo, mediaLabel: s === 'loading' ? 'poster · đang tải' : 'video 9:16',
+      scrimHeight: expanded ? '520px' : pill ? '400px' : '340px',
+      showMuteBtn: !pill && !noVideo && s !== 'loading',
+      muteIcon: unmuted ? 'icon-volume-2' : 'icon-volume-x',
+      muteLabel: unmuted ? 'Tắt tiếng (M)' : 'Bật tiếng (M)',
+      showMuteHint: s === 'default',
+      isLoading: s === 'loading', isBuffering: s === 'buffering', isError: s === 'error', isOffline: s === 'offline',
+      showChrome: !noVideo && s !== 'loading',
+      showRail: !pill && !noVideo && s !== 'loading',
+      showPill: pill && !noVideo && s !== 'loading',
+      following: liked, notFollowing: !liked,
+      followLabel: liked ? 'Bỏ theo dõi Minh Anh' : 'Theo dõi Minh Anh',
+      liked, heartFill: liked ? 'var(--accent)' : 'none', heartStroke: liked ? 'var(--accent)' : 'currentColor',
+      likeText: stats ? (liked ? '12,5 N' : '12,4 N') : 'Thích',
+      likeLabel: liked ? 'Bỏ thích video' : 'Thích video',
+      hasStats: stats, clamped: !expanded, expanded,
+      progress: s === 'offline' ? '52%' : '38%',
+      isEmpty: s === 'empty-following', isEnd: s === 'end',
+      showToast: s === 'toast', showSheet: s === 'login-prompt'
+    };
+  }
+}
+</script>
+</body>
+</html>

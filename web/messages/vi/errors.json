@@ -1,0 +1,19 @@
+{
+  "errorCode": "Mã lỗi: {digest}",
+  "home": "Về trang chủ",
+  "notFound": {
+    "title": "Không tìm thấy trang",
+    "body": "Trang có thể đã bị xoá hoặc đường dẫn không đúng."
+  },
+  "generic": {
+    "title": "Đã có lỗi xảy ra",
+    "body": "Lỗi không mong muốn. Tải lại trang hoặc quay về trang chủ.",
+    "retry": "Tải lại trang"
+  },
+  "rateLimited": {
+    "title": "Bạn thao tác hơi nhanh",
+    "body": "SVP tạm giới hạn yêu cầu từ thiết bị này. Thử lại sau ít phút.",
+    "retry": "Thử lại",
+    "retryIn": "Thử lại sau {seconds} giây"
+  }
+}

@@ -74,8 +74,9 @@ SVP_TEST_REDIS_URL ?= redis://127.0.0.1:6379/15
 
 .DEFAULT_GOAL := help
 
-.PHONY: help tools ci-tools generate generate-check slo otelcol-validate fmt-check vet lint actionlint buf-lint test cover \
-	check helm-check trivy-config renovate-check hooks
+.PHONY: help tools ci-tools generate generate-go generate-check slo otelcol-validate fmt-check vet lint actionlint buf-lint test \
+	cover check check-go helm-check trivy-config renovate-check hooks web-install web-dev web-generate web-generate-check \
+	web-check web-e2e measure-web
 
 help: ## List the targets
 	@grep -hE '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -103,16 +104,19 @@ ci-tools: ## CI only (Linux amd64): install buf and Helm at the pinned versions 
 	tar -xzf "$$tmp/helm.tar.gz" -C "$$tmp" linux-amd64/helm || exit 1; \
 	install -m 755 "$$tmp/linux-amd64/helm" $(GOBIN)/helm
 
-generate: ## Generate Go code from proto/ (buf) and from SQL (sqlc, per service)
+generate: generate-go web-generate ## Generate all code: Go (generate-go) and the web client's API types (web-generate)
+
+generate-go: ## Generate Go code from proto/ (buf) and from SQL (sqlc, per service)
 	buf generate
 	@for f in $(wildcard services/*/sqlc.yaml); do echo "sqlc generate -f $$f"; sqlc generate -f $$f || exit 1; done
 
-# Generated code must match its sources (docs/adr/0015-cicd-devsecops-stage5.md, section 2). `make generate` runs in a
-# scratch copy of the files git tracks plus the untracked ones it does not ignore (so .env is never read), and the
+# Generated Go code must match its sources (docs/adr/0015-cicd-devsecops-stage5.md, section 2). `make generate-go` runs
+# in a scratch copy of the files git tracks plus the untracked ones it does not ignore (so .env is never read), and the
 # result is compared with a second, untouched copy of the same files: the working tree is never written, so uncommitted
 # edits of generated code survive, and a file that generation adds counts as a difference too. A tracked file deleted
-# from the working tree is left out of both copies.
-generate-check: ## Fail when make generate would change or add a file: list them and print the diff (writes nothing here)
+# from the working tree is left out of both copies. The copy has no web/node_modules, so the web client's types are
+# checked by web-generate-check instead.
+generate-check: ## Fail when make generate-go would change or add a file: list them and print the diff (writes nothing here)
 	@tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
 	git ls-files -z -co --exclude-standard > "$$tmp/listed" || exit 1; \
 	xargs -0 sh -c 'for f; do if [ -e "$$f" ] || [ -L "$$f" ]; then printf "%s\0" "$$f"; fi; done' sh \
@@ -120,10 +124,10 @@ generate-check: ## Fail when make generate would change or add a file: list them
 	COPYFILE_DISABLE=1 tar -cf "$$tmp/tree.tar" --null -T "$$tmp/files" || exit 1; \
 	mkdir "$$tmp/before" "$$tmp/after" && tar -xf "$$tmp/tree.tar" -C "$$tmp/before" \
 		&& tar -xf "$$tmp/tree.tar" -C "$$tmp/after" || exit 1; \
-	$(MAKE) --no-print-directory -C "$$tmp/after" generate || exit 1; \
+	$(MAKE) --no-print-directory -C "$$tmp/after" generate-go || exit 1; \
 	cd "$$tmp" || exit 1; \
 	if git diff --no-index --quiet before after; then echo "generated code is up to date"; exit 0; fi; \
-	echo "make generate changes or adds these files (run make generate and commit the result):"; \
+	echo "make generate-go changes or adds these files (run make generate-go and commit the result):"; \
 	git -c core.quotepath=off diff --no-index --no-color --no-ext-diff --name-status before after; \
 	git -c core.quotepath=off diff --no-index --no-color --no-ext-diff before after; \
 	exit 1
@@ -147,8 +151,9 @@ otelcol-validate: ## Validate the Collector configs with the pinned Collector: o
 	$(OTELCOL) validate --config=/etc/otelcol/config.yaml --config=/etc/otelcol/elastic.yaml
 	$(OTELCOL) validate --config=/etc/otelcol/k8s.yaml
 
+# web/node_modules is left out: npm packages may ship Go sources of their own (flatted does).
 fmt-check: ## Fail and list the files that gofmt would change (generated code excluded)
-	@out=$$(find . -name '*.go' -not -path './gen/*' -not -path './.roster/*' -print0 \
+	@out=$$(find . -name '*.go' -not -path './gen/*' -not -path './.roster/*' -not -path './web/node_modules/*' -print0 \
 		| xargs -0 grep -L --null '^// Code generated .* DO NOT EDIT\.$$' | xargs -0 gofmt -l) \
 		|| { echo "gofmt failed (syntax error?)" >&2; exit 1; }; \
 	if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
@@ -175,7 +180,9 @@ cover: ## go test -race with coverage into cover.out (same test variables and TE
 	@go tool cover -func=cover.out | tail -1
 	@echo "per line in a browser: go tool cover -html=cover.out"
 
-check: fmt-check vet lint actionlint buf-lint test ## Run every check
+check: check-go web-check ## Run every check: Go (check-go) and the web client (web-check)
+
+check-go: fmt-check vet lint actionlint buf-lint test ## Run the Go, workflow and proto checks
 
 # Every chart of the repository, as the GitOps path renders it (ADR-0015, section 2): each component of components.json
 # with a `path`, under its release name and namespace, with its values file, and the app-of-apps chart itself. A release
@@ -225,6 +232,87 @@ renovate-check: ## Validate renovate.json with the pinned Renovate (renovate-con
 
 hooks: ## Point git at .githooks (run once per clone)
 	git config core.hooksPath .githooks
+
+# Web client in web/ (docs/adr/0016-web-client.md, section 10). Node's major is pinned in web/.nvmrc and pnpm's exact
+# version in the packageManager field of web/package.json; every web target checks both before it runs anything and,
+# on a mismatch, prints the command that installs the right one. nvm leaves PATH to the shell and its default may be
+# another major, so the newest nvm install of the pinned major goes first on PATH; without one (CI's setup-node) PATH
+# is used as it is. Next's anonymous telemetry is off for every web target.
+WEB_NODE_MAJOR := $(shell cat web/.nvmrc 2>/dev/null)
+NVM_DIR ?= $(HOME)/.nvm
+WEB_NODE_BIN := $(shell ls -d $(NVM_DIR)/versions/node/v$(WEB_NODE_MAJOR).*/bin 2>/dev/null | sort -V | tail -1)
+WEB := cd web && export $(if $(WEB_NODE_BIN),PATH="$(WEB_NODE_BIN):$$PATH") NEXT_TELEMETRY_DISABLED=1 && \
+	node_major=$$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null); \
+	if [ "$$node_major" != "$(WEB_NODE_MAJOR)" ]; then echo "web/ needs Node $(WEB_NODE_MAJOR) (web/.nvmrc), found \
+	$$(node --version 2>/dev/null || echo none): nvm install $(WEB_NODE_MAJOR)" >&2; exit 1; fi; \
+	pnpm_want=$$(node -p 'require("./package.json").packageManager.split("@")[1]') || exit 1; \
+	if [ "$$(pnpm --version 2>/dev/null)" != "$$pnpm_want" ]; then echo "web/ needs pnpm $$pnpm_want (packageManager of \
+	web/package.json), found $$(pnpm --version 2>/dev/null || echo none): npm install -g pnpm@$$pnpm_want" >&2; exit 1; fi;
+
+web-install: ## Install the web client's packages exactly as web/pnpm-lock.yaml pins them
+	@$(WEB) pnpm install --frozen-lockfile
+
+# next dev on loopback only, against the gateway of `make up` and the web's session database (Redis db 9). The
+# browser origin is http://localhost:3002, not 127.0.0.1: POST requests from any other origin are refused as CSRF.
+web-dev: ## Run the web client in dev mode at http://localhost:3002 against the gateway at 127.0.0.1:8080
+	@$(WEB) GATEWAY_URL=http://127.0.0.1:8080 REDIS_URL=redis://127.0.0.1:6379/9 APP_ORIGIN=http://localhost:3002 \
+		MEDIA_ORIGIN=http://127.0.0.1:9000 pnpm dev --port 3002 --hostname 127.0.0.1
+
+web-generate: ## Generate web/gen/api.d.ts from services/gateway/openapi.yaml (openapi-typescript)
+	@$(WEB) pnpm generate
+
+# Generates into a scratch directory and compares with web/gen/api.d.ts; the working tree is never written. The input
+# is the one of the generate script in web/package.json.
+web-generate-check: ## Fail when make web-generate would change web/gen/api.d.ts: print the diff (writes nothing here)
+	@$(WEB) tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
+	pnpm --silent exec openapi-typescript ../services/gateway/openapi.yaml --output "$$tmp/api.d.ts" >/dev/null || exit 1; \
+	if diff -q gen/api.d.ts "$$tmp/api.d.ts" >/dev/null; then echo "web/gen/api.d.ts is up to date"; exit 0; fi; \
+	echo "make web-generate changes web/gen/api.d.ts (run make web-generate and commit the result):"; \
+	diff -u gen/api.d.ts "$$tmp/api.d.ts"; exit 1
+
+# Bundle budgets (docs/adr/0016-web-client.md, section 10) on the output of next build, gzip, checked by size-limit
+# with web/.size-limit.json. Each route has two budgets. The first covers what the route adds to Next's runtime: the
+# chunks the build's client reference manifest lists for the route's layouts, page and error boundaries (the scripts of
+# its HTML), plus the chunks those load lazily (hls.js on the feed). The second covers the whole first load, that set
+# plus the runtime (rootMainFiles of build-manifest.json: React, react-dom, Next's router, the same on every route), so
+# a runtime that grows fails the check too. The nomodule polyfill, which current browsers skip, is left out of both.
+# Turbopack names chunks by a content hash, so each set is copied to .next/size-limit/<set>/ first, where the config's
+# globs find it.
+define WEB_SIZE_CHUNKS
+const fs = require("node:fs");
+const runtime = JSON.parse(fs.readFileSync(".next/build-manifest.json", "utf8")).rootMainFiles;
+function routeChunks(page) {
+  globalThis.__RSC_MANIFEST = {};
+  require(process.cwd() + "/.next/server/app/" + page + "_client-reference-manifest.js");
+  const chunks = new Set(Object.values(globalThis.__RSC_MANIFEST["/" + page].entryJSFiles).flat());
+  for (const chunk of chunks) {
+    const refs = fs.readFileSync(".next/" + chunk, "utf8").match(/static\/chunks\/[\w-]+\.js/g) ?? [];
+    for (const ref of refs) if (!runtime.includes(ref)) chunks.add(ref);
+  }
+  return [...chunks].filter((chunk) => !runtime.includes(chunk));
+}
+const sets = { runtime, feed: routeChunks("(main)/page"), login: routeChunks("(auth)/login/page") };
+fs.rmSync(".next/size-limit", { recursive: true, force: true });
+for (const [name, chunks] of Object.entries(sets)) {
+  fs.mkdirSync(".next/size-limit/" + name, { recursive: true });
+  for (const chunk of chunks) fs.copyFileSync(".next/" + chunk, ".next/size-limit/" + name + "/" + chunk.split("/").pop());
+}
+endef
+export WEB_SIZE_CHUNKS
+
+web-check: ## Lint, format check, typecheck, unit tests (Redis db 15 as for test), production build and bundle budgets of the web client
+	@$(WEB) pnpm lint && pnpm format:check && pnpm typecheck && \
+		SVP_TEST_REDIS_URL='$(SVP_TEST_REDIS_URL)' pnpm test && pnpm build && \
+		node -e "$$WEB_SIZE_CHUNKS" && pnpm size
+
+# Both need the compose stack (make up) and the Playwright browsers (pnpm exec playwright install chromium webkit in
+# web/). LOCAL LAB ONLY: the seed (web/e2e/seed.sh) deletes the gateway's register rate limit keys in Redis db 10, as
+# make smoke does.
+web-e2e: ## Playwright end-to-end tests of the web client on Chromium and WebKit against the stack of make up (pnpm e2e)
+	@$(WEB) pnpm e2e
+
+measure-web: ## Run web-e2e and print time to first frame after a swipe (p50/p95 per browser) and the memory of container web at rest and after; JSON in web/test-results/
+	@$(WEB) bash e2e/measure-web.sh
 
 # Docker and compose targets live in their own file (stage 1, compose card).
 -include deploy/compose/compose.mk

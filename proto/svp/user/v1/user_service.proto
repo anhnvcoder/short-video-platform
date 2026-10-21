@@ -22,8 +22,9 @@ service UserService {
   //   rate limiting at the gateway.
   rpc Register(RegisterRequest) returns (RegisterResponse);
 
-  // Login exchanges email and password for an access token. Does not require
-  // caller. There is no refresh token in the MVP: log in again after expiry.
+  // Login exchanges email and password for an access token and a refresh
+  // token. Does not require caller. Every login starts a new refresh token
+  // family: logging in on a second device does not end the first one's.
   //
   // Errors:
   // - UNAUTHENTICATED: unknown email or wrong password. Both cases return the
@@ -31,6 +32,30 @@ service UserService {
   //   passes both to the client, so any difference would reveal whether the
   //   email exists.
   rpc Login(LoginRequest) returns (LoginResponse);
+
+  // Refresh exchanges a refresh token for a new access token and a new refresh
+  // token of the same family (rotation). Does not require caller: the refresh
+  // token is the credential. The presented token is used up; presenting a used
+  // token again revokes its whole family, the token issued in its place
+  // included, because either the client or someone who stole the token is
+  // replaying it and the service cannot tell which (RFC 9700, section
+  // 4.14.2). Two concurrent calls with the same token therefore end with one
+  // success and a revoked family: a client must send one refresh at a time
+  // per token and must not retry a call whose answer it did not get.
+  //
+  // Errors:
+  // - UNAUTHENTICATED: the token is malformed, unknown, expired, revoked or
+  //   already used. Every case returns the same reason
+  //   (`INVALID_REFRESH_TOKEN`) and the same message, so the answer does not
+  //   tell which tokens exist or what happened to them.
+  rpc Refresh(RefreshRequest) returns (RefreshResponse);
+
+  // Logout revokes the family of refresh_token: no token of that login can be
+  // refreshed again. Access tokens already issued stay valid until they
+  // expire. Does not require caller. Idempotent: an unknown, malformed,
+  // expired or already revoked token also succeeds, so the answer does not
+  // tell which tokens exist.
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
 
   // Follow makes the caller follow followee_id. Requires caller. Idempotent:
   // following someone already followed succeeds and emits no new event.
@@ -72,7 +97,34 @@ message LoginResponse {
   string access_token = 1;
   // When access_token stops being accepted.
   google.protobuf.Timestamp expires_at = 2;
+  // Opaque refresh token (43 characters, base64url of 32 random bytes) that
+  // starts a new family. The service stores only its SHA-256 hash.
+  string refresh_token = 3;
+  // When refresh_token stops being accepted (14 days after the login).
+  google.protobuf.Timestamp refresh_expires_at = 4;
 }
+
+message RefreshRequest {
+  string refresh_token = 1;
+}
+
+message RefreshResponse {
+  // Signed JWT for the token's user, as in LoginResponse.
+  string access_token = 1;
+  // When access_token stops being accepted.
+  google.protobuf.Timestamp expires_at = 2;
+  // The refresh token that replaces the presented one, in the same family.
+  string refresh_token = 3;
+  // When refresh_token stops being accepted: 14 days after this call, but
+  // never later than 30 days after the login that started the family.
+  google.protobuf.Timestamp refresh_expires_at = 4;
+}
+
+message LogoutRequest {
+  string refresh_token = 1;
+}
+
+message LogoutResponse {}
 
 message FollowRequest {
   string followee_id = 1;

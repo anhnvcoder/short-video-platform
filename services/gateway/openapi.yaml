@@ -20,9 +20,10 @@ info:
     Every route but `/healthz` and `/readyz` is rate limited, to slow down password guessing, mass
     sign-ups and junk writes (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md,
     section 2): `/auth/register` and `/auth/login` by the client's address, `/auth/login` also by
-    the address and email together, the other routes by the authenticated user. Every call counts,
-    successful or not. Over the limit the answer is a 429 with code `RATE_LIMITED` and a
-    `Retry-After` header in seconds.
+    the address and email together, `/auth/refresh` and `/auth/logout` by the client's address in
+    one shared bucket of 60 a minute with bursts of 30 (docs/adr/0016-web-client.md, section 4),
+    the other routes by the authenticated user. Every call counts, successful or not. Over the
+    limit the answer is a 429 with code `RATE_LIMITED` and a `Retry-After` header in seconds.
 servers:
   - url: http://127.0.0.1:8080
 security: []
@@ -73,10 +74,12 @@ paths:
   /auth/login:
     post:
       operationId: login
-      summary: Exchange email and password for an access token
+      summary: Exchange email and password for an access token and a refresh token
       description: |
-        There is no refresh token: log in again after `expires_at`. An unknown email and a wrong
-        password get the same 401 with code `INVALID_CREDENTIALS`.
+        Every login starts a new refresh token family: logging in on another device does not end
+        the sessions of the first. Before `expires_at`, exchange `refresh_token` for new tokens with
+        `POST /auth/refresh`. An unknown email and a wrong password get the same 401 with code
+        `INVALID_CREDENTIALS`.
       tags: [auth]
       requestBody:
         required: true
@@ -103,6 +106,83 @@ paths:
           $ref: "#/components/responses/PayloadTooLarge"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+
+  /auth/refresh:
+    post:
+      operationId: refresh
+      summary: Exchange a refresh token for a new access token and a new refresh token
+      description: |
+        No Bearer token is needed: the refresh token is the credential. The presented refresh
+        token is used up and replaced by the one in the answer (rotation). Presenting a used
+        token again revokes its whole family, the newest token included, since either the client
+        or someone who stole the token is replaying it. So send one refresh at a time per token,
+        and do not retry a call whose answer was lost: log in again instead. Every token that
+        cannot be used (malformed, unknown, expired, revoked or already used, a missing or empty
+        `refresh_token` included) gets the same 401 with code `INVALID_REFRESH_TOKEN`.
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshTokenRequest"
+      responses:
+        "200":
+          description: New tokens; the presented refresh token no longer works.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessToken"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: The refresh token cannot be used (`INVALID_REFRESH_TOKEN`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+
+  /auth/logout:
+    post:
+      operationId: logout
+      summary: Revoke the refresh token family of a login
+      description: |
+        No Bearer token is needed. Revokes every refresh token of the login that issued
+        `refresh_token`; access tokens already issued stay valid until their `expires_at`.
+        Idempotent: an unknown, malformed, expired or already revoked token also gets 204, so the
+        answer does not tell which tokens exist.
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshTokenRequest"
+      responses:
+        "204":
+          description: The token's family is revoked, or there was nothing to revoke.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -598,7 +678,7 @@ components:
     AccessToken:
       type: object
       additionalProperties: false
-      required: [access_token, token_type, expires_at]
+      required: [access_token, token_type, expires_at, refresh_token, refresh_expires_at]
       properties:
         access_token:
           description: JWT signed with Ed25519 (EdDSA), valid for 1 hour.
@@ -609,6 +689,25 @@ components:
         expires_at:
           type: string
           format: date-time
+        refresh_token:
+          description: |
+            Opaque token for `POST /auth/refresh` and `POST /auth/logout`, usable once. A
+            credential: keep it out of logs and out of reach of page scripts.
+          type: string
+        refresh_expires_at:
+          description: |
+            When `refresh_token` stops working: 14 days after it was issued, and never later than
+            30 days after the login.
+          type: string
+          format: date-time
+
+    RefreshTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
 
     Video:
       type: object

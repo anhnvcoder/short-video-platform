@@ -21,6 +21,8 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	UserService_Register_FullMethodName = "/svp.user.v1.UserService/Register"
 	UserService_Login_FullMethodName    = "/svp.user.v1.UserService/Login"
+	UserService_Refresh_FullMethodName  = "/svp.user.v1.UserService/Refresh"
+	UserService_Logout_FullMethodName   = "/svp.user.v1.UserService/Logout"
 	UserService_Follow_FullMethodName   = "/svp.user.v1.UserService/Follow"
 	UserService_Unfollow_FullMethodName = "/svp.user.v1.UserService/Unfollow"
 )
@@ -46,8 +48,9 @@ type UserServiceClient interface {
 	//   probe which emails are registered; accepted for the MVP and mitigated by
 	//   rate limiting at the gateway.
 	Register(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*RegisterResponse, error)
-	// Login exchanges email and password for an access token. Does not require
-	// caller. There is no refresh token in the MVP: log in again after expiry.
+	// Login exchanges email and password for an access token and a refresh
+	// token. Does not require caller. Every login starts a new refresh token
+	// family: logging in on a second device does not end the first one's.
 	//
 	// Errors:
 	// - UNAUTHENTICATED: unknown email or wrong password. Both cases return the
@@ -55,6 +58,28 @@ type UserServiceClient interface {
 	//   passes both to the client, so any difference would reveal whether the
 	//   email exists.
 	Login(ctx context.Context, in *LoginRequest, opts ...grpc.CallOption) (*LoginResponse, error)
+	// Refresh exchanges a refresh token for a new access token and a new refresh
+	// token of the same family (rotation). Does not require caller: the refresh
+	// token is the credential. The presented token is used up; presenting a used
+	// token again revokes its whole family, the token issued in its place
+	// included, because either the client or someone who stole the token is
+	// replaying it and the service cannot tell which (RFC 9700, section
+	// 4.14.2). Two concurrent calls with the same token therefore end with one
+	// success and a revoked family: a client must send one refresh at a time
+	// per token and must not retry a call whose answer it did not get.
+	//
+	// Errors:
+	// - UNAUTHENTICATED: the token is malformed, unknown, expired, revoked or
+	//   already used. Every case returns the same reason
+	//   (`INVALID_REFRESH_TOKEN`) and the same message, so the answer does not
+	//   tell which tokens exist or what happened to them.
+	Refresh(ctx context.Context, in *RefreshRequest, opts ...grpc.CallOption) (*RefreshResponse, error)
+	// Logout revokes the family of refresh_token: no token of that login can be
+	// refreshed again. Access tokens already issued stay valid until they
+	// expire. Does not require caller. Idempotent: an unknown, malformed,
+	// expired or already revoked token also succeeds, so the answer does not
+	// tell which tokens exist.
+	Logout(ctx context.Context, in *LogoutRequest, opts ...grpc.CallOption) (*LogoutResponse, error)
 	// Follow makes the caller follow followee_id. Requires caller. Idempotent:
 	// following someone already followed succeeds and emits no new event.
 	// A new edge emits user.followed on topic user.follows.v1.
@@ -94,6 +119,26 @@ func (c *userServiceClient) Login(ctx context.Context, in *LoginRequest, opts ..
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(LoginResponse)
 	err := c.cc.Invoke(ctx, UserService_Login_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) Refresh(ctx context.Context, in *RefreshRequest, opts ...grpc.CallOption) (*RefreshResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RefreshResponse)
+	err := c.cc.Invoke(ctx, UserService_Refresh_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) Logout(ctx context.Context, in *LogoutRequest, opts ...grpc.CallOption) (*LogoutResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LogoutResponse)
+	err := c.cc.Invoke(ctx, UserService_Logout_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -141,8 +186,9 @@ type UserServiceServer interface {
 	//   probe which emails are registered; accepted for the MVP and mitigated by
 	//   rate limiting at the gateway.
 	Register(context.Context, *RegisterRequest) (*RegisterResponse, error)
-	// Login exchanges email and password for an access token. Does not require
-	// caller. There is no refresh token in the MVP: log in again after expiry.
+	// Login exchanges email and password for an access token and a refresh
+	// token. Does not require caller. Every login starts a new refresh token
+	// family: logging in on a second device does not end the first one's.
 	//
 	// Errors:
 	// - UNAUTHENTICATED: unknown email or wrong password. Both cases return the
@@ -150,6 +196,28 @@ type UserServiceServer interface {
 	//   passes both to the client, so any difference would reveal whether the
 	//   email exists.
 	Login(context.Context, *LoginRequest) (*LoginResponse, error)
+	// Refresh exchanges a refresh token for a new access token and a new refresh
+	// token of the same family (rotation). Does not require caller: the refresh
+	// token is the credential. The presented token is used up; presenting a used
+	// token again revokes its whole family, the token issued in its place
+	// included, because either the client or someone who stole the token is
+	// replaying it and the service cannot tell which (RFC 9700, section
+	// 4.14.2). Two concurrent calls with the same token therefore end with one
+	// success and a revoked family: a client must send one refresh at a time
+	// per token and must not retry a call whose answer it did not get.
+	//
+	// Errors:
+	// - UNAUTHENTICATED: the token is malformed, unknown, expired, revoked or
+	//   already used. Every case returns the same reason
+	//   (`INVALID_REFRESH_TOKEN`) and the same message, so the answer does not
+	//   tell which tokens exist or what happened to them.
+	Refresh(context.Context, *RefreshRequest) (*RefreshResponse, error)
+	// Logout revokes the family of refresh_token: no token of that login can be
+	// refreshed again. Access tokens already issued stay valid until they
+	// expire. Does not require caller. Idempotent: an unknown, malformed,
+	// expired or already revoked token also succeeds, so the answer does not
+	// tell which tokens exist.
+	Logout(context.Context, *LogoutRequest) (*LogoutResponse, error)
 	// Follow makes the caller follow followee_id. Requires caller. Idempotent:
 	// following someone already followed succeeds and emits no new event.
 	// A new edge emits user.followed on topic user.follows.v1.
@@ -180,6 +248,12 @@ func (UnimplementedUserServiceServer) Register(context.Context, *RegisterRequest
 }
 func (UnimplementedUserServiceServer) Login(context.Context, *LoginRequest) (*LoginResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Login not implemented")
+}
+func (UnimplementedUserServiceServer) Refresh(context.Context, *RefreshRequest) (*RefreshResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Refresh not implemented")
+}
+func (UnimplementedUserServiceServer) Logout(context.Context, *LogoutRequest) (*LogoutResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Logout not implemented")
 }
 func (UnimplementedUserServiceServer) Follow(context.Context, *FollowRequest) (*FollowResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Follow not implemented")
@@ -244,6 +318,42 @@ func _UserService_Login_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _UserService_Refresh_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RefreshRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).Refresh(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_Refresh_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).Refresh(ctx, req.(*RefreshRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_Logout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LogoutRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).Logout(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_Logout_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).Logout(ctx, req.(*LogoutRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _UserService_Follow_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(FollowRequest)
 	if err := dec(in); err != nil {
@@ -294,6 +404,14 @@ var UserService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Login",
 			Handler:    _UserService_Login_Handler,
+		},
+		{
+			MethodName: "Refresh",
+			Handler:    _UserService_Refresh_Handler,
+		},
+		{
+			MethodName: "Logout",
+			Handler:    _UserService_Logout_Handler,
 		},
 		{
 			MethodName: "Follow",

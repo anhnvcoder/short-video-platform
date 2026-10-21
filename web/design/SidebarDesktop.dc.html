@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><link rel="stylesheet" href="./svp-tokens.css"></helmet>
+<aside style="width:248px;height:100%;box-sizing:border-box;padding:20px 16px;display:flex;flex-direction:column;gap:6px;background:var(--surface);color:var(--foreground);border-right:1px solid var(--border);font-family:var(--font-sans)">
+<a href="#" style="padding:8px 12px 20px;font-weight:700;font-size:22px;letter-spacing:0.1em;color:var(--foreground);text-decoration:none">SVP</a>
+<nav aria-label="Điều hướng chính" style="display:flex;flex-direction:column;gap:4px">
+<a href="#" aria-current="{{ homeCur }}" style="min-height:48px;padding:0 12px;border-radius:12px;display:flex;align-items:center;gap:14px;text-decoration:none;font-size:15px;font-weight:{{ homeW }};color:{{ homeC }};background:{{ homeBg }}" style-hover="background:var(--surface-hover);color:var(--foreground)"><i class="icon-house" style="font-size:22px" aria-hidden="true"></i>Trang chủ</a>
+<a href="#" aria-current="{{ profCur }}" style="min-height:48px;padding:0 12px;border-radius:12px;display:flex;align-items:center;gap:14px;text-decoration:none;font-size:15px;font-weight:{{ profW }};color:{{ profC }};background:{{ profBg }}" style-hover="background:var(--surface-hover);color:var(--foreground)"><i class="icon-user" style="font-size:22px" aria-hidden="true"></i>Hồ sơ</a>
+</nav>
+<a href="#" aria-current="{{ upCur }}" style="margin-top:12px;min-height:48px;border-radius:12px;display:flex;align-items:center;justify-content:center;gap:10px;text-decoration:none;font-size:15px;font-weight:600;background:var(--accent);color:var(--accent-foreground)" style-hover="background:var(--accent-hover)"><i class="icon-plus" style="font-size:20px" aria-hidden="true"></i>Tải lên</a>
+<div style="margin-top:auto;display:flex;flex-direction:column;gap:16px">
+<sc-if value="{{ showShortcuts }}" hint-placeholder-val="{{ true }}">
+<div style="padding:14px;border-radius:12px;border:1px solid var(--border);display:flex;flex-direction:column;gap:10px;font-size:13px;color:var(--muted)">
+<span style="font-weight:600;color:var(--foreground)">Phím tắt</span>
+<div style="display:flex;align-items:center;gap:8px"><kbd style="min-width:24px;height:24px;padding:0 6px;box-sizing:border-box;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface-raised);color:var(--foreground);font:500 12px/22px var(--font-mono);text-align:center">↑</kbd><kbd style="min-width:24px;height:24px;padding:0 6px;box-sizing:border-box;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface-raised);color:var(--foreground);font:500 12px/22px var(--font-mono);text-align:center">↓</kbd><span>Chuyển video</span></div>
+<div style="display:flex;align-items:center;gap:8px"><kbd style="min-width:24px;height:24px;padding:0 6px;box-sizing:border-box;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface-raised);color:var(--foreground);font:500 12px/22px var(--font-mono);text-align:center">Space</kbd><span>Tạm dừng / phát</span></div>
+<div style="display:flex;align-items:center;gap:8px"><kbd style="min-width:24px;height:24px;padding:0 6px;box-sizing:border-box;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface-raised);color:var(--foreground);font:500 12px/22px var(--font-mono);text-align:center">M</kbd><span>Tắt / bật tiếng</span></div>
+</div>
+</sc-if>
+<sc-if value="{{ guest }}"><div style="display:flex;flex-direction:column;gap:8px"><a href="#" style="min-height:44px;border-radius:12px;border:1px solid var(--border-strong);display:flex;align-items:center;justify-content:center;color:var(--foreground);font-size:15px;font-weight:600;text-decoration:none" style-hover="background:var(--surface-hover)">Đăng nhập</a><a href="#" style="min-height:44px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:14px;font-weight:500;text-decoration:none">Tạo tài khoản</a></div></sc-if>
+<sc-if value="{{ signedIn }}" hint-placeholder-val="{{ true }}"><div style="display:flex;align-items:center;gap:10px;padding:4px"><span aria-hidden="true" style="width:36px;height:36px;border-radius:999px;background:oklch(0.5 0.09 250);color:oklch(1 0 0);display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:600">L</span><div style="flex:1;min-width:0;display:flex;flex-direction:column"><span style="font-size:14px;font-weight:600">Lan Phương</span><span style="font-size:13px;color:var(--muted)">@lanphuong</span></div><button aria-label="Đăng xuất" style="width:44px;height:44px;border:0;border-radius:10px;background:none;color:var(--muted);display:flex;align-items:center;justify-content:center;cursor:pointer" style-hover="background:var(--surface-hover);color:var(--foreground)"><i class="icon-log-out" style="font-size:18px" aria-hidden="true"></i></button></div></sc-if>
+</div>
+</aside>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:248,&quot;height&quot;:900},&quot;active&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;home&quot;,&quot;upload&quot;,&quot;profile&quot;,&quot;none&quot;],&quot;default&quot;:&quot;home&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;guest&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;showShortcuts&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const a = this.props.active ?? 'home';
+    const guest = !!this.props.guest;
+    const v = k => a === k ? ['page', 600, 'var(--foreground)', 'var(--surface-hover)'] : [undefined, 500, 'var(--muted)', 'transparent'];
+    const h = v('home'), p = v('profile');
+    return {
+      homeCur: h[0], homeW: h[1], homeC: h[2], homeBg: h[3],
+      profCur: p[0], profW: p[1], profC: p[2], profBg: p[3],
+      upCur: a === 'upload' ? 'page' : undefined,
+      showShortcuts: this.props.showShortcuts ?? a === 'home',
+      guest, signedIn: !guest
+    };
+  }
+}
+</script>
+</body>
+</html>

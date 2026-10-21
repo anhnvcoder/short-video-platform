@@ -74,7 +74,12 @@ type backend struct {
 var (
 	userBackend = backend{
 		name: "user-service", addrVar: "USER_SERVICE_ADDR", addr: defaultUserServiceAddr,
-		retry: []string{userv1.UserService_Follow_FullMethodName, userv1.UserService_Unfollow_FullMethodName},
+		// Logout revokes a family that stays revoked, so a second try changes nothing; Refresh is
+		// not retried: a second try reuses the token and revokes its whole family (ADR-0016).
+		retry: []string{
+			userv1.UserService_Follow_FullMethodName, userv1.UserService_Unfollow_FullMethodName,
+			userv1.UserService_Logout_FullMethodName,
+		},
 	}
 	videoBackend = backend{
 		name: "video-service", addrVar: "VIDEO_SERVICE_ADDR", addr: defaultVideoServiceAddr,

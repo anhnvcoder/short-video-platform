@@ -60,9 +60,9 @@ type dependency struct {
 
 // New returns the gateway's HTTP handler: every route on its own mux, behind Trace, Recover,
 // AccessLog and ValidUTF8, with RequireAuth in front of the routes that need a caller. Every
-// route but healthz and readyz is rate limited by limits (ADR-0010 section 2): register and
-// login by client IP, the others by the authenticated user, after RequireAuth. A request
-// that matches no route gets a problem response too. userConn, videoConn, feedConn and engagementConn reach
+// route but healthz and readyz is rate limited by limits (ADR-0010 section 2): register, login,
+// refresh and logout by client IP, the others by the authenticated user, after RequireAuth. A
+// request that matches no route gets a problem response too. userConn, videoConn, feedConn and engagementConn reach
 // user-service, video-service, feed-service and engagement-service. mediaBaseURL is the public
 // base that media object keys are appended to, without a trailing slash. clientAddr finds the
 // client's address, for the rate limits by IP and the client.address of spans alike. serverName
@@ -98,6 +98,8 @@ func New(userConn, videoConn, feedConn, engagementConn grpc.ClientConnInterface,
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /auth/register", s.register)
 	mux.HandleFunc("POST /auth/login", s.login)
+	mux.HandleFunc("POST /auth/refresh", s.refresh)
+	mux.HandleFunc("POST /auth/logout", s.logout)
 	mux.Handle("PUT /me/following/{user_id}", authed(ratelimit.Write, s.follow))
 	mux.Handle("DELETE /me/following/{user_id}", authed(ratelimit.Write, s.unfollow))
 	mux.Handle("POST /videos", authed(ratelimit.Upload, s.initUpload))
@@ -168,10 +170,13 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, registerResponse{UserID: resp.GetUserId()})
 }
 
-type loginResponse struct {
-	AccessToken string    `json:"access_token"`
-	TokenType   string    `json:"token_type"`
-	ExpiresAt   time.Time `json:"expires_at"`
+// tokenResponse is the answer of login and refresh alike (schema AccessToken).
+type tokenResponse struct {
+	AccessToken      string    `json:"access_token"`
+	TokenType        string    `json:"token_type"`
+	ExpiresAt        time.Time `json:"expires_at"`
+	RefreshToken     string    `json:"refresh_token"`
+	RefreshExpiresAt time.Time `json:"refresh_expires_at"`
 }
 
 // login checks the client IP before reading the body, and the (IP, email) pair once the body
@@ -195,11 +200,68 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteGRPCError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, loginResponse{
-		AccessToken: resp.GetAccessToken(),
-		TokenType:   "Bearer",
-		ExpiresAt:   resp.GetExpiresAt().AsTime(),
+	writeJSON(w, http.StatusOK, tokenResponse{
+		AccessToken:      resp.GetAccessToken(),
+		TokenType:        "Bearer",
+		ExpiresAt:        resp.GetExpiresAt().AsTime(),
+		RefreshToken:     resp.GetRefreshToken(),
+		RefreshExpiresAt: resp.GetRefreshExpiresAt().AsTime(),
 	})
+}
+
+type refreshTokenRequest struct {
+	RefreshToken string `json:"refresh_token"`
+}
+
+// refresh and logout need no Bearer: the access token may have just expired, and the refresh
+// token is the credential. Both check the client IP before reading the body (class refresh,
+// ADR-0016 section 4). A missing or empty refresh_token goes on to user-service, which answers
+// it like any other token it cannot use. The refresh token is a credential: it never goes into
+// a log line, a span or a problem (threat model JWT-8).
+//
+// The Refresh call is never retried, not even on UNAVAILABLE: the presented token is used up, so
+// a second attempt would be a reuse and revoke the whole family.
+func (s *server) refresh(w http.ResponseWriter, r *http.Request) {
+	var req refreshTokenRequest
+	if !s.readRefreshToken(w, r, &req) {
+		return
+	}
+	ctx, cancel := callContext(r)
+	defer cancel()
+	resp, err := s.users.Refresh(ctx, &userv1.RefreshRequest{RefreshToken: req.RefreshToken})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, tokenResponse{
+		AccessToken:      resp.GetAccessToken(),
+		TokenType:        "Bearer",
+		ExpiresAt:        resp.GetExpiresAt().AsTime(),
+		RefreshToken:     resp.GetRefreshToken(),
+		RefreshExpiresAt: resp.GetRefreshExpiresAt().AsTime(),
+	})
+}
+
+// logout answers 204 for any token user-service accepts, an unknown one included, so the answer
+// does not tell which tokens exist.
+func (s *server) logout(w http.ResponseWriter, r *http.Request) {
+	var req refreshTokenRequest
+	if !s.readRefreshToken(w, r, &req) {
+		return
+	}
+	ctx, cancel := callContext(r)
+	defer cancel()
+	if _, err := s.users.Logout(ctx, &userv1.LogoutRequest{RefreshToken: req.RefreshToken}); err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// readRefreshToken counts the request in class refresh by client IP, then decodes the body into
+// req. On failure it has written the response and returns false.
+func (s *server) readRefreshToken(w http.ResponseWriter, r *http.Request, req *refreshTokenRequest) bool {
+	return s.allow(w, r, ratelimit.Refresh, ratelimit.ClientIP(r, s.clientAddr)) && httpx.DecodeJSON(w, r, req)
 }
 
 // follow and unfollow pass user_id on as it is: user-service validates it.

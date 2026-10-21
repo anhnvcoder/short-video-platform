@@ -2,8 +2,9 @@
 # (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, sections 4 to 7), plus Redpanda and
 # MinIO with their one-shot init containers (docs/adr/0008-async-upload-pipeline-stage2a.md,
 # sections 5, 6, 11 and 12), plus engagement-service and feed-service with their migrations
-# (docs/adr/0009-engagement-feed-stage2b.md, sections 9, 11 and 12). Run it through `make up` /
-# `make down` (deploy/compose/compose.mk), which pass --env-file .env.
+# (docs/adr/0009-engagement-feed-stage2b.md, sections 9, 11 and 12), plus the web client `web`
+# (docs/adr/0016-web-client.md). Run it through `make up` / `make down`
+# (deploy/compose/compose.mk), which pass --env-file .env.
 #
 # Profiles: `core` is the application above. `obs` (`make up OBS=lgtm`) adds the observability
 # stack of docs/adr/0011-observability-stage3.md, section 9: the OpenTelemetry Collector `otelcol`,
@@ -17,17 +18,27 @@
 #
 # Postgres and Redis are the native ones on the host (127.0.0.1:5432, 127.0.0.1:6379), reached
 # as host.docker.internal; each service has its own Redis db (CLAUDE.md, ADR-0010, section 1).
-# Published ports are on the host's loopback only: the gateway, the MinIO API and console,
-# Redpanda's host listener, and with `obs` Grafana (3000), Alertmanager (9093) and GlitchTip
-# (8000). gRPC ports stay inside the compose network (threat model IN-2); so do the Collector
-# (4317) and LGTM's Prometheus (9090), Tempo (3200), Loki (3100) and Pyroscope (4040), reached from
-# the host through Grafana's datasource proxy.
+# Published ports are on the host's loopback only: the gateway, the web client (3001), the MinIO
+# API and console, Redpanda's host listener, and with `obs` Grafana (3000), Alertmanager (9093)
+# and GlitchTip (8000). gRPC ports stay inside the compose network (threat model IN-2); so do
+# the Collector (4317) and LGTM's Prometheus (9090), Tempo (3200), Loki (3100) and Pyroscope
+# (4040), reached from the host through Grafana's datasource proxy.
 #
-# Two networks: `default` holds everything but media-worker; `worker` (internal, no route out)
-# holds media-worker, Redpanda, MinIO and the Collector only, so the worker that runs ffmpeg on
-# uploaded files reaches neither the gateway, the gRPC services, Postgres, LGTM nor the internet
-# (ADR-0008, section 9; threat model FF-4, FF-5). The Collector only receives telemetry there; it
-# proxies nothing for the worker (ADR-0011, section 1).
+# Three networks: `default` holds everything but media-worker and web; `worker` (internal, no
+# route out) holds media-worker, Redpanda, MinIO and the Collector only, so the worker that runs
+# ffmpeg on uploaded files reaches neither the gateway, the gRPC services, Postgres, LGTM nor the
+# internet (ADR-0008, section 9; threat model FF-4, FF-5). The Collector only receives telemetry
+# there; it proxies nothing for the worker (ADR-0011, section 1). `web` holds web and the gateway
+# only: the Next server renders every page on behalf of browsers, so code run in it (the RSC
+# remote code execution class of docs/adr/0016-web-client.md, section 1) reaches the gateway's
+# HTTP API and nothing else in the stack: not the gRPC services, which take x-user-id as given
+# (threat model IN-2), not Redpanda (no authentication in compose) or MinIO by their compose
+# names. It is not internal, because web reaches its Redis db on the host through
+# host.docker.internal; that same name opens every port of the host's loopback to it, so code run
+# in web still reaches what is published there (Redpanda's host listener 19092 without
+# authentication, MinIO 9000/9001, the other Redis dbs, Postgres with its trust rule, and with
+# `obs` Grafana, Alertmanager, GlitchTip). Accepted for the compose lab, where Redis is the host's
+# (threat model WEB-13); the k3d release closes it with NetworkPolicy.
 name: svp
 
 x-healthcheck: &healthcheck
@@ -381,6 +392,8 @@ services:
       REDIS_URL: ${SVP_GATEWAY_REDIS_URL:-redis://host.docker.internal:6379/10}
     ports:
       - "127.0.0.1:8080:8080"
+    # `web` only for the web client's BFF calls.
+    networks: [default, web]
     healthcheck: *healthcheck
     restart: unless-stopped
     depends_on:
@@ -394,6 +407,58 @@ services:
       # down, so the gateway must start without it too (ADR-0009, section 9).
       engagement-service:
         condition: service_started
+
+  # Web client: Next's standalone server, the browser's only origin, with the BFF that holds the
+  # sessions and calls the gateway (docs/adr/0016-web-client.md, sections 5 and 7). Open it at
+  # http://localhost:3001, the APP_ORIGIN that login redirects and the cookie's form go by.
+  # http://127.0.0.1:3001 works too, with a session cookie of its own: browsers send
+  # Sec-Fetch-Site: same-origin there, which the CSRF check accepts before it compares Origin.
+  web:
+    <<: *host-services
+    profiles: [core]
+    image: svp/web:dev
+    pull_policy: build
+    build:
+      # The web client's own tree, so the six Go images keep the repository's .dockerignore and
+      # build cache; web/.dockerignore leaves out node_modules, build output and .env*.
+      context: ../../web
+      dockerfile: ../deploy/docker/web.Dockerfile
+    environment:
+      # The only host the BFF calls.
+      GATEWAY_URL: http://gateway:8080
+      # Sessions and refresh locks in Redis db 9 of the host (CLAUDE.md).
+      REDIS_URL: redis://host.docker.internal:6379/9
+      # What the browser uses: the CSRF check, the cookie's form (no Secure on plain http) and
+      # the post-login redirect check compare against it.
+      APP_ORIGIN: http://localhost:3001
+      # Where the browser fetches HLS and thumbnails (the gateway's MEDIA_PUBLIC_BASE_URL), allowed
+      # by the Content-Security-Policy.
+      MEDIA_ORIGIN: http://127.0.0.1:9000
+    ports:
+      - "127.0.0.1:3001:3001"
+    # Only the network it shares with the gateway; Redis is on the host.
+    networks: [web]
+    # The same lockdown as media-worker, although the distroless image has no shell or package
+    # manager to take away: read-only root (the server writes no file: every route is rendered per
+    # request and images are not optimized, so .next/cache stays empty), no capabilities, no
+    # privilege gain, the image's non-root user.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    user: "65532:65532"
+    # About 100 MiB resident at rest; the limit bounds a leak.
+    mem_limit: 256m
+    # Node runs about a dozen threads (main, libuv pool, V8 helpers).
+    pids_limit: 64
+    healthcheck:
+      <<: *healthcheck
+      # Distroless has no shell or curl: the image's node asks /healthz, which answers from the
+      # process alone, without Redis or the gateway.
+      test: ["CMD", "/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:3001/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+    restart: unless-stopped
+    depends_on:
+      gateway:
+        condition: service_healthy
 
   media-worker:
     profiles: [core]
@@ -483,7 +548,7 @@ services:
       PYROSCOPE_EXTRA_ARGS: -usage-stats.enabled=false
       # Prometheus is not published, so the "Source" link of an alert (its generatorURL) would name
       # the container and not open from the host. The external URL points it at Grafana's datasource
-      # proxy on the published 127.0.0.1:3000 instead, with no eighth published port. The route
+      # proxy on the published 127.0.0.1:3000 instead, with no extra published port. The route
       # prefix stays /, so everything inside the container and the compose network (Grafana's
       # datasource, the image's healthcheck, OTLP and remote write) still reaches Prometheus at the
       # root (ADR-0011, section 8).
@@ -686,6 +751,7 @@ networks:
   default:
   worker:
     internal: true
+  web:
 
 volumes:
   redpanda-data:

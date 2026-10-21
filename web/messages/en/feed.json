@@ -1,0 +1,67 @@
+{
+  "tabs": {
+    "label": "Choose a feed",
+    "following": "Following",
+    "explore": "Explore"
+  },
+  "feedLabel": "Videos",
+  "loading": "Loading video",
+  "playError": {
+    "title": "Can't play this video",
+    "body": "Something went wrong loading this video. Try again or swipe to the next one.",
+    "retry": "Try again"
+  },
+  "offline": {
+    "title": "You're offline",
+    "body": "Videos will keep playing when you're back online."
+  },
+  "mute": "Mute (M)",
+  "unmute": "Unmute (M)",
+  "tapToUnmute": "Tap to unmute",
+  "paused": "Paused · Space to play",
+  "play": "Play video",
+  "pause": "Pause video",
+  "like": "Like video",
+  "likeWithCount": "Like video, {count}",
+  "unlikeWithCount": "Unlike video, {count}",
+  "likeText": "Like",
+  "likeCount": "{count} likes",
+  "viewCount": "{count} views",
+  "follow": "Follow creator",
+  "unfollow": "Unfollow creator",
+  "author": "Creator",
+  "titleMore": "More",
+  "titleLess": "Less",
+  "progress": "Video progress",
+  "previous": "Previous video (↑)",
+  "next": "Next video (↓)",
+  "empty": {
+    "followingTitle": "You're not following anyone yet",
+    "followingBody": "Follow creators in Explore and their new videos will show up here.",
+    "followingAction": "Go to Explore",
+    "exploreTitle": "No videos yet",
+    "exploreBody": "New videos will show up here once someone posts."
+  },
+  "end": {
+    "title": "You're all caught up",
+    "exploreBody": "No more new videos in Explore. Check back later for more.",
+    "followingBody": "No more new videos from people you follow. Check back later for more.",
+    "action": "Watch from the start"
+  },
+  "loadError": {
+    "title": "Couldn't load videos",
+    "body": "Something went wrong loading the feed. Check your connection and try again.",
+    "rateLimited": "You're going a bit fast. Try again in a few seconds.",
+    "retry": "Try again"
+  },
+  "toast": {
+    "region": "Notifications",
+    "likeFailed": "Couldn't like the video. Undone.",
+    "unlikeFailed": "Couldn't unlike the video. Undone.",
+    "followFailed": "Couldn't follow the creator. Try again later.",
+    "unfollowFailed": "Couldn't unfollow the creator. Try again later.",
+    "rateLimited": "You're going a bit fast. Try again in a few seconds.",
+    "retry": "Try again",
+    "dismiss": "Dismiss"
+  }
+}

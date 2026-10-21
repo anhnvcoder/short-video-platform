@@ -1,6 +1,6 @@
 # 0010. Giai đoạn 2 phần C: Redis cho rate limit và cache feed khám phá, timeout/retry/circuit breaker ở gateway, job dọn upload bỏ dở
 
-- Trạng thái: Chấp nhận
+- Trạng thái: Chấp nhận; §2 (bảng lớp rate limit, thêm `refresh`) chỉnh bởi [0016](0016-web-client.md)
 - Ngày: 2026-10-11
 
 ## Bối cảnh

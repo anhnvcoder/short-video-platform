@@ -119,7 +119,7 @@ GLITCHTIP_INIT = COMPOSE='$(COMPOSE_UP_lgtm)' deploy/observability/glitchtip/ini
 glitchtip-init: env-required db-bootstrap ## Migrate and bootstrap GlitchTip (admin, org/project svp, drill token), add SENTRY_* to .env; idempotent, never changes a set value
 	$(GLITCHTIP_INIT)
 
-up: k3d-exclusive env-required obs-valid obs-exclusive db-bootstrap ## Bootstrap Postgres, build, migrate and start the core stack; OBS=lgtm adds Grafana LGTM (127.0.0.1:3000) and GlitchTip (127.0.0.1:8000), OBS=elastic adds Elasticsearch, Kibana (127.0.0.1:5601) and APM Server instead, OBS=off turns telemetry off (drills keep it off); refuses while a container of a profile not chosen runs (make down first)
+up: k3d-exclusive env-required obs-valid obs-exclusive db-bootstrap ## Bootstrap Postgres, build, migrate and start the core stack (web client at http://localhost:3001); OBS=lgtm adds Grafana LGTM (127.0.0.1:3000) and GlitchTip (127.0.0.1:8000), OBS=elastic adds Elasticsearch, Kibana (127.0.0.1:5601) and APM Server instead, OBS=off turns telemetry off (drills keep it off); refuses while a container of a profile not chosen runs (make down first)
 	$(if $(filter lgtm,$(OBS)),$(GLITCHTIP_INIT))
 	$(COMPOSE_UP_$(OBS)) up -d --build --wait
 

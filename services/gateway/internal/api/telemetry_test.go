@@ -50,6 +50,22 @@ func recordSpans(t *testing.T) *tracetest.SpanRecorder {
 	return rec
 }
 
+// endedSpans returns the spans ended so far once there are at least want of them, or after two
+// seconds. A service's span ends after its answer has left: the gRPC server runs the stats
+// handler that ends the span in a deferred call once the status is written, so the gateway can
+// finish the request before the span reaches the recorder.
+func endedSpans(t *testing.T, rec *tracetest.SpanRecorder, want int) []sdktrace.ReadOnlySpan {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		ended := rec.Ended()
+		if len(ended) >= want || time.Now().After(deadline) {
+			return ended
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // logLines returns the decoded log lines whose msg is msg.
 func logLines(t *testing.T, logs *bytes.Buffer, msg string) []map[string]any {
 	t.Helper()
@@ -81,8 +97,9 @@ func TestTraceAcrossServices(t *testing.T) {
 	e.handler.ServeHTTP(rec, r)
 	wantStatus(t, rec, http.StatusServiceUnavailable)
 
+	ended := endedSpans(t, spans, 3)
 	var httpSpan, clientSpan, serverSpan sdktrace.ReadOnlySpan
-	for _, s := range spans.Ended() {
+	for _, s := range ended {
 		switch {
 		case s.SpanKind() == trace.SpanKindServer && s.Name() == "GET /videos/{video_id}":
 			httpSpan = s
@@ -93,7 +110,7 @@ func TestTraceAcrossServices(t *testing.T) {
 		}
 	}
 	if httpSpan == nil || clientSpan == nil || serverSpan == nil {
-		t.Fatalf("spans = %v, want the HTTP, gRPC client and service spans", spanNames(spans.Ended()))
+		t.Fatalf("spans = %v, want the HTTP, gRPC client and service spans", spanNames(ended))
 	}
 	id := httpSpan.SpanContext().TraceID()
 	if id.String() == clientTraceID || httpSpan.Parent().IsValid() {
@@ -156,7 +173,7 @@ func TestLoginSpansHoldNoSecrets(t *testing.T) {
 			e.handler.ServeHTTP(rec, r)
 			wantStatus(t, rec, tc.want)
 
-			ended := spans.Ended()
+			ended := endedSpans(t, spans, 3)
 			if len(ended) != 3 {
 				t.Fatalf("spans = %v, want HTTP, client and service", spanNames(ended))
 			}
@@ -171,6 +188,57 @@ func TestLoginSpansHoldNoSecrets(t *testing.T) {
 			}
 			if !bytes.Contains(raw, []byte(`"POST /auth/login"`)) {
 				t.Errorf("no span named POST /auth/login:\n%s", raw)
+			}
+		})
+	}
+}
+
+// TestRefreshTokensStayOutOfTelemetry is threat model JWT-8 on refresh and logout: whatever
+// user-service answers, neither the presented refresh token nor the tokens of the answer reach a
+// span, a log line or a problem body.
+func TestRefreshTokensStayOutOfTelemetry(t *testing.T) {
+	for _, tc := range []struct {
+		name, path string
+		fail       error
+		want       int
+	}{
+		{"refresh", "/auth/refresh", nil, http.StatusOK},
+		{"refresh with an invalid token", "/auth/refresh", grpcerr.New(codes.Unauthenticated, "INVALID_REFRESH_TOKEN", "invalid refresh token"), http.StatusUnauthorized},
+		{"refresh failing inside user-service", "/auth/refresh", grpcerr.New(codes.Internal, "DB_DOWN", "database unavailable"), http.StatusInternalServerError},
+		{"logout", "/auth/logout", nil, http.StatusNoContent},
+		{"logout with user-service unavailable", "/auth/logout", status.Error(codes.Unavailable, "user-service is down"), http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := captureLog(t)
+			spans := recordSpans(t)
+			e := newEnv(t)
+			if tc.fail != nil {
+				e.users.fail(tc.fail)
+			}
+			rec := e.do(t, http.MethodPost, tc.path, refreshBody, "")
+			wantStatus(t, rec, tc.want)
+			if strings.Contains(rec.Body.String(), fakeRefreshToken) {
+				t.Errorf("response echoes the presented token: %s", rec.Body.String())
+			}
+
+			ended := endedSpans(t, spans, 3)
+			if len(ended) != 3 {
+				t.Fatalf("spans = %v, want HTTP, client and service", spanNames(ended))
+			}
+			raw, err := json.Marshal(tracetest.SpanStubsFromReadOnlySpans(ended))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, secret := range []string{fakeRefreshToken, rotatedRefreshToken, rotatedAccessToken} {
+				if bytes.Contains(raw, []byte(secret)) {
+					t.Errorf("spans contain %q:\n%s", secret, raw)
+				}
+				if strings.Contains(logs.String(), secret) {
+					t.Errorf("log contains %q:\n%s", secret, logs.String())
+				}
+			}
+			if access := logLines(t, logs, "http request"); len(access) != 1 || access[0]["route"] != "POST "+tc.path {
+				t.Errorf("access log = %v, want one line for POST %s", access, tc.path)
 			}
 		})
 	}
@@ -208,7 +276,7 @@ func TestReadyzLeavesNoSpans(t *testing.T) {
 	wantStatus(t, e.do(t, http.MethodGet, "/readyz", "", ""), http.StatusOK)
 
 	checks := 0
-	for _, s := range spans.Ended() {
+	for _, s := range endedSpans(t, spans, 3) {
 		switch {
 		case s.SpanKind() == trace.SpanKindServer && s.Name() == strings.TrimPrefix(healthpb.Health_Check_FullMethodName, "/"):
 			checks++

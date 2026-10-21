@@ -1,6 +1,6 @@
-// Package server implements svp.user.v1.UserService: accounts, login and the follow graph. A
-// change to the follow graph writes user.followed or user.unfollowed to the outbox in the same
-// transaction, so the event is published exactly when the change commits
+// Package server implements svp.user.v1.UserService: accounts, login, refresh tokens and the
+// follow graph. A change to the follow graph writes user.followed or user.unfollowed to the outbox
+// in the same transaction, so the event is published exactly when the change commits
 // (docs/adr/0009-engagement-feed-stage2b.md, section 1).
 package server
 
@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/mail"
 	"strings"
+	"time"
 	"uuid"
 
 	"github.com/jackc/pgx/v5"
@@ -38,6 +39,9 @@ import (
 var PublicMethods = []string{
 	userv1.UserService_Register_FullMethodName,
 	userv1.UserService_Login_FullMethodName,
+	// The refresh token is what authenticates these two: the access token may already be expired.
+	userv1.UserService_Refresh_FullMethodName,
+	userv1.UserService_Logout_FullMethodName,
 	healthpb.Health_Check_FullMethodName,
 }
 
@@ -84,12 +88,15 @@ type Server struct {
 	hasher  Hasher
 	issuer  *authtoken.Issuer
 	logger  *slog.Logger
+	// now is the clock refresh tokens are issued and checked against; tests replace it to reach
+	// an expiry without waiting.
+	now func() time.Time
 }
 
 // New returns a Server reading and writing through pool, hashing with hasher and signing tokens
 // with issuer. logger should come from logx so context attributes reach the log.
 func New(pool *pgxpool.Pool, hasher Hasher, issuer *authtoken.Issuer, logger *slog.Logger) *Server {
-	return &Server{pool: pool, queries: store.New(pool), hasher: hasher, issuer: issuer, logger: logger}
+	return &Server{pool: pool, queries: store.New(pool), hasher: hasher, issuer: issuer, logger: logger, now: time.Now}
 }
 
 // Register creates an account for a new email.
@@ -121,9 +128,10 @@ func (s *Server) Register(ctx context.Context, req *userv1.RegisterRequest) (*us
 	return &userv1.RegisterResponse{UserId: id}, nil
 }
 
-// Login returns an access token for a matching email and password. Every way of failing to
-// authenticate returns the same error, and an unknown email still runs a hash comparison, so
-// neither the answer nor its timing tells whether the email is registered (JWT-5).
+// Login returns an access token and a refresh token that opens a new family for a matching email
+// and password. Every way of failing to authenticate returns the same error, and an unknown email
+// still runs a hash comparison, so neither the answer nor its timing tells whether the email is
+// registered (JWT-5).
 func (s *Server) Login(ctx context.Context, req *userv1.LoginRequest) (*userv1.LoginResponse, error) {
 	pw := secret.New(req.GetPassword())
 	email, ok := normalizeEmail(req.GetEmail())
@@ -164,8 +172,18 @@ func (s *Server) Login(ctx context.Context, req *userv1.LoginRequest) (*userv1.L
 	if err != nil {
 		return nil, s.internal(ctx, "issue token", err)
 	}
+	// Without its refresh token the login fails as a whole rather than return the access token alone.
+	refresh, refreshExpiresAt, err := s.startFamily(ctx, user.ID, s.clock())
+	if err != nil {
+		return nil, s.internal(ctx, "insert refresh token", err)
+	}
 	s.logger.InfoContext(ctx, "user logged in")
-	return &userv1.LoginResponse{AccessToken: token.Reveal(), ExpiresAt: timestamppb.New(expiresAt)}, nil
+	return &userv1.LoginResponse{
+		AccessToken:      token.Reveal(),
+		ExpiresAt:        timestamppb.New(expiresAt),
+		RefreshToken:     refresh.value.Reveal(),
+		RefreshExpiresAt: timestamppb.New(refreshExpiresAt),
+	}, nil
 }
 
 // rehash stores a hash of pw made with the current parameters (JWT-7). A failure is logged and
