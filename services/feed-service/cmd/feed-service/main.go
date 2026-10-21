@@ -20,6 +20,9 @@
 // (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 1). serve exports
 // telemetry when OTEL_EXPORTER_OTLP_ENDPOINT is set, profiles when PYROSCOPE_SERVER_ADDRESS is,
 // and reports errors when SENTRY_DSN is (docs/adr/0011-observability-stage3.md).
+//
+// Release images are built, scanned and signed in CI, and clusters run them by digest
+// (docs/adr/0015-cicd-devsecops-stage5.md).
 package main
 
 import (
