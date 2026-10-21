@@ -1,7 +1,8 @@
 # Kiến trúc short-video platform
 
-> Trạng thái: giai đoạn 0, 1, 2 (2026-10-11) và 3 (2026-10-17) xong; giai đoạn 4 (Kubernetes local) đang làm, đường dev
-> đã chạy và đã kiểm, phần GitOps push → sync còn chờ kiểm. ADR 0001–0014, contract ở [`proto/`](../proto/)
+> Trạng thái: giai đoạn 0, 1, 2 (2026-10-11), 3 (2026-10-17) và 4 (2026-10-20) xong; giai đoạn 5 (CI/CD và chuỗi cung ứng,
+> [§5.2](#52-cicd-và-chuỗi-cung-ứng-giai-đoạn-5)) đang làm: phần chạy được trên máy đã kiểm ngày 2026-10-21, phần chạy
+> trên GitHub và cluster GitOps kiểm sau push. ADR 0001–0015, contract ở [`proto/`](../proto/)
 > ([§8](#8-contract)), threat model ở [`threat-model.md`](threat-model.md). `make up` chạy luồng đồng bộ (đăng ký, đăng
 > nhập, tạo và đọc video, follow), luồng upload bất đồng bộ (presigned POST lên MinIO, outbox → Redpanda, media-worker
 > transcode ra HLS, video `READY` hoặc `FAILED`, job dọn upload bỏ dở), luồng feed (follow qua outbox, feed-service
@@ -270,7 +271,8 @@ flowchart LR
 
 - **Namespace:** `svp` (6 service), `svp-data` (Postgres, Valkey, Redpanda, MinIO), `svp-obs` (observability, GlitchTip),
   `svp-edge` (`Gateway`, chứng chỉ wildcard); công cụ ở `cert-manager`, `envoy-gateway-system`, `cnpg-system`, `keda`,
-  `argo-rollouts` và `argocd` (chỉ đường GitOps). Mọi namespace trừ `kube-system` chạy Pod Security `restricted`; bốn
+  `argo-rollouts`, `kyverno` (giai đoạn 5) và `argocd` (chỉ đường GitOps). Mọi namespace trừ `kube-system` chạy Pod
+  Security `restricted`; bốn
   namespace của project có NetworkPolicy chặn mặc định hai chiều, mỗi luồng ở bảng ADR-0014 §3 một policy theo label pod
   (threat model FF-5, IN-2).
 - **Luồng vào:** client gọi `https://api.svp.localhost:8443` (tên `*.localhost` phân giải về loopback), qua load balancer
@@ -293,11 +295,12 @@ flowchart LR
   Tempo, scrape `/public_metrics` của Redpanda), kube-prometheus-stack (Prometheus, Alertmanager gửi Telegram, Grafana),
   Loki, Tempo có metrics-generator, Pyroscope, GlitchTip trên database `svp_glitchtip` của `svp-pg`. Không UI nào có route
   hay cổng node: chỉ `make k8s-ui-*` (port-forward trên `127.0.0.1`), Grafana và GlitchTip có đăng nhập.
-- **Cài đặt và GitOps** (ADR-0014 §7, §12): `deploy/argocd/apps/components.json` liệt kê 20 thành phần theo wave 0–7
-  (cert-manager và Envoy Gateway; namespace, CA, policy; operator; backend dữ liệu và observability; chart dữ liệu; chart
-  observability; Collector; 6 service). Đường dev `make k8s-up` cài file đó bằng Helm, image tag `dev-<image ID>` build
-  từ working tree; đường GitOps `make k8s-gitops-up` dựng cluster mới mà Argo CD (app-of-apps, root `svp-root`, AppProject
-  `svp`) đồng bộ từ GitHub, image theo tag 12 ký tự của commit do `make k8s-release` build và ghi vào values.
+- **Cài đặt và GitOps** (ADR-0014 §7, §12): `deploy/argocd/apps/components.json` liệt kê 22 thành phần theo wave 0–7
+  (cert-manager và Envoy Gateway; namespace, CA, policy; operator và Kyverno; backend dữ liệu, observability và policy
+  image `svp-policy`; chart dữ liệu; chart observability; Collector; 6 service). Đường dev `make k8s-up` cài file đó bằng
+  Helm, image tag `dev-<image ID>` build từ working tree vào registry k3d; đường GitOps `make k8s-gitops-up` dựng cluster
+  mới mà Argo CD (app-of-apps, root `svp-root`, AppProject `svp`) đồng bộ từ GitHub, image kéo từ GHCR theo digest mà PR
+  promote ghi vào values (giai đoạn 5, [§5.2](#52-cicd-và-chuỗi-cung-ứng-giai-đoạn-5)).
 - **Canary của gateway** (ADR-0014 §13): Argo Rollouts đổi trọng số HTTPRoute `api` qua plugin Gateway API: 25% → 60 s →
   50% → 60 s → bước phân tích chặn → 100%. Phân tích đọc metric Envoy của backend canary trong Prometheus: tỉ lệ 5xx < 1%
   và p99 < 150 ms (SLO feed), cần ít nhất 30 response không phải 4xx mỗi phút; hỏng hay Prometheus không trả lời thì
@@ -307,6 +310,85 @@ flowchart LR
 - **Chi phí:** RAM của cả cluster lúc nghỉ 5,9–6,8 GiB theo `docker stats` (gồm ~1–2 GiB page cache; phần anon ~3,9 GiB),
   đỉnh ~8 GiB khi media-worker scale lên, so với 1,7–2,6 GiB của compose `core` + `obs`; số đo, thời gian dựng và kết quả
   diễn tập ở [plan](../plans/261004-devops-sa-roadmap/plan.md), Tiến độ giai đoạn 4.
+
+### 5.2 CI/CD và chuỗi cung ứng (giai đoạn 5)
+
+Image phát hành không còn build trên máy: GitHub Actions build, quét, ký và đẩy lên GHCR; một PR ghi digest vào values;
+Argo CD đồng bộ; Kyverno chỉ cho pod của `svp` chạy image đã ký và sạch. Thiết kế và lý do ở
+[ADR-0015](adr/0015-cicd-devsecops-stage5.md); lệnh ở [`CLAUDE.md`](../CLAUDE.md) mục Kiểm tra. Đường dev `make k8s-up`
+giữ image `dev-*` chưa ký trong registry k3d, policy chạy Audit.
+
+```mermaid
+flowchart LR
+    dev["Người học<br/>nhánh, PR"]
+    renovate["App Renovate<br/>PR dependency"]
+    subgraph gh["GitHub: repo public"]
+        pr["Pull request"]
+        checks["ci.yml: make check, generate-check,<br/>buf, config, gitleaks<br/>images.yml: build-nopush, values-check"]
+        main["main<br/>ruleset: ci-ok, images-ok"]
+        build["images.yml trên main<br/>build amd64 + arm64 → trivy<br/>→ push → index → ký, attest"]
+        promote["bot/promote<br/>PR promote"]
+        rescan["rescan hằng ngày"]
+    end
+    ghcr[("GHCR<br/>image theo digest,<br/>.sig, .att")]
+    sigstore["Sigstore công khai<br/>Fulcio, Rekor, TUF"]
+    subgraph cluster["cluster GitOps svp"]
+        argo["Argo CD<br/>poll git"]
+        kyv["Kyverno svp-images<br/>Enforce, chỉ ns svp"]
+        app["Pod của svp<br/>canary gateway"]
+    end
+    dev --> pr
+    renovate --> pr
+    pr --> checks
+    checks -->|"xanh, merge"| main
+    main --> build
+    build -->|"push, .sig, .att"| ghcr
+    build -->|"OIDC → chứng chỉ, log ký"| sigstore
+    build --> promote
+    promote -->|"người học duyệt, merge"| main
+    rescan -->|"attestation vuln mới"| ghcr
+    main -->|"values: image.digest"| argo
+    argo -->|"tạo pod"| kyv
+    kyv -->|"chữ ký, attestation"| ghcr
+    kyv -->|"khoá tin cậy TUF"| sigstore
+    kyv -->|"nhận"| app
+    app -->|"kéo theo digest"| ghcr
+```
+
+- **Hai workflow** (ADR-0015 §1, §2): `ci.yml` chạy đủ mục Kiểm tra (Go test trên Postgres và Redis là service
+  container, lệch code sinh, `buf breaking`, cấu hình, chart, digest bên thứ ba, gitleaks toàn lịch sử); `images.yml`
+  build image. Mỗi file một check tổng (`ci-ok`, `images-ok`), là hai check bắt buộc của ruleset `main`. Mọi action ghim
+  SHA commit và chỉ là action của GitHub hay của chính nhà cung cấp công cụ; trivy, syft chạy bằng image ghim digest.
+  Mọi job của lượt PR, kể cả PR từ fork, chỉ có `contents: read` và không secret; quyền ghi (`packages`, `id-token`,
+  `contents`, `pull-requests`, `security-events`) chỉ ở job chạy trên `main` với code đã qua PR.
+- **Build** (§3, §4, §6): chỉ service có thay đổi so với lần push `main` thành công cuối (tập đường dẫn `image_paths` của
+  `deploy/k8s/lib.sh`; đổi đường build, quét, ký thì cả sáu). Mỗi service build native trên runner amd64 và arm64, trivy
+  quét tar cục bộ của từng kiến trúc: bí mật (mọi severity) và lỗ hổng CRITICAL chặn **trước** push, HIGH chỉ báo
+  (SARIF lên tab Security của `main`); ngoại lệ chỉ qua `.trivyignore.yaml` có lý do, tối đa 30 ngày. Push đúng image đã
+  quét (so config digest), rồi ghép index đa kiến trúc `ghcr.io/anhnvcoder/short-video-platform/<svc>:<12 hex commit>`.
+- **Ký và attestation** (§7): cosign keyless bằng OIDC của GitHub (chứng chỉ Fulcio, ghi Rekor; không khoá dài hạn), ký
+  digest index với identity `images.yml@refs/heads/main`; attestation `vuln` trên index gộp kết quả quét hai nền tảng,
+  SBOM SPDX của syft trên từng manifest con. Rescan hằng ngày quét lại mọi digest đang phát hành bằng DB mới và thay
+  attestation `vuln`.
+- **Promote** (§9): job `promote` dựng lại nhánh `bot/promote` từ `main`, ghi `repository`, `tag`, `digest` của mọi
+  service đã ký mà chưa merge (không bao giờ ghi lùi) vào `deploy/k8s/values/services/<svc>.yaml` và mở hay cập nhật một PR
+  cuộn. Người học bấm duyệt lượt chạy của PR, merge khi hai check xanh; Argo CD poll thấy commit, sync, gateway đi canary
+  như giai đoạn 4. Rollback là PR revert.
+- **Admission** (§8): Kyverno 1.19.1 (admission controller 1 replica + reports controller), một `ImageValidatingPolicy`
+  `svp-images` cho Pod ở namespace `svp`, kiểm theo thứ tự: prefix GHCR của repo và có digest (không gọi mạng), chữ ký
+  đúng identity, attestation `vuln` đúng identity, đủ hai nền tảng, không CRITICAL, không quá 72 giờ. Đường GitOps Enforce
+  (`Deny`, webhook `Fail`: Kyverno chết hay Sigstore, GHCR không tới được thì pod `svp` mới bị từ chối); đường dev Audit.
+  Namespace khác không qua webhook. Image bên thứ ba (operator, dữ liệu, observability, Argo CD, Kyverno) ghim digest, kiểm
+  tĩnh trong CI bằng `deploy/k8s/check-image-digests.sh`, chưa kiểm chữ ký nhà cung cấp.
+- **Renovate** (§10): App Mend chỉ cho repo này, mở PR hằng tuần cho Go module, action (SHA), base image, công cụ của
+  `Makefile`, chart và image ghim; chờ bản phát hành 3 ngày, không automerge.
+- **Chi phí:** repo public nên runner (cả arm64) và package GHCR public không tính tiền; ngân sách thời gian mỗi workflow
+  dưới 10 phút (kiểm sau push). Kyverno thêm 0,13–0,16 GiB RAM: cluster dev nghỉ 6,40 GiB, đỉnh 7,92 GiB khi media-worker
+  scale lên (đo 2026-10-21, cách đo ADR-0014 §2); cluster GitOps đo sau push.
+- **Trạng thái:** phần kiểm được trên máy đã kiểm ngày 2026-10-20 và 2026-10-21: mọi lệnh của `ci.yml`, cổng image và
+  các script CI chạy trên máy hay trên repo git tạm, đường dev có Kyverno, các ca từ chối của diễn tập chuỗi cung ứng với
+  policy Enforce tạm. Workflow chạy thật, chữ ký thật, PR promote, cluster GitOps Enforce, Renovate **kiểm sau push**
+  (ADR-0015, mục "Kiểm chứng sau phát hành").
 
 ## 6. Sở hữu dữ liệu và event
 

@@ -2,9 +2,12 @@
 # public HTTP API behind Envoy at https://api.svp.localhost:8443. Secret gateway-env holds JWT_VERIFY_KEYS, public
 # keys only: the gateway verifies tokens, it cannot sign them (threat model JWT-10).
 image:
-  repository: k3d-svp-registry:5111/svp/gateway
-  # Written by a release; empty means "the dev tag make k8s-up passes".
-  tag: "8e7a6d80812b"
+  # Releases on GHCR, built, scanned and signed by CI (.github/workflows/images.yml). The promote pull request
+  # writes the three lines below; the GitOps cluster pulls the digest, the tag names the commit for people. Empty:
+  # no release yet. The dev path (make k8s-up) ignores them and passes its own registry, tag and an empty digest.
+  repository: ghcr.io/anhnvcoder/short-video-platform/gateway
+  tag: ""
+  digest: ""
 protocol: http
 port: 8080
 resources:

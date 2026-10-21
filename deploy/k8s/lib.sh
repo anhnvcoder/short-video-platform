@@ -11,10 +11,13 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 
 # k3d's own helper images, pinned by digest (multi-arch index): k3d otherwise picks them by its version tag
 # (docs/adr/0014-kubernetes-local-stage4.md, section 1).
+# renovate: datasource=docker depName=ghcr.io/k3d-io/k3d-proxy
 export K3D_IMAGE_LOADBALANCER=ghcr.io/k3d-io/k3d-proxy:5.9.0@sha256:7be40abfeb6ac9a81d0d4157a7cbf3aacc68a64a1780ca2efb160f1aea915177
+# renovate: datasource=docker depName=ghcr.io/k3d-io/k3d-tools
 export K3D_IMAGE_TOOLS=ghcr.io/k3d-io/k3d-tools:5.9.0@sha256:c57abce697e66feeb826922718738fe186b47779312d49d4e51e6fb9b8a6f34d
 # The local registry (ADR section 6): k3d prefixes the name, so the container is k3d-svp-registry; inside it listens on
 # 5000, published on 127.0.0.1:5111 only.
+# renovate: datasource=docker depName=docker.io/library/registry
 registry_image=docker.io/library/registry:3.1.2@sha256:ddf754342cfc8acc51a56d5d0ab6af06826461864460636d8bd5c546dab2a7b8
 # Deadline of `k3d cluster create` and `k3d cluster start`, which otherwise wait forever for a node's "up and running"
 # log line (k3d v5.9.0 sets one only when --timeout > 0). k3d applies it to each step of a create (network, containers
@@ -267,6 +270,26 @@ argocd_root_app() {
   }'
 }
 
+# image_policy_ready NAME [FAILURE_POLICY]: true when Kyverno has compiled ImageValidatingPolicy NAME
+# (status.conditionStatus.ready) and kyverno-resource-validating-webhook-cfg holds a webhook for it: one of the
+# policy's failurePolicy (FAILURE_POLICY when given: Fail or Ignore), objectSelector and rules whose namespaceSelector
+# carries the policy's match on namespace svp (Kyverno ANDs it with the selector of its own ConfigMap). A policy with
+# its own webhookConfiguration.timeoutSeconds (svp-images and every temporary policy of the drills) gets a webhook of
+# its own, ivpol.validate.kyverno.svc-fail-finegrained-<policy> (-ignore- in Audit); the webhook is still found by what
+# it selects, not by that name, which is Kyverno's to change (docs/adr/0015-cicd-devsecops-stage5.md, section 8).
+image_policy_ready() {
+  local name=$1 want=${2:-} pol
+  pol=$(kc get imagevalidatingpolicies.policies.kyverno.io "$name" -o json 2>/dev/null) || return 1
+  [ "$(jq -r '.status.conditionStatus.ready // false' <<<"$pol")" = true ] || return 1
+  [ -n "$want" ] || want=$(jq -r '.spec.failurePolicy // "Fail"' <<<"$pol")
+  kc get validatingwebhookconfiguration kyverno-resource-validating-webhook-cfg -o json 2>/dev/null |
+    jq -e --arg want "$want" --argjson sel "$(jq -c '.spec.matchConstraints.objectSelector // {}' <<<"$pol")" '
+      [.webhooks[] | select(.name | startswith("ivpol."))
+        | select(.failurePolicy == $want and (.objectSelector // {}) == $sel)
+        | select(any(.rules[]?; .resources | index("pods")))
+        | select((.namespaceSelector.matchLabels // {})["kubernetes.io/metadata.name"] == "svp")] | length > 0' >/dev/null
+}
+
 # workload_kind NAMESPACE NAME: rollout when NAME is an Argo Rollouts Rollout (the gateway, which chart svp-service
 # renders as one: docs/adr/0014-kubernetes-local-stage4.md, section 13), deployment otherwise. Before Argo Rollouts is
 # installed the kind does not exist and the answer is deployment.
@@ -371,82 +394,142 @@ build_dev_images() {
   done
 }
 
-# Release images (ADR-0014 section 6): tagged with the first 12 hex digits of the commit they are built from, the tag
-# deploy/k8s/values/services/<service>.yaml holds on the GitOps path.
-
 # image_paths SERVICE: the paths SERVICE's image is built from, relative to the repository root: what its Dockerfile
 # copies (go.mod, go.sum, gen/, internal/, services/<service>/), the Dockerfile itself and .dockerignore, which decides
-# what reaches the build.
+# what reaches the build. CI builds a release of SERVICE when one of them changed (deploy/ci/changed-services.sh).
 image_paths() {
   printf '%s\n' go.mod go.sum gen internal "services/$1" "$(dockerfile "$1")" .dockerignore
 }
 
-# build_release_image SERVICE REV: builds SERVICE's image from commit REV of this clone, pushes it to the registry as
-# 127.0.0.1:5111/svp/<service>:<first 12 hex digits of the commit>, and sets release_tag to that tag. The source is
-# `git archive` of the commit, unpacked into a new temporary directory: neither the working tree nor the index is
-# read or changed, so the image holds exactly what the commit holds whatever the working tree looks like, and a tag
-# lost with the registry (`make k8s-down` deletes it) can be built again from its commit. Run after ensure_registry.
-build_release_image() {
-  local svc=$1 sha dir ref
-  sha=$(git -C "$repo_root" rev-parse --verify --quiet "$2^{commit}") || fail "$2 is not a commit of this clone"
-  release_tag=${sha:0:12}
-  dir=$(mktemp -d) || fail "create a temporary directory for the source of commit $release_tag"
-  echo "build $svc from commit $release_tag"
-  if ! git -C "$repo_root" archive "$sha" | tar -x -C "$dir"; then
-    rm -rf "$dir"
-    fail "unpack commit $release_tag with git archive"
-  fi
-  if ! build_image "$svc" "$dir"; then
-    rm -rf "$dir"
-    fail "build the image of $svc from commit $release_tag"
-  fi
-  rm -rf "$dir"
-  ref="127.0.0.1:5111/svp/$svc:$release_tag"
-  docker_ tag "$image_id" "$ref" || fail "tag the image of $svc as $ref"
-  docker_ push --quiet "$ref" >/dev/null || fail "push $ref"
-  ok "$svc image $release_tag pushed to the registry"
-}
+# Release images (docs/adr/0015-cicd-devsecops-stage5.md, sections 5 and 9): built, scanned and signed by CI only,
+# under this prefix on GHCR, one image per service; nothing else may be pushed there. The promote pull request writes
+# a release's repository, tag (first 12 hex digits of its commit, for people) and digest (what pods run) into
+# deploy/k8s/values/services/<service>.yaml; the GitOps cluster pulls them anonymously by digest. The dev path never
+# reads them: `make k8s-up` passes its own registry, tag and an empty digest (deploy/k8s/install.sh).
+# shellcheck disable=SC2034 # read by the scripts that source this file
+ghcr_prefix=ghcr.io/anhnvcoder/short-video-platform
 
-# registry_has SERVICE TAG: true when the registry holds image svp/SERVICE:TAG.
-registry_has() {
-  curl -sf --max-time 5 -o /dev/null -I \
-    -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json' \
-    -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
-    "http://127.0.0.1:5111/v2/svp/$1/manifests/$2"
-}
-
-# values_tag: reads a service's values file on stdin and prints its image.tag, without quotes ("" when empty). Only
-# the shape these files have is read: a line `  tag: <value>` inside the top-level `image:` block, the value bare or
-# in double quotes, with no comment after it. Fails on anything else, rather than guess.
-values_tag() {
-  awk '
+# values_field FIELD: reads a service's values file on stdin and prints image.FIELD (repository, tag or digest)
+# without quotes, "" when empty. Only the shape these files have is read: exactly one line `  FIELD: <value>` inside
+# the top-level `image:` block, the value bare or in double quotes, no comment after it, and of FIELD's form:
+# repository [0-9a-z.:/_-]*, tag empty or 12 lowercase hex digits (a commit), digest empty or sha256:<64 hex>. Anything
+# else fails, naming the problem on stderr, rather than guess: the result goes to a registry, to cosign and to git.
+# Exit status: 3 no such line, 4 the line twice, 5 a value of the wrong form.
+values_field() {
+  local form value rc=0
+  case $1 in
+  repository) form='^[0-9a-z.:/_-]*$' ;;
+  tag) form='^([0-9a-f]{12})?$' ;;
+  digest) form='^(sha256:[0-9a-f]{64})?$' ;;
+  *) fail "values_field: unknown field '$1'" ;;
+  esac
+  # awk only finds the line; the form is checked by bash, whose regular expressions are the same on macOS and on the
+  # Ubuntu runner (awk's interval expressions are not).
+  value=$(awk -v key="$1" '
     /^image:/ { block = 1; next }
     /^[^ #]/ { block = 0 }
-    block && /^  tag:/ {
+    block && $0 ~ "^  " key ":" {
       v = $0
-      sub(/^  tag:[ ]*/, "", v)
+      sub("^  " key ":[ ]*", "", v)
       if (v ~ /^"[^"]*"$/) v = substr(v, 2, length(v) - 2)
-      if (v !~ /^[0-9a-z.-]*$/) exit 2
-      print v
+      out = v
       found++
     }
-    END { if (found != 1) exit 2 }'
+    END {
+      if (found == 0) exit 3
+      if (found > 1) exit 4
+      print out
+    }') || rc=$?
+  [ "$rc" != 0 ] || [[ $value =~ $form ]] || rc=5
+  case $rc in
+  0)
+    echo "$value"
+    return 0
+    ;;
+  3) echo "image.$1: no line '  $1: ...' in the image block" >&2 ;;
+  4) echo "image.$1: more than one line '  $1: ...' in the image block" >&2 ;;
+  5) echo "image.$1: '$value' does not have the form $form" >&2 ;;
+  *) echo "image.$1: cannot read the values" >&2 ;;
+  esac
+  return "$rc"
 }
 
-# set_values_tag FILE TAG: writes TAG as image.tag of values file FILE, leaving every other line as it is. Written to
-# a temporary file beside FILE first and moved over it, so an interrupted run leaves the old file whole.
-set_values_tag() {
-  local file=$1 tag=$2 tmp
-  values_tag <"$file" >/dev/null || fail "$file has no single line '  tag: ...' in its image block"
-  tmp=$(mktemp "$file.XXXXXX") || fail "create a temporary file beside $file"
-  if ! awk -v tag="$tag" '
-    /^image:/ { block = 1; print; next }
+# values_set_image REPOSITORY TAG DIGEST: reads a service's values file on stdin and prints it with image.repository,
+# image.tag and image.digest set to these values, every other line as it was. The three lines must already be there,
+# once each (values_field's rule), and the result must read back as exactly these values, or nothing is printed and it
+# fails. The tag and the digest are written in double quotes: a tag of 12 decimal digits would otherwise be a YAML
+# number.
+values_set_image() {
+  local out field want
+  out=$(awk -v repo="$1" -v tag="$2" -v digest="$3" '
+    /^image:/ { block = 1; buf = buf $0 "\n"; next }
     /^[^ #]/ { block = 0 }
-    block && /^  tag:/ { print "  tag: \"" tag "\""; next }
-    { print }' "$file" >"$tmp"; then
-    rm -f "$tmp"
-    fail "write image.tag into $file"
+    block && /^  repository:/ { n["repository"]++; buf = buf "  repository: " repo "\n"; next }
+    block && /^  tag:/ { n["tag"]++; buf = buf "  tag: \"" tag "\"\n"; next }
+    block && /^  digest:/ { n["digest"]++; buf = buf "  digest: \"" digest "\"\n"; next }
+    { buf = buf $0 "\n" }
+    END {
+      if (n["repository"] != 1 || n["tag"] != 1 || n["digest"] != 1) exit 3
+      printf "%s", buf
+    }' && echo x) || {
+    echo "image: repository, tag and digest are not one line each in the image block" >&2
+    return 1
+  }
+  # The x keeps the last newline, which command substitution would drop.
+  out=${out%x}
+  for field in repository tag digest; do
+    case $field in repository) want=$1 ;; tag) want=$2 ;; digest) want=$3 ;; esac
+    [ "$(values_field "$field" <<<"$out")" = "$want" ] || {
+      echo "image.$field: '$want' cannot be written as a value of that form" >&2
+      return 1
+    }
+  done
+  printf '%s' "$out"
+}
+
+# ghcr_manifest_status NAME DIGEST: prints the HTTP status GHCR answers an anonymous HEAD of manifest NAME@DIGEST
+# with (NAME without ghcr.io/), as a node pulling without credentials gets it: 200 when it can pull it. A package that
+# is private or does not exist is refused already by the token endpoint (403), whose status is printed then. 000 when
+# GHCR cannot be reached.
+ghcr_manifest_status() {
+  local resp code token
+  resp=$(curl -s --max-time 10 -w '\n%{http_code}' "https://ghcr.io/token?scope=repository:$1:pull&service=ghcr.io") ||
+    resp=$'\n000'
+  code=${resp##*$'\n'}
+  if [ "$code" != 200 ]; then
+    echo "$code"
+    return 0
   fi
-  chmod 644 "$tmp"
-  mv "$tmp" "$file"
+  token=$(jq -r '.token // empty' <<<"${resp%$'\n'*}" 2>/dev/null) || token=
+  curl -s --max-time 10 -o /dev/null -w '%{http_code}' -I -H "Authorization: Bearer $token" \
+    -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+    -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+    "https://ghcr.io/v2/$1/manifests/$2" || true
+}
+
+# release_image SERVICE WHERE: reads SERVICE's values file on stdin (WHERE names it in messages, such as
+# "deploy/k8s/values/services/gateway.yaml at 1a2b3c4d5e6f") and prints REPOSITORY@DIGEST of the release it names
+# once the GitOps cluster can pull it: image.digest set (the promote pull request writes it), image.repository
+# exactly $ghcr_prefix/SERVICE, and that manifest served to an anonymous pull by GHCR. Fails naming the cause
+# otherwise; creates nothing. Whether the release carries a signature and a fresh vuln attestation is
+# deploy/ci/verify-release.sh's check.
+release_image() {
+  local svc=$1 where=$2 values repo digest code
+  values=$(cat)
+  digest=$(values_field digest <<<"$values") ||
+    fail "$svc: no release in $where (image.digest above); the promote pull request (branch bot/promote) writes it: merge it on GitHub, fetch, and run again"
+  [ -n "$digest" ] ||
+    fail "$svc: image.digest is empty in $where: $svc has no release there yet; merge the promote pull request (branch bot/promote) on GitHub, fetch, and run again"
+  repo=$(values_field repository <<<"$values") || fail "$svc: cannot read image.repository in $where (above)"
+  [ "$repo" = "$ghcr_prefix/$svc" ] ||
+    fail "$svc: image.repository is '$repo' in $where; the GitOps path runs only releases of $ghcr_prefix/$svc"
+  code=$(ghcr_manifest_status "${repo#ghcr.io/}" "$digest")
+  case $code in
+  200) ;;
+  401 | 403 | 404)
+    fail "$svc: GHCR refuses an anonymous pull of $repo@$digest (HTTP $code): package $repo is not public yet (GitHub: Package settings > Change visibility) or holds no such digest"
+    ;;
+  *) fail "$svc: GHCR did not answer for $repo@$digest (HTTP ${code:-none}); check the network and run again" ;;
+  esac
+  echo "$repo@$digest"
 }

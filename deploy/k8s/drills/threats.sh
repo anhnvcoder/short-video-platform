@@ -72,15 +72,17 @@
 #              Rollouts controller's right to list pods in svp, to which can-i says yes as well. Operators: the
 #              CloudNativePG operator may get and list Secrets, create pods and exec into them in cnpg-system and
 #              svp-data only, the Envoy Gateway controller get and list Secrets in the namespaces it watches only
-#              (envoy-gateway-system, svp, svp-data, svp-edge) and patch pods nowhere, neither cluster-wide (can-i in
-#              every namespace and -A); the exceptions (cert-manager, Argo CD) are printed as info with their reason;
+#              (envoy-gateway-system, svp, svp-data, svp-edge) and patch pods nowhere, Kyverno's admission and reports
+#              controllers get and list Secrets in kyverno only, neither cluster-wide (can-i in every namespace and
+#              -A); the exceptions (cert-manager, Argo CD, Kyverno) are printed as info with their reason;
 #   PSA-platform every namespace but kube-system, kube-public, kube-node-lease and default (the platform charts'
-#              included: cert-manager, envoy-gateway-system, cnpg-system, keda, argo-rollouts, argocd on the GitOps
-#              path) enforces PSA restricted at the podSecurityVersion of chart svp-cluster, and every namespace of
-#              deploy/argocd/apps/components.json exists; default, kube-public and kube-node-lease carry no PSA label
-#              and the cluster default (deploy/k8s/pod-security-admission.yaml) refuses a privileged pod with the
-#              node's / as hostPath there, restricted at that version (server-side dry run). Control: a restricted
-#              pod is admitted in each. kube-system, exempt from the default, is printed as info with its reason.
+#              included: cert-manager, envoy-gateway-system, cnpg-system, keda, argo-rollouts, kyverno, argocd on the
+#              GitOps path) enforces PSA restricted at the podSecurityVersion of chart svp-cluster, and every
+#              namespace of deploy/argocd/apps/components.json exists; default, kube-public and kube-node-lease carry
+#              no PSA label and the cluster default (deploy/k8s/pod-security-admission.yaml) refuses a privileged pod
+#              with the node's / as hostPath there, restricted at that version (server-side dry run). Control: a
+#              restricted pod is admitted in each. kube-system, exempt from the default, is printed as info with its
+#              reason.
 #
 # Test records: the drill writes one empty record (key drill-threats-<run>, header svp-drill=threats) to the
 # dead-letter topic of each user that has one; nothing consumes a dead-letter topic, and the dead-letter metric is
@@ -876,6 +878,12 @@ rbac() {
   operator_scope envoy-gateway-system/envoy-gateway "$eg" "get secrets" get secrets
   operator_scope envoy-gateway-system/envoy-gateway "$eg" "list secrets" list secrets
   operator_scope envoy-gateway-system/envoy-gateway "" "patch pods" patch pods
+  # Kyverno (docs/adr/0015-cicd-devsecops-stage5.md, section 8): its own TLS Secrets and its lease, nothing else.
+  for sa in kyverno-admission-controller kyverno-reports-controller; do
+    operator_scope "kyverno/$sa" kyverno "get secrets" get secrets
+    operator_scope "kyverno/$sa" kyverno "list secrets" list secrets
+    operator_scope "kyverno/$sa" "" "create pods" create pods
+  done
   # Webhook configurations are cluster-scoped: asked with -A, kubectl prints no warning that they have no namespace.
   # Writing one would let the operator send itself every Secret written in the cluster; cainjector writes the CA of its
   # two (deploy/k8s/values/cloudnative-pg.yaml).
@@ -890,6 +898,7 @@ rbac() {
   info "RBAC exception: Envoy Gateway reads the Secrets of svp and svp-data, which it watches for routes api and s3 (its Secret cache covers every watched namespace; deploy/k8s/values/envoy-gateway.yaml)"
   info "RBAC exception: cert-manager's controller and cainjector read Secrets in every namespace, cainjector patches every webhook configuration, the controller creates pods in every namespace (Certificates in cert-manager, svp-edge, keda and cnpg-system, ClusterIssuers svp-selfsigned and svp-ca; deploy/k8s/values/cert-manager.yaml); its pods are held to PSA restricted everywhere but kube-system (PSA-platform)"
   info "RBAC exception: Argo CD's application controller and server (GitOps path) hold rights on every resource of the cluster, Secrets included: they apply every chart (ADR-0014 section 12)"
+  info "RBAC exception: Kyverno's admission controller creates, patches and deletes every webhook configuration and validating admission policy of the cluster: it registers the webhooks of its policies itself (a taken-over controller could send itself any request, or drop the image policy's webhook); its reports controller reads the pods of every namespace (what the policy matches; the chart's view binding is off, deploy/k8s/values/kyverno.yaml)"
 }
 
 # operator_scope NAMESPACE/SA ALLOWED LABEL CAN-I-ARGS...: kubectl auth can-i CAN-I-ARGS as ServiceAccount
@@ -1233,13 +1242,13 @@ rl1() {
 # psa_platform: Pod Security "restricted" enforced, at the version chart svp-cluster pins, on every namespace of the
 # cluster but Kubernetes' own: kube-system (k3s's control plane, and servicelb's pods, which need NET_ADMIN),
 # kube-public, kube-node-lease and default, where nothing of the lab runs. That is the project's namespaces and the
-# platform charts' (cert-manager, envoy-gateway-system, cnpg-system, keda, argo-rollouts; argocd on the GitOps path),
-# where whoever may create pods (a controller, taken over) could, without any Pod Security, start a privileged pod with
-# a hostPath of the node and read every Secret of the cluster from it. The cluster default below already refuses that
-# in a namespace without labels; the label is still required: it pins the level and version on the namespace itself,
-# visible there and independent of the API server's configuration, and the default is only the net for a namespace
-# whose label is missing. Every namespace counts, not a list kept here: one that a new chart brings without the label
-# fails. Each namespace of deploy/argocd/apps/components.json must be among them.
+# platform charts' (cert-manager, envoy-gateway-system, cnpg-system, keda, argo-rollouts, kyverno; argocd on the
+# GitOps path), where whoever may create pods (a controller, taken over) could, without any Pod Security, start a
+# privileged pod with a hostPath of the node and read every Secret of the cluster from it. The cluster default below
+# already refuses that in a namespace without labels; the label is still required: it pins the level and version on
+# the namespace itself, visible there and independent of the API server's configuration, and the default is only the
+# net for a namespace whose label is missing. Every namespace counts, not a list kept here: one that a new chart
+# brings without the label fails. Each namespace of deploy/argocd/apps/components.json must be among them.
 # default, kube-public and kube-node-lease have no label: there the cluster default of the API server
 # (deploy/k8s/pod-security-admission.yaml) holds, shown by a privileged pod it refuses at the same level and version;
 # a label on one of them (privileged, say) would override the default, so they must have none.

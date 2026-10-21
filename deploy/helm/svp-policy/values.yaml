@@ -1,0 +1,29 @@
+# ImageValidatingPolicy svp-images (docs/adr/0015-cicd-devsecops-stage5.md, section 8). Installed after Kyverno (wave
+# 3 of deploy/argocd/apps/components.json), whose chart brings the CRD, and before any pod of namespace svp (wave 7).
+
+imageVerification:
+  # Enforce: a pod that breaks a rule is refused, and so is every pod when Kyverno cannot be reached or cannot verify
+  # (failurePolicy Fail): the GitOps path, whose images are the signed releases on GHCR. Audit: nothing is refused,
+  # each violation lands in a PolicyReport of namespace svp, and a Kyverno that is down admits every pod (failurePolicy
+  # Ignore): the dev path, whose images are unsigned dev builds in the local registry. deploy/k8s/install.sh sets Audit
+  # with --set, never in a file.
+  mode: Enforce
+  # The one namespace whose pods the policy checks, and the only one whose requests reach its webhook. Every platform
+  # namespace stays out: their images are third-party ones pinned by digest and checked before merge
+  # (deploy/k8s/check-image-digests.sh), and a Kyverno that is down must not stop them.
+  namespace: svp
+  # Only images under this prefix run in the namespace, each by digest. CI pushes nothing else there.
+  imagePrefix: ghcr.io/anhnvcoder/short-video-platform/
+  # The keyless identity of every signature and vuln attestation: the Fulcio certificate of a run of
+  # .github/workflows/images.yml on main (its SAN is server_url + job_workflow_ref). A run on another branch, or of
+  # another workflow, has another subject and is refused.
+  issuer: https://token.actions.githubusercontent.com
+  subject: https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main
+  # Oldest scan result admitted (metadata.scanFinishedOn of the vuln attestation): the daily rescan refreshes it, so 72
+  # hours bear two missed runs. A CEL duration.
+  maxAttestationAge: 72h
+
+# Drills only (deploy/k8s/drills/supplychain.sh renders a temporary copy with another name, a shorter age and an
+# objectSelector on a drill label): the policy's name, and the pods it applies to within the namespace.
+name: svp-images
+objectSelector: {}

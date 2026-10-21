@@ -40,6 +40,12 @@ configs:
     # between every Application of the repository, so a push is seen within about 60 s, about 120 s at worst.
     timeout.reconciliation: 60s
     timeout.reconciliation.jitter: 0s
+    # resource.exclusions is left to the chart's default, which already keeps Argo CD from watching Kyverno's report
+    # kinds, the four Kyverno v1.19.1 writes among them (PolicyReport and ClusterPolicyReport of wgpolicyk8s.io,
+    # EphemeralReport and ClusterEphemeralReport of reports.kyverno.io; docs/adr/0015-cicd-devsecops-stage5.md, section
+    # 8): the reports controller makes one per pod and policy, which no chart renders, and tracking them would only cost
+    # the application controller RAM. A resource.exclusions set here would replace that whole list; an exclusion of the
+    # project's own goes into resourceExclusionsAdditional, which the chart appends to it.
     # Since 1.8 Argo CD no longer assesses the health of an Application, so an app-of-apps would start each sync wave
     # as soon as the previous wave's Applications are applied, not once their operators, CRDs and databases are
     # ready (helm --wait does that on the dev path). This restores it, starting from the Lua of
@@ -144,3 +150,55 @@ configs:
           (available.message or "")
       end
       return hs
+    # Argo CD v3.5.5 has a health check for Kyverno's kyverno.io/Policy only, so Application svp-policy (wave 3) would
+    # be Healthy as soon as its ImageValidatingPolicy is applied, before Kyverno has compiled it and registered its
+    # webhook, and the services (wave 7) could start before any pod of svp is checked (deploy/k8s/install.sh waits for
+    # the same thing on the dev path). Kyverno v1.19.1 sets status.conditionStatus.ready once every condition is True
+    # (WebhookConfigured: the policy is in the webhook; RBACPermissionsGranted). An ImageValidatingPolicy is:
+    #   Healthy      when ready is true;
+    #   Progressing  otherwise, with the first condition that is not True. Never Degraded, as Argo CD's check of
+    #                kyverno.io/Policy: a policy Kyverno cannot compile stays Progressing until deploy/k8s/gitops.sh's
+    #                deadline, which names it.
+    # The status carries no observedGeneration: after a change in git, ready is still the previous generation's until
+    # Kyverno reconciles, which matters little once the webhook is there.
+    resource.customizations.health.policies.kyverno.io_ImageValidatingPolicy: |
+      hs = {}
+      hs.status = "Progressing"
+      hs.message = "waiting for Kyverno to compile the policy and register its webhook"
+      if obj.status == nil or obj.status.conditionStatus == nil then
+        return hs
+      end
+      local cs = obj.status.conditionStatus
+      if cs.ready == true then
+        hs.status = "Healthy"
+        hs.message = "policy ready, webhook configured"
+        return hs
+      end
+      if cs.conditions ~= nil then
+        for _, c in ipairs(cs.conditions) do
+          if c.status ~= "True" then
+            hs.message = tostring(c.type) .. " " .. tostring(c.status) .. ": " .. (c.message or "")
+            return hs
+          end
+        end
+      end
+      return hs
+
+# Images by digest (multi-arch index: linux/amd64 and linux/arm64), the chart's tags beside them for the reader: a tag
+# can be pushed again to other content, a digest cannot (docs/adr/0015-cicd-devsecops-stage5.md, section 8). The chart
+# renders repository:tag, so tag holds version@digest; deploy/k8s/check-image-digests.sh fails on an image without one.
+# repository is the chart's default written out: Renovate's helm-values manager finds a pin only as repository and tag
+# under a key ending in "image" (ADR-0015 section 10), and updates both parts of tag.
+# global.image.tag is every Argo CD component's image (controller, repo-server, server, the ApplicationSet controller
+# left at zero replicas, the Job that writes the Redis password); the chart's version label turns it into
+# v3.5.5-sha256-<first hex digits>, a valid label value.
+global:
+  image:
+    repository: quay.io/argoproj/argocd
+    tag: v3.5.5@sha256:13db7b10db23283b1b36f855046602e18539a8a8204c9f6f039e8896c8897518
+# The chart's Redis, from its default registry (Amazon ECR Public's mirror of Docker Hub's library/redis, the same
+# digest as docker.io/library/redis:8.6.4-alpine).
+redis:
+  image:
+    repository: ecr-public.aws.com/docker/library/redis
+    tag: 8.6.4-alpine@sha256:2cc044fc5a07c9b701f8f1255a309ae9ad7856e694ac03513bf3648c01e40763

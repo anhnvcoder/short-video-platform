@@ -1,12 +1,15 @@
-# syntax=docker/dockerfile:1
 # media-worker image (docs/adr/0008-async-upload-pipeline-stage2a.md, section 9): the Go build of
 # service.Dockerfile, on an Alpine runtime that carries ffmpeg and ffprobe. Distroless has no
 # ffmpeg, so this image has a shell and apk; compose makes up for it (read-only root, no
 # capabilities, non-root user, no internet). No secret goes into the build: credentials are
 # environment variables given at run time.
+# No `# syntax=` line: BuildKit's built-in frontend already runs RUN --mount, and a syntax image would be pulled
+# from Docker Hub by a tag that can be pushed again, the one unpinned image of the build.
 
-# Build stage: Go toolchain pinned to the version the repo is developed with.
-FROM golang:1.27.2-trixie AS build
+# Build stage: Go toolchain pinned to the version the repo is developed with. Base images are pinned by the digest of
+# their multi-arch index (linux/amd64 and linux/arm64), as in service.Dockerfile: a tag can be pushed again with other
+# content, a digest cannot.
+FROM golang:1.27.2-trixie@sha256:47667934874913a449b96faa7ef4777fa285d9ec29126ee80ed61c45b7cccf0e AS build
 WORKDIR /src
 
 # Modules first, so the download layer is reused until go.mod or go.sum change.
@@ -22,8 +25,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 go build -trimpath -o /app ./services/media-worker/cmd/media-worker
 
 # Runtime stage: the tag keeps the 3.24 branch; the ffmpeg package is not pinned, since Alpine
-# drops old builds from its repository once a fix lands, so a rebuild takes the branch's patches.
-FROM alpine:3.24.2
+# drops old builds from its repository once a fix lands, so a rebuild takes the branch's patches. The base itself is
+# pinned by digest; Renovate proposes the next 3.24 build.
+FROM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 RUN apk add --no-cache ffmpeg \
     && install -d -o 65532 -g 65532 -m 0750 /work
 COPY --from=build /app /app

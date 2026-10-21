@@ -5,6 +5,14 @@
 # reads there too.
 
 pyroscope:
+  # By digest (multi-arch index: linux/amd64 and linux/arm64), the chart's appVersion beside it for the reader: a tag
+  # can be pushed again to other content, a digest cannot (docs/adr/0015-cicd-devsecops-stage5.md, section 8). The chart
+  # renders repository:tag (Docker Hub implied), so tag holds version@digest; deploy/k8s/check-image-digests.sh fails
+  # on an image without one. repository is the chart's default written out: Renovate's helm-values manager finds a pin
+  # only as repository and tag under a key ending in "image" (ADR-0015 section 10), and updates both parts of tag.
+  image:
+    repository: grafana/pyroscope
+    tag: 2.4.0@sha256:b7e62699a27463aa3533efe3f88c320da594da495731fd6eabca6f44f92cdd7b
   # The single binary finds its own metastore through the API server (-metastore.address=kubernetes:///..., Role
   # pyroscope-discovery of the chart): allow-kube-api of chart svp-cluster opens that egress for pods with this label
   # only. The chart puts these labels on every object it renders, the pod included.

@@ -52,6 +52,15 @@
       "values": "deploy/k8s/values/argo-rollouts.yaml"
     },
     {
+      "name": "kyverno",
+      "namespace": "kyverno",
+      "wave": 2,
+      "repo": "https://kyverno.github.io/kyverno/",
+      "chart": "kyverno",
+      "version": "3.9.1",
+      "values": "deploy/k8s/values/kyverno.yaml"
+    },
+    {
       "name": "kube-prometheus-stack",
       "namespace": "svp-obs",
       "wave": 2,
@@ -59,6 +68,12 @@
       "chart": "kube-prometheus-stack",
       "version": "92.10.1",
       "values": "deploy/k8s/values/kube-prometheus-stack.yaml"
+    },
+    {
+      "name": "svp-policy",
+      "namespace": "kyverno",
+      "wave": 3,
+      "path": "deploy/helm/svp-policy"
     },
     {
       "name": "redpanda",

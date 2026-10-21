@@ -1,6 +1,6 @@
 # 0014. Giai đoạn 4: Kubernetes local trên k3d với Helm, Envoy Gateway, dữ liệu trong cluster, Argo CD và canary bằng Argo Rollouts
 
-- Trạng thái: Chấp nhận
+- Trạng thái: Chấp nhận; §6 (tag phát hành, `make k8s-release`) và đường image của §12 chỉnh bởi [0015](0015-cicd-devsecops-stage5.md)
 - Ngày: 2026-10-18
 
 ## Bối cảnh
@@ -95,7 +95,7 @@ Bảng version (chart ghim version; cột digest là digest manifest list/OCI in
 | Loki | `https://grafana-community.github.io/helm-charts` `loki` | 18.17.1 | 3.7.8 (cùng compose) | Theo chart |
 | Tempo | `https://grafana-community.github.io/helm-charts` `tempo` | 3.2.0 | 3.1.0 (cùng compose) | Theo chart |
 | Pyroscope | `https://grafana.github.io/helm-charts` `pyroscope` | 2.4.0 | 2.4.0 (compose 2.3.1) | Theo chart |
-| OTel Collector | `https://open-telemetry.github.io/opentelemetry-helm-charts` `opentelemetry-collector` | 0.176.0 | 0.162.0 | `otel/opentelemetry-collector-contrib@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6` (index của 0.162.0, cùng compose; chart nhận `image.digest`) |
+| OTel Collector | `https://open-telemetry.github.io/opentelemetry-helm-charts` `opentelemetry-collector` | 0.176.0 | 0.162.0 | `otel/opentelemetry-collector-contrib@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6` (index của 0.162.0, cùng compose; từ giai đoạn 5 ghi `image.tag: 0.162.0@sha256:39923a8e…` thay `image.digest` để Renovate đổi version và digest cùng lúc, cùng index, [ADR-0015](0015-cicd-devsecops-stage5.md) mục 10) |
 | Argo CD | `https://argoproj.github.io/argo-helm` `argo-cd` | 10.10.5 | v3.5.5 (Helm bên trong 4.2.1) | Theo chart |
 | Argo Rollouts | `https://argoproj.github.io/argo-helm` `argo-rollouts` | 2.43.8 | v1.10.1 | Theo chart; plugin `argoproj-labs/rollouts-plugin-trafficrouter-gatewayapi` v0.17.0 (bảng mục 13) |
 | Valkey | — | — | 9.1.2 | `docker.io/valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11` |
@@ -633,6 +633,9 @@ SASL SCRAM-SHA-256, mỗi service một user, ACL tối thiểu, `resource-patte
 
 ## 6. Image
 
+> Chỉnh bởi [ADR-0015](0015-cicd-devsecops-stage5.md) mục 5, 9: image phát hành build trong CI, nằm trên GHCR theo digest,
+> `make k8s-release` bị bỏ; tag dev và registry k3d của đường dev giữ nguyên.
+
 ### Các lựa chọn
 
 | Lựa chọn | Được | Mất |
@@ -1076,7 +1079,8 @@ giá: không phát hiện được Valkey treo mà cổng vẫn mở, lab chấp
   `filesystem` `/data/shared`, PVC, `usage-stats.enabled=false`. Service `pyroscope:4040`. 5 service đẩy profile tới
   `PYROSCOPE_SERVER_ADDRESS=http://pyroscope.svp-obs:4040`, media-worker không.
 - **Collector** (`opentelemetry-collector` 0.176.0): `mode: deployment`, `replicaCount: 1`, `fullnameOverride:
-  otel-collector`, `image.repository: otel/opentelemetry-collector-contrib` + `image.digest` (mục 1), chỉ cổng `otlp` 4317 →
+  otel-collector`, `image.repository: otel/opentelemetry-collector-contrib` + `image.tag: <version>@<digest>` (mục 1; trước
+  giai đoạn 5 là `image.digest`, cùng index), chỉ cổng `otlp` 4317 →
   Service **`otel-collector.svp-obs:4317`**. Cấu hình **không** dùng `config:` của chart (giá trị đó gộp sâu với mặc định của
   chart): `configMap.create: false`, `configMap.existingName` trỏ ConfigMap do `svp-observability` dựng từ
   **`deploy/observability/otelcol/k8s-config.yaml`** (key `relay`). File đó giữ cùng processor (`memory_limiter`,
@@ -1148,6 +1152,9 @@ giá: không phát hiện được Valkey treo mà cổng vẫn mở, lab chấp
     StatefulSet toàn cluster; chiếm Grafana là đọc được khoá ký JWT ở `svp/user-service-env`.
 
 ## 12. GitOps
+
+> Chỉnh bởi [ADR-0015](0015-cicd-devsecops-stage5.md) mục 9: đường image của GitOps (PR promote ghi `repository`, `tag`,
+> `digest`; cluster kéo từ GHCR; `gitops.sh` kiểm digest trên GHCR thay vì dựng lại image).
 
 ### Các lựa chọn
 

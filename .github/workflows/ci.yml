@@ -1,0 +1,350 @@
+# Checks of every pull request and of every push to main: the whole check list of CLAUDE.md (make check, generated code,
+# buf breaking, compose, Collector, Prometheus rules, charts) plus the secret scan of the whole git history and the
+# misconfiguration scan (docs/adr/0015-cicd-devsecops-stage5.md, sections 1, 2 and 11). Job ci-ok is the only check the
+# ruleset of main requires from this workflow, so the other jobs can be renamed or added without touching it.
+#
+# The repository is public and a pull request from a fork runs this workflow with the fork's code, so:
+# - no pull_request_target and no workflow_run: a pull request never runs with a write token or with secrets;
+# - every job that runs code of the repository has contents: read and nothing else. The only job with a write
+#   permission (sarif, security-events: write) runs on main outside pull requests and executes nothing of the
+#   repository: it uploads the SARIF reports the other jobs left as artifacts;
+# - every action is GitHub's own and pinned to a full commit SHA: a tag moved to other code changes nothing here;
+# - checkout never leaves the token in .git/config (persist-credentials: false);
+# - values an outsider controls (branch names, titles) never go into a script through ${{ }}: only through env.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Run by hand on any branch. No paths filter on any trigger: a required check whose workflow does not run is never
+  # reported and leaves the pull request waiting.
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # A new push to a pull request makes its previous run useless. On main a running run is never cancelled, but the
+  # group holds one running and one pending run: a newer push replaces the pending one, so with several merges during
+  # one run the commits in between get no result of their own (the newest commit's run checks the code they led to).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # make check: gofmt, go vet, golangci-lint (gosec included), actionlint, buf lint and build, go test -race. The
+  # integration tests reach Postgres and Redis on the same 127.0.0.1 addresses as on a dev machine, the only ones
+  # internal/pgtest and internal/redistest accept, through the two service containers below.
+  check:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    services:
+      # Major 15 like the dev machine's Postgres and the cluster's; superuser postgres/postgres, the default
+      # SVP_TEST_POSTGRES_URL of the Makefile. Tests create their own svp_*_test databases from it.
+      postgres:
+        image: docker.io/library/postgres:15.19-trixie@sha256:c961aa287d8698297cb26cdfadfbe9fd2cbaf77e53cfffe9636e8d8a1e4d842c
+        env:
+          POSTGRES_PASSWORD: postgres
+        # The runner hands this string to docker create -p as it is, so the port is published on loopback only.
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      # Same 8.8 line as the dev machine's Redis; tests use db 15 (default SVP_TEST_REDIS_URL of the Makefile).
+      redis:
+        image: docker.io/library/redis:8.8.3-trixie@sha256:eb1aa641bc5380ed14442398e45a5a51aeaaac919fab811e4f134eb77c71dd2d
+        ports:
+          - 127.0.0.1:6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The Go of the Dockerfiles' builder image and of the dev machine. Caches modules and the build cache, keyed on
+      # go.sum.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.2
+          cache-dependency-path: go.sum
+      # The binaries of make tools and make ci-tools, rebuilt only when the Makefile (their pinned versions) changes.
+      - id: tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/bin
+          key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}
+      - name: Install the pinned tools
+        if: steps.tools.outputs.cache-hit != 'true'
+        run: make tools ci-tools
+      # The transcode tests of media-worker skip without ffmpeg and ffprobe, which the runner lacks. Ubuntu 24.04 ships
+      # 6.1, older than the image's (Alpine 3.24); the tests use long-standing flags only.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends ffmpeg
+      # -count=1: the restored build cache would otherwise report cached test results and run nothing. golangci-lint
+      # runs once and writes a SARIF report beside its text output; the path is filled in here because a $ left in
+      # the value would be read by make as one of its variables.
+      - name: make check
+        env:
+          LINTFLAGS: --output.text.path=stdout --output.sarif.path=${{ runner.temp }}/golangci-lint.sarif
+        run: make check TESTFLAGS=-count=1 LINTFLAGS="$LINTFLAGS"
+      - name: Summary of golangci-lint
+        if: always()
+        env:
+          SARIF: ${{ runner.temp }}/golangci-lint.sarif
+          TOOL: golangci-lint
+        run: &sarif-summary |
+          # Rule, level and place of each finding (no message), at most 50 rows; nothing when the tool wrote no report.
+          [ -f "$SARIF" ] || exit 0
+          jq -r --arg tool "$TOOL" '[.runs[].results[]] as $r
+            | "### \($tool): \($r | length) finding(s)", "",
+              "| Level | Rule | Location |", "| --- | --- | --- |",
+              ($r[:50][] | .locations[0].physicalLocation as $l
+                | "| \(.level // "warning") | \(.ruleId) | \($l.artifactLocation.uri // "-"):\($l.region.startLine // "-") |")' \
+            "$SARIF" >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the golangci-lint report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sarif-golangci-lint
+          path: ${{ runner.temp }}/golangci-lint.sarif
+          if-no-files-found: ignore
+
+  # make generate in a scratch copy, compared with the files as committed (the working tree is never written).
+  generate:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.2
+          cache-dependency-path: go.sum
+      - id: tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/bin
+          key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}
+      - name: Install the pinned tools
+        if: steps.tools.outputs.cache-hit != 'true'
+        run: make tools ci-tools
+      - run: make generate-check
+
+  # Breaking changes of the proto contracts. buf lint and buf build already run in make check.
+  buf:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      # The whole history, so the base commit below is there to compare against.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.2
+          cache-dependency-path: go.sum
+      - id: tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/bin
+          key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}
+      - name: Install the pinned tools
+        if: steps.tools.outputs.cache-hit != 'true'
+        run: make tools ci-tools
+      # Base of the comparison: a pull request, the merge base with its base branch; a push to main, main as it was
+      # before the push (all zeros when the branch did not exist: nothing to compare with); a manual run, the merge
+      # base with main, as images.yml does (its before is empty, not zeros).
+      - name: buf breaking
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          case "$EVENT_NAME" in
+            pull_request) base=$(git merge-base HEAD "origin/$GITHUB_BASE_REF") ;;
+            push)
+              if [ -z "${BEFORE//0/}" ]; then
+                echo "buf breaking skipped: the push created the branch, there is no previous state to compare with." \
+                  | tee -a "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+              base=$BEFORE ;;
+            *) base=$(git merge-base HEAD origin/main) ;;
+          esac
+          echo "buf breaking against $base"
+          "$(go env GOPATH)/bin/buf" breaking --against ".git#ref=$base"
+
+  # The configuration that no Go test covers: the rules of .trivyignore.yaml, Prometheus rules and their tests, the
+  # three Collector configs, the compose file of every profile, every chart of the repository, the digests of
+  # third-party images.
+  config:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Here and not only in the image gate: a pull request that changes nothing but .trivyignore.yaml builds no image,
+      # and a broken entry merged into main would stop the daily rescan from attesting every service (ADR section 6).
+      # Needs no image, no tool and no token.
+      - run: deploy/ci/scan-gate.sh --check-ignorefile
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.2
+          cache-dependency-path: go.sum
+      - id: tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/bin
+          key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}
+      - name: Install the pinned tools
+        if: steps.tools.outputs.cache-hit != 'true'
+        run: make tools ci-tools
+      # Helm for the image digest check below; make targets put GOBIN on PATH themselves.
+      - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - run: make slo-check
+      - run: make otelcol-validate
+      # make env writes a .env of fresh random secrets (mode 600) that lives on this runner until the job ends: it is
+      # never printed or uploaded, and compose config --quiet does not print the file with the secrets filled in.
+      - name: make compose-config
+        run: |
+          make env
+          make compose-config
+      - run: make helm-check
+      - run: deploy/k8s/check-image-digests.sh
+
+  # gitleaks over the whole history of every ref (no --log-opts: setting it drops gitleaks's default --full-history
+  # --all), at the version make tools pins. Any finding fails the job. --redact keeps the secret out of the log and the
+  # report, which anyone can read on a public repository. A false positive (a test fixture) is allowed only in
+  # .gitleaks.toml, narrowly, with the reason beside it.
+  gitleaks:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.2
+          cache-dependency-path: go.sum
+      - id: tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/bin
+          key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}
+      - name: Install the pinned tools
+        if: steps.tools.outputs.cache-hit != 'true'
+        run: make tools ci-tools
+      - name: gitleaks (whole history)
+        run: >-
+          "$(go env GOPATH)/bin/gitleaks" git --redact --no-banner
+          --report-format sarif --report-path "$RUNNER_TEMP/gitleaks.sarif"
+      - name: Summary of gitleaks
+        if: always()
+        env:
+          SARIF: ${{ runner.temp }}/gitleaks.sarif
+          TOOL: gitleaks
+        run: *sarif-summary
+      - name: Keep the gitleaks report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sarif-gitleaks
+          path: ${{ runner.temp }}/gitleaks.sarif
+          if-no-files-found: ignore
+
+  # trivy config on the Dockerfiles, charts and manifests with the pinned trivy image. Report only: it never fails the
+  # job on a finding.
+  trivy-config:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: make trivy-config TRIVY_CONFIG_SARIF="$RUNNER_TEMP/trivy-config.sarif"
+      - name: Summary of trivy config
+        if: always()
+        env:
+          SARIF: ${{ runner.temp }}/trivy-config.sarif
+          TOOL: trivy config
+        run: *sarif-summary
+      - name: Keep the trivy config report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sarif-trivy-config
+          path: ${{ runner.temp }}/trivy-config.sarif
+          if-no-files-found: ignore
+
+  # The code scanning upload, the one job with a write permission. Only on main outside pull requests: a pull request
+  # (from a branch of the repository or from a fork) runs its own code before anyone has read it, so it never gets
+  # security-events: write; its findings stay in the artifacts and job summaries. This job checks the code out only so
+  # upload-sarif can read the lines of each finding and fingerprint it (an alert then survives a line shift with its
+  # history and dismissal): it runs nothing of the repository. It is a report, not a check: ci-ok does not need it,
+  # and a failed upload still turns the run red.
+  sarif:
+    needs: [check, gitleaks, trivy-config]
+    if: always() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Each report the jobs above left, in sarif/<artifact name>/; a job that stopped before writing its report left
+      # none, and its upload below is skipped.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: sarif-*
+          path: sarif
+      - if: hashFiles('sarif/sarif-golangci-lint/golangci-lint.sarif') != ''
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          sarif_file: sarif/sarif-golangci-lint/golangci-lint.sarif
+          category: golangci-lint
+      - if: hashFiles('sarif/sarif-gitleaks/gitleaks.sarif') != ''
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          sarif_file: sarif/sarif-gitleaks/gitleaks.sarif
+          category: gitleaks
+      - if: hashFiles('sarif/sarif-trivy-config/trivy-config.sarif') != ''
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          sarif_file: sarif/sarif-trivy-config/trivy-config.sarif
+          category: trivy-config
+
+  # The required check. It runs whatever happened before it (always()) and fails unless every check job succeeded:
+  # GitHub counts a skipped required check as passed, and a job that failed or was cancelled does not fail the jobs
+  # that need it by itself. None of the six has a condition, so skipped here can only mean a wrong if: and is red too.
+  # No condition may ever skip ci-ok itself.
+  ci-ok:
+    needs: [check, generate, buf, config, gitleaks, trivy-config]
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Every check job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$NEEDS"
+          jq -e 'length == 6 and all(.[]; .result == "success")' <<< "$NEEDS" > /dev/null

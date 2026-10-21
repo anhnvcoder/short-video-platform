@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # The GitOps path of docs/adr/0014-kubernetes-local-stage4.md, section 12: a new cluster svp on which Argo CD builds
 # everything from GitHub. This script installs only what git cannot hold or what must exist before Argo CD:
-#   1. the release tags: read from the revision Argo CD will follow, and each one checked to be a commit of this clone,
-#      before anything is created;
-#   2. the registry and the cluster (as `make k8s-up`), then every release image the registry lacks, built from its
-#      commit (the registry is deleted with the cluster);
+#   1. the release images, before anything is created (docs/adr/0015-cicd-devsecops-stage5.md, sections 7 and 9):
+#      image.repository and image.digest of the six values files at the revision Argo CD will follow, which the
+#      promote pull request writes; each must be a release of ghcr.io/anhnvcoder/short-video-platform/<service> that
+#      GHCR serves to an anonymous pull (the nodes pull without credentials), signed by images.yml on main, with a
+#      vuln attestation that is clean and at most 48 hours old (Kyverno refuses new pods at 72);
+#   2. the registry and the cluster (as `make k8s-up`); nothing is built here, the images come from GHCR;
 #   3. the Secrets from .env (deploy/k8s/secrets.sh), which never go to git;
 #   4. Argo CD (deploy/k8s/values/argo-cd.yaml) in namespace argocd with Pod Security "restricted", its repository
 #      Secret with the read-only deploy key, AppProject svp and the emptied AppProject default
@@ -12,15 +14,16 @@
 #   5. a bounded wait until every Application is Synced and Healthy with its last sync Succeeded, with GlitchTip's DSN
 #      put into Secret svp/sentry once GlitchTip is up (deploy/k8s/glitchtip-init.sh), so the services report errors
 #      on this path too. An error Argo CD keeps reporting for 180 s stops the wait early.
-# The release tags and the list of Applications come from git, never from the working tree: what this script checks
+# The release images and the list of Applications come from git, never from the working tree: what this script checks
 # is what Argo CD deploys.
 #
 # Environment (set by `make k8s-gitops-up`):
 #   ARGOCD_DEPLOY_KEY  path of the private half of a deploy key of the GitHub repository, made with "Allow write
 #                      access" left unticked (GitHub's side cannot be checked from here): Argo CD only reads git.
 #                      Read from its file into the Secret on stdin; never printed, copied or written anywhere else.
-#   GITOPS_REV         what Argo CD follows: a branch of origin (default main; its tags are read from
+#   GITOPS_REV         what Argo CD follows: a branch of origin (default main; its values are read from
 #                      refs/remotes/origin/<branch> as fetched last, without a fetch) or a full commit SHA.
+#   SVP_ATTEST_MAX_AGE drills only (never in .env): a shorter limit than 48h for the age of the vuln attestations.
 #
 # Secrets live outside git, so a changed .env reaches this cluster by hand: `make k8s-secrets`, then a sync of
 # Application svp-data, whose init Jobs set the new passwords in Postgres, MinIO and Redpanda
@@ -38,6 +41,7 @@ set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
 repo_url=git@github.com:anhnvcoder/short-video-platform.git
+# renovate: datasource=helm depName=argo-cd registryUrl=https://argoproj.github.io/argo-helm
 argocd_chart_version=10.10.5
 rev=${GITOPS_REV:-main}
 key_file=${ARGOCD_DEPLOY_KEY:-}
@@ -51,7 +55,7 @@ ssh-keygen -y -P '' -f "$key_file" >/dev/null 2>&1 ||
   fail "ARGOCD_DEPLOY_KEY: $key_file is not an SSH private key without a passphrase"
 command -v jq >/dev/null || fail "jq is not installed (brew install jq): it reads components.json and Argo CD's status"
 
-# --- the revision and its release tags, before anything is created.
+# --- the revision and its release images, before anything is created.
 if sha=$(git -C "$repo_root" rev-parse --verify --quiet "refs/remotes/origin/$rev^{commit}"); then
   echo "revision: origin/$rev = $sha (as last fetched; this script does not fetch)"
 elif [[ $rev =~ ^[0-9a-f]{40}$ ]] && sha=$(git -C "$repo_root" rev-parse --verify --quiet "$rev^{commit}"); then
@@ -60,19 +64,32 @@ else
   fail "GITOPS_REV=$rev is neither a branch of origin (refs/remotes/origin/$rev) nor a full commit SHA of this clone"
 fi
 
+# Every service is checked before the script stops, so one run names every release that is missing. release_image
+# (deploy/k8s/lib.sh) reads the values file from git and asks GHCR; deploy/ci/verify-release.sh then checks each
+# release's signature and vuln attestation anonymously, with the pinned cosign image COSIGN_IMAGE when cosign is not
+# installed.
 values_dir=deploy/k8s/values/services
 release_images=()
 if git -C "$repo_root" cat-file -e "$sha:$values_dir" 2>/dev/null; then
+  unready=
   for svc in "${svp_services[@]}"; do
     file="$values_dir/$svc.yaml"
-    content=$(git -C "$repo_root" show "$sha:$file" 2>/dev/null) || fail "$svc: $file is missing at ${sha:0:12}"
-    tag=$(printf '%s\n' "$content" | values_tag) || fail "$svc: cannot read image.tag of $file at ${sha:0:12}"
-    [ -n "$tag" ] || fail "$svc: image.tag is empty in $file at ${sha:0:12}; release it (make k8s-release SVC=$svc), commit the values file and push"
-    [[ $tag =~ ^[0-9a-f]{12}$ ]] && git -C "$repo_root" cat-file -e "$tag^{commit}" 2>/dev/null ||
-      fail "$svc: image.tag $tag in $file at ${sha:0:12} is not a commit of this clone; release it (make k8s-release SVC=$svc), commit the values file and push"
-    release_images+=("$svc:$tag")
+    if ! content=$(git -C "$repo_root" show "$sha:$file" 2>/dev/null); then
+      echo "FAIL  $svc: $file is missing at ${sha:0:12}" >&2
+      unready=1
+    elif image=$(release_image "$svc" "$file at ${sha:0:12}" <<<"$content"); then
+      release_images+=("$image")
+    else
+      unready=1
+    fi
   done
-  ok "release tags at ${sha:0:12}: ${release_images[*]}"
+  [ -z "$unready" ] || fail "the release images at ${sha:0:12} are not ready for the GitOps path (above); nothing was created"
+  for image in "${release_images[@]}"; do
+    "$repo_root/deploy/ci/verify-release.sh" "${image%@*}" "${image#*@}" || unready=1
+  done
+  [ -z "$unready" ] ||
+    fail "a release at ${sha:0:12} is not signed, or its vuln attestation is not clean and fresh (above); nothing was created. Refresh the attestations of these values: gh workflow run images.yml --ref main -f rescan=true -f values_ref=$sha, then run this again once that run is green"
+  ok "release images at ${sha:0:12}: GHCR serves all six anonymously, each signed with a fresh, clean vuln attestation"
 else
   echo "skip  release images: ${sha:0:12} has no $values_dir; Argo CD will report what the revision lacks"
 fi
@@ -95,18 +112,10 @@ fi
 if k3d_ cluster get svp >/dev/null 2>&1; then
   fail "cluster svp already exists; the GitOps path starts from a new cluster: run make k8s-down first"
 fi
+# The registry stays although nothing is pushed to it on this path: deploy/k8s/k3d.yaml, shared by both paths, names
+# it as the nodes' registry, and the cluster cannot be created without it.
 ensure_registry
 ensure_cluster
-
-for image in ${release_images[@]+"${release_images[@]}"}; do
-  svc=${image%%:*}
-  tag=${image#*:}
-  if registry_has "$svc" "$tag"; then
-    ok "$svc image $tag already in the registry"
-  else
-    build_release_image "$svc" "$tag"
-  fi
-done
 
 # --- the Secrets. Chart svp-cluster (wave 1) owns the project's namespaces, but two things need them earlier: the
 # Secrets, before the first pod that reads one (wave 2), and Envoy Gateway (wave 0), which binds a Role in each
@@ -170,7 +179,7 @@ kc apply --server-side --field-manager=svp-gitops --force-conflicts -f "$repo_ro
 ok "AppProject svp, AppProject default emptied"
 
 # The root follows $rev, and hands the same revision to every Application it makes (value targetRevision of chart
-# deploy/argocd/apps), so the tags checked above are the ones deployed. argocd_root_app (lib.sh) writes the revision
+# deploy/argocd/apps), so the releases checked above are the ones deployed. argocd_root_app (lib.sh) writes the revision
 # as a string whatever it looks like.
 argocd_root_app "$repo_url" "$rev" | kc apply --server-side --field-manager=svp-gitops -f - >/dev/null ||
   fail "apply Application svp-root"

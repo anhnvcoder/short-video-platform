@@ -154,6 +154,7 @@ compose-hash: env-required obs-valid
 
 # promtool of the pinned LGTM image (the same image as `lgtm` in compose.yaml), with no network:
 # the Prometheus config and its rule files at the paths compose mounts them, then the rule tests.
+# renovate: datasource=docker depName=grafana/otel-lgtm
 LGTM_IMAGE := grafana/otel-lgtm:0.36.0@sha256:57c04cbd8e7022f32bb84c4ac005d79baf8b08e2c5be44facf11f5f1f9944ba2
 PROMTOOL := env -u DOCKER_DEFAULT_PLATFORM docker run --rm --network none \
 	-v $(CURDIR)/deploy/observability/prometheus/prometheus.yaml:/otel-lgtm/prometheus.yaml:ro \

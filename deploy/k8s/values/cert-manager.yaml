@@ -31,3 +31,30 @@ global:
 # creates, in any namespace, is held to Pod Security restricted (namespace labels, and the API server's default for
 # namespaces without them: deploy/k8s/pod-security-admission.yaml), except in kube-system, which k3s's own pods keep
 # exempt: a stolen controller token can still start a privileged pod there, root on the node.
+
+# Images by digest (multi-arch index: linux/amd64 and linux/arm64), the chart's own tag beside it for the reader: a tag
+# can be pushed again to other content, a digest cannot (docs/adr/0015-cicd-devsecops-stage5.md, section 8). The chart
+# renders repository:tag, so tag holds version@digest; deploy/k8s/check-image-digests.sh fails on an image without one.
+# repository is the chart's own default (quay.io/jetstack/<name>) written out: Renovate's helm-values manager finds a
+# pin only as repository and tag under a key ending in "image" (ADR-0015 section 10), and updates both parts of tag.
+image:
+  repository: quay.io/jetstack/cert-manager-controller
+  tag: v1.21.2@sha256:70f532fd9cfde0b09d55687200942399d89838bc2d5d5b45152eb799a15912b8
+webhook:
+  image:
+    repository: quay.io/jetstack/cert-manager-webhook
+    tag: v1.21.2@sha256:a60e2dac46dbb8a7f3df95c54ce941012f54c2fe022f0ee55aaa1ab40ed957ae
+cainjector:
+  image:
+    repository: quay.io/jetstack/cert-manager-cainjector
+    tag: v1.21.2@sha256:c85268c64f2e0e76684bf5fe8906caff34b82523561c6affe0fae3546bd87562
+# The ACME HTTP-01 solver image the controller would start pods from (--acme-http01-solver-image); no ACME issuer here.
+acmesolver:
+  image:
+    repository: quay.io/jetstack/cert-manager-acmesolver
+    tag: v1.21.2@sha256:699b40d622211ab7accad8a21b04c5fbaa1841ef7a12621e8de492dbe27b2503
+# Job hook of the chart that waits for the webhook after an install.
+startupapicheck:
+  image:
+    repository: quay.io/jetstack/cert-manager-startupapicheck
+    tag: v1.21.2@sha256:46e75b6866359ffb5d82624f41e3ed1c70b2994982702ced547ce5edb418a8f5

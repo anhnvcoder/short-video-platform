@@ -45,3 +45,21 @@ config:
 # and its certgen Job no ClusterRole patching webhook configurations. Nothing else in the controller reads pods.
 topologyInjector:
   enabled: false
+
+# Images by digest (multi-arch index: linux/amd64 and linux/arm64), the chart's tag beside it for the reader: a tag can
+# be pushed again to other content, a digest cannot (docs/adr/0015-cicd-devsecops-stage5.md, section 8). The chart splits
+# these at the first "/" and ":" only, so version@digest stays whole after the colon;
+# deploy/k8s/check-image-digests.sh fails on an image without one.
+global:
+  images:
+    # The controller, its certgen Job, and the shutdown-manager sidecar it adds to every Envoy pod.
+    envoyGateway:
+      image: docker.io/envoyproxy/gateway:v1.9.2@sha256:9d67017c442a70e6ae9f1a358e6c80eb653c67c2e40823d9a991e0daf37ba926
+    # Only started when a rate limit policy exists (none here); the same digest v1.9.2 has built in.
+    ratelimit:
+      image: docker.io/envoyproxy/ratelimit:0482748e@sha256:5fdd8e3ae335ab6d64316f8d2fd9a886830075cbbb40a1d8065c869275909162
+    # envoyProxy.image stays unset: the Envoy proxy pods run the image the controller has built in,
+    # docker.io/envoyproxy/envoy:distroless-v1.39.1@sha256:eb2c01c13125d1629637cb4e4cce7207009fb7cc2c8027f9742758549d15b6f4
+    # (DefaultEnvoyProxyImage, api/v1alpha1/shared_types.go@v1.9.2), already a digest, and it moves with the chart's
+    # version, the Envoy release this controller was tested with. The chart never renders it, so the check above does
+    # not see it.

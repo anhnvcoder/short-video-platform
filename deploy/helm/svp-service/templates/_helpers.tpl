@@ -15,14 +15,22 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
 {{- /*
-The image, with a tag that must be set: the dev tag `make k8s-up` passes, or a release's tag in the values file.
+The image. With a digest (the GitOps path: a release on GHCR, which the promote pull request writes into
+deploy/k8s/values/services/<release>.yaml) the pod runs that digest: <repository>:<tag>@<digest>, or
+<repository>@<digest> without a tag; the tag only tells people which commit it is, since a tag can be pushed again.
+Without one (the dev path) the tag must be set: the dev tag `make k8s-up` passes with --set.
 */}}
 {{- define "svp-service.image" -}}
-{{- $msg := printf "image.tag is empty for release %s:" .Release.Name -}}
-{{- $msg = printf "%s make k8s-up passes the dev tag with --set image.tag=..., a release writes it in" $msg -}}
+{{- $repository := required (printf "image.repository is empty for release %s" .Release.Name) .Values.image.repository -}}
+{{- if .Values.image.digest -}}
+{{ $repository }}{{ with .Values.image.tag }}:{{ . }}{{ end }}@{{ .Values.image.digest }}
+{{- else -}}
+{{- $msg := printf "image.tag and image.digest are empty for release %s:" .Release.Name -}}
+{{- $msg = printf "%s on the dev path make k8s-up passes the dev tag with --set image.tag=...;" $msg -}}
+{{- $msg = printf "%s on the GitOps path the promote pull request writes image.tag and image.digest into" $msg -}}
 {{- $msg = printf "%s deploy/k8s/values/services/%s.yaml" $msg .Release.Name -}}
-{{- $tag := required $msg .Values.image.tag -}}
-{{ required (printf "image.repository is empty for release %s" .Release.Name) .Values.image.repository }}:{{ $tag }}
+{{ $repository }}:{{ required $msg .Values.image.tag }}
+{{- end }}
 {{- end }}
 
 {{- /*

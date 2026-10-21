@@ -1,0 +1,123 @@
+# Kyverno v1.19.1 (chart https://kyverno.github.io/kyverno/ kyverno 3.9.1), release kyverno in namespace kyverno, wave 2
+# of deploy/argocd/apps/components.json (docs/adr/0015-cicd-devsecops-stage5.md, section 8): the admission controller,
+# which verifies the signature and the vuln attestation of every image a pod of namespace svp runs, the reports
+# controller (PolicyReports of the dev path's Audit mode), and the CRDs. The policy itself, ImageValidatingPolicy
+# svp-images, is chart deploy/helm/svp-policy (wave 3), before any pod of svp (wave 7).
+#
+# Every pod of the chart meets Pod Security "restricted" (non-root uid 65534, read-only root, drop ALL, seccomp
+# RuntimeDefault, no host namespace, only emptyDir and projected token volumes), which namespace kyverno enforces: chart
+# svp-cluster (wave 1) makes it with that label and its NetworkPolicies (default-deny; DNS; the API server; webhook
+# calls from the API server; TCP 443 to public addresses only, for GHCR and Sigstore's TUF). Requests and limits stay
+# the chart's: admission controller 100m/128Mi, limit 384Mi; reports controller 100m/64Mi, limit 128Mi.
+#
+# Kyverno down and the policy in Enforce (GitOps path): the policy's webhook fails closed, so no new pod of svp starts
+# (a KEDA scale-out, a restart, a rollout), while pods already running keep running: the API server admits a pod once,
+# when it is created, so `k3d cluster start` brings back the pods it had without asking Kyverno. Every other namespace
+# never reaches that webhook. A Kyverno stopped on purpose is not down in that sense: when its admission controller
+# stops while its Deployment asks for 0 replicas (scaled to 0) or is being deleted, it deletes all its webhook
+# configurations (IsGoingDown, pkg/utils/runtime/utils.go of v1.19.1), and every pod is admitted unchecked until it
+# starts again; so whoever may scale or delete Deployments in namespace kyverno can turn the policy off.
+
+# Every pod of the chart calls the API server: allow-kube-api of chart svp-cluster opens that egress for pods with this
+# label only, in a namespace that denies everything else.
+admissionController:
+  podLabels:
+    svp-kube-api: allow
+  rbac:
+    # The chart also binds ClusterRole view to the controller, for policies that look resources up (pods, Services,
+    # ConfigMaps of every namespace). The image policy reads only the pod in the request and its namespace, which the
+    # controller's own ClusterRole covers: without view it logs no forbidden and verifies as before.
+    createViewRoleBinding: false
+  # One replica: the lab's machine has 16 GB (docs/adr/0014-kubernetes-local-stage4.md, section 2); a second one would
+  # only matter for an upgrade or a node drain without a gap in admission.
+  replicas: 1
+  # Each image of the chart by digest (multi-arch index: linux/amd64 and linux/arm64), the version beside it for the
+  # reader: a tag can be pushed again to other content, a digest cannot (ADR-0015 section 8). The chart renders
+  # registry/repository:tag, so tag holds version@digest; deploy/k8s/check-image-digests.sh fails on an image without
+  # one. Registry ghcr.io instead of the chart's reg.kyverno.io, which is the same GHCR repository under another name
+  # (the same digests): one registry fewer the nodes depend on, and the one Renovate's docker datasource reads.
+  initContainer:
+    image:
+      registry: ghcr.io
+      repository: kyverno/kyvernopre
+      tag: v1.19.1@sha256:c25c47461f06f2845a48c319ae86fbbc1730a7b9ed5b701889c9dc1f9ee94b09
+  container:
+    image:
+      registry: ghcr.io
+      repository: kyverno/kyverno
+      tag: v1.19.1@sha256:b31d8511ae5fd6010e2a01ea72ebae08eb82fa51d91af14a1d9fe989949b4edb
+    extraArgs:
+      # The cache of verification results (on by default, 60 minutes per result) is a ristretto cache whose budget is
+      # this flag: a signature result costs 1, an attestation result 1 + the bytes of the payload it keeps
+      # (pkg/image/verification/cache/client.go of v1.19.1). At the default of 1000 no vuln payload (two trivy
+      # reports, kilobytes) would be kept, and every new pod would reach TUF and GHCR again. The same flag also sizes
+      # ristretto's frequency sketch and bloom filter (NumCounters = 10 x budget, rounded up to powers of two), which
+      # Go counts as heap from the start: about 48 MiB for 1 MiB, but 3 GiB for 64 MiB, far past the GOMEMLIMIT
+      # Kyverno derives from the 384Mi limit, so the GC would run without pause. 1 MiB keeps the payloads of the six
+      # services and the two drill images several times over. A result is then trusted for up to 60 minutes, so an
+      # attestation older than 72 hours by less than that, or Sigstore failing after it was cached, still admits a pod
+      # (ADR-0015 section 8).
+      imageVerifyCacheMaxSize: "1048576"
+
+reportsController:
+  enabled: true
+  podLabels:
+    svp-kube-api: allow
+  rbac:
+    # Instead of ClusterRole view in every namespace: the controller watches the kinds its policies match to keep their
+    # PolicyReports, and the one policy matches pods.
+    createViewRoleBinding: false
+    clusterRole:
+      extraResources:
+        - apiGroups: [""]
+          resources: [pods]
+          verbs: [get, list, watch]
+  image:
+    registry: ghcr.io
+    repository: kyverno/reports-controller
+    tag: v1.19.1@sha256:c0eee97b9b44a0dd35805d56b358fa52548480f79d4944602b9609538eccd64c
+
+# Neither mutate-existing/generate (background controller) nor cleanup policies are used: only the admission controller
+# and the reports controller run.
+backgroundController:
+  enabled: false
+cleanupController:
+  enabled: false
+
+crds:
+  migration:
+    podLabels:
+      svp-kube-api: allow
+    # Job kyverno-migrate-resources, a post-upgrade hook (Argo CD runs it as PostSync): it rewrites the stored policies
+    # to the CRDs' storage version after an upgrade of Kyverno.
+    image:
+      registry: ghcr.io
+      repository: kyverno/kyverno-cli
+      tag: v1.19.1@sha256:ced7b2be0b04250cabfe695f15307f69eb715fe23234816388af4f3812915b2a
+
+# The chart's test pods (run only by `helm test`, but rendered by helm template, which the digest check reads). The
+# readiness checker is published under latest and commit tags only; this is the digest latest pointed to for v1.19.1.
+test:
+  image:
+    registry: ghcr.io
+    repository: kyverno/readiness-checker
+    tag: latest@sha256:8dab9b157f3b14b2e406fbb8659efc47637f92d9d9704aaaa8b9c9a58f272da3
+
+# A pre-delete hook that removes Kyverno's webhook configurations when the release is uninstalled. Off: Kyverno is never
+# uninstalled from a running cluster here (make k8s-down deletes the cluster), and the hook would be one more image.
+webhooksCleanup:
+  enabled: false
+
+features:
+  # Admission only: pods already running are not scanned again in the background (on the GitOps path a pod of svp was
+  # admitted by the same policy; a rescan that finds a CRITICAL stops new pods, not running ones).
+  backgroundScan:
+    enabled: false
+  # The PolicyException kinds stay off, as the chart has them (ADR-0015 section 8, CVE-2026-100704).
+  policyExceptions:
+    enabled: false
+  registryClient:
+    # The packages on GHCR are public and pulled anonymously; the other helpers would ask the cloud's metadata
+    # service (google, amazon, azure) or GitHub for credentials first.
+    credentialHelpers:
+      - default

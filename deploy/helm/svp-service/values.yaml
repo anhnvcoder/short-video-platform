@@ -4,11 +4,15 @@
 # Installed by deploy/k8s/install.sh as wave 7 of deploy/argocd/apps/components.json, once every dependency runs.
 
 image:
-  # k3d-svp-registry:5111/svp/<service>: the local registry under the name the nodes resolve on network k3d-svp.
+  # GitOps path: ghcr.io/anhnvcoder/short-video-platform/<service>, from the release's values file. Dev path: `make
+  # k8s-up` passes k3d-svp-registry:5111/svp/<service>, the local registry under the name the nodes resolve on network
+  # k3d-svp.
   repository: ""
-  # Empty on purpose: `make k8s-up` passes the dev tag of the image it has just built with --set image.tag=..., a
-  # release writes its commit's tag into the values file. An empty tag fails the render naming the release.
+  # Empty on purpose. Dev path: `make k8s-up` passes the dev tag of the image it has just built (--set image.tag=...)
+  # and an empty digest. GitOps path: the promote pull request writes the release's commit (tag, for people) and its
+  # signed index digest (what the pod runs) into the values file. Both empty fails the render naming the release.
   tag: ""
+  digest: ""
 
 # http: the gateway (probes on /healthz). grpc: the four gRPC services (Kubernetes' own grpc probe on the standard
 # health service). none: media-worker (no port, no probe, no Service).

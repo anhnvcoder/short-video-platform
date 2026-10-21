@@ -7,8 +7,12 @@ and they hold no project data.
 
 Not needed despite the deny: kubelet probes and kubectl port-forward come from the node the pod runs on, which a
 NetworkPolicy cannot block.
+
+Namespace kyverno gets the same three (its pods that call the API server carry svp-kube-api=allow), and two more at the
+end of this file.
 */}}
-{{- range .Values.namespaces }}
+{{- $kyverno := dict "name" .Values.kyverno.namespace "kubeAPI" true }}
+{{- range concat .Values.namespaces (list $kyverno) }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -72,3 +76,56 @@ spec:
           port: 443
 {{- end }}
 {{- end }}
+{{- /*
+Kyverno's admission controller (docs/adr/0015-cicd-devsecops-stage5.md, section 8). In: the API server's admission
+calls on the webhook port. The API server runs on the server node: a call to a pod on that node comes from the node
+itself, one to a pod on the agent leaves through the server's VXLAN interface (values: kyverno.vxlanAddresses), so only
+those addresses and the nodes' network are let in, no pod. Out: TCP 443 to public addresses only, for the registries and Sigstore's TUF
+repository it verifies images against; every private range is left out (values: kyverno.privateRanges), so neither the
+local registry nor anything else on the nodes' network or the host is reachable. The reports controller needs only the
+API server.
+*/}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-webhook-from-api-server
+  namespace: {{ .Values.kyverno.namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: kyverno
+      app.kubernetes.io/component: admission-controller
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: {{ .Values.nodeSubnet }}
+        {{- range .Values.kyverno.vxlanAddresses }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.kyverno.webhookPort }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-public-https
+  namespace: {{ .Values.kyverno.namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: kyverno
+      app.kubernetes.io/component: admission-controller
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- toYaml .Values.kyverno.privateRanges | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 443

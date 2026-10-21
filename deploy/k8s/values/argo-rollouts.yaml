@@ -35,6 +35,16 @@ controller:
   # One controller: the lab runs one canary at a time, and a second replica only waits for the lease (about 150 MiB,
   # ADR section 2).
   replicas: 1
+  # By digest (multi-arch index: linux/amd64 and linux/arm64), the chart's appVersion beside it for the reader: a tag
+  # can be pushed again to other content, a digest cannot (docs/adr/0015-cicd-devsecops-stage5.md, section 8). The chart
+  # takes version@digest in tag and strips the digest from its version label; deploy/k8s/check-image-digests.sh fails
+  # on an image without one. The plugin below is a binary pinned by its sha256, not an image. registry and repository
+  # are the chart's defaults written out: Renovate's helm-values manager finds a pin only as repository and tag under a
+  # key ending in "image" (ADR-0015 section 10), and without registry it would look the image up on Docker Hub.
+  image:
+    registry: quay.io
+    repository: argoproj/argo-rollouts
+    tag: v1.10.1@sha256:fbcc4cf0a29da25d86230992b1dfdeadf30b6f1baa74ea7c9c98e3e580769396
   resources:
     requests:
       cpu: 50m

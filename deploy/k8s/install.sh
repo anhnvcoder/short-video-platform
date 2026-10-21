@@ -23,10 +23,20 @@ if kc -n argocd get applications.argoproj.io svp-root >/dev/null 2>&1; then
 fi
 
 # The services' images first, so a build that fails stops the run before anything is installed. Each release of
-# chart svp-service then gets its service's dev tag with --set (never written to a file); the tag in
-# deploy/k8s/values/services/ is for releases on the GitOps path.
+# chart svp-service then gets its image with --set (never written to a file): the local registry, the service's dev
+# tag and an empty digest (image_sets). The repository, tag and digest in deploy/k8s/values/services/ name releases on
+# GHCR for the GitOps path (docs/adr/0015-cicd-devsecops-stage5.md, section 9); this path neither reads nor pulls them.
 service_chart=deploy/helm/svp-service
 build_dev_images
+
+# image_sets SERVICE: sets the array image_sets to the --set flags of SERVICE's dev image. The upgrade and canary_ahead
+# both use them, so the template canary_ahead compares is the one the upgrade applies: any difference there would be
+# a new revision of the gateway, a canary of unchanged code.
+image_sets() {
+  local tag_var="dev_tag_${1//-/_}"
+  [ -n "${!tag_var:-}" ] || fail "no image was built for $1 (not in svp_services of deploy/k8s/lib.sh)"
+  image_sets=(--set "image.repository=k3d-svp-registry:5111/svp/$1" --set "image.tag=${!tag_var}" --set "image.digest=")
+}
 
 # A process reads the Secret it gets as environment variables only when it starts, and nothing restarts a pod when
 # that Secret changes; no chart can roll its pods by a checksum of the Secret in the pod template either, since
@@ -89,16 +99,18 @@ stop_canary_traffic() {
   own_traffic=
 }
 
-# canary_ahead NAMESPACE NAME VALUES TAG: false only when the coming upgrade of release NAME (chart svp-service, values
-# file VALUES, image tag TAG) renders Rollout NAME exactly as the release's current revision does and that Rollout is
-# Healthy: no canary will run, so no drill traffic is started (each start registers users and deletes the register
-# rate limit keys). A Rollout that differs in anything, or whose canary is in progress, paused or aborted, counts as a
-# canary ahead. The chart reads nothing from the cluster, so `helm template` renders what the upgrade will.
+# canary_ahead NAMESPACE NAME VALUES SET...: false only when the coming upgrade of release NAME (chart svp-service,
+# values file VALUES, the image flags SET... of image_sets) renders Rollout NAME exactly as the release's current
+# revision does and that Rollout is Healthy: no canary will run, so no drill traffic is started (each start registers
+# users and deletes the register rate limit keys). A Rollout that differs in anything, or whose canary is in progress,
+# paused or aborted, counts as a canary ahead. The chart reads nothing from the cluster, so `helm template` renders
+# what the upgrade will.
 canary_ahead() {
-  local ns=$1 name=$2 values=$3 tag=$4 new old
+  local ns=$1 name=$2 values=$3 new old
+  shift 3
   [ "$(kc -n "$ns" get rollout "$name" -o jsonpath='{.status.phase}')" = Healthy ] || return 0
-  new=$(hc template "$name" "$repo_root/$service_chart" --namespace "$ns" --values "$values" --set "image.tag=$tag" |
-    rollout_doc) || return 0
+  new=$(hc template "$name" "$repo_root/$service_chart" --namespace "$ns" --values "$values" "$@" | rollout_doc) ||
+    return 0
   old=$(hc get manifest "$name" --namespace "$ns" | rollout_doc) || return 0
   [ -z "$new" ] || [ "$new" != "$old" ]
 }
@@ -221,6 +233,21 @@ after_install() {
       # starts), so a changed SVP_GRAFANA_ADMIN_PASSWORD takes a restart, as a service's Secret does.
       restart_on_secret_change svp-obs kps-grafana grafana-admin
       ;;
+    kyverno)
+      # Kyverno's admission controller registers its webhook configurations itself once it is ready, none of them in
+      # the chart: kyverno-policy-validating-webhook-cfg checks the policy chart svp-policy installs next, and
+      # kyverno-resource-validating-webhook-cfg will carry that policy's webhook.
+      wait_until 120 "Kyverno registers its webhook configurations" kc get validatingwebhookconfigurations \
+        kyverno-policy-validating-webhook-cfg kyverno-resource-validating-webhook-cfg
+      ok "Kyverno's webhook configurations registered"
+      ;;
+    svp-policy)
+      # The policy counts only once Kyverno has compiled it and registered its webhook, which takes the requests of
+      # namespace svp only; the services (wave 7) start after that (docs/adr/0015-cicd-devsecops-stage5.md, section 8).
+      wait_until 120 "ImageValidatingPolicy svp-images ready, its webhook registered for namespace svp" \
+        image_policy_ready svp-images
+      ok "ImageValidatingPolicy svp-images ready (Audit: violations go to PolicyReports), its webhook takes namespace svp only"
+      ;;
     keda)
       # The HPA KEDA makes for a ScaledObject reads the lag through this API; until the metrics server behind it
       # answers, the HPA reports no metric and never scales.
@@ -330,9 +357,8 @@ while IFS=$sep read -r name namespace wave path repo chart version values; do
     args+=(--set-string "podAnnotations.svp-config-sha256=${collector_sum%% *}")
   fi
   if [ "$path" = "$service_chart" ]; then
-    tag_var="dev_tag_${name//-/_}"
-    [ -n "${!tag_var:-}" ] || fail "no image was built for $name (not in svp_services of deploy/k8s/lib.sh)"
-    args+=(--set "image.tag=${!tag_var}")
+    image_sets "$name"
+    args+=("${image_sets[@]}")
     # A release with canary set (the gateway) is applied client-side. Argo Rollouts writes into two objects of the
     # chart: the selectors of Services <release> and <release>-canary (rollouts-pod-template-hash) and the weights in
     # HTTPRoute api. Helm 4's server-side apply sends the chart's whole selector and rules, both atomic fields now
@@ -347,7 +373,7 @@ while IFS=$sep read -r name namespace wave path repo chart version values; do
     watch_migrate "$namespace" "$name-migrate" "$old_job" &
     watcher=$!
     kind=$(workload_kind "$namespace" "$name")
-    if [ "$kind" = rollout ] && canary_ahead "$namespace" "$name" "$repo_root/$values" "${!tag_var}"; then
+    if [ "$kind" = rollout ] && canary_ahead "$namespace" "$name" "$repo_root/$values" "${image_sets[@]}"; then
       start_canary_traffic "$name"
     fi
   fi
@@ -364,6 +390,10 @@ while IFS=$sep read -r name namespace wave path repo chart version values; do
   # unless told to take it over. Every object svp-cluster renders is the project's own, under a name no other chart
   # uses.
   if [ "$name" = svp-cluster ]; then args+=(--take-ownership); fi
+  # The dev path runs unsigned images of the local registry: the image policy only reports what it would refuse, in
+  # PolicyReports of namespace svp, and lets every pod through when Kyverno is down (failurePolicy Ignore). The GitOps
+  # path keeps the values file's Enforce (docs/adr/0015-cicd-devsecops-stage5.md, section 8).
+  if [ "$name" = svp-policy ]; then args+=(--set imageVerification.mode=Audit); fi
   echo "helm upgrade --install $name (wave $wave, namespace $namespace)"
   rc=0
   hc "${args[@]}" >/dev/null || rc=$?

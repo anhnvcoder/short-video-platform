@@ -49,6 +49,21 @@ image:
   # The tags are the chart's version, which never changes under a pinned chart; Always would reach ghcr.io at every
   # start of a pod, so a cluster restarted offline could not start KEDA.
   pullPolicy: IfNotPresent
+  # By digest (multi-arch index: linux/amd64 and linux/arm64), the chart's version beside it for the reader: a tag can
+  # be pushed again to other content, a digest cannot (docs/adr/0015-cicd-devsecops-stage5.md, section 8). The chart
+  # renders registry/repository:tag, so tag holds version@digest; deploy/k8s/check-image-digests.sh fails on an image
+  # without one. These keys do not end in "image", so Renovate's helm-values manager does not see them: the
+  # "# renovate:" line right above each tag names the image for the custom manager that updates it (ADR-0015 section
+  # 10), the chart's default registry/repository.
+  keda:
+    # renovate: datasource=docker depName=ghcr.io/kedacore/keda
+    tag: 2.21.0@sha256:81fe6547ce8d1cc29273f887b76507e9b853e5bc1f875ec23fe60061a38ed809
+  metricsApiServer:
+    # renovate: datasource=docker depName=ghcr.io/kedacore/keda-metrics-apiserver
+    tag: 2.21.0@sha256:255375037fe592732eeb554743aae360c2da88cf0b9b1258d0a987ef885f0881
+  webhooks:
+    # renovate: datasource=docker depName=ghcr.io/kedacore/keda-admission-webhooks
+    tag: 2.21.0@sha256:e1969628cca6123e32eea13c47c75817091af2657fa68d9d0d58a8620d1b75b1
 
 # The RBAC of KEDA 2.21.0 as its chart renders it with the values above, but for ClusterRole keda-operator.
 #

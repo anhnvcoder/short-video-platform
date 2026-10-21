@@ -5,8 +5,9 @@
 K8S_LIB := . deploy/k8s/lib.sh
 
 .PHONY: k8s-exclusive k8s-up k8s-down k8s-status k8s-ca k8s-secrets k8s-images k8s-smoke drill-k8s-keda drill-k8s-pdb \
-	k8s-glitchtip-init k8s-ui-grafana k8s-ui-prometheus k8s-ui-alertmanager k8s-ui-glitchtip k8s-gitops-up k8s-release \
-	measure-gitops k8s-ui-argocd k8s-traffic-start k8s-traffic-stop drill-k8s-canary measure-canary drill-k8s-threats
+	k8s-glitchtip-init k8s-ui-grafana k8s-ui-prometheus k8s-ui-alertmanager k8s-ui-glitchtip k8s-gitops-up \
+	measure-gitops k8s-ui-argocd k8s-traffic-start k8s-traffic-stop drill-k8s-canary measure-canary drill-k8s-threats \
+	drill-k8s-supplychain
 
 # Compose and k3d never run together on the 16 GB machine (CLAUDE.md): the cluster is not created or started beside a
 # running compose stack. `make up` refuses the other way round (deploy/compose/compose.mk).
@@ -19,20 +20,17 @@ k8s-up: k8s-exclusive env-required ## Create (or start) the registry 127.0.0.1:5
 	@bash -c '$(K8S_LIB) && ensure_registry && ensure_cluster'
 	deploy/k8s/install.sh
 
-# The GitOps path (docs/adr/0014-kubernetes-local-stage4.md, section 12). GITOPS_REV is what Argo CD follows: a branch
-# of origin (its release tags are read from origin/<branch> as last fetched) or a full commit SHA.
+# The GitOps path (docs/adr/0014-kubernetes-local-stage4.md, section 12; its images:
+# docs/adr/0015-cicd-devsecops-stage5.md, section 9). GITOPS_REV is what Argo CD follows: a branch of origin (its
+# values are read from origin/<branch> as last fetched) or a full commit SHA. Releases are built, signed and promoted
+# by CI (.github/workflows/images.yml): no target builds one on this machine.
 GITOPS_REV ?= main
 
-k8s-gitops-up: k8s-exclusive env-required ## Create a new cluster svp that Argo CD builds from GitHub: ARGOCD_DEPLOY_KEY=<private key file of a read-only deploy key> (GitHub repo Settings > Deploy keys, "Allow write access" unticked) [GITOPS_REV=main]; checks the release tags at that revision first, rebuilds the missing release images, applies the Secrets of .env, installs Argo CD, waits until every Application is Synced and Healthy
+k8s-gitops-up: k8s-exclusive env-required ## Create a new cluster svp that Argo CD builds from GitHub: ARGOCD_DEPLOY_KEY=<private key file of a read-only deploy key> (GitHub repo Settings > Deploy keys, "Allow write access" unticked) [GITOPS_REV=main]; first checks that the six release digests at that revision are on GHCR (anonymous pull), signed, with a clean vuln attestation at most 48 h old; applies the Secrets of .env, installs Argo CD, waits until every Application is Synced and Healthy
 	@test -n '$(ARGOCD_DEPLOY_KEY)' || { echo "make k8s-gitops-up: set ARGOCD_DEPLOY_KEY=<private key file of a read-only deploy key>" >&2; exit 1; }
 	ARGOCD_DEPLOY_KEY='$(ARGOCD_DEPLOY_KEY)' GITOPS_REV='$(GITOPS_REV)' deploy/k8s/gitops.sh
 
-# Needs the registry only (created when missing), not the cluster, so it runs right after `make k8s-down` too.
-k8s-release: k8s-exclusive ## Build SVC=<service>|all from the commit at HEAD (refused while its code has uncommitted changes), push it as svp/<service>:<12 hex of the commit>, write that tag into deploy/k8s/values/services/<service>.yaml; prints the git commands to commit and push it, runs none
-	@test -n '$(SVC)' || { echo "make k8s-release: set SVC=<service>|all" >&2; exit 1; }
-	deploy/k8s/release.sh '$(SVC)'
-
-measure-gitops: ## On the GitOps cluster, time release commit REV=<commit> from its push (reflog of origin/main, else GitHub's PushEvent) through Argo CD's sync to the first and last pod Ready with the new tag; JSON in .k8s/drills/ (read only)
+measure-gitops: ## On the GitOps cluster, time release commit REV=<commit> (the merge of a promote pull request) from its push (reflog of origin/main, else GitHub's PushEvent) through Argo CD's sync to the first and last pod Ready with the new digest; JSON in .k8s/drills/ (read only)
 	@test -n '$(REV)' || { echo "make measure-gitops: set REV=<commit>" >&2; exit 1; }
 	deploy/k8s/drills/gitops.sh '$(REV)'
 
@@ -105,6 +103,14 @@ drill-k8s-pdb: ## Cordon the nodes and evict both gateway pods one after the oth
 drill-k8s-threats: ## Check the stage 4 threat model rows on cluster svp, each with a control case: a probe pod in namespace svp-probe (created, then deleted) and media-worker reach only what the NetworkPolicies allow, Kafka ACLs per user, pod security and PSA, no trust in pg_hba, login rate limit ignores forged X-Forwarded-For, no pprof/metrics, no exposed UI, Grafana 401, no ServiceAccount reads secrets or pods; PASS/FAIL table, log in .k8s/drills/threats-<time>.log, searched for the Secret values read (LOCAL LAB ONLY: resets register rate limit keys in the cluster's Valkey db 10)
 	@test -s .k8s/ca.crt || { echo "make drill-k8s-threats: .k8s/ca.crt missing; run make k8s-up (or make k8s-ca)" >&2; exit 1; }
 	$(K8S_DRILL_ENV) deploy/k8s/drills/threats.sh https://api.svp.localhost:8443
+
+# The image policy of namespace svp (docs/adr/0015-cicd-devsecops-stage5.md, section 8); the cases are listed at the
+# top of deploy/k8s/drills/supplychain.sh. It talks to the cluster's API, and for the CRITICAL case to GHCR and Sigstore
+# through cosign (anonymous, COSIGN_IMAGE when cosign is not installed), so it needs neither .k8s/ca.crt nor the
+# gateway, and deletes no rate limit key.
+drill-k8s-supplychain: ## Check Kyverno's image policy of namespace svp: a signed, clean release admitted; unsigned (SUPPLYCHAIN_UNSIGNED=<GHCR digest>), CRITICAL (SUPPLYCHAIN_VULNERABLE=<GHCR digest>, attestation within the maximum age), outside GHCR, without digest, attestation too old, ephemeral container and image UPDATE refused, each with its rule's message; Kyverno down refuses svp only; PASS/FAIL per case, JSON in .k8s/drills/ (dev path, whose policy is Audit: SUPPLYCHAIN_ENFORCE_TMP=1 switches it to Enforce for the drill and back)
+	SVP_STACK=k3d SUPPLYCHAIN_UNSIGNED='$(SUPPLYCHAIN_UNSIGNED)' SUPPLYCHAIN_VULNERABLE='$(SUPPLYCHAIN_VULNERABLE)' \
+	  SUPPLYCHAIN_ENFORCE_TMP='$(SUPPLYCHAIN_ENFORCE_TMP)' deploy/k8s/drills/supplychain.sh
 
 # The operations UIs have no route, LoadBalancer or NodePort (threat model OPS-2): each is reached by a port-forward
 # bound to the host's loopback only, for as long as the target runs (Ctrl-C ends it). The host ports are those of

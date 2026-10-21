@@ -65,7 +65,9 @@ Người học ưu tiên học DevOps + SA.
   container chạy amd64 qua giả lập, chậm và tốn RAM. Chạy tay ngoài Makefile cũng phải thêm tiền tố đó.
   Image cho cloud build đa kiến trúc ở CI.
 - **kubectl/helm** chỉ chạy vào cluster k3d, luôn ghi `--context k3d-<tên>` trong lệnh.
-- **Git:** conventional commits, mô tả tiếng Việt. Không commit `.env`, secret, token, file state Terraform.
+- **Git:** conventional commits, mô tả tiếng Việt. Không commit `.env`, secret, token, file state Terraform. Từ khi bật
+  ruleset `main` (`.github/rulesets/main.json`, [ADR-0015](docs/adr/0015-cicd-devsecops-stage5.md) §11), mọi thay đổi
+  vào `main` đi qua PR có `ci-ok` và `images-ok` xanh, cả của người học; không force push, hoàn tác bằng PR revert.
 
 ## An toàn cloud
 
@@ -94,11 +96,17 @@ Từ giai đoạn 1, cho code Go (`services/`, `internal/`, `tools/`), mọi l�
 liệt kê target):
 
 - `make tools`: cài một lần các công cụ ghim version (`protoc-gen-go`, `protoc-gen-go-grpc`, `sqlc`, `golangci-lint`,
-  `gitleaks`, `sloth` sinh rule SLO, `k3d`); `buf` cài bằng Homebrew.
+  `actionlint`, `gitleaks`, `sloth` sinh rule SLO, `k3d`); `buf`, Helm cài bằng Homebrew (CI cài hai thứ đó bằng
+  `make ci-tools`, chỉ chạy trên Linux amd64).
 - `make generate`: chạy sau khi sửa `proto/` hoặc SQL của `sqlc`; code sinh ra (`gen/go`, code `sqlc`) được commit.
-- `make check`: `gofmt`, `go vet`, `golangci-lint run`, `buf lint` + `buf build`, `go test -race ./...` (có integration
-  test trên Postgres native `127.0.0.1:5432` qua `SVP_TEST_POSTGRES_URL` và Redis native db 15 qua `SVP_TEST_REDIS_URL`,
-  mặc định `redis://127.0.0.1:6379/15` trong `Makefile`). Thu hẹp bằng `make test PKGS=./services/user-service/...`.
+- `make generate-check`: chạy `make generate` trong bản sao tạm của working tree (file đã track và file chưa track không bị
+  ignore, không `.env`), in file lệch và diff, exit ≠ 0 khi lệch; không bao giờ ghi vào working tree.
+- `make check`: `gofmt`, `go vet`, `golangci-lint run` (gồm gosec), `actionlint` (mọi file của `.github/workflows/`),
+  `buf lint` + `buf build`, `go test -race ./...` (có integration test trên Postgres native `127.0.0.1:5432` qua
+  `SVP_TEST_POSTGRES_URL` và Redis native db 15 qua `SVP_TEST_REDIS_URL`, mặc định `redis://127.0.0.1:6379/15` trong
+  `Makefile`). Thu hẹp bằng `make test PKGS=./services/user-service/...`; `TESTFLAGS` thêm cờ cho `go test` của
+  `make test`, `make cover`, `make check` (`make test TESTFLAGS=-count=1` chạy lại không dùng cache, như CI), `LINTFLAGS`
+  thêm cờ cho golangci-lint của `make lint`.
 - `make cover`: `go test -race` như `make test` nhưng ghi coverage vào `cover.out` (đã gitignore) và in tổng; thu hẹp bằng
   `PKGS=`, xem từng dòng bằng `go tool cover -html=cover.out`.
 - `make env`: sinh `.env` local (mode 600, mật khẩu DB, mật khẩu root MinIO và secret key S3 của từng service ngẫu nhiên,
@@ -195,7 +203,7 @@ liệt kê target):
 - Giai đoạn 4, cluster k3d `svp` ([ADR-0014](docs/adr/0014-kubernetes-local-stage4.md)), target ở `deploy/k8s/k8s.mk`.
   Ràng buộc chung: chỉ chạy qua Makefile (`docker`/`k3d` với `env -u DOCKER_DEFAULT_PLATFORM`, `kubectl`/`helm` luôn
   `--context k3d-svp`, cache Helm ở `.k8s/helm`); `k3d` ghim cài bằng `make tools`. **Không chạy cùng compose:**
-  `make k8s-up`, `k8s-gitops-up`, `k8s-release` từ chối khi stack compose `svp` đang chạy; `make up` từ chối khi node của
+  `make k8s-up`, `k8s-gitops-up` từ chối khi stack compose `svp` đang chạy; `make up` từ chối khi node của
   cluster hay registry `k3d-svp-registry` đang chạy. Cổng chỉ trên `127.0.0.1`: API 6550, HTTPS của Envoy 8443
   (`api.svp.localhost`, `s3.svp.localhost`, đều phân giải về loopback), registry 5111. Postgres (CloudNativePG), Valkey,
   Redpanda (SASL + ACL), MinIO nằm trong cluster: target giai đoạn 4 không đụng Postgres/Redis native. File sinh ra nằm ở
@@ -207,6 +215,12 @@ liệt kê target):
   node server khởi động): sửa `k3d.yaml` hay dời repo phải `make k8s-down && make k8s-up`, sửa file đó có hiệu lực ở lần
   khởi động sau; `make k8s-up` từ chối cluster tạo khi chưa có cấu hình này, hay khi nguồn mount không còn là file, khác
   file của repo hiện tại, hay version lệch `podSecurityVersion`.
+- Kyverno ([ADR-0015](docs/adr/0015-cicd-devsecops-stage5.md) §8), cùng `ImageValidatingPolicy` `svp-images` (chart
+  `deploy/helm/svp-policy`) trên hai đường, chỉ namespace `svp`: `make k8s-up` cài **Audit** (`failurePolicy: Ignore`,
+  image `dev-*` chưa ký của registry k3d vẫn chạy, vi phạm ghi vào PolicyReport), `make k8s-gitops-up` **Enforce**
+  (`Deny` + `Fail`: chỉ nhận image `ghcr.io/anhnvcoder/short-video-platform/*` theo digest, ký keyless bởi
+  `images.yml@refs/heads/main`, có attestation `vuln` đủ hai nền tảng, không CRITICAL, không quá 72 giờ; Kyverno chết thì
+  pod `svp` mới bị từ chối, namespace khác không qua webhook).
 - `make k8s-up` / `make k8s-down` / `make k8s-status`: `k8s-up` tạo (hay khởi động) registry và cluster, build và push sáu
   image tag `dev-<image ID>` (chỉ `--set`, không ghi file), cài `deploy/argocd/apps/components.json` theo wave bằng
   `deploy/k8s/install.sh` (trong đó chạy `secrets.sh` sau `svp-cluster`, `glitchtip-init.sh` sau `svp-observability`),
@@ -223,18 +237,23 @@ liệt kê target):
   `svp/sentry` và token API chỉ đọc vào `svp-obs/glitchtip-api` (không vào `.env`, không in), restart service khởi động
   khi chưa có DSN hiện tại; idempotent, `k8s-up` tự gọi, không cần `.env`. `k8s-ca` ghi CA của chứng chỉ TLS ra
   `.k8s/ca.crt`.
-- `make k8s-images`, `make k8s-release SVC=<svc>|all`: `k8s-images` build sáu image từ working tree và push lên
-  `127.0.0.1:5111` tag `dev-<image ID>`. `k8s-release` build từ commit ở HEAD (từ chối khi code của image có thay đổi chưa
-  commit), push tag 12 ký tự hex của commit, ghi tag vào `deploy/k8s/values/services/<svc>.yaml`, in lệnh git để người
-  học commit và push, **không chạy lệnh git nào**; chỉ cần registry (tự tạo), không cần cluster.
+- `make k8s-images`: build sáu image từ working tree và push lên `127.0.0.1:5111` tag `dev-<image ID>` (đường dev).
+  `make k8s-release` **đã bỏ** (giai đoạn 5): image phát hành build, quét, ký trong CI (`images.yml`, bên dưới), job
+  `promote` ghi `image.repository`, `image.tag`, `image.digest` vào `deploy/k8s/values/services/<svc>.yaml` trên nhánh
+  `bot/promote` và mở hay cập nhật một PR cuộn; người học duyệt lượt chạy của PR ("Approve workflows to run") rồi merge.
+  Đường dev `make k8s-up` giữ registry k3d và tag dev (chỉ `--set`).
 - `make k8s-gitops-up ARGOCD_DEPLOY_KEY=<file> [GITOPS_REV=main]`, `make measure-gitops REV=<commit>`: đường GitOps
-  (ADR-0014 §12), tạo cluster `svp` **mới** mà Argo CD dựng từ GitHub. Kiểm tag phát hành ở đúng revision (`origin/<nhánh>`
-  như lần fetch cuối, không `git fetch`) trước khi tạo gì, dựng lại image phát hành registry thiếu, tạo namespace và Secret
-  từ `.env`, cài Argo CD (namespace `argocd`, PSA `restricted`), Secret repo bằng deploy key **chỉ đọc** do người học tạo
-  trên GitHub (file mode 600, không passphrase; không in, không chép), AppProject `svp` và `default` đã khoá, root
-  `svp-root`; chờ mọi Application `Synced`, Healthy, sync cuối `Succeeded` (lỗi còn sau 180 s thì dừng). `measure-gitops`
-  đo commit phát hành từ lúc push (reflog `origin/main`, không có thì PushEvent qua `gh api`, chỉ đọc) qua sync của Argo CD
-  tới pod đầu và cuối Ready với tag mới; chỉ đọc, JSON ở `.k8s/drills/`.
+  (ADR-0014 §12, ADR-0015 §9), tạo cluster `svp` **mới** mà Argo CD dựng từ GitHub, kéo image từ GHCR theo digest, ẩn
+  danh. Trước khi tạo gì, kiểm ở đúng revision (`origin/<nhánh>` như lần fetch cuối, không `git fetch`) cả 6 file values:
+  có digest (PR promote đã merge), repository `ghcr.io/anhnvcoder/short-video-platform/<svc>`, manifest kéo ẩn danh được
+  (package GHCR đã public), chữ ký và attestation `vuln` đúng identity, không CRITICAL, không quá 48 giờ
+  (`deploy/ci/verify-release.sh` bằng `COSIGN_IMAGE`; quá hạn thì in lệnh dispatch rescan với `values_ref=<revision>`);
+  thiếu một điều là dừng, không tạo gì. Rồi tạo namespace và Secret từ `.env`, cài Argo CD (namespace `argocd`, PSA
+  `restricted`), Secret repo bằng deploy key **chỉ đọc** do người học tạo trên GitHub (file mode 600, không passphrase;
+  không in, không chép), AppProject `svp` và `default` đã khoá, root `svp-root`; chờ mọi Application `Synced`, Healthy,
+  sync cuối `Succeeded` (lỗi còn sau 180 s thì dừng). `measure-gitops` đo commit phát hành (merge của PR promote) từ lúc
+  push (reflog `origin/main`, không có thì PushEvent qua `gh api`, chỉ đọc) qua sync của Argo CD tới pod đầu và cuối Ready
+  với digest mới; chỉ đọc, JSON ở `.k8s/drills/`. Với image GHCR cả hai target **kiểm sau push**.
 - `make k8s-traffic-start` / `make k8s-traffic-stop`: traffic diễn tập chạy nền, 4 user, ~10 request/s vào
   `GET /feed/explore`, `/feed/following` qua `https://api.svp.localhost:8443`, mỗi request một dòng ở
   `.k8s/drills/traffic-<time>.log`, chạy tới khi dừng (qua cả lúc push phát hành trên cluster GitOps); `stop` chỉ dừng
@@ -256,6 +275,21 @@ liệt kê target):
   Secret đã đọc. Kết quả và JSON ở `.k8s/drills/`; script trả cluster về như cũ khi kết thúc (uncordon, bỏ ghim KEDA,
   trả bản gateway tốt). **LOCAL LAB ONLY:** trừ `measure-canary`, mọi target này xoá khoá `svp:gw:rl:register:*` ở
   Valkey db 10 của cluster (qua `kubectl exec`).
+- `make drill-k8s-supplychain [SUPPLYCHAIN_UNSIGNED=<digest GHCR>] [SUPPLYCHAIN_VULNERABLE=<digest GHCR>]
+  [SUPPLYCHAIN_ENFORCE_TMP=1]` (giai đoạn 5, script `deploy/k8s/drills/supplychain.sh`): policy Kyverno của `svp`, mỗi ca
+  một dòng PASS/FAIL/SKIP và chỉ PASS khi đúng message của rule cần từ chối; pod gửi bằng `--dry-run=server` (trừ ca b là
+  Deployment thật, xoá sau). Ca: (a) bản phát hành đã ký, sạch được nhận, hai lần liền (lần hai từ cache); (b)
+  `drill-unsigned` bị từ chối vì thiếu chữ ký; (c) `drill-vulnerable` bị từ chối vì CRITICAL, ca này tự đọc
+  `scanFinishedOn` bằng cosign và FAIL khi quá 72 giờ, nên chạy trong 72 giờ sau khi dispatch image diễn tập (`gh workflow
+  run images.yml --ref main -f drill=true`, người học chạy); (d) image registry k3d và Docker Hub bị từ chối vì prefix,
+  mỗi lần dưới 1 s; (e) image không digest; (f) attestation quá hạn (policy tạm tuổi tối đa 5 s); (g) admission
+  controller không lịch được: pod `svp` bị từ chối, pod ở namespace thử `svp-probe` được nhận; (h) ephemeral container
+  chưa ký bị từ chối, đã ký được nhận; (i) UPDATE image chưa ký bị từ chối; (k) đường keyless với image công khai của nhà
+  cung cấp khác (đúng identity nhận, sai identity từ chối; chỉ trên dev). Đường dev là Audit nên script từ chối chạy trừ
+  khi `SUPPLYCHAIN_ENFORCE_TMP=1`: chạy (k), nâng tạm `svp-policy` lên Enforce cho các ca còn lại rồi trả Audit; trên
+  đường dev chưa có image ký nên (a), (b), (c), (f) và nửa nhận của (h) SKIP. Mọi ca đủ trên cluster GitOps sau push
+  (**kiểm sau push**). Khi kết thúc script trả Kyverno, Argo CD sync, Audit về như cũ, xoá policy tạm, `svp-probe`, và so
+  webhook với ảnh chụp đầu; JSON ở `.k8s/drills/`. Không gọi API của gateway, không xoá khoá rate limit nào.
 - `make k8s-ui-grafana`, `k8s-ui-prometheus`, `k8s-ui-alertmanager`, `k8s-ui-glitchtip`, `k8s-ui-argocd`: port-forward chỉ
   trên `127.0.0.1` (lần lượt 3000, 9090, 9093, 8000, 8081) trong lúc target chạy (Ctrl-C để đóng); không HTTPRoute,
   LoadBalancer hay NodePort nào cho UI (OPS-2). Grafana đăng nhập `admin` + `SVP_GRAFANA_ADMIN_PASSWORD`, GlitchTip bằng
@@ -263,6 +297,45 @@ liệt kê target):
   bằng lệnh target in ra; Prometheus và Alertmanager không có đăng nhập nên chỉ mở khi forward đang chạy.
 - `make hooks`: bật git hook ở `.githooks/` một lần cho mỗi clone. `pre-commit` chạy `gofmt` trên file Go đã stage,
   `golangci-lint run`, `buf lint` và `gitleaks` trên thay đổi đã stage.
+- Giai đoạn 5, CI trên GitHub Actions ([ADR-0015](docs/adr/0015-cicd-devsecops-stage5.md)). Hai workflow, mọi action
+  ghim SHA commit, `permissions: {}` ở đầu file và quyền khai theo job; mọi job của lượt `pull_request` (cả PR từ fork)
+  chỉ có `contents: read` và không secret; không `pull_request_target`, `workflow_run`:
+  - `.github/workflows/ci.yml` (PR, push `main`, dispatch): `check` (`make check TESTFLAGS=-count=1`, Postgres và Redis
+    là service container trên `127.0.0.1`, ffmpeg), `generate` (`make generate-check`), `buf` (`buf breaking` so với
+    merge-base của PR, `main` trước push, hay merge-base với `origin/main` khi dispatch), `config`
+    (`deploy/ci/scan-gate.sh --check-ignorefile`, `make slo-check`, `make otelcol-validate`, `make env` rồi
+    `make compose-config`, `make helm-check`, `deploy/k8s/check-image-digests.sh`), `gitleaks` (toàn lịch sử,
+    `--redact`), `trivy-config` (chỉ báo), `sarif` (chỉ `main`), check tổng `ci-ok`.
+  - `.github/workflows/images.yml` (PR, push `main`, dispatch, lịch hằng ngày): chỉ build service đổi so với lần push
+    `main` thành công cuối (`deploy/ci/changed-services.sh`; đổi `images.yml`, `deploy/ci/`, `deploy/k8s/lib.sh` hay dòng
+    `TRIVY_IMAGE`/`SYFT_IMAGE`/`COSIGN_IMAGE` của `Makefile` thì cả sáu); mỗi service hai chân amd64, arm64 build native,
+    trivy chặn bí mật (mọi severity) và CRITICAL **trước** push, push lên `ghcr.io/anhnvcoder/short-video-platform/<svc>`
+    đúng bản đã quét, ghép index, ký keyless bằng cosign kèm attestation `vuln` (kết quả quét hai nền tảng) và SBOM syft
+    mỗi nền tảng, rồi job `promote` mở PR cuộn. Lượt PR chỉ build và quét (`build-nopush`), `values-check` kiểm digest mà
+    PR đổi (đã ký, attestation không quá 48 giờ). Dispatch `-f rescan=true [-f values_ref=<ref>]` quét lại mọi digest
+    phát hành (lịch hằng ngày làm việc này), `-f drill=true` đẩy hai image diễn tập; check tổng `images-ok`.
+  - Check bắt buộc của ruleset `main`: `ci-ok`, `images-ok`, chỉ nhận từ app GitHub Actions. Ruleset, cài đặt repo
+    (Actions chỉ cho action của GitHub và `sigstore/cosign-installer`, ghim SHA bắt buộc; secret scanning + push
+    protection; Dependabot alerts) và package GHCR public do người học bật (ADR-0015 §5, §11): **kiểm sau push**.
+  - Chạy lại một job trên máy, từ gốc repo: `make check TESTFLAGS=-count=1`; `make generate-check`;
+    `buf breaking --against '.git#ref=<base>'`; `deploy/ci/scan-gate.sh --check-ignorefile`, `make slo-check`,
+    `make otelcol-validate`, `make compose-config`, `make helm-check`, `deploy/k8s/check-image-digests.sh`;
+    `gitleaks git --redact --no-banner`; `make trivy-config`; một chân image (build, quét, cổng, không push):
+    `deploy/ci/build-image.sh <svc> arm64 "$(mktemp -d)"`; service nào sẽ build: `deploy/ci/changed-services.sh <base>
+    HEAD`. Push GHCR, ký, attest, promote chỉ chạy trong CI: không đăng nhập GHCR hay Sigstore từ máy.
+  - `make helm-check`: `helm lint` và `helm template` mọi chart của repo với values đường GitOps (`HELM_*_HOME` trong
+    thư mục tạm). `deploy/k8s/check-image-digests.sh`: `helm template` mọi chart bên thứ ba với đúng values, mọi image
+    (ngoài 6 service) phải ghim `@sha256:`. `make trivy-config`: trivy quét cấu hình Dockerfile, chart, chỉ báo.
+    `make renovate-check`: `renovate-config-validator --strict` trong `RENOVATE_IMAGE` ghim, không mạng. trivy, syft,
+    cosign, Renovate chạy trên máy chỉ bằng image ghim digest của `Makefile` (`TRIVY_IMAGE`, `SYFT_IMAGE`,
+    `COSIGN_IMAGE`, `RENOVATE_IMAGE`), không cài.
+  - `.trivyignore.yaml` ở gốc repo (hiện chưa có): chỉ phần `vulnerabilities`, mỗi mục có `id`, `statement` (lý do) và
+    `expired_at` không quá 30 ngày sau ngày chạy; thêm qua PR; bí mật không bỏ qua được. File sai quy tắc làm job `config`
+    đỏ ở mọi PR.
+  - Renovate: GitHub App Mend, chỉ repo này (người học cài, **kiểm sau push**); `renovate.json`: sáng thứ Bảy giờ Việt
+    Nam, `minimumReleaseAge` 3 ngày (trừ cảnh báo lỗ hổng), không automerge, không đụng `deploy/k8s/values/services/`
+    (của PR promote) và `gen/`. Ghim mới trong `Makefile`, `lib.sh` hay values bên thứ ba theo dạng của
+    ADR-0015 §10 (chú thích `# renovate: datasource=… depName=…` ngay trên dòng khi manager có sẵn không đọc được).
 
 Quy ước test:
 

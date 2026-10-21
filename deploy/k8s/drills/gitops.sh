@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # Measures, after the fact, how long a commit took from the push to the pods that run it on the GitOps path
 # (docs/adr/0014-kubernetes-local-stage4.md, section 12): `make measure-gitops REV=<commit>` on a cluster made by
-# `make k8s-gitops-up`. Read only: git, GitHub's events and the cluster are read, nothing is changed.
+# `make k8s-gitops-up`. Read only: git, GitHub's events and the cluster are read, nothing is changed. A release commit
+# is the merge of a promote pull request, which changes image.digest in deploy/k8s/values/services/
+# (docs/adr/0015-cicd-devsecops-stage5.md, section 9).
 #
-#   push           the reflog entry "update by push" of refs/remotes/origin/main that moved it to REV (the learner
-#                  pushes from this machine); else the PushEvent of GitHub's events API whose head is REV (gh api);
-#                  else "not measurable", and the times count from the start of Argo CD's sync instead. Never the
-#                  commit's own date: a commit can be made long before it is pushed.
+#   push           the reflog entry "update by push" of refs/remotes/origin/main that moved it to REV (a push from
+#                  this machine); else the PushEvent of GitHub's events API whose head is REV (gh api), which is how a
+#                  pull request merged on GitHub arrives (this machine only fetches it later); else "not measurable",
+#                  and the times count from the start of Argo CD's sync instead. Never the commit's own date: a commit
+#                  can be made long before it is pushed.
 #   sync           the entries for REV in status.history of the Applications that synced it: when the first started
 #                  and when the last finished;
-#   pods           the services whose image.tag REV changes (values files at REV against its first parent): when the
-#                  first and the last pod running the new tag turned Ready, once every pod of those services runs it.
+#   pods           the services whose image.digest REV changes (values files at REV against its first parent): when
+#                  the first and the last pod running the new digest turned Ready, once every pod of those services
+#                  runs it.
 #                  Pods that restarted since, or that were made outside the rollout (the HPA scaling out, a pod that
 #                  replaced an evicted one), no longer hold the time the rollout made them Ready: they are left out
 #                  and named.
@@ -39,16 +43,17 @@ iso() { date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ; }
 sha=$(git -C "$repo_root" rev-parse --verify --quiet "$1^{commit}") || fail "$1 is not a commit of this clone"
 short=${sha:0:12}
 
-# --- the services whose release tag REV changes, from git alone and before the cluster is read: a commit that changes
-# no tag (code or docs only) changes no manifest, so no Application ever syncs it, and only this check can say why.
-parent=$(git -C "$repo_root" rev-parse --verify --quiet "$sha^1") || fail "$short has no parent to compare its release tags with"
+# --- the services whose release digest REV changes, from git alone and before the cluster is read: a commit that
+# changes no digest (code or docs only) changes no pod, so no rollout follows it, and only this check can say why.
+# The first parent of a merge on GitHub is main before it.
+parent=$(git -C "$repo_root" rev-parse --verify --quiet "$sha^1") || fail "$short has no parent to compare its release digests with"
 changed=()
 for svc in "${svp_services[@]}"; do
-  new=$(git -C "$repo_root" show "$sha:$values_dir/$svc.yaml" 2>/dev/null | values_tag) || continue
-  old=$(git -C "$repo_root" show "$parent:$values_dir/$svc.yaml" 2>/dev/null | values_tag) || old=
-  if [ -n "$new" ] && [ "$new" != "$old" ]; then changed+=("$svc:$new"); fi
+  new=$(git -C "$repo_root" show "$sha:$values_dir/$svc.yaml" 2>/dev/null | values_field digest 2>/dev/null) || continue
+  old=$(git -C "$repo_root" show "$parent:$values_dir/$svc.yaml" 2>/dev/null | values_field digest 2>/dev/null) || old=
+  if [ -n "$new" ] && [ "$new" != "$old" ]; then changed+=("$svc@$new"); fi
 done
-[ ${#changed[@]} -gt 0 ] || fail "$short changes no image.tag in $values_dir, so no pod runs a new tag to time; measure a release commit (make k8s-release)"
+[ ${#changed[@]} -gt 0 ] || fail "$short changes no image.digest in $values_dir, so no pod runs a new release to time; measure the merge commit of a promote pull request"
 
 kc get --raw /readyz >/dev/null 2>&1 || fail "cluster svp is not reachable (context k3d-svp); run make k8s-gitops-up"
 kc -n argocd get applications.argoproj.io svp-root >/dev/null 2>&1 ||
@@ -112,7 +117,7 @@ sync_apps=$(printf '%s\n' "$syncs" | awk '{print $1}' | sort -u | tr '\n' ' ')
 sync_start=$(printf '%s\n' "$syncs" | awk '{print $2}' | sort | head -1)
 sync_end=$(printf '%s\n' "$syncs" | awk '{print $3}' | sort | tail -1)
 
-# --- pods of the services whose release tag REV changes.
+# --- pods of the services whose release digest REV changes.
 # A pod's Ready condition holds the time it last turned Ready, and this script reads it after the fact, so two kinds of
 # pod are left out of the times and named instead:
 # - a pod whose containers restarted: it turned Ready again after its last start, not when the rollout made it;
@@ -189,8 +194,8 @@ time_rollout_pods() {
 }
 
 for image in "${changed[@]}"; do
-  svc=${image%%:*}
-  tag=${image#*:}
+  svc=${image%%@*}
+  digest=${image#*@}
   # The service's own Application (named after it) must have synced REV last: a later sync may have rolled its pods.
   latest=$(printf '%s' "$apps_json" | jq -r --arg app "$svc" "$git_revs"'
     .items[] | select(.metadata.name == $app) | [.status.history[]?] | last // {} | git_revs[0] // ""')
@@ -224,9 +229,12 @@ for image in "${changed[@]}"; do
       + " \([.status.conditions[]? | select(.type == "Ready" and .status == "True") | .lastTransitionTime][0] // "-")"') ||
     fail "read the pods of $svc"
   total=$(printf '%s\n' "$pods" | grep -c . || true)
-  fresh=$(printf '%s\n' "$pods" | awk -v img="k3d-svp-registry:5111/svp/$svc:$tag" '$2 == img && $5 != "-"' | grep -c . || true)
+  # The chart renders a release as <repository>[:<tag>]@<digest>: a pod runs the new release when its image ends in
+  # @<digest>, whatever its tag.
+  fresh=$(printf '%s\n' "$pods" | awk -v d="@$digest" \
+    'length($2) > length(d) && substr($2, length($2) - length(d) + 1) == d && $5 != "-"' | grep -c . || true)
   [ "$total" -gt 0 ] && [ "$fresh" = "$total" ] ||
-    waiting "$svc: $fresh of $total pods run image tag $tag and are Ready"
+    waiting "$svc: $fresh of $total pods run $digest and are Ready"
   first_left=${#left_out[@]}
   time_rollout_pods "$(epoch "$deploy_start")" "$(epoch "$deploy_end")" $((rollout_slack + steps_total)) < <(printf '%s\n' "$pods")
   [ "$timed" -gt 0 ] ||

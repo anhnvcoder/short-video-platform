@@ -97,6 +97,28 @@ prometheusOperator:
   resources:
     requests: {cpu: 20m, memory: 32Mi}
     limits: {memory: 128Mi}
+  # Images by digest (multi-arch index: linux/amd64 and linux/arm64), the chart's tags beside them for the reader: a tag
+  # can be pushed again to other content, a digest cannot (docs/adr/0015-cicd-devsecops-stage5.md, section 8). The
+  # chart renders registry/repository:tag when its own digest key, sha, is empty, so tag holds version@digest;
+  # deploy/k8s/check-image-digests.sh fails on an image without one. registry and repository are the chart's defaults
+  # written out: Renovate's helm-values manager finds a pin only as repository and tag under a key ending in "image"
+  # (ADR-0015 section 10), and updates both parts of tag. Prometheus and Alertmanager below also set version and leave
+  # repository out (see there).
+  image:
+    registry: quay.io
+    repository: prometheus-operator/prometheus-operator
+    tag: v0.94.1@sha256:7c88d4e7bae63bd8d0f8da986054337c23b4472fa8d3c6817f5bc4b8407a2d6a
+  # The config-reloader the operator adds to the Prometheus and Alertmanager pods (--prometheus-config-reloader).
+  prometheusConfigReloader:
+    image:
+      registry: quay.io
+      repository: prometheus-operator/prometheus-config-reloader
+      tag: v0.94.1@sha256:06b52bd4dbe3ed6dd5905aadaf8b9987d9da4c31d37bb86deaadae68cee2d26b
+  # Default image of Thanos sidecars and rulers (--thanos-default-base-image); none runs here, pinned all the same.
+  thanosImage:
+    registry: quay.io
+    repository: thanos/thanos
+    tag: v0.42.4@sha256:b567818fe608067eb0f1d7c2c4fe361e7ad83c8a256234c97685f1d0bf670cc8
 
 kube-state-metrics:
   fullnameOverride: kps-kube-state-metrics
@@ -110,9 +132,24 @@ kube-state-metrics:
   resources:
     requests: {cpu: 10m, memory: 32Mi}
     limits: {memory: 128Mi}
+  # By digest, as prometheusOperator above.
+  image:
+    registry: registry.k8s.io
+    repository: kube-state-metrics/kube-state-metrics
+    tag: v2.20.0@sha256:42cfe3723a5f058171c627537fb57a3ea0f26e4380fa18555a95cb1a1b4cfc5b
 
 prometheus:
   prometheusSpec:
+    # By digest, as prometheusOperator above (tag holds version@digest), with two differences. Unless version is set,
+    # the chart writes tag into the version field of the Prometheus object, which the operator parses as a version and
+    # could not with a digest in it: so version holds the same version without the digest, and the two always change
+    # together. And repository stays out of this file on purpose: with it, Renovate's helm-values manager would read
+    # tag and move it without version. Instead the "# renovate:" line names the image (the chart's default
+    # registry/repository) for the custom manager that writes version and tag together (ADR-0015 section 10).
+    # renovate: datasource=docker depName=quay.io/prometheus/prometheus
+    version: v3.15.0-distroless
+    image:
+      tag: v3.15.0-distroless@sha256:b2a413d5a03ea6a76782a508d1c7947440bba3b973931a25676e278431891b01
     # As compose (deploy/observability/prometheus/prometheus.yaml and the command line of the image's
     # run-prometheus.sh): the OTLP receiver every metric arrives through (the Collector, and the Collector's own
     # telemetry), the resource attributes promoted to labels, the identifying ones kept, out-of-order samples within
@@ -216,9 +253,19 @@ alertmanager:
     resources:
       requests: {cpu: 10m, memory: 24Mi}
       limits: {memory: 64Mi}
+    # By digest, as Prometheus above: the Alertmanager object's version field comes from tag too unless version is set.
+    # renovate: datasource=docker depName=quay.io/prometheus/alertmanager
+    version: v0.34.1
+    image:
+      tag: v0.34.1@sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a
 
 grafana:
   fullnameOverride: kps-grafana
+  # By digest, as prometheusOperator above (the chart strips the digest from its version label).
+  image:
+    registry: docker.io
+    repository: grafana/grafana
+    tag: 13.2.4-distroless@sha256:ae3d3add290adbe6a88412229f5d76fd7bb82743050881698642d3d62f277e35
   # Login only (threat model OPS-2): the admin user and password come from Secret grafana-admin, which
   # deploy/k8s/secrets.sh writes from .env (SVP_GRAFANA_ADMIN_PASSWORD). Grafana has no route from outside the
   # cluster either: make k8s-ui-grafana port-forwards it to 127.0.0.1:3000.
@@ -281,6 +328,11 @@ grafana:
     requests: {cpu: 50m, memory: 256Mi}
     limits: {memory: 448Mi}
   sidecar:
+    # By digest, as prometheusOperator above.
+    image:
+      registry: quay.io
+      repository: kiwigrid/k8s-sidecar
+      tag: 2.14.1@sha256:092dbe0c335fba9af414a27630ca68f34df6185784fa847d9954187e69dbfdd7
     # Each sidecar (k8s-sidecar, Python) was OOM-killed at 48 MiB while loading its first list of ConfigMaps.
     resources:
       requests: {cpu: 10m, memory: 48Mi}

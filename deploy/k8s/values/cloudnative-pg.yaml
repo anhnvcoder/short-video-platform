@@ -59,3 +59,14 @@ additionalEnv:
     value: svp-data
   - name: MANAGE_WEBHOOK_CONFIGURATIONS
     value: "false"
+
+# The operator's image by digest (multi-arch index: linux/amd64 and linux/arm64), the chart's appVersion beside it for
+# the reader: a tag can be pushed again to other content, a digest cannot (docs/adr/0015-cicd-devsecops-stage5.md,
+# section 8). The chart renders repository:tag, so tag holds version@digest; it also goes into env OPERATOR_IMAGE_NAME,
+# the image the operator starts the bootstrap initContainer of every Postgres pod from, pinned the same way. The
+# Postgres image itself is imageName of Cluster svp-pg (chart svp-data), pinned there; the operator's built-in default
+# Postgres image is never used. repository is the chart's default written out: Renovate's helm-values manager finds a
+# pin only as repository and tag under a key ending in "image" (ADR-0015 section 10), and updates both parts of tag.
+image:
+  repository: ghcr.io/cloudnative-pg/cloudnative-pg
+  tag: 1.30.1@sha256:923c267ec29636db3bee20f993d0ec4973fa22998e1adad37da79e4d32b5bc07

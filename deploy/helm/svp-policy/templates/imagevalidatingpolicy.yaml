@@ -1,0 +1,149 @@
+{{- /*
+Kyverno v1.19.1 ImageValidatingPolicy (docs/adr/0015-cicd-devsecops-stage5.md, sections 7 and 8). The checks run in
+order and stop at the first that fails, each with its own message naming the images it refused:
+  1. every image of the pod is <imagePrefix><name>@sha256:<64 hex>. Kyverno verifies only the images that
+     matchImageReferences selects and lets every other one through, so this check alone refuses an image of the local
+     registry or of Docker Hub; it reads the pod only, so such a pod is refused without any registry being asked. An
+     image under the prefix without a digest is refused earlier still, by verifyDigest ("does not have a digest"),
+     before Kyverno would look its tag up;
+  2. a keyless cosign signature by the workflow identity (issuer + subject);
+  3. a vuln attestation (https://cosign.sigstore.dev/attestation/vuln/v1) signed by the same identity;
+  4. its predicate covers exactly linux/amd64 and linux/arm64 (scanner.result.platforms, the contract of
+     deploy/ci/vuln-predicate.sh);
+  5. no CRITICAL vulnerability on either platform;
+  6. metadata.scanFinishedOn at most maxAttestationAge ago.
+The payload of an attestation is the whole in-toto statement, so its paths start at .predicate; extractPayload reads it
+only once verifyAttestationSignatures has verified it in the same evaluation (check 3 comes first).
+*/}}
+{{- $iv := .Values.imageVerification }}
+{{- if not (has $iv.mode (list "Enforce" "Audit")) }}
+{{- fail (printf "imageVerification.mode must be Enforce or Audit, not %q" $iv.mode) }}
+{{- end }}
+{{- range $key := list "imagePrefix" "issuer" "subject" "maxAttestationAge" }}
+{{- $value := required (printf "imageVerification.%s is required" $key) (get $iv $key) }}
+{{- if regexMatch "['\\\\\n]" $value }}
+{{- fail (printf "imageVerification.%s goes into CEL string literals: no quote, backslash or newline" $key) }}
+{{- end }}
+{{- end }}
+{{- if not (hasSuffix "/" $iv.imagePrefix) }}
+{{- fail "imageVerification.imagePrefix must end in /: it is the repository prefix of every allowed image" }}
+{{- end }}
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: {{ .Values.name }}
+spec:
+  {{- if eq $iv.mode "Enforce" }}
+  validationActions: [Deny]
+  # Kyverno down, or an error while verifying (GHCR or Sigstore's TUF out of reach): the pod is refused too.
+  failurePolicy: Fail
+  {{- else }}
+  validationActions: [Audit]
+  # Audit refuses nothing, and a Kyverno that is down lets every pod through.
+  failurePolicy: Ignore
+  {{- end }}
+  # 30 s, the most the API server allows (Kyverno's default is 10). A verification Kyverno has not cached reaches
+  # Sigstore's TUF, GHCR and Rekor, and a single signature took 6-8 s on the lab's cluster; each image is verified twice
+  # (signature, then vuln attestation). Under Enforce a webhook call that times out refuses the pod.
+  webhookConfiguration:
+    timeoutSeconds: 30
+  evaluation:
+    # Admission only: Kyverno's background scan is off (deploy/k8s/values/kyverno.yaml).
+    background:
+      enabled: false
+  # Pods only, no rule generated for Deployments, ReplicaSets, Jobs or Rollouts (an empty list that is not nil turns
+  # autogen off): every way to a running container goes through a Pod, so a Deployment, the gateway's Rollout, the
+  # migrate Jobs and KEDA's scale-outs all meet this one check, once, when their pod is created.
+  autogen:
+    podControllers:
+      controllers: []
+  matchConstraints:
+    # Kyverno writes this selector, ANDed with the namespaceSelector of its ConfigMap (kube-system and kyverno left
+    # out), onto the webhook it registers for this policy: no request of another namespace reaches it.
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ $iv.namespace }}
+    {{- with .Values.objectSelector }}
+    objectSelector:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    resourceRules:
+      # pods/ephemeralcontainers is a subresource a match on pods does not cover: kubectl debug adds a container to a
+      # running pod through it (an UPDATE). UPDATE of pods covers a changed container image.
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods, pods/ephemeralcontainers]
+  matchImageReferences:
+    - glob: {{ printf "%s*" $iv.imagePrefix | quote }}
+  validationConfigurations:
+    # Images are never rewritten (the default would pin a tag to its digest through a mutating webhook): the digest is
+    # in git already, and Argo CD would see the live pod differ from it.
+    mutateDigest: false
+    verifyDigest: true
+    required: true
+  attestors:
+    - name: images
+      cosign:
+        keyless:
+          identities:
+            - issuer: {{ $iv.issuer | quote }}
+              subject: {{ $iv.subject | quote }}
+  attestations:
+    - name: vuln
+      intoto:
+        type: https://cosign.sigstore.dev/attestation/vuln/v1
+  variables:
+    # Every image of the pod, whatever its registry: what check 1 reads.
+    - name: podImages
+      expression: >-
+        object.spec.?containers.orValue([]).map(c, c.image) +
+        object.spec.?initContainers.orValue([]).map(c, c.image) +
+        object.spec.?ephemeralContainers.orValue([]).map(c, c.image)
+    - name: foreign
+      expression: >-
+        variables.podImages.filter(i, !i.matches({{ printf "r'^%s[a-z0-9._/-]+(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$'" (regexQuoteMeta $iv.imagePrefix) }}))
+    # The images under the prefix (matchImageReferences), the ones Kyverno verifies.
+    - name: matched
+      expression: images.containers + images.initContainers + images.ephemeralContainers
+    - name: unsigned
+      expression: variables.matched.filter(i, verifyImageSignatures(i, [attestors.images]) == 0)
+    - name: unattested
+      expression: variables.matched.filter(i, verifyAttestationSignatures(i, attestations.vuln, [attestors.images]) == 0)
+    # Exactly two entries, one linux/amd64 and one linux/arm64 (the payload is read again for each part; Kyverno keeps
+    # it in memory for the request).
+    - name: wrongPlatforms
+      expression: >-
+        variables.matched.filter(i, !(
+          size(extractPayload(i, attestations.vuln).?predicate.?scanner.?result.?platforms.orValue([])) == 2 &&
+          extractPayload(i, attestations.vuln).predicate.scanner.result.platforms.exists(p, p.?platform.orValue('') == 'linux/amd64') &&
+          extractPayload(i, attestations.vuln).predicate.scanner.result.platforms.exists(p, p.?platform.orValue('') == 'linux/arm64')))
+    - name: critical
+      expression: >-
+        variables.matched.filter(i,
+          extractPayload(i, attestations.vuln).?predicate.?scanner.?result.?platforms.orValue([]).exists(p,
+            p.?report.?Results.orValue([]).exists(r,
+              r.?Vulnerabilities.orValue([]).exists(v, v.?Severity.orValue('') == 'CRITICAL'))))
+    - name: stale
+      expression: >-
+        variables.matched.filter(i,
+          time.now() - timestamp(extractPayload(i, attestations.vuln).predicate.metadata.scanFinishedOn) > duration('{{ $iv.maxAttestationAge }}'))
+  validations:
+    - expression: size(variables.foreign) == 0
+      messageExpression: >-
+        'image not allowed in namespace {{ $iv.namespace }}, which runs only {{ $iv.imagePrefix }}<service>@sha256:<digest>: ' + variables.foreign.join(', ')
+    - expression: size(variables.unsigned) == 0
+      messageExpression: >-
+        'image without a keyless signature by {{ $iv.subject }} (issuer {{ $iv.issuer }}): ' + variables.unsigned.join(', ')
+    - expression: size(variables.unattested) == 0
+      messageExpression: >-
+        'image without a vuln attestation signed by {{ $iv.subject }}: ' + variables.unattested.join(', ')
+    - expression: size(variables.wrongPlatforms) == 0
+      messageExpression: >-
+        'vuln attestation does not cover exactly linux/amd64 and linux/arm64: ' + variables.wrongPlatforms.join(', ')
+    - expression: size(variables.critical) == 0
+      messageExpression: >-
+        'vuln attestation reports a CRITICAL vulnerability: ' + variables.critical.join(', ')
+    - expression: size(variables.stale) == 0
+      messageExpression: >-
+        'vuln attestation older than {{ $iv.maxAttestationAge }} (scanFinishedOn): ' + variables.stale.join(', ')

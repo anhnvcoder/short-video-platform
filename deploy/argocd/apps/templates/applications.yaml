@@ -79,8 +79,8 @@ spec:
   # adds rollouts-pod-template-hash to the selectors of Services gateway and gateway-canary. Ignored here, selfHeal does
   # not set the weights back in the middle of a canary. RespectIgnoreDifferences also keeps the live values when a sync
   # applies these objects: Argo CD applies server-side with --force-conflicts, so without it every sync of this
-  # Application (a new release tag) would strip the hash from both selectors, sending each request to stable and canary
-  # pods alike until the controller sets it again, and reset the weights.
+  # Application (a new release digest) would strip the hash from both selectors, sending each request to stable and
+  # canary pods alike until the controller sets it again, and reset the weights.
   # The price, read in controller/sync.go of Argo CD v3.5.5 (normalizeTargetResources): the live values reach the
   # applied manifest through a JSON merge patch, which replaces a list whole, so the whole spec.rules of the live route
   # is applied, not only its weights. A change of the rules in git (a match, a filter, a timeout) is therefore not

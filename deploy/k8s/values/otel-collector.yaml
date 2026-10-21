@@ -9,10 +9,13 @@ replicaCount: 1
 fullnameOverride: otel-collector
 
 # The image of compose's otelcol (deploy/compose/compose.yaml) and of `make otelcol-validate`, by the same index
-# digest; keep the three in step.
+# digest; keep the three in step. The chart renders repository:tag, so tag holds version@digest, the form of the other
+# two. Not the chart's own digest key: Renovate's helm-values manager finds a pin only as repository and tag under a
+# key ending in "image" (docs/adr/0015-cicd-devsecops-stage5.md, section 10) and updates both parts of tag, so version
+# and digest change together.
 image:
   repository: otel/opentelemetry-collector-contrib
-  digest: sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
+  tag: 0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
 command:
   name: otelcol-contrib
 

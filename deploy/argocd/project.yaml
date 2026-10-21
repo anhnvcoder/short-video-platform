@@ -24,6 +24,7 @@ spec:
     - https://grafana.github.io/helm-charts
     - https://open-telemetry.github.io/opentelemetry-helm-charts
     - https://argoproj.github.io/argo-helm
+    - https://kyverno.github.io/kyverno/
   # The project's namespaces and those of the platform charts, on this cluster only. argocd holds the Applications the
   # root makes. kube-system only because KEDA's chart puts RoleBinding keda-operator-auth-reader there: it binds the
   # Role extension-apiserver-authentication-reader, which exists in kube-system alone, so that KEDA's metrics server
@@ -38,6 +39,7 @@ spec:
     - {server: https://kubernetes.default.svc, namespace: cnpg-system}
     - {server: https://kubernetes.default.svc, namespace: keda}
     - {server: https://kubernetes.default.svc, namespace: argo-rollouts}
+    - {server: https://kubernetes.default.svc, namespace: kyverno}
     - {server: https://kubernetes.default.svc, namespace: argocd}
     - {server: https://kubernetes.default.svc, namespace: kube-system}
   # Cluster-scoped kinds the charts render (helm template of every component with its values), nothing else: no
@@ -60,6 +62,9 @@ spec:
     - {group: gateway.networking.k8s.io, kind: GatewayClass}
     # Chart svp-data: KEDA's login to Redpanda, read from Secret keda/keda-kafka.
     - {group: keda.sh, kind: ClusterTriggerAuthentication}
+    # Chart svp-policy: the image policy of namespace svp. Kyverno's own chart needs no kind beyond the CRDs and RBAC
+    # above; the webhook configurations it registers at run time are its own, not Argo CD's.
+    - {group: policies.kyverno.io, kind: ImageValidatingPolicy}
 ---
 # AppProject default: argocd-server creates it at its start when it is missing, open to every repository, destination
 # and kind, and an Application that names it (or names no project) would escape every limit of svp above. Emptied, it

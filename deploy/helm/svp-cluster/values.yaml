@@ -34,6 +34,35 @@ platformNamespaces:
   - name: argo-rollouts
   - name: cnpg-system
   - name: keda
+  - name: kyverno
+
+# Kyverno (wave 2; docs/adr/0015-cicd-devsecops-stage5.md, section 8), the one platform namespace whose pods also get
+# NetworkPolicies here: it verifies images against registries and Sigstore on the internet, and the API server sends it
+# every pod of svp (Kyverno itself starts no pod there). default-deny and allow-dns as in the project's namespaces,
+# allow-kube-api for its pods labelled svp-kube-api=allow (deploy/k8s/values/kyverno.yaml), and two of its own
+# (templates/networkpolicies.yaml): the API server's webhook calls in, TCP 443 out to public addresses only.
+kyverno:
+  namespace: kyverno
+  # The admission controller's webhook server (its Service's 443 forwards there).
+  webhookPort: 9443
+  # Where the API server's webhook calls come from besides the nodes' network (nodeSubnet): a call to a pod on the other
+  # node goes through flannel's VXLAN interface, whose address is the network address of the server node's pod range.
+  # k3s gives each node one /24 of 10.42.0.0/16 in the order they join, so with the two nodes of deploy/k8s/k3d.yaml the
+  # server's is one of these two; no pod ever gets a .0 address, so these name the nodes only.
+  vxlanAddresses:
+    - 10.42.0.0/32
+    - 10.42.1.0/32
+  # Left out of the egress on 443, so the admission controller reaches only the internet: GHCR
+  # (ghcr.io, pkg-containers.githubusercontent.com) and Sigstore's TUF repository (tuf-repo-cdn.sigstore.dev), which
+  # NetworkPolicy cannot name. 10.0.0.0/8 holds the k3d nodes and the local registry (nodeSubnet below), the pods and
+  # the Services; the other ranges are the private, shared and link-local ones (the host, Docker's networks, a cloud's
+  # metadata service).
+  privateRanges:
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 100.64.0.0/10
+    - 169.254.0.0/16
 
 # Pod Security Standard version the admission controller checks against, pinned so a k3s upgrade does not tighten or
 # loosen it silently: the minor of the node image in deploy/k8s/k3d.yaml.
