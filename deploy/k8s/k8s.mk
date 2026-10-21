@@ -72,7 +72,7 @@ k8s-smoke: ## Run the end-to-end smoke test against cluster svp at https://api.s
 # compose drills' default of 5 applies to their own targets only).
 K8S_DRILL_ENV := SVP_STACK=k3d CURL_CA_BUNDLE=$(CURDIR)/.k8s/ca.crt
 
-drill-k8s-keda: ## Upload and complete N (default 9, 6-12; more until the records cover all 3 partitions) 60 s 1080p videos at once; time media-worker's KEDA scale-out to 2/3 replicas and back to 1, peak lag, each READY, worker CPU/RAM; scale down a pod mid-transcode; every video transcoded once (LOCAL LAB ONLY: resets register rate limit keys in the cluster's Valkey db 10)
+drill-k8s-keda: ## Upload and complete N (default 9, 6-12; more until the records cover all 3 partitions) 60 s 1080p videos at once; time media-worker's KEDA scale-out to its 2 replicas and back to 1, peak lag, each READY, worker CPU/RAM; scale down a pod mid-transcode; every video transcoded once; the k3s server must not restart (LOCAL LAB ONLY: resets register rate limit keys in the cluster's Valkey db 10)
 	@test -s .k8s/ca.crt || { echo "make drill-k8s-keda: .k8s/ca.crt missing; run make k8s-up (or make k8s-ca)" >&2; exit 1; }
 	$(K8S_DRILL_ENV) N='$(if $(filter file,$(origin N)),9,$(N))' deploy/k8s/drills/keda.sh https://api.svp.localhost:8443
 

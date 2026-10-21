@@ -1,6 +1,7 @@
 # 0015. Giai đoạn 5: CI/CD và chuỗi cung ứng image với GitHub Actions ghim SHA, image đa kiến trúc trên GHCR, trivy chặn trước push, SBOM syft, ký keyless cosign, Kyverno chỉ nhận image đã ký và sạch, promote bằng PR GitOps, Renovate
 
-- Trạng thái: Chấp nhận
+- Trạng thái: Chấp nhận; thứ tự cắt RAM của §8 chỉnh bởi [0017](0017-gitops-capacity-media-worker-max2.md) (thiếu tiêu chí
+  (c) thì đi thẳng tới media-worker tối đa 2)
 - Ngày: 2026-10-20
 
 ## Bối cảnh
@@ -829,6 +830,9 @@ workflow quyết. Các job:
     `active_file` 5,36 GiB); đỉnh trong `make drill-k8s-keda N=9`: cửa sổ 6 mẫu cao nhất có 3 replica Ready (2 worker
     transcode) 7,68 GiB, mẫu cao nhất 7,92 GiB (mẫu duy nhất có 3 worker cùng transcode), dưới ngưỡng 8,7. Không áp bước
     cắt nào. Đường GitOps (có Argo CD): kiểm sau push.
+  - **Đo trên đường GitOps (2026-10-21):** ngưỡng RAM đạt (nghỉ 6,93–6,97 GiB đủ (b), đỉnh 3 worker 8,45 GiB) nhưng k3s
+    server chết trong `drill-k8s-keda` vì VM hết CPU; số đo, tiêu chí (c) và quyết định media-worker tối đa 2 ở
+    [ADR-0017](0017-gitops-capacity-media-worker-max2.md).
 
 ## 9. Promote qua PR GitOps (thay `make k8s-release`)
 

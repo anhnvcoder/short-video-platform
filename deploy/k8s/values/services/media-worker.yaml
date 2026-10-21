@@ -39,11 +39,14 @@ ingressFrom: []
 egressTo: [redpanda, minio, collector]
 # Scaled by KEDA on the lag of group media-worker on video.lifecycle.v1 (CPU says nothing about the queue: a worker
 # waiting for a job is idle while jobs pile up). Each worker handles one job at a time (one record per poll), so
-# lagThreshold 1 asks for one replica per record waiting or in hand, up to 3, the topic's partition count: a fourth
-# consumer would get no partition. The HPA KEDA makes reads the lag every 15 s.
+# lagThreshold 1 asks for one replica per record waiting or in hand, up to 2. Not 3, the topic's partition count: with
+# 3 workers transcoding at once (2 CPUs each) the 8-vCPU Docker VM ran 99 % busy with 1.06 GiB available and swapping,
+# k3s's kine compaction hit its 20 s limit and the k3s server exited, twice in the GitOps cluster (ADR-0017). Both
+# paths read this file. The topic keeps 3 partitions, so one of the 2 workers owns two; a consumer beyond the partition
+# count would get none. The HPA KEDA makes reads the lag every 15 s.
 keda:
   minReplicas: 1
-  maxReplicas: 3
+  maxReplicas: 2
   kafka:
     topic: video.lifecycle.v1
     consumerGroup: media-worker
