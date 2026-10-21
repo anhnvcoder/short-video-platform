@@ -26,6 +26,9 @@ SLOTH_VERSION              := v0.16.0
 K3D_VERSION                := v5.9.0
 # renovate: datasource=docker depName=rancher/k3s
 K3S_IMAGE_TAG              := v1.36.5-k3s1
+# One line on purpose: a backslash-newline inside the single quotes of a recipe reaches the shell as a literal backslash
+# on GNU Make 4.x (Make 3.81 joined the lines), and the linker then gets a broken -ldflags.
+K3D_LDFLAGS                := -X github.com/k3d-io/k3d/v5/version.Version=$(K3D_VERSION) -X github.com/k3d-io/k3d/v5/version.K3sVersion=$(K3S_IMAGE_TAG)
 # Linter of the GitHub Actions workflows, run by `make actionlint` inside `make check`
 # (docs/adr/0015-cicd-devsecops-stage5.md, section 1). It also runs shellcheck on every `run:` script when shellcheck is
 # on PATH: the CI runner has it, a dev machine need not.
@@ -86,8 +89,7 @@ tools: ## Install the pinned code generators, linters, secret scanner, SLO gener
 	GOBIN=$(GOBIN) go install github.com/zricethezav/gitleaks/v8@$(GITLEAKS_VERSION)
 	GOBIN=$(GOBIN) go install -ldflags='-X github.com/slok/sloth/internal/info.Version=$(SLOTH_VERSION)' \
 		github.com/slok/sloth/cmd/sloth@$(SLOTH_VERSION)
-	GOBIN=$(GOBIN) go install -ldflags='-X github.com/k3d-io/k3d/v5/version.Version=$(K3D_VERSION) \
-		-X github.com/k3d-io/k3d/v5/version.K3sVersion=$(K3S_IMAGE_TAG)' github.com/k3d-io/k3d/v5@$(K3D_VERSION)
+	GOBIN=$(GOBIN) go install -ldflags='$(K3D_LDFLAGS)' github.com/k3d-io/k3d/v5@$(K3D_VERSION)
 
 # Refuses anything but Linux x86_64: the Helm it installs is the linux-amd64 build, and GOBIN comes first on PATH, so on
 # a Mac it would shadow Homebrew's helm and break every helm call with "exec format error".
