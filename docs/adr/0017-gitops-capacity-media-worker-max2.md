@@ -28,7 +28,9 @@
     9,70 GiB, swap đang dùng 679 MiB (35 s trước là 415 MiB). Ba worker đã giữ 6 trong 8 vCPU; phần còn lại chia cho k3s (API
     server, kine/SQLite), Argo CD, Kyverno, Prometheus, Redpanda. Đường dev cùng code (không Argo CD) đo đỉnh 7,92 GiB
     và không chết; giai đoạn 4 trên GitOps chưa từng có mẫu 3 worker cùng transcode.
-- Như vậy ngưỡng RAM đạt mà cluster vẫn không đứng được: nghẽn là CPU (và swap đi kèm), thứ ADR-0014 §2 không đo.
+- Như vậy ngưỡng RAM đạt mà cluster vẫn không đứng được: nghẽn là CPU (và swap đi kèm), thứ ADR-0014 §2 không đo. "Đạt"
+  ở đây là (b) đo ở các lúc nghỉ muộn của lượt 2; ở điểm đo của ADR-0014 §2 (60 s sau khi mọi pod Ready) cả hai cluster
+  GitOps thiếu (b), xem mục Kiểm chứng.
 
 ## Các lựa chọn
 
@@ -94,8 +96,25 @@ Chọn **C** (người học chọn ngày 2026-10-21).
   việc "cluster đứng được", không chỉ "RAM vừa".
 - Phải trả: tối đa 2 job transcode song song; burst 9 video cần ~5 vòng thay vì ~3. Đường dev cũng mất worker thứ ba.
   Sau khi đổi, cluster GitOps phải đo lại: nghỉ, rồi `make drill-k8s-keda N=9` **hai lần**, cả hai PASS gồm (c).
-- Kiểm chứng: chưa kiểm. Thay đổi vào `main` qua PR, Argo CD sync (`kubectl --context k3d-svp -n svp get scaledobject
-  media-worker -o jsonpath='{.spec.maxReplicaCount}'` = 2), rồi đo như trên trên cluster GitOps.
+- Kiểm chứng (2026-10-21): thay đổi vào `main` qua PR (`bea9954`), cluster GitOps dựng mới từ revision đó
+  (`maxReplicaCount` = 2), cắm sạc, Low Power Mode tắt, ba lượt `make drill-k8s-keda N=9`:
+  - (c) đạt cả ba lượt: `RestartCount` 0, `StartedAt` không đổi.
+  - Drill FAIL, PASS, PASS. Lượt 1 là lượt duy nhất có 2 worker cùng transcode (~3,5 phút); giữa lúc đó node server đứng
+    ~40 s: mọi probe của pod trên node timeout, Envoy Gateway mất leader, operator CloudNativePG và reports controller của
+    Kyverno restart vì mất lease, Prometheus mất mẫu của node 75 s, k3s Slow SQL 1,5–14,3 s (không có compaction lúc
+    đó). video-service hết endpoint Ready, gateway trả 503, drill dừng; cả 9 video vẫn `READY` sau đó. Lượt 2 và 3 đạt
+    đủ (lên 2 replica, mỗi pod một partition, scale down giữa job, mỗi video transcode đúng một lần, về 1 replica sau
+    ~290 s), nhưng hai worker transcode lần lượt, không có cửa sổ nào 2 worker cùng bận. Điều kiện "hai lần PASS gồm
+    (c)" ở trên đạt theo số lượt, chưa đạt ở đỉnh 2 worker.
+  - RAM: cửa sổ 6 mẫu có 2 worker cùng transcode 8,46 GiB, mẫu cao nhất 8,54 GiB: đủ (a), không thấp hơn đỉnh 3 worker
+    như dự báo. Nghỉ ở dòng RAM của mục "Kiểm chứng sau phát hành" trong ADR-0015: ở điểm đo của ADR-0014 §2 (60 s sau
+    khi mọi pod Ready) cả hai cluster GitOps thiếu (b), MEM USAGE trừ `active_file` 7,17–7,18 GiB so với ngưỡng 6,5 GiB;
+    (b) chỉ đạt sau 70–90 phút (5,92–6,20 GiB). Chưa áp bước cắt nào; phần này kiểm lại ở giai đoạn cloud (7).
+  - Máy host thiếu bộ nhớ suốt lúc đo (áp lực bộ nhớ của macOS ở mức cảnh báo, swap 15–17 GB); số đo không tách được
+    phần do host và phần do VM.
+  - Quyết định (người học, 2026-10-21): nhận (c) đạt 3/3, drill đạt 2/3, không đo lại ở local. Cluster local chứng minh
+    logic scale 1 ↔ 2, scale down êm và transcode đúng một lần; lượt có 2 worker cùng transcode làm node server đứng ~40 s
+    là giới hạn của máy lab, ghi là rủi ro mở. Hai worker cùng transcode trên node thật kiểm ở giai đoạn 7.
 - Xem lại khi:
   - (c) vẫn trượt với 2 worker: xét D (hạ limit CPU của worker) hay giảm CPU của thành phần khác, ghi bằng ADR mới.
   - Docker VM có thêm CPU, hay chuyển lên cluster cloud (giai đoạn 7) với node thật: tính lại `maxReplicaCount` theo CPU
