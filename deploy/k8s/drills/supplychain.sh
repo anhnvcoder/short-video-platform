@@ -196,9 +196,11 @@ reason() {
   printf '%s' "${r:-$(head -n 1 <<<"$out")}"
 }
 
-# admitted CASE WHAT: PASS when $out shows the dry run was admitted.
+# admitted CASE WHAT [MARK]: PASS when the command succeeded and $out holds MARK, the line kubectl prints for an admitted
+# dry run: "(server dry run)" for create (the default), "pod/<name> patched" for patch, which prints no dry-run suffix.
 admitted() {
-  if [[ $rc == 0 && $out == *"(server dry run)"* ]]; then
+  local mark=${3:-"(server dry run)"}
+  if [[ $rc == 0 && $out == *"$mark"* ]]; then
     result "$1" PASS "$2: admitted" "$ms"
   else
     result "$1" FAIL "$2: admitted (got: $(reason))" "$ms"
@@ -649,7 +651,7 @@ timed kc -n svp patch pod "$target" --subresource=ephemeralcontainers --type=str
 refused h "$bad_rule" "ephemeral container $bad in pod svp/$target"
 if [[ -n $signed ]]; then
   timed kc -n svp patch pod "$target" --subresource=ephemeralcontainers --type=strategic --dry-run=server -p "$(ephemeral "$signed")"
-  admitted h "ephemeral container $signed in pod svp/$target"
+  admitted h "ephemeral container $signed in pod svp/$target" "pod/$target patched"
 else
   result h SKIP "admitted half: no signed image of GHCR runs in svp"
 fi

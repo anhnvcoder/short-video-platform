@@ -267,7 +267,8 @@ liệt kê target):
   danh. Trước khi tạo gì, kiểm ở đúng revision (`origin/<nhánh>` như lần fetch cuối, không `git fetch`) cả 6 file values:
   có digest (PR promote đã merge), repository `ghcr.io/anhnvcoder/short-video-platform/<svc>`, manifest kéo ẩn danh được
   (package GHCR đã public), chữ ký và attestation `vuln` đúng identity, không CRITICAL, không quá 48 giờ
-  (`deploy/ci/verify-release.sh` bằng `COSIGN_IMAGE`; quá hạn thì in lệnh dispatch rescan với `values_ref=<revision>`);
+  (`deploy/ci/verify-release.sh` bằng `cosign` trên PATH, không có thì `COSIGN_IMAGE`; quá hạn thì in lệnh dispatch rescan
+  với `values_ref=<revision>`);
   thiếu một điều là dừng, không tạo gì. Rồi tạo namespace và Secret từ `.env`, cài Argo CD (namespace `argocd`, PSA
   `restricted`), Secret repo bằng deploy key **chỉ đọc** do người học tạo trên GitHub (file mode 600, không passphrase;
   không in, không chép), AppProject `svp` và `default` đã khoá, root `svp-root`; chờ mọi Application `Synced`, Healthy,
@@ -282,9 +283,10 @@ liệt kê target):
 - `make k8s-smoke`, `make drill-k8s-keda N=9`, `make drill-k8s-pdb`, `make drill-k8s-canary`, `make measure-canary`,
   `make drill-k8s-threats`: trên cluster đang chạy, qua Envoy với `.k8s/ca.crt` (thiếu thì chạy `make k8s-ca`), script ở
   `deploy/k8s/drills/` (`k8s-smoke` dùng `deploy/compose/smoke.sh`). Lần lượt: luồng đầu-cuối như `make smoke`; N (mặc
-  định 9, 6–12) video 60 s 1080p cùng lúc, đo KEDA scale media-worker lên 2/3 replica và về 1, lag đỉnh, mỗi `READY`,
-  CPU/RAM, scale down một pod đang transcode (ghim `paused-replicas` của KEDA thấp hơn một, pod tắt êm) rồi kiểm mọi
-  video transcode đúng một lần; cordon node và evict lần lượt hai pod gateway như drain: PDB cho pod đầu (201), từ chối
+  định 9, 6–12) video 60 s 1080p cùng lúc, đo KEDA scale media-worker lên tối đa 2 replica và về 1, lag đỉnh, mỗi
+  `READY`, CPU/RAM, scale down một pod đang transcode (ghim `paused-replicas` của KEDA thấp hơn một, pod tắt êm) rồi kiểm
+  mọi video transcode đúng một lần, và k3s server không restart suốt diễn tập (`RestartCount`, `StartedAt` của container
+  `k3d-svp-server-0`, [ADR-0017](docs/adr/0017-gitops-capacity-media-worker-max2.md)); cordon node và evict lần lượt hai pod gateway như drain: PDB cho pod đầu (201), từ chối
   pod thứ hai (429) khi pod thay còn Pending, rồi uncordon; canary của gateway trên cluster dev dưới traffic diễn tập:
   bản tốt qua 25%, 50%, 100% và được promote, bản lỗi (`FEED_SERVICE_ADDR` trỏ Service không có) bị phân tích abort,
   trọng số về 0, pod stable không đổi, rồi trả bản tốt; `measure-canary` đọc lại lần abort canary gần nhất (chỉ đọc);
@@ -327,17 +329,24 @@ liệt kê target):
     (`deploy/ci/scan-gate.sh --check-ignorefile`, `make slo-check`, `make otelcol-validate`, `make env` rồi
     `make compose-config`, `make helm-check`, `deploy/k8s/check-image-digests.sh`), `gitleaks` (toàn lịch sử,
     `--redact`), `trivy-config` (chỉ báo), `sarif` (chỉ `main`), check tổng `ci-ok` (cần đủ 7 job, trừ `sarif`).
-  - `.github/workflows/images.yml` (PR, push `main`, dispatch, lịch hằng ngày): chỉ build service đổi so với lần push
-    `main` thành công cuối (`deploy/ci/changed-services.sh`; đổi `images.yml`, `deploy/ci/`, `deploy/k8s/lib.sh` hay dòng
-    `TRIVY_IMAGE`/`SYFT_IMAGE`/`COSIGN_IMAGE` của `Makefile` thì cả sáu); mỗi service hai chân amd64, arm64 build native,
+  - `.github/workflows/images.yml` (PR, push `main`, dispatch, lịch hằng ngày): chỉ build service đổi so với base
+    (`deploy/ci/changed-services.sh`; đổi `images.yml`, `deploy/ci/`, `deploy/k8s/lib.sh` hay dòng
+    `TRIVY_IMAGE`/`SYFT_IMAGE`/`COSIGN_IMAGE` của `Makefile` thì cả sáu). Base: push `main` so với lượt push `main` thành
+    công cuối (lượt dispatch không đẩy base, nên thay đổi chỉ dispatch đã phát hành, như push GitHub không chạy workflow,
+    được build lại ở push kế); PR so với merge-base với nhánh base; dispatch so với merge-base với `origin/main` (trên
+    `main` là chính HEAD, nên không build gì), input `services` (`all` hay tên cách bằng khoảng trắng) ghi đè phép so. Mỗi
+    service hai chân amd64, arm64 build native,
     trivy chặn bí mật (mọi severity) và CRITICAL **trước** push, push lên `ghcr.io/anhnvcoder/short-video-platform/<svc>`
     đúng bản đã quét, ghép index, ký keyless bằng cosign kèm attestation `vuln` (kết quả quét hai nền tảng) và SBOM syft
     mỗi nền tảng, rồi job `promote` mở PR cuộn. Lượt PR chỉ build và quét (`build-nopush`), `values-check` kiểm digest mà
-    PR đổi (đã ký, attestation không quá 48 giờ). Dispatch `-f rescan=true [-f values_ref=<ref>]` quét lại mọi digest
-    phát hành (lịch hằng ngày làm việc này), `-f drill=true` đẩy hai image diễn tập; check tổng `images-ok`.
-  - Check bắt buộc của ruleset `main`: `ci-ok`, `images-ok`, chỉ nhận từ app GitHub Actions. Ruleset, cài đặt repo
-    (Actions chỉ cho action của GitHub và `sigstore/cosign-installer`, ghim SHA bắt buộc; secret scanning + push
-    protection; Dependabot alerts) và package GHCR public do người học bật (ADR-0015 §5, §11): **kiểm sau push**.
+    PR đổi (đã ký, attestation không quá 48 giờ). Dispatch `-f services=<tên…|all>` build, ký và promote lại các service
+    đó ở commit được dispatch, `-f rescan=true [-f values_ref=<ref>]` quét lại mọi digest phát hành (lịch hằng ngày làm
+    việc này), `-f drill=true` đẩy hai image diễn tập; check tổng `images-ok`.
+  - Check bắt buộc của ruleset `main`: `ci-ok`, `images-ok`, chỉ nhận từ app GitHub Actions. Ruleset, năm cài đặt repo
+    của ADR-0015 §11 (quyền mặc định của `GITHUB_TOKEN` chỉ đọc kèm "Allow GitHub Actions to create and approve pull
+    requests"; Actions chỉ cho action của GitHub và `sigstore/cosign-installer`, ghim SHA bắt buộc; duyệt workflow của PR
+    fork cho mọi người ngoài; secret scanning + push protection; Dependabot alerts) và package GHCR public do người học bật
+    (ADR-0015 §5, §11): **kiểm sau push**.
   - Chạy lại một job trên máy, từ gốc repo: `make check-go TESTFLAGS=-count=1`; `make web-check`,
     `make web-generate-check`; `make generate-check`;
     `buf breaking --against '.git#ref=<base>'`; `deploy/ci/scan-gate.sh --check-ignorefile`, `make slo-check`,
@@ -350,7 +359,8 @@ liệt kê target):
     (ngoài 6 service) phải ghim `@sha256:`. `make trivy-config`: trivy quét cấu hình Dockerfile, chart, chỉ báo.
     `make renovate-check`: `renovate-config-validator --strict` trong `RENOVATE_IMAGE` ghim, không mạng. trivy, syft,
     cosign, Renovate chạy trên máy chỉ bằng image ghim digest của `Makefile` (`TRIVY_IMAGE`, `SYFT_IMAGE`,
-    `COSIGN_IMAGE`, `RENOVATE_IMAGE`), không cài.
+    `COSIGN_IMAGE`, `RENOVATE_IMAGE`), không cài. Riêng cosign, script (`cosign_` của `deploy/ci/common.sh`) dùng `cosign`
+    trên PATH trước nếu có (CI cài bằng `sigstore/cosign-installer`), không có thì `COSIGN_IMAGE`.
   - `.trivyignore.yaml` ở gốc repo (hiện chưa có): chỉ phần `vulnerabilities`, mỗi mục có `id`, `statement` (lý do) và
     `expired_at` không quá 30 ngày sau ngày chạy; thêm qua PR; bí mật không bỏ qua được. File sai quy tắc làm job `config`
     đỏ ở mọi PR.
