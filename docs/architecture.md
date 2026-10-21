@@ -240,7 +240,7 @@ flowchart LR
         subgraph app["svp"]
             gw["gateway<br/>Argo Rollout, 2 replica"]
             svc["user-, video-,<br/>engagement-, feed-service"]
-            mw["media-worker<br/>KEDA 1–3"]
+            mw["media-worker<br/>KEDA 1–2"]
         end
         subgraph data["svp-data"]
             pg[("Postgres svp-pg<br/>CloudNativePG")]
@@ -288,8 +288,10 @@ flowchart LR
   `make env`, đưa vào Secret bằng `deploy/k8s/secrets.sh`, không nằm trong git.
 - **Workload** (ADR-0014 §10): một chart chung `deploy/helm/svp-service` cho 6 service (probe, `requests`/`limits`,
   securityContext `restricted`, không token ServiceAccount); gateway 2 replica có PDB và HPA theo CPU, feed-service HPA
-  theo CPU, media-worker 1–3 replica do KEDA scale theo lag của group `media-worker`. Node bão hoà CPU thì probe 1 s của
-  service cùng node có thể quá hạn và pod bị restart (thấy ở lượt kiểm cuối, plan Tiến độ giai đoạn 4).
+  theo CPU, media-worker 1–2 replica do KEDA scale theo lag của group `media-worker` (topic vẫn 3 partition; 3 worker
+  cùng transcode làm Docker VM hết CPU và k3s server chết, [ADR-0017](adr/0017-gitops-capacity-media-worker-max2.md)).
+  Node bão hoà CPU thì probe 1 s của service cùng node có thể quá hạn và pod bị restart (thấy ở lượt kiểm cuối, plan Tiến
+  độ giai đoạn 4).
 - **Observability** (ADR-0014 §11): cùng SDK và cùng file của giai đoạn 3 (rule, dashboard, SLO dùng lại bằng symlink),
   nhưng tách thành thành phần riêng: Collector (OTLP 4317, đẩy metric sang Prometheus bằng OTLP, log sang Loki, trace sang
   Tempo, scrape `/public_metrics` của Redpanda), kube-prometheus-stack (Prometheus, Alertmanager gửi Telegram, Grafana),

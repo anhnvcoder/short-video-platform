@@ -1,6 +1,8 @@
 # 0014. Giai đoạn 4: Kubernetes local trên k3d với Helm, Envoy Gateway, dữ liệu trong cluster, Argo CD và canary bằng Argo Rollouts
 
-- Trạng thái: Chấp nhận; §6 (tag phát hành, `make k8s-release`) và đường image của §12 chỉnh bởi [0015](0015-cicd-devsecops-stage5.md)
+- Trạng thái: Chấp nhận; §6 (tag phát hành, `make k8s-release`) và đường image của §12 chỉnh bởi [0015](0015-cicd-devsecops-stage5.md);
+  §2 (tiêu chí ổn định (c), cửa sổ đỉnh 2 worker, bước cắt 3 đã áp) và §10 (`maxReplicaCount` 2, topic giữ 3 partition)
+  chỉnh bởi [0017](0017-gitops-capacity-media-worker-max2.md)
 - Ngày: 2026-10-18
 
 ## Bối cảnh
