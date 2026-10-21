@@ -50,6 +50,22 @@ func recordSpans(t *testing.T) *tracetest.SpanRecorder {
 	return rec
 }
 
+// endedSpans returns the spans ended so far once there are at least want of them, or after two
+// seconds. A service's span ends after its answer has left: the gRPC server runs the stats
+// handler that ends the span in a deferred call once the status is written, so the gateway can
+// finish the request before the span reaches the recorder.
+func endedSpans(t *testing.T, rec *tracetest.SpanRecorder, want int) []sdktrace.ReadOnlySpan {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		ended := rec.Ended()
+		if len(ended) >= want || time.Now().After(deadline) {
+			return ended
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // logLines returns the decoded log lines whose msg is msg.
 func logLines(t *testing.T, logs *bytes.Buffer, msg string) []map[string]any {
 	t.Helper()
@@ -81,8 +97,9 @@ func TestTraceAcrossServices(t *testing.T) {
 	e.handler.ServeHTTP(rec, r)
 	wantStatus(t, rec, http.StatusServiceUnavailable)
 
+	ended := endedSpans(t, spans, 3)
 	var httpSpan, clientSpan, serverSpan sdktrace.ReadOnlySpan
-	for _, s := range spans.Ended() {
+	for _, s := range ended {
 		switch {
 		case s.SpanKind() == trace.SpanKindServer && s.Name() == "GET /videos/{video_id}":
 			httpSpan = s
@@ -93,7 +110,7 @@ func TestTraceAcrossServices(t *testing.T) {
 		}
 	}
 	if httpSpan == nil || clientSpan == nil || serverSpan == nil {
-		t.Fatalf("spans = %v, want the HTTP, gRPC client and service spans", spanNames(spans.Ended()))
+		t.Fatalf("spans = %v, want the HTTP, gRPC client and service spans", spanNames(ended))
 	}
 	id := httpSpan.SpanContext().TraceID()
 	if id.String() == clientTraceID || httpSpan.Parent().IsValid() {
@@ -156,7 +173,7 @@ func TestLoginSpansHoldNoSecrets(t *testing.T) {
 			e.handler.ServeHTTP(rec, r)
 			wantStatus(t, rec, tc.want)
 
-			ended := spans.Ended()
+			ended := endedSpans(t, spans, 3)
 			if len(ended) != 3 {
 				t.Fatalf("spans = %v, want HTTP, client and service", spanNames(ended))
 			}
@@ -204,7 +221,7 @@ func TestRefreshTokensStayOutOfTelemetry(t *testing.T) {
 				t.Errorf("response echoes the presented token: %s", rec.Body.String())
 			}
 
-			ended := spans.Ended()
+			ended := endedSpans(t, spans, 3)
 			if len(ended) != 3 {
 				t.Fatalf("spans = %v, want HTTP, client and service", spanNames(ended))
 			}
@@ -259,7 +276,7 @@ func TestReadyzLeavesNoSpans(t *testing.T) {
 	wantStatus(t, e.do(t, http.MethodGet, "/readyz", "", ""), http.StatusOK)
 
 	checks := 0
-	for _, s := range spans.Ended() {
+	for _, s := range endedSpans(t, spans, 3) {
 		switch {
 		case s.SpanKind() == trace.SpanKindServer && s.Name() == strings.TrimPrefix(healthpb.Health_Check_FullMethodName, "/"):
 			checks++
