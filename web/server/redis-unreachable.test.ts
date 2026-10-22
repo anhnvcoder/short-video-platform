@@ -31,6 +31,7 @@ vi.stubEnv("GATEWAY_URL", "http://gateway.test");
 vi.stubEnv("REDIS_URL", `redis://127.0.0.1:${await closedPort()}/15`);
 vi.stubEnv("APP_ORIGIN", "http://localhost:3001");
 vi.stubEnv("MEDIA_ORIGIN", "http://127.0.0.1:9000");
+vi.stubEnv("UPLOAD_ORIGIN", "http://127.0.0.1:9000");
 
 const api = await import("@/app/api/[...path]/route");
 const logout = await import("@/app/logout/route");
@@ -79,7 +80,7 @@ describe("with the session Redis unreachable", () => {
   });
 
   it("login and register answer UNAVAILABLE without setting a cookie", async () => {
-    const fields = form({ email: "a@example.com", password: "12345678" });
+    const fields = form({ email: "a@example.com", password: "12345678", handle: "alice" });
     expect((await loginAction(initialAuthState, fields)).formError).toBe("UNAVAILABLE");
     expect((await registerAction(initialAuthState, fields)).formError).toBe("UNAVAILABLE");
     expect([...request.cookies.keys()]).toEqual(["svp_sid"]);

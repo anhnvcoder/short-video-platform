@@ -189,6 +189,7 @@ func likeRows(t *testing.T, videoID string) (likes, likeCount int64) {
 	return likes, likeCount
 }
 
+// Every RPC but GetStats requires a caller; GetStats rejects a present but invalid one.
 func TestEveryRPCRequiresCaller(t *testing.T) {
 	s, _ := newServer(nil)
 	videoID := ids.New()
@@ -199,12 +200,16 @@ func TestEveryRPCRequiresCaller(t *testing.T) {
 		wantError(t, err, codes.Unauthenticated, callerid.ReasonUnauthenticatedCaller)
 		_, err = call(t.Context(), caller, methodRecordView, &engagementv1.RecordViewRequest{VideoId: videoID}, s.RecordView)
 		wantError(t, err, codes.Unauthenticated, callerid.ReasonUnauthenticatedCaller)
+		if caller == "" {
+			continue
+		}
 		_, err = call(t.Context(), caller, methodGetStats, &engagementv1.GetStatsRequest{VideoIds: []string{videoID}}, s.GetStats)
 		wantError(t, err, codes.Unauthenticated, callerid.ReasonUnauthenticatedCaller)
 	}
 }
 
-// A server wired without the interceptor must not serve an anonymous caller.
+// A server wired without the interceptor must not serve an anonymous caller where one is required.
+// GetStats then answers as for a call without caller, which only reads public counters.
 func TestHandlersFailClosedWithoutInterceptor(t *testing.T) {
 	s, _ := newServer(nil)
 	videoID := ids.New()
@@ -216,9 +221,8 @@ func TestHandlersFailClosedWithoutInterceptor(t *testing.T) {
 	if status.Code(err) != codes.Unauthenticated {
 		t.Errorf("RecordView code = %s, want Unauthenticated", status.Code(err))
 	}
-	_, err = s.GetStats(t.Context(), &engagementv1.GetStatsRequest{})
-	if status.Code(err) != codes.Unauthenticated {
-		t.Errorf("GetStats code = %s, want Unauthenticated", status.Code(err))
+	if _, err = s.GetStats(t.Context(), &engagementv1.GetStatsRequest{}); err != nil {
+		t.Errorf("GetStats without caller = %v, want no error", err)
 	}
 }
 

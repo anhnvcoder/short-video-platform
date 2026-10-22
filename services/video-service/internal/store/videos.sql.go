@@ -133,6 +133,66 @@ func (q *Queries) ListAbandonedUploads(ctx context.Context, arg ListAbandonedUpl
 	return items, nil
 }
 
+const listAuthorVideos = `-- name: ListAuthorVideos :many
+SELECT id, author_id, title, status, size_bytes, content_type, duration_ms, playlist_key, thumbnail_key, published_at, created_at, processing_at FROM videos
+WHERE author_id = $1
+  AND ($2::boolean OR status = 'READY')
+  AND (created_at, id) < (COALESCE($3::timestamptz, 'infinity'), $4::uuid)
+ORDER BY created_at DESC, id DESC
+LIMIT $5
+`
+
+type ListAuthorVideosParams struct {
+	AuthorID        uuid.UUID
+	AllStatuses     bool
+	BeforeCreatedAt *time.Time
+	BeforeID        uuid.UUID
+	RowLimit        int32
+}
+
+// Reads a page of the videos of author_id, newest first, strictly after the cursor
+// (before_created_at, before_id); a NULL before_created_at starts at the newest video. Every status
+// when all_statuses (the caller is the author), otherwise only READY ones (UP-3). Runs on
+// videos_author_created_idx.
+func (q *Queries) ListAuthorVideos(ctx context.Context, arg ListAuthorVideosParams) ([]Video, error) {
+	rows, err := q.db.Query(ctx, listAuthorVideos,
+		arg.AuthorID,
+		arg.AllStatuses,
+		arg.BeforeCreatedAt,
+		arg.BeforeID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Video
+	for rows.Next() {
+		var i Video
+		if err := rows.Scan(
+			&i.ID,
+			&i.AuthorID,
+			&i.Title,
+			&i.Status,
+			&i.SizeBytes,
+			&i.ContentType,
+			&i.DurationMs,
+			&i.PlaylistKey,
+			&i.ThumbnailKey,
+			&i.PublishedAt,
+			&i.CreatedAt,
+			&i.ProcessingAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockAuthorUploads = `-- name: LockAuthorUploads :exec
 SELECT pg_advisory_xact_lock(hashtextextended('video-upload-author:' || $1::uuid::text, 0))
 `

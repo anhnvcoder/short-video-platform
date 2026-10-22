@@ -34,8 +34,10 @@ const (
 	callTimeout = 3 * time.Second
 	// readyTimeout bounds the health checks of /readyz.
 	readyTimeout = 1 * time.Second
-	// statsTimeout bounds the one GetStats call a feed page makes (ADR-0009 section 9): the feed
-	// answers within its 150 ms p99 budget even when engagement-service is slow.
+	// statsTimeout bounds each of the two calls that add stats and authors to the videos of an
+	// answer, one GetStats and one GetProfiles side by side (ADR-0009 section 9, ADR-0018 section
+	// 5): the feed answers within its 150 ms p99 budget even when engagement-service or
+	// user-service is slow.
 	statsTimeout = 100 * time.Millisecond
 )
 
@@ -61,7 +63,8 @@ type dependency struct {
 // New returns the gateway's HTTP handler: every route on its own mux, behind Trace, Recover,
 // AccessLog and ValidUTF8, with RequireAuth in front of the routes that need a caller. Every
 // route but healthz and readyz is rate limited by limits (ADR-0010 section 2): register, login,
-// refresh and logout by client IP, the others by the authenticated user, after RequireAuth. A
+// refresh, logout and the public video by client IP, the others by the authenticated user,
+// after RequireAuth. A
 // request that matches no route gets a problem response too. userConn, videoConn, feedConn and engagementConn reach
 // user-service, video-service, feed-service and engagement-service. mediaBaseURL is the public
 // base that media object keys are appended to, without a trailing slash. clientAddr finds the
@@ -100,6 +103,14 @@ func New(userConn, videoConn, feedConn, engagementConn grpc.ClientConnInterface,
 	mux.HandleFunc("POST /auth/login", s.login)
 	mux.HandleFunc("POST /auth/refresh", s.refresh)
 	mux.HandleFunc("POST /auth/logout", s.logout)
+	// The one route outside /auth without RequireAuth: the public share page reads it without
+	// logging in (ADR-0018 section 6).
+	mux.HandleFunc("GET /public/videos/{video_id}", s.getPublicVideo)
+	mux.Handle("GET /me", authed(ratelimit.Read, s.getMe))
+	mux.Handle("PATCH /me", authed(ratelimit.Write, s.updateMe))
+	mux.Handle("GET /me/videos", authed(ratelimit.Read, s.myVideos))
+	mux.Handle("GET /profiles/{handle}", authed(ratelimit.Read, s.getProfile))
+	mux.Handle("GET /users/{user_id}/videos", authed(ratelimit.Read, s.userVideos))
 	mux.Handle("PUT /me/following/{user_id}", authed(ratelimit.Write, s.follow))
 	mux.Handle("DELETE /me/following/{user_id}", authed(ratelimit.Write, s.unfollow))
 	mux.Handle("POST /videos", authed(ratelimit.Upload, s.initUpload))
@@ -148,6 +159,15 @@ type credentials struct {
 	Password string `json:"password"`
 }
 
+// registerRequest is credentials plus the optional handle and display name; user-service
+// generates a handle when it is empty and defaults the display name to the handle.
+type registerRequest struct {
+	Email       string `json:"email"`
+	Password    string `json:"password"`
+	Handle      string `json:"handle"`
+	DisplayName string `json:"display_name"`
+}
+
 type registerResponse struct {
 	UserID string `json:"user_id"`
 }
@@ -156,13 +176,18 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	if !s.allow(w, r, ratelimit.Register, ratelimit.ClientIP(r, s.clientAddr)) {
 		return
 	}
-	var req credentials
+	var req registerRequest
 	if !httpx.DecodeJSON(w, r, &req) {
 		return
 	}
 	ctx, cancel := callContext(r)
 	defer cancel()
-	resp, err := s.users.Register(ctx, &userv1.RegisterRequest{Email: req.Email, Password: req.Password})
+	resp, err := s.users.Register(ctx, &userv1.RegisterRequest{
+		Email:       req.Email,
+		Password:    req.Password,
+		Handle:      req.Handle,
+		DisplayName: req.DisplayName,
+	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
 		return
@@ -285,6 +310,81 @@ func (s *server) unfollow(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// profile is what anyone may see of a user (schema Profile); it never holds the email.
+type profile struct {
+	UserID      string `json:"user_id"`
+	Handle      string `json:"handle"`
+	DisplayName string `json:"display_name"`
+}
+
+func toProfile(p *userv1.Profile) *profile {
+	return &profile{UserID: p.GetUserId(), Handle: p.GetHandle(), DisplayName: p.GetDisplayName()}
+}
+
+// userProfile is a profile as the caller sees it (schema UserProfile).
+type userProfile struct {
+	profile
+	FollowedByMe bool `json:"followed_by_me"`
+}
+
+// getMe reads the caller's profile with GetProfiles. Unlike the authors added to videos, the
+// profile is the answer itself, so the call has the whole call deadline and its errors go
+// through the §8.4 table. GetProfiles leaves out an id without a user, which here means the
+// token outlived its account (a database reset): 404 USER_NOT_FOUND, the reason user-service
+// gives on the other routes of the caller's own profile.
+func (s *server) getMe(w http.ResponseWriter, r *http.Request) {
+	caller := httpx.UserID(r.Context())
+	ctx, cancel := callContext(r)
+	defer cancel()
+	resp, err := s.users.GetProfiles(ctx, &userv1.GetProfilesRequest{UserIds: []string{caller}})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	for _, p := range resp.GetProfiles() {
+		if p.GetUserId() == caller {
+			writeJSON(w, http.StatusOK, toProfile(p))
+			return
+		}
+	}
+	httpx.WriteProblem(w, r, http.StatusNotFound, "USER_NOT_FOUND", "user not found")
+}
+
+type profileUpdate struct {
+	DisplayName string `json:"display_name"`
+}
+
+// updateMe changes the caller's display name. A missing or empty display_name goes on to
+// user-service, which refuses it like any other invalid name (INVALID_DISPLAY_NAME). The name
+// is never logged: users may put their real name in it (threat model WEB-18).
+func (s *server) updateMe(w http.ResponseWriter, r *http.Request) {
+	var req profileUpdate
+	if !httpx.DecodeJSON(w, r, &req) {
+		return
+	}
+	ctx, cancel := callContext(r)
+	defer cancel()
+	resp, err := s.users.UpdateDisplayName(ctx, &userv1.UpdateDisplayNameRequest{DisplayName: req.DisplayName})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toProfile(resp.GetProfile()))
+}
+
+// getProfile passes handle on as it is: user-service normalizes it and answers a value that
+// cannot be a handle with the same 404 as an unknown one.
+func (s *server) getProfile(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := callContext(r)
+	defer cancel()
+	resp, err := s.users.GetProfileByHandle(ctx, &userv1.GetProfileByHandleRequest{Handle: r.PathValue("handle")})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, userProfile{profile: *toProfile(resp.GetProfile()), FollowedByMe: resp.GetFollowedByMe()})
+}
+
 type initUploadRequest struct {
 	Title       string `json:"title"`
 	SizeBytes   int64  `json:"size_bytes"`
@@ -340,8 +440,15 @@ type videoResponse struct {
 	// PlaylistURL and ThumbnailURL are set once the video has the keys, which is when it is READY.
 	PlaylistURL  string `json:"playlist_url,omitempty"`
 	ThumbnailURL string `json:"thumbnail_url,omitempty"`
+	// Author and Stats are added by GET /videos/{video_id} and the video lists (see addExtras);
+	// nil, and the field absent, in POST /videos/{video_id}/complete and when their service did
+	// not answer in time.
+	Author *profile    `json:"author,omitempty"`
+	Stats  *videoStats `json:"stats,omitempty"`
 }
 
+// getVideo reads the video first, then adds its author and stats: the video decides whether
+// there is anything to show, and only its own errors fail the request.
 func (s *server) getVideo(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := callContext(r)
 	defer cancel()
@@ -350,7 +457,117 @@ func (s *server) getVideo(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteGRPCError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.toVideoResponse(resp.GetVideo()))
+	v := s.toVideoResponse(resp.GetVideo())
+	stats, authors := s.addExtras(r, []string{v.VideoID}, []string{v.AuthorID})
+	v.Stats, v.Author = stats[v.VideoID], authors[v.AuthorID]
+	writeJSON(w, http.StatusOK, v)
+}
+
+// publicVideo is a READY video for anyone (schema PublicVideo): the fields of a feed item, and
+// counters without liked_by_me, since there is no caller.
+type publicVideo struct {
+	VideoID      string            `json:"video_id"`
+	AuthorID     string            `json:"author_id"`
+	Title        string            `json:"title"`
+	DurationMs   int64             `json:"duration_ms"`
+	PlaylistURL  string            `json:"playlist_url"`
+	ThumbnailURL string            `json:"thumbnail_url"`
+	PublishedAt  time.Time         `json:"published_at"`
+	Author       *profile          `json:"author,omitempty"`
+	Stats        *publicVideoStats `json:"stats,omitempty"`
+}
+
+type publicVideoStats struct {
+	ViewCount int64 `json:"view_count"`
+	LikeCount int64 `json:"like_count"`
+}
+
+// getPublicVideo serves the public share page (ADR-0018 section 6). It never reads the
+// Authorization header, a wrong token included, so nothing here has a caller: GetPublicVideo
+// and GetStats go out without x-user-id, and the answer is the same for everyone. The rate
+// limit by client IP comes before any call, so a caller over it costs no service anything
+// (threat model WEB-15).
+//
+// Only a 200 may be kept by a shared cache, for 30 seconds: counters lag by about a minute
+// anyway. Everything else is no-store: a 404 is heuristically cacheable (RFC 9110 section
+// 15.1), and a video still PROCESSING must not stay a cached 404 once READY; a 429 belongs to
+// one client. video-service answers every video it will not show (no such video, not READY, an
+// id that is not a UUID) with the same NOT_FOUND, which goes out unchanged.
+func (s *server) getPublicVideo(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if !s.allow(w, r, ratelimit.Public, ratelimit.ClientIP(r, s.clientAddr)) {
+		return
+	}
+	ctx, cancel := callContext(r)
+	defer cancel()
+	resp, err := s.videos.GetPublicVideo(ctx, &videov1.GetPublicVideoRequest{VideoId: r.PathValue("video_id")})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	pv := resp.GetVideo()
+	out := publicVideo{
+		VideoID:      pv.GetVideoId(),
+		AuthorID:     pv.GetAuthorId(),
+		Title:        pv.GetTitle(),
+		DurationMs:   pv.GetDuration().AsDuration().Milliseconds(),
+		PlaylistURL:  s.mediaURL(pv.GetPlaylistKey()),
+		ThumbnailURL: s.mediaURL(pv.GetThumbnailKey()),
+		PublishedAt:  pv.GetPublishedAt().AsTime(),
+	}
+	stats, authors := s.addExtras(r, []string{out.VideoID}, []string{out.AuthorID})
+	if st := stats[out.VideoID]; st != nil {
+		out.Stats = &publicVideoStats{ViewCount: st.ViewCount, LikeCount: st.LikeCount}
+	}
+	out.Author = authors[out.AuthorID]
+	w.Header().Set("Cache-Control", "public, max-age=30")
+	writeJSON(w, http.StatusOK, out)
+}
+
+type videoPage struct {
+	Items      []videoResponse `json:"items"`
+	NextCursor string          `json:"next_cursor"`
+}
+
+// myVideos lists the caller's own videos, in every status.
+func (s *server) myVideos(w http.ResponseWriter, r *http.Request) {
+	s.serveAuthorVideos(w, r, httpx.UserID(r.Context()))
+}
+
+// userVideos passes user_id on as it is: video-service validates it, and shows videos that are
+// not READY only when it is the caller's own id.
+func (s *server) userVideos(w http.ResponseWriter, r *http.Request) {
+	s.serveAuthorVideos(w, r, r.PathValue("user_id"))
+}
+
+// serveAuthorVideos reads one page of authorID's videos and adds their authors and stats. The
+// query works as on the feeds (see pageQuery).
+func (s *server) serveAuthorVideos(w http.ResponseWriter, r *http.Request, authorID string) {
+	size, token, ok := pageQuery(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := callContext(r)
+	defer cancel()
+	resp, err := s.videos.ListAuthorVideos(ctx, &videov1.ListAuthorVideosRequest{AuthorId: authorID, PageSize: size, PageToken: token})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	items := make([]videoResponse, 0, len(resp.GetVideos())) // an empty page is [], never null
+	videoIDs := make([]string, 0, len(resp.GetVideos()))
+	authorIDs := make([]string, 0, len(resp.GetVideos()))
+	for _, v := range resp.GetVideos() {
+		item := s.toVideoResponse(v)
+		items = append(items, item)
+		videoIDs = append(videoIDs, item.VideoID)
+		authorIDs = append(authorIDs, item.AuthorID)
+	}
+	stats, authors := s.addExtras(r, videoIDs, authorIDs)
+	for i := range items {
+		items[i].Stats, items[i].Author = stats[items[i].VideoID], authors[items[i].AuthorID]
+	}
+	writeJSON(w, http.StatusOK, videoPage{Items: items, NextCursor: resp.GetNextPageToken()})
 }
 
 // completeUpload answers 202 with the video in whatever state CompleteUpload returns: the RPC is
@@ -459,6 +676,9 @@ type feedItem struct {
 	PlaylistURL  string    `json:"playlist_url"`
 	ThumbnailURL string    `json:"thumbnail_url"`
 	PublishedAt  time.Time `json:"published_at"`
+	// Author is nil, and the field absent, when user-service did not answer in time or has no
+	// profile for author_id.
+	Author *profile `json:"author,omitempty"`
 	// Stats is nil, and the field absent, when engagement-service did not answer in time.
 	Stats *videoStats `json:"stats,omitempty"`
 }
@@ -487,30 +707,41 @@ func (s *server) exploreFeed(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// serveFeed reads one feed page with fetch and adds the stats of its videos. The query's cursor
-// goes on unread as page_token (architecture §8.3) and page_size must be an integer; their
-// values are feed-service's to check. A feed-service error is mapped like any other; a stats
-// failure is not (see addStats).
-func (s *server) serveFeed(w http.ResponseWriter, r *http.Request, fetch func(ctx context.Context, size int32, token string) (feedPage, error)) {
+// pageQuery reads the paging query of a feed or a video list: the cursor goes on unread as
+// page_token (architecture §8.3) and page_size must be an integer; their values are the
+// service's to check. On a page_size that is not an integer it writes the 400 and returns false.
+func pageQuery(w http.ResponseWriter, r *http.Request) (size int32, token string, ok bool) {
 	q := r.URL.Query()
-	var size int32
 	if v := q.Get("page_size"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 32)
 		if err != nil {
 			httpx.WriteProblem(w, r, http.StatusBadRequest, "INVALID_PAGE_SIZE", "page_size must be an integer")
-			return
+			return 0, "", false
 		}
 		size = int32(n)
 	}
+	return size, q.Get("cursor"), true
+}
+
+// serveFeed reads one feed page with fetch and adds the authors and stats of its videos. A
+// feed-service error is mapped like any other; a failure to add authors or stats is not (see
+// addExtras).
+func (s *server) serveFeed(w http.ResponseWriter, r *http.Request, fetch func(ctx context.Context, size int32, token string) (feedPage, error)) {
+	size, token, ok := pageQuery(w, r)
+	if !ok {
+		return
+	}
 	ctx, cancel := callContext(r)
 	defer cancel()
-	page, err := fetch(ctx, size, q.Get("cursor"))
+	page, err := fetch(ctx, size, token)
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
 		return
 	}
 
 	items := make([]feedItem, 0, len(page.GetItems())) // an empty page is [], never null
+	videoIDs := make([]string, 0, len(page.GetItems()))
+	authorIDs := make([]string, 0, len(page.GetItems()))
 	for _, it := range page.GetItems() {
 		items = append(items, feedItem{
 			VideoID:      it.GetVideoId(),
@@ -521,34 +752,54 @@ func (s *server) serveFeed(w http.ResponseWriter, r *http.Request, fetch func(ct
 			ThumbnailURL: s.mediaURL(it.GetThumbnailKey()),
 			PublishedAt:  it.GetPublishedAt().AsTime(),
 		})
+		videoIDs = append(videoIDs, it.GetVideoId())
+		authorIDs = append(authorIDs, it.GetAuthorId())
 	}
-	s.addStats(r, items)
+	stats, authors := s.addExtras(r, videoIDs, authorIDs)
+	for i := range items {
+		items[i].Stats, items[i].Author = stats[items[i].VideoID], authors[items[i].AuthorID]
+	}
 	writeJSON(w, http.StatusOK, feedResponse{Items: items, NextCursor: page.GetNextPageToken()})
 }
 
-// addStats sets the stats of items from one GetStats call, within statsTimeout and without
-// retry (ADR-0009 section 9). Stats are matched by video_id, so their order and count do not
-// matter; an item without a match keeps no stats. Any error leaves every item without stats and
-// is only logged: a slow or failing engagement-service must not fail the feed (architecture
-// §7.2), so the error does not go through the §8.4 table. While engagement-service's circuit
-// breaker is open the call fails at once, without waiting for statsTimeout (ADR-0010 section 4).
-func (s *server) addStats(r *http.Request, items []feedItem) {
-	if len(items) == 0 {
-		return
+// addExtras reads what the gateway adds to the videos of one answer: the stats of videoIDs with
+// one GetStats call and the profiles of the authors with one GetProfiles call, side by side, so
+// a page waits for the slower of the two rather than their sum (ADR-0018 section 5). Each call
+// has its own statsTimeout and no retry: 100 ms holds no second try (ADR-0010 section 4). The
+// answers come back by video id and by user id, so their order and count do not matter; a
+// video or author without a match gets nothing, and a nil map answers nil for every key. A
+// call that fails only leaves its part out (see getStats, getAuthors). An empty page makes no
+// call.
+//
+// GetStats goes out with the caller's x-user-id when the request has one, for liked_by_me; on
+// the public route there is none, and engagement-service then reads no like.
+func (s *server) addExtras(r *http.Request, videoIDs, authorIDs []string) (map[string]*videoStats, map[string]*profile) {
+	if len(videoIDs) == 0 {
+		return nil, nil
 	}
-	ids := make([]string, len(items))
-	for i, it := range items {
-		ids[i] = it.VideoID
-	}
+	var stats map[string]*videoStats
+	var authors map[string]*profile
+	var wg sync.WaitGroup
+	wg.Go(func() { stats = s.getStats(r, videoIDs) })
+	wg.Go(func() { authors = s.getAuthors(r, authorIDs) })
+	wg.Wait()
+	return stats, authors
+}
+
+// getStats returns the stats of ids by video id, or nil when GetStats fails. The error is only
+// logged: a slow or failing engagement-service must not fail the answer (architecture §7.2),
+// so it does not go through the §8.4 table. While engagement-service's circuit breaker is open
+// the call fails at once, without waiting for statsTimeout (ADR-0010 section 4).
+func (s *server) getStats(r *http.Request, ids []string) map[string]*videoStats {
 	ctx, cancel := context.WithTimeout(httpx.OutgoingContext(r.Context()), statsTimeout)
 	defer cancel()
 	resp, err := s.engagement.GetStats(ctx, &engagementv1.GetStatsRequest{VideoIds: ids})
 	if err != nil {
-		slog.WarnContext(r.Context(), "feed served without stats",
+		slog.WarnContext(r.Context(), "served without stats",
 			slog.String("grpc_code", status.Code(err).String()),
 			slog.String("error", err.Error()),
 		)
-		return
+		return nil
 	}
 	byID := make(map[string]*videoStats, len(resp.GetStats()))
 	for _, st := range resp.GetStats() {
@@ -558,9 +809,37 @@ func (s *server) addStats(r *http.Request, items []feedItem) {
 			LikedByMe: st.GetLikedByMe(),
 		}
 	}
-	for i := range items {
-		items[i].Stats = byID[items[i].VideoID]
+	return byID
+}
+
+// getAuthors returns the profiles of ids, each asked once, by user id, or nil when GetProfiles
+// fails. As in getStats the error is only logged, and while user-service's circuit breaker is
+// open the call fails at once. The log line holds no profile: display names may be real names
+// (threat model WEB-18).
+func (s *server) getAuthors(r *http.Request, ids []string) map[string]*profile {
+	seen := make(map[string]bool, len(ids))
+	unique := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			unique = append(unique, id)
+		}
 	}
+	ctx, cancel := context.WithTimeout(httpx.OutgoingContext(r.Context()), statsTimeout)
+	defer cancel()
+	resp, err := s.users.GetProfiles(ctx, &userv1.GetProfilesRequest{UserIds: unique})
+	if err != nil {
+		slog.WarnContext(r.Context(), "served without authors",
+			slog.String("grpc_code", status.Code(err).String()),
+			slog.String("error", err.Error()),
+		)
+		return nil
+	}
+	byID := make(map[string]*profile, len(resp.GetProfiles()))
+	for _, p := range resp.GetProfiles() {
+		byID[p.GetUserId()] = toProfile(p)
+	}
+	return byID
 }
 
 type statusResponse struct {

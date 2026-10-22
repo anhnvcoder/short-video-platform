@@ -60,7 +60,7 @@ const (
 )
 
 // Server serves EngagementService. Every RPC expects the caller id that
-// callerid.UnaryServerInterceptor puts into the context.
+// callerid.UnaryServerInterceptor puts into the context, except GetStats, whose caller is optional.
 type Server struct {
 	engagementv1.UnimplementedEngagementServiceServer
 
@@ -75,10 +75,15 @@ func New(pool *pgxpool.Pool, producer *kgo.Client, logger *slog.Logger) *Server 
 	return &Server{pool: pool, queries: store.New(pool), producer: producer, logger: logger}
 }
 
-// CallerInterceptor requires the caller's x-user-id on every EngagementService RPC. Only the
-// health check is public: the healthcheck subcommand and probes call it without a user.
+// CallerInterceptor requires the caller's x-user-id on every EngagementService RPC but two. The
+// health check is public: the healthcheck subcommand and probes call it without a user. GetStats
+// takes an optional caller: the public share page reads counters without one, while a present
+// x-user-id must still be valid (docs/adr/0018-web-profiles-public-video-upload.md, section 6).
 func CallerInterceptor() grpc.UnaryServerInterceptor {
-	return callerid.UnaryServerInterceptor(healthpb.Health_Check_FullMethodName)
+	return callerid.NewUnaryServerInterceptor(callerid.Methods{
+		Public:         []string{healthpb.Health_Check_FullMethodName},
+		OptionalCaller: []string{engagementv1.EngagementService_GetStats_FullMethodName},
+	})
 }
 
 // Like records that the caller likes the video. In one transaction it inserts the likes row and,
@@ -150,12 +155,9 @@ func (s *Server) inTx(ctx context.Context, fn func(q *store.Queries) error) erro
 }
 
 // GetStats returns the counters of each requested video in request order, a repeated id once per
-// occurrence, and zeros for an id never liked or viewed.
+// occurrence, and zeros for an id never liked or viewed. Without a caller liked_by_me is false for
+// every video and no like is read.
 func (s *Server) GetStats(ctx context.Context, req *engagementv1.GetStatsRequest) (*engagementv1.GetStatsResponse, error) {
-	caller, err := callerID(ctx)
-	if err != nil {
-		return nil, err
-	}
 	reqIDs := req.GetVideoIds()
 	if len(reqIDs) > MaxStatsVideoIDs {
 		return nil, grpcerr.New(codes.InvalidArgument, ReasonTooManyVideoIDs, "at most 50 video_ids are allowed")
@@ -165,12 +167,13 @@ func (s *Server) GetStats(ctx context.Context, req *engagementv1.GetStatsRequest
 	}
 	videoIDs := make([]uuid.UUID, len(reqIDs))
 	for i, id := range reqIDs {
+		var err error
 		if videoIDs[i], err = ids.Parse(id); err != nil {
 			return nil, grpcerr.New(codes.InvalidArgument, ReasonInvalidVideoID, invalidVideoIDsMessage)
 		}
 	}
 
-	rows, err := s.queries.GetStats(ctx, store.GetStatsParams{VideoIds: videoIDs, CallerID: caller})
+	rows, err := s.stats(ctx, videoIDs)
 	if err != nil {
 		return nil, s.internal(ctx, "select stats", err)
 	}
@@ -187,6 +190,23 @@ func (s *Server) GetStats(ctx context.Context, req *engagementv1.GetStatsRequest
 		}
 	}
 	return &engagementv1.GetStatsResponse{Stats: stats}, nil
+}
+
+// stats reads the GetStats rows of videoIDs for the caller in ctx. Without a caller it reads only
+// the counters, never the likes table, and leaves liked_by_me false.
+func (s *Server) stats(ctx context.Context, videoIDs []uuid.UUID) ([]store.GetStatsRow, error) {
+	if caller, ok := callerid.FromContext(ctx); ok {
+		return s.queries.GetStats(ctx, store.GetStatsParams{VideoIds: videoIDs, CallerID: uuid.MustParse(caller)})
+	}
+	counts, err := s.queries.GetCounts(ctx, videoIDs)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]store.GetStatsRow, len(counts))
+	for i, c := range counts {
+		rows[i] = store.GetStatsRow{ViewCount: c.ViewCount, LikeCount: c.LikeCount}
+	}
+	return rows, nil
 }
 
 // RecordView produces one view.recorded for the caller, keyed by video_id, and waits for the

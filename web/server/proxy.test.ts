@@ -6,6 +6,7 @@ const composeEnv = {
   REDIS_URL: "redis://host.docker.internal:6379/9",
   APP_ORIGIN: "http://localhost:3001",
   MEDIA_ORIGIN: "http://127.0.0.1:9000",
+  UPLOAD_ORIGIN: "http://127.0.0.1:9000",
 };
 
 // Tests of web/proxy.ts, kept here because the unit run only looks in the source folders. The environment is read once
@@ -67,6 +68,17 @@ describe("proxy", () => {
 
     const second = proxy(request("/")).headers.get("content-security-policy");
     expect(second).not.toBe(csp);
+  });
+
+  it("lets the browser connect to the upload origin too, listed once when it is the media origin", async () => {
+    const same = (await loadProxy()).proxy(request("/upload")).headers.get("content-security-policy") ?? "";
+    expect(same).toContain("; connect-src 'self' http://127.0.0.1:9000; ");
+
+    const { proxy } = await loadProxy({ ...composeEnv, UPLOAD_ORIGIN: "https://s3.svp.localhost:8443" });
+    const csp = proxy(request("/upload")).headers.get("content-security-policy") ?? "";
+    expect(csp).toContain("; connect-src 'self' http://127.0.0.1:9000 https://s3.svp.localhost:8443; ");
+    // Only XHR goes to the upload origin: it serves no image, media or script.
+    expect(csp.split("; ").filter((directive) => directive.includes("s3.svp.localhost"))).toHaveLength(1);
   });
 
   it("sets the other security headers; no HSTS on http://localhost", async () => {

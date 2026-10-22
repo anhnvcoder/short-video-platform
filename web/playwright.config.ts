@@ -18,6 +18,24 @@ if (evidence) {
   );
 }
 
+// SVP_E2E_MEASURE_UPLOAD_FILE=<video file> is set by e2e/measure-upload.sh (`make measure-upload`) only: the run is the
+// upload measurement of e2e/measure-upload.e2e.ts, which no other run includes.
+const measureUpload = process.env.SVP_E2E_MEASURE_UPLOAD_FILE;
+
+const chromium = { ...devices["Desktop Chrome"] };
+const webkit = {
+  ...devices["Desktop Safari"],
+  // No screenshot at the end of each test in WebKit: Playwright adds a <style> element to the page for every WebKit
+  // screenshot, which the app's CSP refuses and the CSP watcher of e2e/fixtures.ts reports as a failure. The trace and
+  // the video still record every WebKit test.
+  ...(evidence ? { screenshot: "off" as const } : {}),
+};
+
+// Tests tagged @publishes make a video READY, and the newest READY video leads Explore. Other tests expect the WEB-1
+// video of e2e/seed.sh to lead it, so the publishing tests run in projects of their own, listed last: with one worker,
+// Playwright runs the projects one after the other in this order, so both browsers have run every other test first.
+const publishes = /@publishes/;
+
 // End-to-end tests of the web client on the compose stack of `make up` (`make web-e2e`, `make measure-web`): the
 // browser opens the `web` container at http://localhost:3001, the origin its CSRF check and cookie form expect
 // (docs/adr/0016-web-client.md, sections 5 and 7). e2e/global-setup.ts seeds the videos through the gateway first.
@@ -25,8 +43,8 @@ export default defineConfig({
   testDir: "./e2e",
   // Not *.test.ts or *.spec.ts: those names belong to the unit tests of vitest.config.ts.
   testMatch: "**/*.e2e.ts",
-  // The screenshots of e2e/evidence.e2e.ts are only wanted in an evidence run.
-  testIgnore: evidence ? [] : ["**/evidence.e2e.ts"],
+  // The screenshots of e2e/evidence.e2e.ts are only wanted in an evidence run, the upload measurement only in its own.
+  testIgnore: [...(evidence ? [] : ["**/evidence.e2e.ts"]), ...(measureUpload ? [] : ["**/measure-upload.e2e.ts"])],
   // A subfolder, because Playwright empties its output folder at the start of a run and e2e/measure-web.sh reads the
   // measurements the first-frame test writes next to it.
   outputDir: evidence ? join(evidence, "artifacts") : "./test-results/playwright",
@@ -48,16 +66,9 @@ export default defineConfig({
     video: evidence ? "on" : "off",
   },
   projects: [
-    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
-    {
-      name: "webkit",
-      use: {
-        ...devices["Desktop Safari"],
-        // No screenshot at the end of each test in WebKit: Playwright adds a <style> element to the page for every
-        // WebKit screenshot, which the app's CSP refuses and the CSP watcher of e2e/fixtures.ts reports as a failure.
-        // The trace and the video still record every WebKit test.
-        ...(evidence ? { screenshot: "off" as const } : {}),
-      },
-    },
+    { name: "chromium", grepInvert: publishes, use: chromium },
+    { name: "webkit", grepInvert: publishes, use: webkit },
+    { name: "chromium-publishing", grep: publishes, use: chromium },
+    { name: "webkit-publishing", grep: publishes, use: webkit },
   ],
 });

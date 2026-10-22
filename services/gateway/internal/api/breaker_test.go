@@ -12,7 +12,9 @@ import (
 	"google.golang.org/grpc/status"
 
 	engagementv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/engagement/v1"
+	userv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1"
 	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/breaker"
+	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/httpx"
 )
 
 // TestEngagementBreakerOpen: once engagement-service's breaker opens, likes fail at once with
@@ -70,12 +72,61 @@ func TestEngagementBreakerOpen(t *testing.T) {
 	}
 	// The feed went without stats because the breaker refused GetStats, not because statsTimeout
 	// ran out: a call that waited would log DeadlineExceeded instead.
-	if feedLogs := logs.String()[feedLogsFrom:]; !strings.Contains(feedLogs, `"msg":"feed served without stats"`) ||
+	if feedLogs := logs.String()[feedLogsFrom:]; !strings.Contains(feedLogs, `"msg":"served without stats"`) ||
 		!strings.Contains(feedLogs, `"error":"rpc error: code = Unavailable desc = engagement-service: circuit breaker is open"`) {
 		t.Errorf("feed log lacks the breaker's refusal of GetStats:\n%s", feedLogs)
 	}
 	if !strings.Contains(logs.String(), `"msg":"circuit breaker state changed"`) ||
 		!strings.Contains(logs.String(), `"grpc_code":"Unavailable"`) {
 		t.Errorf("log lacks the state change or the stats warning:\n%s", logs.String())
+	}
+}
+
+// TestUserBreakerOpen: once user-service's breaker opens, follows fail at once with 503 and the
+// feed answers without authors, keeping its stats, without GetProfiles reaching user-service
+// (ADR-0018 section 5).
+func TestUserBreakerOpen(t *testing.T) {
+	logs := captureLog(t)
+	e := newEnvDialed(t, httpx.ClientAddr{}, downLimits(t),
+		[]grpc.DialOption{grpc.WithUnaryInterceptor(breaker.New("user-service", userv1.UserService_GetProfiles_FullMethodName))}, nil)
+	e.users.fail(status.Error(codes.Unavailable, "user-service is down"))
+	token := e.token(t, userA)
+
+	for range 5 {
+		wantStatus(t, e.do(t, http.MethodPut, "/me/following/"+userB, "", token), http.StatusServiceUnavailable)
+	}
+	if got := len(e.users.recorded()); got != 5 {
+		t.Fatalf("user-service got %d calls, want 5", got)
+	}
+	// As in TestEngagementBreakerOpen, a call that got past the breaker would now hang until its
+	// deadline and log DeadlineExceeded.
+	e.users.setHook(func(ctx context.Context, _ string) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+
+	feedLogsFrom := logs.Len()
+	rec := e.do(t, http.MethodGet, "/feed/following", "", token)
+	wantStatus(t, rec, http.StatusOK)
+	got := decode[struct {
+		Items []map[string]any `json:"items"`
+	}](t, rec)
+	if len(got.Items) != 2 {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+	for _, item := range got.Items {
+		if a, ok := item["author"]; ok {
+			t.Errorf("item %v has author %v, want none", item["video_id"], a)
+		}
+		if _, ok := item["stats"]; !ok {
+			t.Errorf("item %v has no stats", item["video_id"])
+		}
+	}
+	if got := len(e.users.recorded()); got != 5 {
+		t.Errorf("user-service got %d calls, want still 5", got)
+	}
+	if feedLogs := logs.String()[feedLogsFrom:]; !strings.Contains(feedLogs, `"msg":"served without authors"`) ||
+		!strings.Contains(feedLogs, `"error":"rpc error: code = Unavailable desc = user-service: circuit breaker is open"`) {
+		t.Errorf("feed log lacks the breaker's refusal of GetProfiles:\n%s", feedLogs)
 	}
 }

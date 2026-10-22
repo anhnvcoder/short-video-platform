@@ -1,4 +1,4 @@
-import { Check, Eye, Heart, Plus } from "lucide-react";
+import { Check, Eye, Heart, Plus, Share } from "lucide-react";
 import { useLocale, useTranslations } from "next-intl";
 import { Avatar } from "@/components/ui";
 import { focusRing } from "@/components/ui/styles";
@@ -9,6 +9,8 @@ export type RailFollow = { following: boolean; pending: boolean; onToggle: () =>
 
 type ActionRailProps = {
   authorId: string;
+  // Display name of the author, for the avatar's initial; without it a person icon.
+  authorName?: string;
   // Null on the caller's own videos: no follow button.
   follow: RailFollow | null;
   // A rate limit is running: like and follow wait for its Retry-After.
@@ -18,20 +20,31 @@ type ActionRailProps = {
   likeCount: number | null;
   viewCount: number | null;
   onLike: () => void;
+  // Copies the video's share link.
+  onShare: () => void;
 };
 
 // Over the video at the bottom right on small screens (FeedMobile, rail layout); beside the video on wide screens
-// (FeedDesktop). Part A has no share button.
-export function ActionRail({ authorId, follow, locked, liked, likeCount, viewCount, onLike }: ActionRailProps) {
+// (FeedDesktop).
+export function ActionRail({
+  authorId,
+  authorName,
+  follow,
+  locked,
+  liked,
+  likeCount,
+  viewCount,
+  onLike,
+  onShare,
+}: ActionRailProps) {
   const t = useTranslations("feed");
   const locale = useLocale();
   const label = "text-[13px] font-semibold text-shadow-media md:text-shadow-none";
-  // The like button's name holds the text it shows (WCAG 2.5.3), so a user who says what they see can press it: the
-  // count after the action, or, without stats, "Like" in the action itself, with aria-pressed telling the state (an
-  // "Unlike video" name would not hold the "Like" it shows).
+  // A toggle: its name stays the same in both states and aria-pressed alone tells whether the video is liked, so a
+  // screen reader never reads "Unlike video, pressed". The name holds the text the button shows (WCAG 2.5.3), so a
+  // user who says what they see can press it: the count after the action, or, without stats, "Like" in the action.
   const shownLikes = likeCount === null ? null : formatCompact(likeCount, locale);
-  const likeName =
-    shownLikes === null ? t("like") : t(liked ? "unlikeWithCount" : "likeWithCount", { count: shownLikes });
+  const likeName = shownLikes === null ? t("like") : t("likeWithCount", { count: shownLikes });
   return (
     <div className="absolute right-1 bottom-4 z-10 flex w-16 flex-col items-center gap-2.5 text-on-media md:static md:w-18 md:gap-4.5 md:self-end md:pb-1 md:text-foreground">
       {follow ? (
@@ -42,7 +55,7 @@ export function ActionRail({ authorId, follow, locked, liked, likeCount, viewCou
           onClick={follow.onToggle}
           className={cn("relative flex h-16 w-14 justify-center rounded-full disabled:opacity-60", focusRing)}
         >
-          <Avatar seed={authorId} className="border-2 border-on-media md:size-13 md:border-0" />
+          <Avatar seed={authorId} name={authorName} className="border-2 border-on-media md:size-13 md:border-0" />
           <span
             aria-hidden="true"
             className={cn(
@@ -54,7 +67,12 @@ export function ActionRail({ authorId, follow, locked, liked, likeCount, viewCou
           </span>
         </button>
       ) : (
-        <Avatar seed={authorId} label={t("author")} className="border-2 border-on-media md:size-13 md:border-0" />
+        <Avatar
+          seed={authorId}
+          name={authorName}
+          label={t("author")}
+          className="border-2 border-on-media md:size-13 md:border-0"
+        />
       )}
 
       <button
@@ -90,6 +108,18 @@ export function ActionRail({ authorId, follow, locked, liked, likeCount, viewCou
           <span className={label}>{formatCompact(viewCount, locale)}</span>
         </div>
       )}
+
+      <button
+        type="button"
+        aria-label={t("shareLabel")}
+        onClick={onShare}
+        className={cn("flex min-h-14 w-14 flex-col items-center gap-0.5 rounded-md py-1", focusRing)}
+      >
+        <span className="flex size-8 items-center justify-center md:size-13 md:rounded-full md:bg-surface-raised md:hover:bg-surface-hover">
+          <Share aria-hidden="true" className="size-7 drop-shadow-media md:size-5.5 md:drop-shadow-none" />
+        </span>
+        <span className={label}>{t("share")}</span>
+      </button>
     </div>
   );
 }

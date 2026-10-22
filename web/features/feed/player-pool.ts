@@ -8,6 +8,9 @@ import { isMediaUrl } from "./media-url";
 //
 // Three consecutive indexes have three different remainders modulo 3, so item i always uses slot i % 3 and a slot is
 // never wanted by two items of the window at once.
+//
+// The current item loads first: a neighbour gets its source only once the current item's video can play (or failed),
+// so its playlist and segments never compete with the current item's first segment and poster on a slow link.
 
 export const poolSize = 3;
 
@@ -41,8 +44,15 @@ export function slotOf(index: number): number {
 const hlsConfig: Partial<HlsConfig> = {
   // No level above what the element shows: a phone does not fetch 1080p for a 390 px wide column.
   capLevelToPlayerSize: true,
-  // Short clips: a few seconds ahead is enough, and three instances buffer at once.
+  // The first segment comes from the lowest level, the quickest to arrive; the bandwidth it measures lets hls.js move
+  // up from the next segment on.
+  startLevel: 0,
+  // Short clips: a few seconds ahead is enough, and three instances buffer at once. hls.js stretches maxBufferLength to
+  // what maxBufferSize holds at the level's bitrate (8 * size / bitrate; the 60 MB default is a whole clip), up to
+  // maxMaxBufferLength (600 s by default): both are kept small so no instance downloads the whole clip ahead.
   maxBufferLength: 10,
+  maxBufferSize: 2 * 1000 * 1000,
+  maxMaxBufferLength: 20,
   backBufferLength: 10,
   // The playlist and segments are public objects of the media origin: hls.js's XHR loader sends them without
   // credentials (withCredentials stays false) and no xhrSetup adds a header or a cookie.
@@ -56,6 +66,8 @@ interface Slot {
   host: HTMLElement | null;
   // Bumped on every change of source, so an attach still waiting for hls.js to load gives up when it is stale.
   generation: number;
+  // The source can play (canplay or playing) or failed: when this slot holds the current item, its neighbours may load.
+  started: boolean;
 }
 
 export class PlayerPool {
@@ -63,6 +75,9 @@ export class PlayerPool {
   private current = -1;
   private shouldPlay = false;
   private muted = true;
+  // The last sync's list and host lookup, used again when the current item starts and its neighbours may load.
+  private sources: readonly PoolSource[] = [];
+  private hostFor: (index: number) => HTMLElement | null = () => null;
 
   constructor(
     private readonly mediaOrigin: string,
@@ -87,7 +102,17 @@ export class PlayerPool {
   ): void {
     this.current = current;
     this.shouldPlay = shouldPlay;
+    this.sources = sources;
+    this.hostFor = hostFor;
+    this.update();
+  }
+
+  private update(): void {
+    const { current, sources, hostFor } = this;
     const wanted = windowIndexes(current, sources.length);
+    // On the item after the last video nothing plays, so the last video has nothing to wait for.
+    const lead = this.slots[slotOf(current)];
+    const leadStarted = current >= sources.length || (lead?.index === current && lead.started);
     this.slots.forEach((slot, slotIndex) => {
       const index = wanted.find((candidate) => slotOf(candidate) === slotIndex);
       const source = index === undefined ? undefined : sources[index];
@@ -98,8 +123,10 @@ export class PlayerPool {
       }
       if (slot.index !== source.index || slot.source?.playlistUrl !== source.playlistUrl) {
         this.release(slot);
-        // Plays once the source is attached.
-        void this.attach(slot, source, host);
+        // Plays once the source is attached. A neighbour waits for the current item to start (update runs again then).
+        if (source.index === current || leadStarted) {
+          void this.attach(slot, source, host);
+        }
         return;
       }
       if (slot.host !== host) {
@@ -130,6 +157,7 @@ export class PlayerPool {
   }
 
   destroy(): void {
+    this.sources = [];
     for (const slot of this.slots) {
       this.release(slot);
     }
@@ -145,15 +173,17 @@ export class PlayerPool {
     video.loop = true;
     video.preload = "metadata";
     video.className = "absolute inset-0 size-full object-cover";
-    const slot: Slot = { video, hls: null, index: null, source: null, host: null, generation: 0 };
+    const slot: Slot = { video, hls: null, index: null, source: null, host: null, generation: 0, started: false };
     const report = (state: PlaybackState) => () => {
       if (slot.index !== null) {
         this.callbacks.onState(slot.index, state);
       }
     };
+    video.addEventListener("canplay", () => this.markStarted(slot));
     video.addEventListener("playing", () => {
       video.dataset.state = "playing";
       report("playing")();
+      this.markStarted(slot);
     });
     video.addEventListener("pause", () => {
       video.dataset.state = "paused";
@@ -246,6 +276,18 @@ export class PlayerPool {
     if (slot.index !== null) {
       this.callbacks.onState(slot.index, "error");
     }
+    // A broken current video does not hold its neighbours back.
+    this.markStarted(slot);
+  }
+
+  private markStarted(slot: Slot): void {
+    if (slot.started || slot.index === null) {
+      return;
+    }
+    slot.started = true;
+    if (slot.index === this.current) {
+      this.update();
+    }
   }
 
   private applyPlayback(slot: Slot): void {
@@ -291,6 +333,7 @@ export class PlayerPool {
     }
     delete video.dataset.state;
     video.remove();
+    slot.started = false;
     slot.index = null;
     slot.source = null;
     slot.host = null;

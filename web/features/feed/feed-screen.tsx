@@ -1,21 +1,32 @@
 "use client";
 
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { ChevronDown, ChevronUp, Link2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useEffect, useEffectEvent, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { preload } from "react-dom";
 import type { RailFollow } from "@/components/feed/action-rail";
 import { FeedItem } from "@/components/feed/feed-item";
 import { EmptyFeed, FeedEnd, FeedLoadError, FeedSkeleton, OfflineBanner } from "@/components/feed/feed-states";
 import { useCountdown } from "@/components/shell/use-countdown";
 import { IconButton, Toast, ToastRegion } from "@/components/ui";
-import { ApiError, loginHref, recordView, type FeedItem as FeedItemData, type FeedKind, type FeedPage } from "./api";
+import {
+  ApiError,
+  copyShareLink,
+  loginHref,
+  recordView,
+  type FeedItem as FeedItemData,
+  type FeedKind,
+  type FeedPage,
+} from "./api";
 import { FeedFrame } from "./feed-frame";
 import { isMediaUrl } from "./media-url";
+import { ignoresShortcut, subscribeVisibility } from "./page-events";
 import { PlayerPool, type PlaybackState } from "./player-pool";
 import { useFeed } from "./use-feed";
 import { useFollows } from "./use-follows";
 import { useLike } from "./use-like";
+import { useNow, usePublishedAgo } from "./use-now";
 import { ViewCounter } from "./view-counter";
 
 type FeedScreenProps = {
@@ -31,18 +42,15 @@ type FeedScreenProps = {
   mediaOrigin: string;
   // The logged-in user: no follow button on their own videos.
   currentUserId: string;
+  // When the server rendered the page (ms since the epoch): the clock of "2 days ago" until the browser's takes over.
+  renderedAt: number;
 };
 
-type ToastState = { id: number; message: string; retry?: () => void };
+type ToastState = { id: number; tone: "danger" | "success"; message: string; retry?: () => void };
 
 // Share of an item that must be on screen for it to become the current one.
 const visibleRatio = 0.6;
 const toastMs = 5000;
-
-function subscribeVisibility(onChange: () => void) {
-  document.addEventListener("visibilitychange", onChange);
-  return () => document.removeEventListener("visibilitychange", onChange);
-}
 
 function subscribeOnline(onChange: () => void) {
   window.addEventListener("online", onChange);
@@ -59,18 +67,6 @@ function itemPart(feed: HTMLElement | null, index: number, part: "video-host" | 
   return feed?.children.item(index)?.querySelector<HTMLElement>(`[data-part="${part}"]`) ?? null;
 }
 
-// Keys typed into a field, or Space on a control that Space activates, are not feed shortcuts.
-function ignoresShortcut(event: KeyboardEvent): boolean {
-  const target = event.target instanceof HTMLElement ? event.target : null;
-  if (!target) {
-    return false;
-  }
-  if (target.isContentEditable || target.closest("input, textarea, select")) {
-    return true;
-  }
-  return event.key === " " && target.closest("button, a, [role='tab']") !== null;
-}
-
 // The vertical feed (docs/adr/0016-web-client.md, section 8): items snap one per screen, an IntersectionObserver picks
 // the current one, and a pool of three players plays it and preloads its neighbours. Explore and Following share it.
 export function FeedScreen({
@@ -80,14 +76,22 @@ export function FeedScreen({
   initialRetryAfterSeconds,
   mediaOrigin,
   currentUserId,
+  renderedAt,
 }: FeedScreenProps) {
   const t = useTranslations("feed");
+  const publishedAgo = usePublishedAgo(useNow(renderedAt));
   const router = useRouter();
   // Read from a deadline like the login page's countdown, so a page in the background never asks early.
   const firstWait = useCountdown(initialPage ? null : (initialRetryAfterSeconds ?? null), kind);
   const feed = useFeed(kind, initialPage, initialPageFetchedAt, firstWait === 0);
   const items = useMemo(() => feed.data?.pages.flatMap((page) => page.items) ?? [], [feed.data]);
   const itemCount = items.length;
+  // The first poster is the page's largest paint: rendered on the server, this puts a high-priority preload in the
+  // <head>, so the image starts before the scripts and fonts the page also asks for.
+  const firstPoster = items[0]?.thumbnail_url;
+  if (firstPoster && isMediaUrl(firstPoster, mediaOrigin)) {
+    preload(firstPoster, { as: "image", fetchPriority: "high" });
+  }
 
   const [current, setCurrent] = useState(0);
   // The item after the last video (end, next page loading or failed) can be current too: then nothing plays.
@@ -144,7 +148,20 @@ export function FeedScreen({
     if (rateLimited) {
       setRateLimit({ seconds: error.retryAfterSeconds ?? 1 });
     }
-    setToast({ id: toastId.current, message: rateLimited ? t("toast.rateLimited") : message, retry });
+    setToast({ id: toastId.current, tone: "danger", message: rateLimited ? t("toast.rateLimited") : message, retry });
+  }
+
+  function share(videoId: string) {
+    copyShareLink(videoId).then(
+      () => {
+        toastId.current += 1;
+        setToast({ id: toastId.current, tone: "success", message: t("toast.linkCopied") });
+      },
+      () => {
+        toastId.current += 1;
+        setToast({ id: toastId.current, tone: "danger", message: t("toast.copyFailed") });
+      },
+    );
   }
 
   const follows = useFollows(kind, (error, wanted) =>
@@ -365,11 +382,13 @@ export function FeedScreen({
             item={item}
             index={index}
             current={index === active}
+            nearby={Math.abs(index - active) <= 1}
             playback={playback[index]}
             pausedByUser={pausedIndex === index}
             muted={muted}
             showUnmuteHint={muted && !soundChosen}
             mediaOrigin={mediaOrigin}
+            publishedAgo={publishedAgo(item.published_at)}
             follow={
               item.author_id === currentUserId
                 ? null
@@ -383,6 +402,7 @@ export function FeedScreen({
             onLikeError={(error, wanted, retry) =>
               actionFailed(error, wanted ? t("toast.likeFailed") : t("toast.unlikeFailed"), retry)
             }
+            onShare={() => share(item.video_id)}
             onStageTap={onStageTap}
             onToggleMute={() => setSound(muted)}
             onRetry={() => pool.current?.retry(index)}
@@ -427,7 +447,8 @@ export function FeedScreen({
             {toast && (
               <Toast
                 key={toast.id}
-                tone="danger"
+                tone={toast.tone}
+                icon={toast.tone === "success" ? Link2 : undefined}
                 action={
                   toast.retry && !locked
                     ? {
@@ -456,28 +477,35 @@ type FeedEntryProps = {
   item: FeedItemData;
   index: number;
   current: boolean;
+  // In the window of the player pool (the current item or a neighbour): only these render their poster, so a page of
+  // ten videos does not download ten images on load.
+  nearby: boolean;
   playback: PlaybackState | undefined;
   pausedByUser: boolean;
   muted: boolean;
   showUnmuteHint: boolean;
   mediaOrigin: string;
+  publishedAgo: string | null;
   follow: RailFollow | null;
   locked: boolean;
   onLikeError: (error: unknown, wanted: boolean, retry: () => void) => void;
+  onShare: () => void;
   onStageTap: () => void;
   onToggleMute: () => void;
   onRetry: () => void;
 };
 
 // One item with its own like state.
-function FeedEntry({ item, mediaOrigin, onLikeError, ...props }: FeedEntryProps) {
+function FeedEntry({ item, mediaOrigin, nearby, onLikeError, ...props }: FeedEntryProps) {
   const like = useLike(item.video_id, item.stats, onLikeError);
   return (
     <FeedItem
       {...props}
       title={item.title}
       authorId={item.author_id}
-      posterUrl={isMediaUrl(item.thumbnail_url, mediaOrigin) ? item.thumbnail_url : null}
+      author={item.author ? { displayName: item.author.display_name, handle: item.author.handle } : null}
+      authorHref={item.author ? `/u/${item.author.handle}` : null}
+      posterUrl={nearby && isMediaUrl(item.thumbnail_url, mediaOrigin) ? item.thumbnail_url : null}
       liked={like.liked}
       likeCount={like.count}
       viewCount={item.stats?.view_count ?? null}

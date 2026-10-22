@@ -60,3 +60,15 @@ FOR UPDATE;
 UPDATE videos SET status = 'FAILED'
 WHERE id = ANY(sqlc.arg(ids)::uuid[]) AND status = 'UPLOADING'
 RETURNING id, author_id;
+
+-- name: ListAuthorVideos :many
+-- Reads a page of the videos of author_id, newest first, strictly after the cursor
+-- (before_created_at, before_id); a NULL before_created_at starts at the newest video. Every status
+-- when all_statuses (the caller is the author), otherwise only READY ones (UP-3). Runs on
+-- videos_author_created_idx.
+SELECT * FROM videos
+WHERE author_id = @author_id
+  AND (@all_statuses::boolean OR status = 'READY')
+  AND (created_at, id) < (COALESCE(sqlc.narg(before_created_at)::timestamptz, 'infinity'), @before_id::uuid)
+ORDER BY created_at DESC, id DESC
+LIMIT @row_limit;

@@ -1,6 +1,6 @@
 # 0009. Giai đoạn 2 phần B: event follow, engagement-service đếm theo lô, feed-service fan-out on write
 
-- Trạng thái: Chấp nhận
+- Trạng thái: Chấp nhận; §9 (ghép thêm tác giả song song với số đếm) chỉnh bởi [0018](0018-web-profiles-public-video-upload.md)
 - Ngày: 2026-10-11
 
 ## Bối cảnh

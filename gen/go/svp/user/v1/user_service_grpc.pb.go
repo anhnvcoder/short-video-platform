@@ -19,19 +19,23 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	UserService_Register_FullMethodName = "/svp.user.v1.UserService/Register"
-	UserService_Login_FullMethodName    = "/svp.user.v1.UserService/Login"
-	UserService_Refresh_FullMethodName  = "/svp.user.v1.UserService/Refresh"
-	UserService_Logout_FullMethodName   = "/svp.user.v1.UserService/Logout"
-	UserService_Follow_FullMethodName   = "/svp.user.v1.UserService/Follow"
-	UserService_Unfollow_FullMethodName = "/svp.user.v1.UserService/Unfollow"
+	UserService_Register_FullMethodName           = "/svp.user.v1.UserService/Register"
+	UserService_Login_FullMethodName              = "/svp.user.v1.UserService/Login"
+	UserService_Refresh_FullMethodName            = "/svp.user.v1.UserService/Refresh"
+	UserService_Logout_FullMethodName             = "/svp.user.v1.UserService/Logout"
+	UserService_Follow_FullMethodName             = "/svp.user.v1.UserService/Follow"
+	UserService_Unfollow_FullMethodName           = "/svp.user.v1.UserService/Unfollow"
+	UserService_GetProfiles_FullMethodName        = "/svp.user.v1.UserService/GetProfiles"
+	UserService_GetProfileByHandle_FullMethodName = "/svp.user.v1.UserService/GetProfileByHandle"
+	UserService_UpdateDisplayName_FullMethodName  = "/svp.user.v1.UserService/UpdateDisplayName"
 )
 
 // UserServiceClient is the client API for UserService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// UserService owns accounts, password hashes and the follow graph.
+// UserService owns accounts, password hashes, the follow graph and public
+// profiles (handle and display name).
 //
 // Caller identity: the gateway verifies the JWT and passes the authenticated
 // user id in the gRPC metadata key `x-user-id`. Requests never carry the
@@ -39,14 +43,33 @@ const (
 // return UNAUTHENTICATED when `x-user-id` is missing or not a valid UUID.
 //
 // All ids are UUIDv7 strings in canonical lowercase form (36 chars).
+//
+// A handle is unique and never changes. Its stored form matches
+// `^[a-z][a-z0-9_]{2,29}$`. Input is normalized first: surrounding white
+// space trimmed, and only ASCII `A`-`Z` lowered, so any other character
+// makes it invalid. A handle the user picks must also not match
+// `^u_[0-9a-f]{12}$`, the form the service generates (`u_` and the last 12
+// hex digits of the user id, which are random), so a picked handle never
+// collides with a generated one.
 type UserServiceClient interface {
-	// Register creates an account. Does not require caller.
+	// Register creates an account. Does not require caller. Checks email,
+	// password, handle and display name, in that order, before hashing the
+	// password, so bad input never costs a hash. Without a handle the service
+	// generates one; if that one is taken (two generated handles collide), it
+	// retries with a new user id, so a client that sends no handle never gets
+	// a handle error.
 	//
 	// Errors:
-	// - INVALID_ARGUMENT: malformed email or password not meeting the policy.
-	// - ALREADY_EXISTS: the email is already registered. This lets a client
-	//   probe which emails are registered; accepted for the MVP and mitigated by
-	//   rate limiting at the gateway.
+	// - INVALID_ARGUMENT: malformed email (`INVALID_EMAIL`), password not
+	//   meeting the policy (`INVALID_PASSWORD`), handle not of the picked form
+	//   (`INVALID_HANDLE`), or display name breaking its rules
+	//   (`INVALID_DISPLAY_NAME`).
+	// - ALREADY_EXISTS: the email is already registered
+	//   (`EMAIL_ALREADY_REGISTERED`), or the handle is taken
+	//   (`HANDLE_ALREADY_TAKEN`). When both are, the reason is whichever the
+	//   database reports first. This lets a client probe which emails and
+	//   handles are registered: accepted for the MVP (handles are public
+	//   anyway) and mitigated by rate limiting at the gateway.
 	Register(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*RegisterResponse, error)
 	// Login exchanges email and password for an access token and a refresh
 	// token. Does not require caller. Every login starts a new refresh token
@@ -95,6 +118,35 @@ type UserServiceClient interface {
 	// Errors:
 	// - INVALID_ARGUMENT: followee_id is not a UUID.
 	Unfollow(ctx context.Context, in *UnfollowRequest, opts ...grpc.CallOption) (*UnfollowResponse, error)
+	// GetProfiles returns the profiles of up to 50 users. Does not require
+	// caller: profiles are public, and the gateway uses it for the authors of
+	// the public share page too. Ids without a user are left out without an
+	// error, a repeated id is answered once, and the order is unspecified:
+	// match profiles by user_id. An empty list returns no profiles.
+	//
+	// Errors:
+	// - INVALID_ARGUMENT: more than 50 ids (`TOO_MANY_USER_IDS`), or an id
+	//   that is not a UUID (`INVALID_USER_ID`).
+	GetProfiles(ctx context.Context, in *GetProfilesRequest, opts ...grpc.CallOption) (*GetProfilesResponse, error)
+	// GetProfileByHandle returns the profile with handle, and whether the
+	// caller follows that user. Requires caller. The handle is normalized as on
+	// Register (trimmed, ASCII `A`-`Z` lowered), so the lookup ignores case.
+	//
+	// Errors:
+	// - NOT_FOUND: no user has the handle, or the input cannot be a handle at
+	//   all (`USER_NOT_FOUND` for both, without reading the database for the
+	//   latter).
+	GetProfileByHandle(ctx context.Context, in *GetProfileByHandleRequest, opts ...grpc.CallOption) (*GetProfileByHandleResponse, error)
+	// UpdateDisplayName sets the caller's display name and returns the
+	// caller's profile with it. Requires caller. Idempotent: setting the same
+	// name again changes nothing. Emits no event: no service keeps a copy of
+	// profiles.
+	//
+	// Errors:
+	// - INVALID_ARGUMENT: display_name breaks its rules, an empty one included
+	//   (`INVALID_DISPLAY_NAME`).
+	// - NOT_FOUND: the caller's account no longer exists (`USER_NOT_FOUND`).
+	UpdateDisplayName(ctx context.Context, in *UpdateDisplayNameRequest, opts ...grpc.CallOption) (*UpdateDisplayNameResponse, error)
 }
 
 type userServiceClient struct {
@@ -165,11 +217,42 @@ func (c *userServiceClient) Unfollow(ctx context.Context, in *UnfollowRequest, o
 	return out, nil
 }
 
+func (c *userServiceClient) GetProfiles(ctx context.Context, in *GetProfilesRequest, opts ...grpc.CallOption) (*GetProfilesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetProfilesResponse)
+	err := c.cc.Invoke(ctx, UserService_GetProfiles_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) GetProfileByHandle(ctx context.Context, in *GetProfileByHandleRequest, opts ...grpc.CallOption) (*GetProfileByHandleResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetProfileByHandleResponse)
+	err := c.cc.Invoke(ctx, UserService_GetProfileByHandle_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) UpdateDisplayName(ctx context.Context, in *UpdateDisplayNameRequest, opts ...grpc.CallOption) (*UpdateDisplayNameResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateDisplayNameResponse)
+	err := c.cc.Invoke(ctx, UserService_UpdateDisplayName_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // UserServiceServer is the server API for UserService service.
 // All implementations must embed UnimplementedUserServiceServer
 // for forward compatibility.
 //
-// UserService owns accounts, password hashes and the follow graph.
+// UserService owns accounts, password hashes, the follow graph and public
+// profiles (handle and display name).
 //
 // Caller identity: the gateway verifies the JWT and passes the authenticated
 // user id in the gRPC metadata key `x-user-id`. Requests never carry the
@@ -177,14 +260,33 @@ func (c *userServiceClient) Unfollow(ctx context.Context, in *UnfollowRequest, o
 // return UNAUTHENTICATED when `x-user-id` is missing or not a valid UUID.
 //
 // All ids are UUIDv7 strings in canonical lowercase form (36 chars).
+//
+// A handle is unique and never changes. Its stored form matches
+// `^[a-z][a-z0-9_]{2,29}$`. Input is normalized first: surrounding white
+// space trimmed, and only ASCII `A`-`Z` lowered, so any other character
+// makes it invalid. A handle the user picks must also not match
+// `^u_[0-9a-f]{12}$`, the form the service generates (`u_` and the last 12
+// hex digits of the user id, which are random), so a picked handle never
+// collides with a generated one.
 type UserServiceServer interface {
-	// Register creates an account. Does not require caller.
+	// Register creates an account. Does not require caller. Checks email,
+	// password, handle and display name, in that order, before hashing the
+	// password, so bad input never costs a hash. Without a handle the service
+	// generates one; if that one is taken (two generated handles collide), it
+	// retries with a new user id, so a client that sends no handle never gets
+	// a handle error.
 	//
 	// Errors:
-	// - INVALID_ARGUMENT: malformed email or password not meeting the policy.
-	// - ALREADY_EXISTS: the email is already registered. This lets a client
-	//   probe which emails are registered; accepted for the MVP and mitigated by
-	//   rate limiting at the gateway.
+	// - INVALID_ARGUMENT: malformed email (`INVALID_EMAIL`), password not
+	//   meeting the policy (`INVALID_PASSWORD`), handle not of the picked form
+	//   (`INVALID_HANDLE`), or display name breaking its rules
+	//   (`INVALID_DISPLAY_NAME`).
+	// - ALREADY_EXISTS: the email is already registered
+	//   (`EMAIL_ALREADY_REGISTERED`), or the handle is taken
+	//   (`HANDLE_ALREADY_TAKEN`). When both are, the reason is whichever the
+	//   database reports first. This lets a client probe which emails and
+	//   handles are registered: accepted for the MVP (handles are public
+	//   anyway) and mitigated by rate limiting at the gateway.
 	Register(context.Context, *RegisterRequest) (*RegisterResponse, error)
 	// Login exchanges email and password for an access token and a refresh
 	// token. Does not require caller. Every login starts a new refresh token
@@ -233,6 +335,35 @@ type UserServiceServer interface {
 	// Errors:
 	// - INVALID_ARGUMENT: followee_id is not a UUID.
 	Unfollow(context.Context, *UnfollowRequest) (*UnfollowResponse, error)
+	// GetProfiles returns the profiles of up to 50 users. Does not require
+	// caller: profiles are public, and the gateway uses it for the authors of
+	// the public share page too. Ids without a user are left out without an
+	// error, a repeated id is answered once, and the order is unspecified:
+	// match profiles by user_id. An empty list returns no profiles.
+	//
+	// Errors:
+	// - INVALID_ARGUMENT: more than 50 ids (`TOO_MANY_USER_IDS`), or an id
+	//   that is not a UUID (`INVALID_USER_ID`).
+	GetProfiles(context.Context, *GetProfilesRequest) (*GetProfilesResponse, error)
+	// GetProfileByHandle returns the profile with handle, and whether the
+	// caller follows that user. Requires caller. The handle is normalized as on
+	// Register (trimmed, ASCII `A`-`Z` lowered), so the lookup ignores case.
+	//
+	// Errors:
+	// - NOT_FOUND: no user has the handle, or the input cannot be a handle at
+	//   all (`USER_NOT_FOUND` for both, without reading the database for the
+	//   latter).
+	GetProfileByHandle(context.Context, *GetProfileByHandleRequest) (*GetProfileByHandleResponse, error)
+	// UpdateDisplayName sets the caller's display name and returns the
+	// caller's profile with it. Requires caller. Idempotent: setting the same
+	// name again changes nothing. Emits no event: no service keeps a copy of
+	// profiles.
+	//
+	// Errors:
+	// - INVALID_ARGUMENT: display_name breaks its rules, an empty one included
+	//   (`INVALID_DISPLAY_NAME`).
+	// - NOT_FOUND: the caller's account no longer exists (`USER_NOT_FOUND`).
+	UpdateDisplayName(context.Context, *UpdateDisplayNameRequest) (*UpdateDisplayNameResponse, error)
 	mustEmbedUnimplementedUserServiceServer()
 }
 
@@ -260,6 +391,15 @@ func (UnimplementedUserServiceServer) Follow(context.Context, *FollowRequest) (*
 }
 func (UnimplementedUserServiceServer) Unfollow(context.Context, *UnfollowRequest) (*UnfollowResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Unfollow not implemented")
+}
+func (UnimplementedUserServiceServer) GetProfiles(context.Context, *GetProfilesRequest) (*GetProfilesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetProfiles not implemented")
+}
+func (UnimplementedUserServiceServer) GetProfileByHandle(context.Context, *GetProfileByHandleRequest) (*GetProfileByHandleResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetProfileByHandle not implemented")
+}
+func (UnimplementedUserServiceServer) UpdateDisplayName(context.Context, *UpdateDisplayNameRequest) (*UpdateDisplayNameResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateDisplayName not implemented")
 }
 func (UnimplementedUserServiceServer) mustEmbedUnimplementedUserServiceServer() {}
 func (UnimplementedUserServiceServer) testEmbeddedByValue()                     {}
@@ -390,6 +530,60 @@ func _UserService_Unfollow_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _UserService_GetProfiles_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetProfilesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).GetProfiles(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_GetProfiles_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).GetProfiles(ctx, req.(*GetProfilesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_GetProfileByHandle_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetProfileByHandleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).GetProfileByHandle(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_GetProfileByHandle_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).GetProfileByHandle(ctx, req.(*GetProfileByHandleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_UpdateDisplayName_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateDisplayNameRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).UpdateDisplayName(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_UpdateDisplayName_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).UpdateDisplayName(ctx, req.(*UpdateDisplayNameRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // UserService_ServiceDesc is the grpc.ServiceDesc for UserService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -420,6 +614,18 @@ var UserService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Unfollow",
 			Handler:    _UserService_Unfollow_Handler,
+		},
+		{
+			MethodName: "GetProfiles",
+			Handler:    _UserService_GetProfiles_Handler,
+		},
+		{
+			MethodName: "GetProfileByHandle",
+			Handler:    _UserService_GetProfileByHandle_Handler,
+		},
+		{
+			MethodName: "UpdateDisplayName",
+			Handler:    _UserService_UpdateDisplayName_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

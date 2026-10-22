@@ -16,6 +16,8 @@ vi.mock("next/navigation", () => ({ useRouter: vi.fn() }));
 vi.mock("./hls-loader", () => ({ loadHls: () => Promise.resolve({ isSupported: () => false }) }));
 
 const mediaOrigin = "http://127.0.0.1:9000";
+// The server's clock for "2 days ago": 2026-10-22 10:00 in Vietnam, two days after the videos' published_at.
+const renderedAt = Date.parse("2026-10-22T03:00:00Z");
 const me = "0192f0c1-7a3e-7c4b-9d2e-000000000001";
 const creator = "0192f0c1-7a3e-7c4b-9d2e-000000000002";
 
@@ -95,6 +97,7 @@ function renderFeed({
           initialRetryAfterSeconds={initialRetryAfterSeconds}
           mediaOrigin={mediaOrigin}
           currentUserId={me}
+          renderedAt={renderedAt}
         />
       </QueryClientProvider>
     </NextIntlClientProvider>,
@@ -126,9 +129,9 @@ async function settle(check: () => void, attempts = 100) {
 
 const t = (locale: Locale = "vi") => messagesFor(locale).feed;
 
-// A like button with stats, by its state: the name is the action, then the count the button shows (WCAG 2.5.3).
+// A like button with stats: one name in both states, the action then the count the button shows (WCAG 2.5.3);
+// aria-pressed alone tells whether the video is liked.
 const likeName = (locale: Locale = "vi") => new RegExp(`^${t(locale).likeWithCount.replace("{count}", ".+")}$`);
-const unlikeName = (locale: Locale = "vi") => new RegExp(`^${t(locale).unlikeWithCount.replace("{count}", ".+")}$`);
 
 function articles() {
   return within(screen.getByRole("feed")).getAllByRole("article");
@@ -202,25 +205,89 @@ afterEach(() => {
 });
 
 describe("FeedScreen", () => {
-  it.each<Locale>(["vi", "en"])(
-    "%s: renders the server's first page with tabs, actions and no share button",
-    (locale) => {
-      renderFeed({ locale, initialPage: page([item(1), item(2)]) });
-      const messages = t(locale);
-      const tabs = screen.getByRole("tablist", { name: messages.tabs.label });
-      expect(within(tabs).getByRole("tab", { name: messages.tabs.explore }).getAttribute("aria-selected")).toBe("true");
-      expect(articles().map((article) => article.getAttribute("aria-label"))).toEqual(["Video 1", "Video 2", null]);
-      const first = articles()[0] as HTMLElement;
-      const like = within(first).getByRole("button", {
-        name: messages.likeWithCount.replace("{count}", formatCompact(12_400, locale)),
-      });
-      expect(like.textContent).toBe(formatCompact(12_400, locale));
-      expect(within(first).getByRole("img", { name: /1,2 triệu|1.2 million/ })).toBeTruthy();
-      expect(within(first).getByRole("button", { name: messages.follow })).toBeTruthy();
-      expect(screen.queryByText(/Chia sẻ|Share/)).toBeNull();
-      expect(first.querySelector("img")?.getAttribute("src")).toBe(`${mediaOrigin}/media/thumbs/1.jpg`);
-    },
-  );
+  it.each<Locale>(["vi", "en"])("%s: renders the server's first page with tabs and actions", (locale) => {
+    renderFeed({ locale, initialPage: page([item(1), item(2)]) });
+    const messages = t(locale);
+    const tabs = screen.getByRole("tablist", { name: messages.tabs.label });
+    expect(within(tabs).getByRole("tab", { name: messages.tabs.explore }).getAttribute("aria-selected")).toBe("true");
+    expect(articles().map((article) => article.getAttribute("aria-label"))).toEqual(["Video 1", "Video 2", null]);
+    const first = articles()[0] as HTMLElement;
+    const like = within(first).getByRole("button", {
+      name: messages.likeWithCount.replace("{count}", formatCompact(12_400, locale)),
+    });
+    expect(like.textContent).toBe(formatCompact(12_400, locale));
+    expect(within(first).getByRole("img", { name: /1,2 triệu|1.2 million/ })).toBeTruthy();
+    expect(within(first).getByRole("button", { name: messages.follow })).toBeTruthy();
+    expect(within(first).getByRole("button", { name: messages.shareLabel }).textContent).toBe(messages.share);
+    expect(first.querySelector("img")?.getAttribute("src")).toBe(`${mediaOrigin}/media/thumbs/1.jpg`);
+  });
+
+  it.each<[Locale, string]>([
+    ["vi", "@minhanh · 1 ngày trước"],
+    ["en", "@minhanh · 1 day ago"],
+  ])("%s: shows the author's name, linked to their profile, with the handle and the video's age", (locale, line) => {
+    const author = { user_id: creator, handle: "minhanh", display_name: "Minh Anh" };
+    renderFeed({ locale, initialPage: page([item(1, { author, published_at: "2026-10-21T02:00:00Z" })]) });
+    const first = articles()[0] as HTMLElement;
+    const link = within(first).getByRole("link", { name: "Minh Anh" });
+    expect(link.getAttribute("href")).toBe("/u/minhanh");
+    expect(within(first).getByText(line)).toBeTruthy();
+    // The avatar shows the name's first letter.
+    expect(within(first).getByRole("button", { name: t(locale).follow }).textContent).toContain("M");
+  });
+
+  it("renders a name holding HTML as text, isolated from the handle after it", () => {
+    const author = { user_id: creator, handle: "minhanh", display_name: '<img src=x onerror="alert(1)">' };
+    renderFeed({ initialPage: page([item(1, { author })]) });
+    const first = articles()[0] as HTMLElement;
+    const link = within(first).getByRole("link", { name: author.display_name });
+    expect(link.querySelector("bdi")?.textContent).toBe(author.display_name);
+    expect(first.querySelector("img[src='x']")).toBeNull();
+  });
+
+  it("without the author keeps the line, empty, so the title does not move when it comes", () => {
+    renderFeed({
+      initialPage: page([item(1), item(2, { author: { user_id: creator, handle: "abc", display_name: "A" } })]),
+    });
+    const [without, withAuthor] = articles() as [HTMLElement, HTMLElement];
+    expect(within(without).queryByRole("link")).toBeNull();
+    expect(within(without).queryByText(/@/)).toBeNull();
+    const line = (article: HTMLElement) =>
+      within(article)
+        .getByText(/^Video/)
+        .closest("button")?.previousElementSibling;
+    expect(line(without)?.className).toBe(line(withAuthor)?.className);
+    expect(line(without)?.className).toContain("min-h-6");
+  });
+
+  it("share copies this origin's link to the video and says so", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    onTestFinished(() => {
+      Reflect.deleteProperty(navigator, "clipboard");
+    });
+    renderFeed({ initialPage: page([item(1)]) });
+    fireEvent.click(within(articles()[0] as HTMLElement).getByRole("button", { name: t().shareLabel }));
+    await waitFor(() => expect(screen.getByText(t().toast.linkCopied)).toBeTruthy());
+    expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/v/${item(1).video_id}`);
+  });
+
+  it.each([
+    [
+      "the browser refuses the clipboard",
+      { writeText: () => Promise.reject(new DOMException("denied", "NotAllowedError")) },
+    ],
+    ["there is no Clipboard API", undefined],
+  ])("share says the link was not copied when %s", async (_, clipboard) => {
+    Object.defineProperty(navigator, "clipboard", { value: clipboard, configurable: true });
+    onTestFinished(() => {
+      Reflect.deleteProperty(navigator, "clipboard");
+    });
+    renderFeed({ initialPage: page([item(1)]) });
+    fireEvent.click(within(articles()[0] as HTMLElement).getByRole("button", { name: t().shareLabel }));
+    await waitFor(() => expect(screen.getByText(t().toast.copyFailed)).toBeTruthy());
+    expect(screen.queryByText(t().toast.linkCopied)).toBeNull();
+  });
 
   it("without stats hides both counts, and like still works", async () => {
     const liked = vi.fn();
@@ -338,10 +405,12 @@ describe("FeedScreen", () => {
     server.use(http.put("*/api/videos/:id/like", () => problem(503, "UNAVAILABLE")));
     renderFeed({ initialPage: page([item(1)]) });
     const first = articles()[0] as HTMLElement;
-    fireEvent.click(within(first).getByRole("button", { name: likeName() }));
-    expect(within(first).getByRole("button", { name: unlikeName() }).textContent).toBe(formatCompact(12_400, "vi"));
+    fireEvent.click(within(first).getByRole("button", { name: likeName(), pressed: false }));
+    expect(within(first).getByRole("button", { name: likeName(), pressed: true }).textContent).toBe(
+      formatCompact(12_400, "vi"),
+    );
     await waitFor(() => expect(screen.getByText(t().toast.likeFailed)).toBeTruthy());
-    const like = within(first).getByRole("button", { name: likeName() });
+    const like = within(first).getByRole("button", { name: likeName(), pressed: false });
     expect(like.getAttribute("aria-pressed")).toBe("false");
     expect(like.textContent).toBe(formatCompact(12_400, "vi"));
     expect(screen.getByRole("button", { name: t().toast.retry })).toBeTruthy();
@@ -443,10 +512,11 @@ describe("FeedScreen", () => {
     expect(observed).not.toContain(loadingItem);
     expect(observed).toContain(last);
     expect(scrolled).toEqual([{ element: third, options: { block: "start", behavior: "instant" } }]);
-    // Video 3 is the current item: it plays, and the pool holds its neighbours.
+    // Video 3 is the current item: it plays, and once it can, the pool loads its neighbours.
     await waitFor(() => expect(videoIn(third)?.getAttribute("src")).toBe(`${mediaOrigin}/media/hls/3/master.m3u8`));
     expect(vi.mocked(HTMLMediaElement.prototype.play).mock.contexts).toContain(videoIn(third));
-    expect(videoIn(fourth)).toBeTruthy();
+    fireEvent(videoIn(third) as HTMLVideoElement, new Event("canplay"));
+    await waitFor(() => expect(videoIn(fourth)).toBeTruthy());
     // Not on one of the last two videos of the new list: no next page yet.
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(cursors).toEqual(["c1"]);
@@ -481,7 +551,7 @@ describe("FeedScreen", () => {
   it("a new visit shows the server's new first page, not the feed kept from the last visit", async () => {
     const client = new QueryClient();
     const explore = renderFeed({ client, initialPage: page([item(1)]) });
-    expect(within(articles()[0] as HTMLElement).getByRole("button", { name: likeName() })).toBeTruthy();
+    expect(within(articles()[0] as HTMLElement).getByRole("button", { name: likeName(), pressed: false })).toBeTruthy();
     explore.unmount();
     renderFeed({ client, kind: "following", initialPage: page([item(5)]) }).unmount();
     // The feed leaves the cache with its screen, as it does between two navigations.
@@ -490,7 +560,7 @@ describe("FeedScreen", () => {
     const liked = { view_count: 3, like_count: 12_401, liked_by_me: true };
     renderFeed({ client, initialPage: page([item(1, { stats: liked }), item(2)]) });
     expect(articles().map((article) => article.getAttribute("aria-label"))).toEqual(["Video 1", "Video 2", null]);
-    const like = within(articles()[0] as HTMLElement).getByRole("button", { name: unlikeName() });
+    const like = within(articles()[0] as HTMLElement).getByRole("button", { name: likeName(), pressed: true });
     expect(like.getAttribute("aria-pressed")).toBe("true");
     expect(like.textContent).toBe(formatCompact(12_401, "vi"));
   });
@@ -509,7 +579,7 @@ describe("FeedScreen", () => {
     // The server's stamp is two minutes off the browser's clock: only its identity counts.
     const first = { initialPage: page([item(1), item(2)]), initialPageFetchedAt: Date.now() - 120_000 };
     const explore = renderFeed({ client, ...first });
-    const like = within(articles()[0] as HTMLElement).getByRole("button", { name: likeName() });
+    const like = within(articles()[0] as HTMLElement).getByRole("button", { name: likeName(), pressed: false });
     fireEvent.click(like);
     expect(like.getAttribute("aria-pressed")).toBe("true");
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -521,19 +591,22 @@ describe("FeedScreen", () => {
 
     // Back: the router hands over the payload of the first visit, at once, with the like missing from it.
     renderFeed({ client, ...first });
-    expect(within(articles()[0] as HTMLElement).getByRole("button", { name: likeName() })).toBeTruthy();
+    expect(within(articles()[0] as HTMLElement).getByRole("button", { name: likeName(), pressed: false })).toBeTruthy();
     await waitFor(() =>
       expect(articles().map((article) => article.getAttribute("aria-label"))).toEqual(["Video 9", "Video 1", null]),
     );
     expect(calls).toEqual([null]);
-    const unlike = within(articles()[1] as HTMLElement).getByRole("button", { name: unlikeName() });
+    const unlike = within(articles()[1] as HTMLElement).getByRole("button", { name: likeName(), pressed: true });
     expect(unlike.getAttribute("aria-pressed")).toBe("true");
     expect(unlike.textContent).toBe(formatCompact(12_401, "vi"));
     // Video 1 moved to index 1: the players follow the items to their new places.
     await waitFor(() =>
       expect(videoIn(articles()[0])?.getAttribute("src")).toBe(`${mediaOrigin}/media/hls/9/master.m3u8`),
     );
-    expect(videoIn(articles()[1])?.getAttribute("src")).toBe(`${mediaOrigin}/media/hls/1/master.m3u8`);
+    fireEvent(videoIn(articles()[0]) as HTMLVideoElement, new Event("canplay"));
+    await waitFor(() =>
+      expect(videoIn(articles()[1])?.getAttribute("src")).toBe(`${mediaOrigin}/media/hls/1/master.m3u8`),
+    );
   });
 
   it("a first page from a new server render is not fetched again, even with the server's clock two minutes off", async () => {
@@ -567,7 +640,7 @@ describe("FeedScreen", () => {
   it("401 on a like sends the user to log in", async () => {
     server.use(http.put("*/api/videos/:id/like", () => problem(401, "UNAUTHENTICATED")));
     renderFeed({ initialPage: page([item(1)]) });
-    fireEvent.click(within(articles()[0] as HTMLElement).getByRole("button", { name: likeName() }));
+    fireEvent.click(within(articles()[0] as HTMLElement).getByRole("button", { name: likeName(), pressed: false }));
     await waitFor(() => expect(router.replace).toHaveBeenCalledWith("/login?next=%2F"));
   });
 
@@ -617,12 +690,12 @@ describe("FeedScreen", () => {
     );
     renderFeed({ initialPage: page([item(1), item(2)]) });
     const [first, second] = articles() as [HTMLElement, HTMLElement];
-    fireEvent.click(within(first).getByRole("button", { name: likeName() }));
+    fireEvent.click(within(first).getByRole("button", { name: likeName(), pressed: false }));
     await settle(() => expect(screen.getByText(t().toast.rateLimited)).toBeTruthy());
 
     const buttons = () => [
-      within(first).getByRole("button", { name: likeName() }),
-      within(second).getByRole("button", { name: likeName() }),
+      within(first).getByRole("button", { name: likeName(), pressed: false }),
+      within(second).getByRole("button", { name: likeName(), pressed: false }),
       within(first).getByRole("button", { name: t().follow }),
     ];
     expect(buttons().map((button) => button.hasAttribute("disabled"))).toEqual([true, true, true]);
@@ -636,7 +709,9 @@ describe("FeedScreen", () => {
     expect(buttons().map((button) => button.hasAttribute("disabled"))).toEqual([false, false, false]);
     fireEvent.click(screen.getByRole("button", { name: t().toast.retry }));
     await settle(() => expect(calls).toEqual(["PUT", "PUT"]));
-    expect(within(first).getByRole("button", { name: unlikeName() }).getAttribute("aria-pressed")).toBe("true");
+    expect(within(first).getByRole("button", { name: likeName(), pressed: true }).getAttribute("aria-pressed")).toBe(
+      "true",
+    );
   });
 
   it("429 waits for Retry-After, then tries again", async () => {
@@ -770,17 +845,59 @@ describe("FeedScreen", () => {
 
   it("moves the players with the current item and marks the playing video", async () => {
     renderFeed({ initialPage: page([item(1), item(2), item(3), item(4)]) });
+    // The neighbour loads only once the current video plays.
+    const first = await waitFor(() => videoIn(articles()[0]) as HTMLVideoElement);
+    expect(document.querySelectorAll("video")).toHaveLength(1);
+    fireEvent(first, new Event("playing"));
     await waitFor(() => expect(document.querySelectorAll("video")).toHaveLength(2));
+    // Video 3 was not a neighbour: it loads now, and video 4 waits for it.
     FakeObserver.current?.show(2);
-    await waitFor(() => expect(document.querySelectorAll("video")).toHaveLength(3));
     const [, second, third, fourth] = articles() as HTMLElement[];
-    expect(second?.querySelector("video")).toBeTruthy();
-    expect(fourth?.querySelector("video")).toBeTruthy();
-    const playing = third?.querySelector("video") as HTMLVideoElement;
+    const playing = await waitFor(() => videoIn(third) as HTMLVideoElement);
     expect(playing.getAttribute("src")).toBe(`${mediaOrigin}/media/hls/3/master.m3u8`);
+    expect(videoIn(second)).toBeTruthy();
+    expect(videoIn(fourth)).toBeNull();
     fireEvent(playing, new Event("playing"));
     expect(playing.dataset.state).toBe("playing");
     expect(within(third as HTMLElement).queryByLabelText(t().loading)).toBeNull();
+    await waitFor(() => expect(document.querySelectorAll("video")).toHaveLength(3));
+    expect(videoIn(fourth)?.getAttribute("src")).toBe(`${mediaOrigin}/media/hls/4/master.m3u8`);
+  });
+
+  it("loads the current poster first, lazy-loads its neighbours' and renders no other", async () => {
+    // Videos no other test renders: React keeps one preload per URL for the whole file.
+    renderFeed({ initialPage: page([item(41), item(42), item(43), item(44)]) });
+    const preload = (n: number) =>
+      document.head
+        .querySelector(`link[rel="preload"][as="image"][href="${mediaOrigin}/media/thumbs/${n}.jpg"]`)
+        ?.getAttribute("fetchpriority") ?? null;
+    expect(preload(41)).toBe("high");
+    expect([preload(42), preload(43), preload(44)]).toEqual([null, null, null]);
+    const poster = (index: number) => articles()[index]?.querySelector("img") ?? null;
+    const first = poster(0);
+    expect(first?.getAttribute("fetchpriority")).toBe("high");
+    expect(first?.hasAttribute("loading")).toBe(false);
+    expect(first?.hasAttribute("decoding")).toBe(false);
+    expect(poster(1)?.getAttribute("src")).toBe(`${mediaOrigin}/media/thumbs/42.jpg`);
+    expect(poster(1)?.getAttribute("loading")).toBe("lazy");
+    expect(poster(1)?.getAttribute("decoding")).toBe("async");
+    expect(poster(1)?.hasAttribute("fetchpriority")).toBe(false);
+    expect(poster(2)).toBeNull();
+    expect(poster(3)).toBeNull();
+
+    // The window moves with the current item.
+    FakeObserver.current?.show(2);
+    expect(poster(0)).toBeNull();
+    expect(poster(1)?.getAttribute("loading")).toBe("lazy");
+    expect(poster(2)?.getAttribute("fetchpriority")).toBe("high");
+    expect(poster(3)?.getAttribute("src")).toBe(`${mediaOrigin}/media/thumbs/44.jpg`);
+    // The preload is for the first paint only.
+    expect(preload(43)).toBeNull();
+  });
+
+  it("puts no preload in the head for a first poster outside the media origin", () => {
+    renderFeed({ initialPage: page([item(1, { thumbnail_url: "https://tracker.example/1.jpg" }), item(2)]) });
+    expect(document.head.querySelector('link[href^="https://tracker.example"]')).toBeNull();
   });
 
   it("the first tap turns the sound on, the next one pauses", async () => {

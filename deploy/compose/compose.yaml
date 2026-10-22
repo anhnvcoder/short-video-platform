@@ -160,6 +160,12 @@ services:
       # The root credential exists only here and in minio-init; services get their own users (UP-5).
       MINIO_ROOT_USER: svp-admin
       MINIO_ROOT_PASSWORD: ${SVP_MINIO_ROOT_PASSWORD:?run make env}
+      # The browser talks to MinIO cross-origin: hls.js loads playlists and segments with XHR,
+      # and the upload page posts the file with XHR (its progress listener makes that a CORS
+      # preflight). The default is *, any site; this lets only the web client's origins read the
+      # answers: `make up` (3001) and `make web-dev` (3002). Commas without spaces: MinIO does not
+      # trim around each origin, and an empty item is a config error (WEB-10, ADR-0018, section 9).
+      MINIO_API_CORS_ALLOW_ORIGIN: http://localhost:3001,http://localhost:3002
     mem_limit: 512m
     networks: [default, worker]
     volumes:
@@ -411,8 +417,9 @@ services:
   # Web client: Next's standalone server, the browser's only origin, with the BFF that holds the
   # sessions and calls the gateway (docs/adr/0016-web-client.md, sections 5 and 7). Open it at
   # http://localhost:3001, the APP_ORIGIN that login redirects and the cookie's form go by.
-  # http://127.0.0.1:3001 works too, with a session cookie of its own: browsers send
-  # Sec-Fetch-Site: same-origin there, which the CSRF check accepts before it compares Origin.
+  # http://127.0.0.1:3001 logs in too, with a session cookie of its own (browsers send
+  # Sec-Fetch-Site: same-origin there, which the CSRF check accepts before it compares Origin),
+  # but plays and uploads no video: MinIO's CORS allows only the localhost origins.
   web:
     <<: *host-services
     profiles: [core]
@@ -434,6 +441,9 @@ services:
       # Where the browser fetches HLS and thumbnails (the gateway's MEDIA_PUBLIC_BASE_URL), allowed
       # by the Content-Security-Policy.
       MEDIA_ORIGIN: http://127.0.0.1:9000
+      # Where the browser posts an upload (the presigned POST of video-service, on the same MinIO),
+      # allowed by the Content-Security-Policy; the upload page sends a file to no other origin.
+      UPLOAD_ORIGIN: http://127.0.0.1:9000
     ports:
       - "127.0.0.1:3001:3001"
     # Only the network it shares with the gateway; Redis is on the host.

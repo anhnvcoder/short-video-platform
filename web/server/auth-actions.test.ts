@@ -70,14 +70,35 @@ describe("auth actions without a session store", () => {
     const state = await loginAction(initialAuthState, form({ email: "bad", password: "12345678" }));
     expect(state).toEqual({
       email: "bad",
+      handle: "",
       fieldErrors: { email: "INVALID_EMAIL" },
       formError: null,
       retryAfterSeconds: null,
     });
     expect(
-      (await registerAction(initialAuthState, form({ email: "a@example.com", password: "1" }))).fieldErrors,
+      (await registerAction(initialAuthState, form({ email: "a@example.com", password: "1", handle: "alice" })))
+        .fieldErrors,
     ).toEqual({
       password: "INVALID_PASSWORD",
+    });
+  });
+
+  it("registerAction needs a handle of the user's own form and sends the field back lowered", async () => {
+    expect(await registerAction(initialAuthState, form({ email: "a@example.com", password: "12345678" }))).toEqual({
+      email: "a@example.com",
+      handle: "",
+      fieldErrors: { handle: "INVALID_HANDLE" },
+      formError: null,
+      retryAfterSeconds: null,
+    });
+    const both = await registerAction(
+      initialAuthState,
+      form({ email: "bad", password: "12345678", handle: " U_0123456789AB " }),
+    );
+    expect(both).toMatchObject({
+      email: "bad",
+      handle: "u_0123456789ab",
+      fieldErrors: { email: "INVALID_EMAIL", handle: "INVALID_HANDLE" },
     });
   });
 
@@ -152,6 +173,7 @@ describe.skipIf(!testRedisURL)("auth actions on the test Redis", () => {
     const state = await loginAction(initialAuthState, form({ email: "a@example.com", password: "12345678" }));
     expect(state).toEqual({
       email: "a@example.com",
+      handle: "",
       fieldErrors: {},
       formError: "RATE_LIMITED",
       retryAfterSeconds: 30,
@@ -159,7 +181,7 @@ describe.skipIf(!testRedisURL)("auth actions on the test Redis", () => {
     expect(request.cookies.size).toBe(0);
   });
 
-  it("registerAction registers, then logs in with the same credentials", async () => {
+  it("registerAction registers with the normalized handle, then logs in with the same credentials", async () => {
     const calls: string[] = [];
     server.use(
       http.post(`${gatewayOrigin}/auth/register`, async ({ request: call }) => {
@@ -172,18 +194,52 @@ describe.skipIf(!testRedisURL)("auth actions on the test Redis", () => {
       }),
     );
     const target = await redirectTarget(
-      registerAction(initialAuthState, form({ email: "a@example.com", password: "12345678", next: "/" })),
+      registerAction(
+        initialAuthState,
+        form({ email: " a@example.com ", password: "12345678", handle: "  MinhAnh_2 ", next: "/following?x=1" }),
+      ),
     );
-    expect(target).toBe("/");
-    const body = JSON.stringify({ email: "a@example.com", password: "12345678" });
-    expect(calls).toEqual([`register ${body}`, `login ${body}`]);
+    expect(target).toBe("/following?x=1");
+    const login = JSON.stringify({ email: "a@example.com", password: "12345678" });
+    const register = JSON.stringify({ email: "a@example.com", password: "12345678", handle: "minhanh_2" });
+    expect(calls).toEqual([`register ${register}`, `login ${login}`]);
     expect(request.cookies.has("svp_sid")).toBe(true);
   });
 
   it("registerAction returns EMAIL_ALREADY_REGISTERED and does not log in", async () => {
     server.use(http.post(`${gatewayOrigin}/auth/register`, () => gatewayProblem(409, "EMAIL_ALREADY_REGISTERED")));
-    const state = await registerAction(initialAuthState, form({ email: "a@example.com", password: "12345678" }));
+    const state = await registerAction(
+      initialAuthState,
+      form({ email: "a@example.com", password: "12345678", handle: "alice" }),
+    );
     expect(state.formError).toBe("EMAIL_ALREADY_REGISTERED");
+    expect(request.cookies.size).toBe(0);
+  });
+
+  it.each([
+    [409, "HANDLE_ALREADY_TAKEN"],
+    [400, "INVALID_HANDLE"],
+  ] as const)("registerAction shows %d %s on the handle field and does not log in", async (status, code) => {
+    let logins = 0;
+    server.use(
+      http.post(`${gatewayOrigin}/auth/register`, () => gatewayProblem(status, code)),
+      http.post(`${gatewayOrigin}/auth/login`, () => {
+        logins++;
+        return HttpResponse.json(accessTokenBody(fakeTokens(userId)));
+      }),
+    );
+    const state = await registerAction(
+      initialAuthState,
+      form({ email: "a@example.com", password: "12345678", handle: "Alice" }),
+    );
+    expect(state).toEqual({
+      email: "a@example.com",
+      handle: "alice",
+      fieldErrors: { handle: code },
+      formError: null,
+      retryAfterSeconds: null,
+    });
+    expect(logins).toBe(0);
     expect(request.cookies.size).toBe(0);
   });
 });

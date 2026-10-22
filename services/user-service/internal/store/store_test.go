@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 	"uuid"
@@ -20,8 +21,8 @@ func TestSchemaConstraints(t *testing.T) {
 
 	alice, bob := uuid.NewV7(), uuid.NewV7()
 	for _, u := range []CreateUserParams{
-		{ID: alice, Email: "alice@example.io", PasswordHash: "hash-a"},
-		{ID: bob, Email: "bob@example.io", PasswordHash: "hash-b"},
+		{ID: alice, Email: "alice@example.io", PasswordHash: "hash-a", Handle: "alice", DisplayName: "Alice"},
+		{ID: bob, Email: "bob@example.io", PasswordHash: "hash-b", Handle: "bob", DisplayName: "Bob"},
 	} {
 		if err := q.CreateUser(ctx, u); err != nil {
 			t.Fatalf("CreateUser: %v", err)
@@ -48,6 +49,10 @@ func TestSchemaConstraints(t *testing.T) {
 	pastFamily := token(alice, bytes.Repeat([]byte{2}, 32))
 	pastFamily.ExpiresAt = pastFamily.FamilyExpiresAt.Add(time.Second)
 
+	user := func(email, handle, displayName string) CreateUserParams {
+		return CreateUserParams{ID: uuid.NewV7(), Email: email, PasswordHash: "x", Handle: handle, DisplayName: displayName}
+	}
+
 	createFollow := func(arg CreateFollowParams) error {
 		_, err := q.CreateFollow(ctx, arg)
 		return err
@@ -58,8 +63,16 @@ func TestSchemaConstraints(t *testing.T) {
 		code       string
 		constraint string
 	}{
-		{"duplicate email", q.CreateUser(ctx, CreateUserParams{ID: uuid.NewV7(), Email: "alice@example.io", PasswordHash: "x"}),
+		{"duplicate email", q.CreateUser(ctx, user("alice@example.io", "carol", "Carol")),
 			"23505", "users_email_key"},
+		{"duplicate handle", q.CreateUser(ctx, user("carol@example.io", "alice", "Carol")),
+			"23505", "users_handle_key"},
+		{"handle not of the stored form", q.CreateUser(ctx, user("carol@example.io", "Carol", "Carol")),
+			"23514", "users_handle_check"},
+		{"empty display name", q.CreateUser(ctx, user("carol@example.io", "carol", "")),
+			"23514", "users_display_name_check"},
+		{"display name over 50 characters", q.CreateUser(ctx, user("carol@example.io", "carol", strings.Repeat("ộ", 51))),
+			"23514", "users_display_name_check"},
 		{"self follow", createFollow(CreateFollowParams{FollowerID: alice, FolloweeID: alice}),
 			"23514", "follows_no_self_follow"},
 		{"unknown followee", createFollow(CreateFollowParams{FollowerID: alice, FolloweeID: uuid.NewV7()}),

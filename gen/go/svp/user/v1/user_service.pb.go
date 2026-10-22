@@ -27,7 +27,13 @@ type RegisterRequest struct {
 	// Email address; compared case-insensitively.
 	Email string `protobuf:"bytes,1,opt,name=email,proto3" json:"email,omitempty"`
 	// Plain-text password, hashed by the service and never stored or logged.
-	Password      string `protobuf:"bytes,2,opt,name=password,proto3" json:"password,omitempty"`
+	Password string `protobuf:"bytes,2,opt,name=password,proto3" json:"password,omitempty"`
+	// Optional handle the user picks; empty once trimmed means none, and the
+	// service generates `u_` and the last 12 hex digits of the new user id.
+	Handle string `protobuf:"bytes,3,opt,name=handle,proto3" json:"handle,omitempty"`
+	// Optional display name; empty once trimmed means none, and it defaults to
+	// the handle. See Profile.display_name for the rules.
+	DisplayName   string `protobuf:"bytes,4,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -72,6 +78,20 @@ func (x *RegisterRequest) GetEmail() string {
 func (x *RegisterRequest) GetPassword() string {
 	if x != nil {
 		return x.Password
+	}
+	return ""
+}
+
+func (x *RegisterRequest) GetHandle() string {
+	if x != nil {
+		return x.Handle
+	}
+	return ""
+}
+
+func (x *RegisterRequest) GetDisplayName() string {
+	if x != nil {
+		return x.DisplayName
 	}
 	return ""
 }
@@ -603,14 +623,360 @@ func (*UnfollowResponse) Descriptor() ([]byte, []int) {
 	return file_svp_user_v1_user_service_proto_rawDescGZIP(), []int{11}
 }
 
+// Profile is what anyone may see of a user. It never holds the email.
+type Profile struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	UserId string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	// Unique, lowercase and never changed; see the service comment.
+	Handle string `protobuf:"bytes,2,opt,name=handle,proto3" json:"handle,omitempty"`
+	// 1 to 50 characters (Unicode code points) of valid UTF-8 once trimmed,
+	// stored as given after trimming, never escaped: whoever displays it must
+	// treat it as text. It holds no control character (U+0000-U+001F,
+	// U+007F-U+009F), no line or paragraph separator (U+2028, U+2029) and no
+	// bidirectional formatting character (U+061C, U+200E, U+200F,
+	// U+202A-U+202E, U+2066-U+2069), which could reorder the text shown after
+	// it. The service does not normalize Unicode: clients send NFC.
+	DisplayName   string `protobuf:"bytes,3,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Profile) Reset() {
+	*x = Profile{}
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Profile) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Profile) ProtoMessage() {}
+
+func (x *Profile) ProtoReflect() protoreflect.Message {
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Profile.ProtoReflect.Descriptor instead.
+func (*Profile) Descriptor() ([]byte, []int) {
+	return file_svp_user_v1_user_service_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *Profile) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *Profile) GetHandle() string {
+	if x != nil {
+		return x.Handle
+	}
+	return ""
+}
+
+func (x *Profile) GetDisplayName() string {
+	if x != nil {
+		return x.DisplayName
+	}
+	return ""
+}
+
+type GetProfilesRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// At most 50 ids.
+	UserIds       []string `protobuf:"bytes,1,rep,name=user_ids,json=userIds,proto3" json:"user_ids,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetProfilesRequest) Reset() {
+	*x = GetProfilesRequest{}
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetProfilesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetProfilesRequest) ProtoMessage() {}
+
+func (x *GetProfilesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetProfilesRequest.ProtoReflect.Descriptor instead.
+func (*GetProfilesRequest) Descriptor() ([]byte, []int) {
+	return file_svp_user_v1_user_service_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *GetProfilesRequest) GetUserIds() []string {
+	if x != nil {
+		return x.UserIds
+	}
+	return nil
+}
+
+type GetProfilesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Profiles      []*Profile             `protobuf:"bytes,1,rep,name=profiles,proto3" json:"profiles,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetProfilesResponse) Reset() {
+	*x = GetProfilesResponse{}
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetProfilesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetProfilesResponse) ProtoMessage() {}
+
+func (x *GetProfilesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetProfilesResponse.ProtoReflect.Descriptor instead.
+func (*GetProfilesResponse) Descriptor() ([]byte, []int) {
+	return file_svp_user_v1_user_service_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *GetProfilesResponse) GetProfiles() []*Profile {
+	if x != nil {
+		return x.Profiles
+	}
+	return nil
+}
+
+type GetProfileByHandleRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Handle        string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetProfileByHandleRequest) Reset() {
+	*x = GetProfileByHandleRequest{}
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetProfileByHandleRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetProfileByHandleRequest) ProtoMessage() {}
+
+func (x *GetProfileByHandleRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetProfileByHandleRequest.ProtoReflect.Descriptor instead.
+func (*GetProfileByHandleRequest) Descriptor() ([]byte, []int) {
+	return file_svp_user_v1_user_service_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *GetProfileByHandleRequest) GetHandle() string {
+	if x != nil {
+		return x.Handle
+	}
+	return ""
+}
+
+type GetProfileByHandleResponse struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Profile *Profile               `protobuf:"bytes,1,opt,name=profile,proto3" json:"profile,omitempty"`
+	// Whether the caller follows this user; false for the caller's own profile.
+	FollowedByMe  bool `protobuf:"varint,2,opt,name=followed_by_me,json=followedByMe,proto3" json:"followed_by_me,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetProfileByHandleResponse) Reset() {
+	*x = GetProfileByHandleResponse{}
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetProfileByHandleResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetProfileByHandleResponse) ProtoMessage() {}
+
+func (x *GetProfileByHandleResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetProfileByHandleResponse.ProtoReflect.Descriptor instead.
+func (*GetProfileByHandleResponse) Descriptor() ([]byte, []int) {
+	return file_svp_user_v1_user_service_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *GetProfileByHandleResponse) GetProfile() *Profile {
+	if x != nil {
+		return x.Profile
+	}
+	return nil
+}
+
+func (x *GetProfileByHandleResponse) GetFollowedByMe() bool {
+	if x != nil {
+		return x.FollowedByMe
+	}
+	return false
+}
+
+type UpdateDisplayNameRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// See Profile.display_name for the rules.
+	DisplayName   string `protobuf:"bytes,1,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateDisplayNameRequest) Reset() {
+	*x = UpdateDisplayNameRequest{}
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateDisplayNameRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateDisplayNameRequest) ProtoMessage() {}
+
+func (x *UpdateDisplayNameRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateDisplayNameRequest.ProtoReflect.Descriptor instead.
+func (*UpdateDisplayNameRequest) Descriptor() ([]byte, []int) {
+	return file_svp_user_v1_user_service_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *UpdateDisplayNameRequest) GetDisplayName() string {
+	if x != nil {
+		return x.DisplayName
+	}
+	return ""
+}
+
+type UpdateDisplayNameResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Profile       *Profile               `protobuf:"bytes,1,opt,name=profile,proto3" json:"profile,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateDisplayNameResponse) Reset() {
+	*x = UpdateDisplayNameResponse{}
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateDisplayNameResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateDisplayNameResponse) ProtoMessage() {}
+
+func (x *UpdateDisplayNameResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_svp_user_v1_user_service_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateDisplayNameResponse.ProtoReflect.Descriptor instead.
+func (*UpdateDisplayNameResponse) Descriptor() ([]byte, []int) {
+	return file_svp_user_v1_user_service_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *UpdateDisplayNameResponse) GetProfile() *Profile {
+	if x != nil {
+		return x.Profile
+	}
+	return nil
+}
+
 var File_svp_user_v1_user_service_proto protoreflect.FileDescriptor
 
 const file_svp_user_v1_user_service_proto_rawDesc = "" +
 	"\n" +
-	"\x1esvp/user/v1/user_service.proto\x12\vsvp.user.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"C\n" +
+	"\x1esvp/user/v1/user_service.proto\x12\vsvp.user.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"~\n" +
 	"\x0fRegisterRequest\x12\x14\n" +
 	"\x05email\x18\x01 \x01(\tR\x05email\x12\x1a\n" +
-	"\bpassword\x18\x02 \x01(\tR\bpassword\"+\n" +
+	"\bpassword\x18\x02 \x01(\tR\bpassword\x12\x16\n" +
+	"\x06handle\x18\x03 \x01(\tR\x06handle\x12!\n" +
+	"\fdisplay_name\x18\x04 \x01(\tR\vdisplayName\"+\n" +
 	"\x10RegisterResponse\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\"@\n" +
 	"\fLoginRequest\x12\x14\n" +
@@ -640,14 +1006,34 @@ const file_svp_user_v1_user_service_proto_rawDesc = "" +
 	"\x0fUnfollowRequest\x12\x1f\n" +
 	"\vfollowee_id\x18\x01 \x01(\tR\n" +
 	"followeeId\"\x12\n" +
-	"\x10UnfollowResponse2\xab\x03\n" +
+	"\x10UnfollowResponse\"]\n" +
+	"\aProfile\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x16\n" +
+	"\x06handle\x18\x02 \x01(\tR\x06handle\x12!\n" +
+	"\fdisplay_name\x18\x03 \x01(\tR\vdisplayName\"/\n" +
+	"\x12GetProfilesRequest\x12\x19\n" +
+	"\buser_ids\x18\x01 \x03(\tR\auserIds\"G\n" +
+	"\x13GetProfilesResponse\x120\n" +
+	"\bprofiles\x18\x01 \x03(\v2\x14.svp.user.v1.ProfileR\bprofiles\"3\n" +
+	"\x19GetProfileByHandleRequest\x12\x16\n" +
+	"\x06handle\x18\x01 \x01(\tR\x06handle\"r\n" +
+	"\x1aGetProfileByHandleResponse\x12.\n" +
+	"\aprofile\x18\x01 \x01(\v2\x14.svp.user.v1.ProfileR\aprofile\x12$\n" +
+	"\x0efollowed_by_me\x18\x02 \x01(\bR\ffollowedByMe\"=\n" +
+	"\x18UpdateDisplayNameRequest\x12!\n" +
+	"\fdisplay_name\x18\x01 \x01(\tR\vdisplayName\"K\n" +
+	"\x19UpdateDisplayNameResponse\x12.\n" +
+	"\aprofile\x18\x01 \x01(\v2\x14.svp.user.v1.ProfileR\aprofile2\xc8\x05\n" +
 	"\vUserService\x12G\n" +
 	"\bRegister\x12\x1c.svp.user.v1.RegisterRequest\x1a\x1d.svp.user.v1.RegisterResponse\x12>\n" +
 	"\x05Login\x12\x19.svp.user.v1.LoginRequest\x1a\x1a.svp.user.v1.LoginResponse\x12D\n" +
 	"\aRefresh\x12\x1b.svp.user.v1.RefreshRequest\x1a\x1c.svp.user.v1.RefreshResponse\x12A\n" +
 	"\x06Logout\x12\x1a.svp.user.v1.LogoutRequest\x1a\x1b.svp.user.v1.LogoutResponse\x12A\n" +
 	"\x06Follow\x12\x1a.svp.user.v1.FollowRequest\x1a\x1b.svp.user.v1.FollowResponse\x12G\n" +
-	"\bUnfollow\x12\x1c.svp.user.v1.UnfollowRequest\x1a\x1d.svp.user.v1.UnfollowResponseB\xb7\x01\n" +
+	"\bUnfollow\x12\x1c.svp.user.v1.UnfollowRequest\x1a\x1d.svp.user.v1.UnfollowResponse\x12P\n" +
+	"\vGetProfiles\x12\x1f.svp.user.v1.GetProfilesRequest\x1a .svp.user.v1.GetProfilesResponse\x12e\n" +
+	"\x12GetProfileByHandle\x12&.svp.user.v1.GetProfileByHandleRequest\x1a'.svp.user.v1.GetProfileByHandleResponse\x12b\n" +
+	"\x11UpdateDisplayName\x12%.svp.user.v1.UpdateDisplayNameRequest\x1a&.svp.user.v1.UpdateDisplayNameResponseB\xb7\x01\n" +
 	"\x0fcom.svp.user.v1B\x10UserServiceProtoP\x01ZDgithub.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1;userv1\xa2\x02\x03SUX\xaa\x02\vSvp.User.V1\xca\x02\vSvp\\User\\V1\xe2\x02\x17Svp\\User\\V1\\GPBMetadata\xea\x02\rSvp::User::V1b\x06proto3"
 
 var (
@@ -662,44 +1048,60 @@ func file_svp_user_v1_user_service_proto_rawDescGZIP() []byte {
 	return file_svp_user_v1_user_service_proto_rawDescData
 }
 
-var file_svp_user_v1_user_service_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_svp_user_v1_user_service_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_svp_user_v1_user_service_proto_goTypes = []any{
-	(*RegisterRequest)(nil),       // 0: svp.user.v1.RegisterRequest
-	(*RegisterResponse)(nil),      // 1: svp.user.v1.RegisterResponse
-	(*LoginRequest)(nil),          // 2: svp.user.v1.LoginRequest
-	(*LoginResponse)(nil),         // 3: svp.user.v1.LoginResponse
-	(*RefreshRequest)(nil),        // 4: svp.user.v1.RefreshRequest
-	(*RefreshResponse)(nil),       // 5: svp.user.v1.RefreshResponse
-	(*LogoutRequest)(nil),         // 6: svp.user.v1.LogoutRequest
-	(*LogoutResponse)(nil),        // 7: svp.user.v1.LogoutResponse
-	(*FollowRequest)(nil),         // 8: svp.user.v1.FollowRequest
-	(*FollowResponse)(nil),        // 9: svp.user.v1.FollowResponse
-	(*UnfollowRequest)(nil),       // 10: svp.user.v1.UnfollowRequest
-	(*UnfollowResponse)(nil),      // 11: svp.user.v1.UnfollowResponse
-	(*timestamppb.Timestamp)(nil), // 12: google.protobuf.Timestamp
+	(*RegisterRequest)(nil),            // 0: svp.user.v1.RegisterRequest
+	(*RegisterResponse)(nil),           // 1: svp.user.v1.RegisterResponse
+	(*LoginRequest)(nil),               // 2: svp.user.v1.LoginRequest
+	(*LoginResponse)(nil),              // 3: svp.user.v1.LoginResponse
+	(*RefreshRequest)(nil),             // 4: svp.user.v1.RefreshRequest
+	(*RefreshResponse)(nil),            // 5: svp.user.v1.RefreshResponse
+	(*LogoutRequest)(nil),              // 6: svp.user.v1.LogoutRequest
+	(*LogoutResponse)(nil),             // 7: svp.user.v1.LogoutResponse
+	(*FollowRequest)(nil),              // 8: svp.user.v1.FollowRequest
+	(*FollowResponse)(nil),             // 9: svp.user.v1.FollowResponse
+	(*UnfollowRequest)(nil),            // 10: svp.user.v1.UnfollowRequest
+	(*UnfollowResponse)(nil),           // 11: svp.user.v1.UnfollowResponse
+	(*Profile)(nil),                    // 12: svp.user.v1.Profile
+	(*GetProfilesRequest)(nil),         // 13: svp.user.v1.GetProfilesRequest
+	(*GetProfilesResponse)(nil),        // 14: svp.user.v1.GetProfilesResponse
+	(*GetProfileByHandleRequest)(nil),  // 15: svp.user.v1.GetProfileByHandleRequest
+	(*GetProfileByHandleResponse)(nil), // 16: svp.user.v1.GetProfileByHandleResponse
+	(*UpdateDisplayNameRequest)(nil),   // 17: svp.user.v1.UpdateDisplayNameRequest
+	(*UpdateDisplayNameResponse)(nil),  // 18: svp.user.v1.UpdateDisplayNameResponse
+	(*timestamppb.Timestamp)(nil),      // 19: google.protobuf.Timestamp
 }
 var file_svp_user_v1_user_service_proto_depIdxs = []int32{
-	12, // 0: svp.user.v1.LoginResponse.expires_at:type_name -> google.protobuf.Timestamp
-	12, // 1: svp.user.v1.LoginResponse.refresh_expires_at:type_name -> google.protobuf.Timestamp
-	12, // 2: svp.user.v1.RefreshResponse.expires_at:type_name -> google.protobuf.Timestamp
-	12, // 3: svp.user.v1.RefreshResponse.refresh_expires_at:type_name -> google.protobuf.Timestamp
-	0,  // 4: svp.user.v1.UserService.Register:input_type -> svp.user.v1.RegisterRequest
-	2,  // 5: svp.user.v1.UserService.Login:input_type -> svp.user.v1.LoginRequest
-	4,  // 6: svp.user.v1.UserService.Refresh:input_type -> svp.user.v1.RefreshRequest
-	6,  // 7: svp.user.v1.UserService.Logout:input_type -> svp.user.v1.LogoutRequest
-	8,  // 8: svp.user.v1.UserService.Follow:input_type -> svp.user.v1.FollowRequest
-	10, // 9: svp.user.v1.UserService.Unfollow:input_type -> svp.user.v1.UnfollowRequest
-	1,  // 10: svp.user.v1.UserService.Register:output_type -> svp.user.v1.RegisterResponse
-	3,  // 11: svp.user.v1.UserService.Login:output_type -> svp.user.v1.LoginResponse
-	5,  // 12: svp.user.v1.UserService.Refresh:output_type -> svp.user.v1.RefreshResponse
-	7,  // 13: svp.user.v1.UserService.Logout:output_type -> svp.user.v1.LogoutResponse
-	9,  // 14: svp.user.v1.UserService.Follow:output_type -> svp.user.v1.FollowResponse
-	11, // 15: svp.user.v1.UserService.Unfollow:output_type -> svp.user.v1.UnfollowResponse
-	10, // [10:16] is the sub-list for method output_type
-	4,  // [4:10] is the sub-list for method input_type
-	4,  // [4:4] is the sub-list for extension type_name
-	4,  // [4:4] is the sub-list for extension extendee
-	0,  // [0:4] is the sub-list for field type_name
+	19, // 0: svp.user.v1.LoginResponse.expires_at:type_name -> google.protobuf.Timestamp
+	19, // 1: svp.user.v1.LoginResponse.refresh_expires_at:type_name -> google.protobuf.Timestamp
+	19, // 2: svp.user.v1.RefreshResponse.expires_at:type_name -> google.protobuf.Timestamp
+	19, // 3: svp.user.v1.RefreshResponse.refresh_expires_at:type_name -> google.protobuf.Timestamp
+	12, // 4: svp.user.v1.GetProfilesResponse.profiles:type_name -> svp.user.v1.Profile
+	12, // 5: svp.user.v1.GetProfileByHandleResponse.profile:type_name -> svp.user.v1.Profile
+	12, // 6: svp.user.v1.UpdateDisplayNameResponse.profile:type_name -> svp.user.v1.Profile
+	0,  // 7: svp.user.v1.UserService.Register:input_type -> svp.user.v1.RegisterRequest
+	2,  // 8: svp.user.v1.UserService.Login:input_type -> svp.user.v1.LoginRequest
+	4,  // 9: svp.user.v1.UserService.Refresh:input_type -> svp.user.v1.RefreshRequest
+	6,  // 10: svp.user.v1.UserService.Logout:input_type -> svp.user.v1.LogoutRequest
+	8,  // 11: svp.user.v1.UserService.Follow:input_type -> svp.user.v1.FollowRequest
+	10, // 12: svp.user.v1.UserService.Unfollow:input_type -> svp.user.v1.UnfollowRequest
+	13, // 13: svp.user.v1.UserService.GetProfiles:input_type -> svp.user.v1.GetProfilesRequest
+	15, // 14: svp.user.v1.UserService.GetProfileByHandle:input_type -> svp.user.v1.GetProfileByHandleRequest
+	17, // 15: svp.user.v1.UserService.UpdateDisplayName:input_type -> svp.user.v1.UpdateDisplayNameRequest
+	1,  // 16: svp.user.v1.UserService.Register:output_type -> svp.user.v1.RegisterResponse
+	3,  // 17: svp.user.v1.UserService.Login:output_type -> svp.user.v1.LoginResponse
+	5,  // 18: svp.user.v1.UserService.Refresh:output_type -> svp.user.v1.RefreshResponse
+	7,  // 19: svp.user.v1.UserService.Logout:output_type -> svp.user.v1.LogoutResponse
+	9,  // 20: svp.user.v1.UserService.Follow:output_type -> svp.user.v1.FollowResponse
+	11, // 21: svp.user.v1.UserService.Unfollow:output_type -> svp.user.v1.UnfollowResponse
+	14, // 22: svp.user.v1.UserService.GetProfiles:output_type -> svp.user.v1.GetProfilesResponse
+	16, // 23: svp.user.v1.UserService.GetProfileByHandle:output_type -> svp.user.v1.GetProfileByHandleResponse
+	18, // 24: svp.user.v1.UserService.UpdateDisplayName:output_type -> svp.user.v1.UpdateDisplayNameResponse
+	16, // [16:25] is the sub-list for method output_type
+	7,  // [7:16] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_svp_user_v1_user_service_proto_init() }
@@ -713,7 +1115,7 @@ func file_svp_user_v1_user_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_svp_user_v1_user_service_proto_rawDesc), len(file_svp_user_v1_user_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   12,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -3,7 +3,8 @@
 > Trạng thái: giai đoạn 0, 1, 2 (2026-10-11), 3 (2026-10-17) và 4 (2026-10-20) xong; giai đoạn 5 (CI/CD và chuỗi cung ứng,
 > [§5.2](#52-cicd-và-chuỗi-cung-ứng-giai-đoạn-5)) đang làm: phần chạy được trên máy đã kiểm ngày 2026-10-21, phần chạy
 > trên GitHub và cluster GitOps kiểm sau push. Giai đoạn 5b (web client, [ADR-0016](adr/0016-web-client.md)): phần A
-> (đăng nhập, feed, like, follow trên compose) đã kiểm trên máy ngày 2026-10-22; phần B, C còn làm. ADR 0001–0016, contract ở [`proto/`](../proto/)
+> (đăng nhập, feed, like, follow trên compose) và phần B (upload, hồ sơ, trang chia sẻ công khai,
+> [ADR-0018](adr/0018-web-profiles-public-video-upload.md)) đã kiểm trên máy ngày 2026-10-22; phần C (k3d) còn làm. ADR 0001–0018, contract ở [`proto/`](../proto/)
 > ([§8](#8-contract)), threat model ở [`threat-model.md`](threat-model.md). `make up` chạy luồng đồng bộ (đăng ký, đăng
 > nhập, tạo và đọc video, follow), luồng upload bất đồng bộ (presigned POST lên MinIO, outbox → Redpanda, media-worker
 > transcode ra HLS, video `READY` hoặc `FAILED`, job dọn upload bỏ dở), luồng feed (follow qua outbox, feed-service
@@ -33,8 +34,12 @@ và trỏ tới.
 | F7 | Like, unlike; ghi lượt xem; hiện số lượt xem, số like và mình đã like chưa |
 
 **Web client** (từ giai đoạn 5b, [ADR-0016](adr/0016-web-client.md)): Next.js ở `web/` phục vụ F1–F7 trong trình
-duyệt; phần A có đăng ký, đăng nhập, feed dọc phát HLS, like, lượt xem, follow; upload và trang chia sẻ ở phần B. Web là
-BFF: trình duyệt chỉ nói chuyện với web, token không bao giờ tới trình duyệt. k6 và curl vẫn gọi thẳng gateway.
+duyệt; phần A có đăng ký, đăng nhập, feed dọc phát HLS, like, lượt xem, follow; phần B
+([ADR-0018](adr/0018-web-profiles-public-video-upload.md)) thêm hồ sơ tối thiểu (handle không đổi, tên hiển thị đổi được),
+danh sách video theo tác giả và "Video của tôi" có trạng thái, upload từ trình duyệt, trang chia sẻ `/v/:id` mở được khi
+chưa đăng nhập. Web là BFF: trình duyệt chỉ gọi API qua web (riêng file video thì tải lên và phát thẳng với object
+storage), token không bao giờ tới trình duyệt. k6 và curl vẫn gọi
+thẳng gateway.
 
 **Ngoài phạm vi:** app di động, comment, tìm kiếm, gợi ý bằng ML, thông báo, xoá/sửa video, kiểm duyệt nội dung. Thêm sau
 thì viết ADR.
@@ -163,7 +168,7 @@ flowchart LR
     end
 
     browser -->|"HTML, /api/*, cookie svp_sid"| web
-    browser -->|"GET HLS, thumbnail"| obj
+    browser -->|"GET HLS, thumbnail; POST file bằng presigned URL (CORS chỉ origin web)"| obj
     web -->|"REST/JSON + Bearer"| gw
     web -->|"session, khoá refresh (db 9)"| redis
     client -->|"REST/JSON"| gw
@@ -200,7 +205,9 @@ CDN (client đọc thẳng MinIO). Redpanda và MinIO chạy trong compose profi
 ([ADR-0008](adr/0008-async-upload-pipeline-stage2a.md)):
 
 - **MinIO:** hai bucket `uploads` (riêng tư) và `media` (ẩn danh chỉ đọc từng object, không liệt kê được); video-service và
-  media-worker mỗi bên một user với policy theo tiền tố key. Client upload và đọc HLS qua `127.0.0.1:9000`.
+  media-worker mỗi bên một user với policy theo tiền tố key. Client upload và đọc HLS qua `127.0.0.1:9000`. CORS chỉ nhận
+  origin của web (`http://localhost:3001`, `web-dev` `http://localhost:3002`; `MINIO_API_CORS_ALLOW_ORIGIN`, toàn cục mọi
+  bucket, threat model WEB-10); web đặt `MEDIA_ORIGIN` và `UPLOAD_ORIGIN` là `http://127.0.0.1:9000`.
 - **Redpanda:** một broker; topic và `.dlq` do container init tạo, broker tắt tự tạo topic. Trong compose là
   `redpanda:9092`, từ máy host là `127.0.0.1:19092`.
 - **engagement-service và feed-service** ([ADR-0009](adr/0009-engagement-feed-stage2b.md) mục 12): gRPC ở `:9103` và
@@ -417,7 +424,7 @@ sở hữu thực thể đó phát.
 
 | Service | Sở hữu | Bản sao (dựng từ event) |
 | --- | --- | --- |
-| `user-service` | tài khoản, hash mật khẩu, follow | — |
+| `user-service` | tài khoản, hash mật khẩu, follow, hồ sơ công khai (handle không đổi, tên hiển thị; từ 5b, không phát event: chưa service nào giữ bản sao, gateway ghép lúc đọc) | — |
 | `video-service` | metadata video, trạng thái, đường dẫn object | — |
 | `media-worker` | không có database | — |
 | `engagement-service` | like, bộ đếm lượt xem/like | — |
@@ -492,6 +499,7 @@ sequenceDiagram
     participant GW as gateway
     participant FS as feed-service
     participant ES as engagement-service
+    participant US as user-service
 
     C->>GW: GET /feed/following hoặc /feed/explore?cursor=...&page_size=...
     GW->>GW: kiểm JWT, rate limit lớp read theo user_id (Redis db 10)
@@ -499,13 +507,22 @@ sequenceDiagram
     FS->>FS: trang đầu feed khám phá: đọc cache Redis db 14, trống thì singleflight đọc Postgres rồi ghi cache 5 s
     FS-->>GW: 10 video kèm metadata và object key, next_page_token
     GW->>GW: ghép URL HLS từ object key
-    GW->>ES: GetStats(video_ids), metadata x-user-id, timeout 100 ms, không retry
-    ES-->>GW: lượt xem, số like, đã like chưa
-    GW-->>C: JSON, nếu ES lỗi hoặc quá hạn thì trả video không có field stats
+    par song song, mỗi lời gọi timeout 100 ms, không retry
+        GW->>ES: GetStats(video_ids), metadata x-user-id
+        ES-->>GW: lượt xem, số like, đã like chưa
+    and
+        GW->>US: GetProfiles(author_ids đã khử trùng)
+        US-->>GW: handle, tên hiển thị
+    end
+    GW-->>C: JSON; ES hay US lỗi hoặc quá hạn thì video không có field stats hay author
 ```
 
-Gateway ghép dữ liệu từ hai service (vai trò BFF). Số đếm là phần phụ: engagement-service chậm thì feed vẫn trả về, chỉ
-thiếu số. Đây là graceful degradation, giữ SLO của feed không phụ thuộc vào service kém quan trọng hơn.
+Gateway ghép dữ liệu từ ba service (vai trò BFF). Số đếm và tác giả là phần phụ: engagement-service hay user-service chậm
+thì feed vẫn trả về, chỉ thiếu số hay tên. Đây là graceful degradation, giữ SLO của feed không phụ thuộc vào service kém
+quan trọng hơn. Hai lời gọi chạy song song nên khi cả hai khoẻ độ trễ của trang gần như không tăng
+([ADR-0018](adr/0018-web-profiles-public-video-upload.md) §5). Cùng cách ghép áp cho danh sách video theo tác giả,
+`GET /videos/{video_id}` và route công khai `GET /public/videos/{video_id}` (ở đó `GetStats` không có caller nên không
+có `liked_by_me`).
 
 Phần chống quá tải và lỗi lan ([ADR-0010](adr/0010-redis-ratelimit-cache-resilience-stage2c.md) mục 2–4):
 
@@ -521,7 +538,9 @@ Phần chống quá tải và lỗi lan ([ADR-0010](adr/0010-redis-ratelimit-cac
   khi 5 lỗi liên tiếp, hoặc ≥ 20 lời gọi với ≥ 50% lỗi trong 10 s; mở 5 s rồi cho một lời gọi thử. Lỗi là `UNAVAILABLE`
   mức kết nối và `DEADLINE_EXCEEDED` (riêng `GetStats` không tính `DEADLINE_EXCEEDED`); mã nghiệp vụ và lỗi phụ thuộc
   của service (`DEPENDENCY_UNAVAILABLE`) không mở breaker. Breaker mở thì lời gọi lỗi ngay, không gọi mạng: feed trả
-  trang không `stats` mà không chờ 100 ms, like trả 503.
+  trang không `stats` mà không chờ 100 ms, like trả 503. Từ 5b, `GetProfiles` dùng để ghép tác giả theo cùng luật với
+  `GetStats`: không retry, `DEADLINE_EXCEEDED` của nó không tính vào breaker của user-service, để user-service chậm mà còn
+  sống không làm login, follow trả 503.
 
 Diễn tập `make drill-engagement-down` (2026-10-11): tắt engagement-service thì breaker mở sau 6 like (3,4 s); với breaker
 mở, 10 lần like trả 503, chậm nhất 8,9 ms; feed following trả 200 trong 0,014 s, khám phá 0,024 s, không item nào có
@@ -643,6 +662,11 @@ Field theo Google AIP-158: request có `page_size`, `page_token`; response có `
 - **Không ký HMAC.** Token chỉ lọc trong timeline của chính người gọi (`user_id` lấy từ metadata, không từ token), hoặc
   trong feed khám phá vốn công khai; sửa token chỉ đổi vị trí đọc trong dữ liệu mình vốn được xem. Lựa chọn khác: ký HMAC
   để phát hiện sửa (thêm quản lý khoá, không chặn được gì thêm); dùng `OFFSET` (bị lệch trang khi có video mới, ADR-0005).
+- **Danh sách video theo tác giả** (`ListAuthorVideos` của video-service, từ 5b,
+  [ADR-0018](adr/0018-web-profiles-public-video-upload.md) §4) dùng cùng định dạng và cùng luật, với field 1 là
+  `created_at` (thứ tự `created_at DESC, video_id DESC`, vì video chưa `READY` không có `published_at`), qua gói chung
+  `internal/pagetoken`. Quyền xem (tác giả thấy mọi trạng thái, người khác chỉ `READY`) đến từ `author_id` của request và
+  người gọi, không từ token, nên token vẫn không cần ký.
 
 ### 8.4 Mã lỗi gRPC sang HTTP ở gateway
 
@@ -722,6 +746,20 @@ field trong proto; thời gian theo RFC 3339, UTC. Route đã có (giai đoạn 
 | `POST /videos/{video_id}/views` | Bearer JWT | ghi một lượt xem, trả 202; số lượt xem cập nhật sau vài giây |
 | `GET /healthz`, `GET /readyz` | không | liveness, readiness |
 
+Route thêm ở giai đoạn 5b phần B ([ADR-0018](adr/0018-web-profiles-public-video-upload.md) §3–§6); mọi field mới là tuỳ
+chọn nên client cũ không vỡ:
+
+| Route | Xác thực | Lớp rate limit | Việc |
+| --- | --- | --- | --- |
+| `POST /auth/register` | không | `register` | thêm `handle`, `display_name` tuỳ chọn (thiếu handle thì sinh `u_` + 12 hex); trùng handle 409 `HANDLE_ALREADY_TAKEN`, sai dạng 400 `INVALID_HANDLE` |
+| `GET /me`, `PATCH /me` | Bearer JWT | `read`, `write` | hồ sơ của mình (`user_id`, `handle`, `display_name`, không có email); đổi tên hiển thị |
+| `GET /profiles/{handle}` | Bearer JWT | `read` | hồ sơ theo handle (không phân biệt hoa thường) kèm `followed_by_me`; 404 `USER_NOT_FOUND` |
+| `GET /users/{user_id}/videos`, `GET /me/videos` | Bearer JWT | `read` | video của một tác giả, mới nhất trước, query `cursor`, `page_size` như feed; chỉ tác giả thấy video chưa `READY` |
+| `GET /public/videos/{video_id}` | **không**, bỏ qua `Authorization` | `public` theo IP | video `READY` kèm `author` và số đếm không `liked_by_me`; mọi ca khác (không có, chưa `READY`, id sai dạng) cùng 404 `VIDEO_NOT_FOUND`; `Cache-Control: public, max-age=30` |
+
+Item của feed, của danh sách video và video của `GET /videos/{video_id}` thêm `author` (`user_id`, `handle`,
+`display_name`); `GET /videos/{video_id}` thêm cả `stats`.
+
 `playlist_url`, `thumbnail_url` là `MEDIA_PUBLIC_BASE_URL` + `/` + object key, ở cả item của feed. Path hay query không
 phải UTF-8 hợp lệ thì gateway trả 400 `INVALID_UTF8` ở mọi route, không gọi service.
 
@@ -752,6 +790,9 @@ Rate limit, cache, timeout/retry/circuit breaker và job dọn upload chốt ở
 - Redis lỗi hay quá 50 ms thì `register`, `login`, `POST /videos` **đóng mềm** (bộ đếm trong bộ nhớ của từng instance,
   ngưỡng bằng nửa), route ghi và đọc **mở**; gateway log WARN `rate limit store unavailable, using fallback` tối đa một
   dòng mỗi 10 s (RL-2);
+- từ 5b phần B, lớp `public` theo IP cho `GET /public/videos/{video_id}`: 120/phút, burst 60, Redis lỗi thì đóng mềm
+  60/phút, burst 30 ([ADR-0018](adr/0018-web-profiles-public-video-upload.md) §6); ở compose mọi khách xem qua web chung
+  một bucket IP;
 - lượt xem thứ hai của cùng cặp (`user_id`, `video_id`) trong 60 s vẫn nhận 202 nhưng không được đếm (RL-3, khoá
   `SET NX PX 60000`); chuyển tiếp `RecordView` lỗi thì xoá khoá đó để lần thử lại được đếm;
 - mỗi user tối đa 3 video `UPLOADING` có form còn hạn (tạo trong 15 phút gần nhất); quá thì 429 `TOO_MANY_UPLOADS`

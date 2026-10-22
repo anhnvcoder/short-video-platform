@@ -113,18 +113,27 @@ liệt kê target):
   và **pnpm 12** đúng version ở `packageManager` của `web/package.json` (`npm install -g pnpm@<version>`, Node 25 trở đi
   không có Corepack). Mọi target `web-*` tự đặt Node 26 mới nhất của nvm lên đầu `PATH`, kiểm major Node và version pnpm,
   lệch thì in lệnh cài và dừng. `make web-install`: `pnpm install --frozen-lockfile` (setting chuỗi cung ứng ở
-  `web/pnpm-workspace.yaml`). `make web-dev`: `next dev` ở `http://localhost:3002`, trỏ gateway `127.0.0.1:8080` và Redis
-  db 9. `make web-generate`: sinh `web/gen/api.d.ts` từ `services/gateway/openapi.yaml` (commit); `make generate` gồm cả
+  `web/pnpm-workspace.yaml`). `make web-dev`: `next dev` ở `http://localhost:3002`, trỏ gateway `127.0.0.1:8080`, Redis
+  db 9 và MinIO `http://127.0.0.1:9000` (`MEDIA_ORIGIN`, `UPLOAD_ORIGIN`: origin nhận presigned POST, bắt buộc, `http` chỉ
+  cho loopback, [ADR-0018](docs/adr/0018-web-profiles-public-video-upload.md) §8). `make web-generate`: sinh `web/gen/api.d.ts` từ `services/gateway/openapi.yaml` (commit); `make generate` gồm cả
   `generate-go` lẫn `web-generate`, còn `make generate-check` chỉ kiểm phần Go. `make web-generate-check`: so bản sinh tạm
   với `web/gen/api.d.ts`, không ghi gì. `make web-check`: ESLint, Prettier, typecheck, Vitest (Redis db 15 qua
   `SVP_TEST_REDIS_URL`), `next build`, ngân sách bundle size-limit (feed ≤ 200 kB trên runtime, ≤ 330 kB tải lần đầu; login
-  ≤ 80/200 kB). `make web-e2e`: Playwright trên Chromium và WebKit vào stack `make up` (`http://localhost:3001`; trình duyệt
-  cài một lần bằng `pnpm exec playwright install chromium webkit` trong `web/`). `make measure-web`: chạy toàn bộ e2e (không
+  ≤ 80/200 kB; `/v/[id]` ≤ 200/330 kB; `/upload` ≤ 80/200 kB). `make web-e2e`: Playwright trên Chromium và WebKit vào stack
+  `make up` (`http://localhost:3001`; trình duyệt cài một lần bằng `pnpm exec playwright install chromium webkit` trong
+  `web/`); test làm video `READY` (gắn `@publishes`) chạy ở project `chromium-publishing`/`webkit-publishing` sau hai
+  project chính. `make measure-web`: chạy toàn bộ e2e (không
   chạy `web-e2e` riêng), in thời gian tới khung đầu sau khi vuốt (p50/p95 mỗi trình duyệt) và bộ nhớ container `web` (cgroup
   theo `docker stats`) lúc nghỉ và sau e2e, JSON ở `web/test-results/`. `SVP_E2E_EVIDENCE=<thư mục tuyệt đối>` (với
   `web-e2e` hay `measure-web`) bật trace và video mỗi test, ảnh cuối mỗi test chỉ trên Chromium (WebKit không chụp được, xem
   `web/playwright.config.ts`), báo cáo HTML và JSON, và ảnh toàn trang các màn ở cỡ mobile 390×844 và desktop 1440×900
-  (`web/e2e/evidence.e2e.ts`, chạy trên cả hai trình duyệt) vào thư mục đó. **LOCAL LAB ONLY:** seed của e2e xoá khoá
+  (`web/e2e/evidence.e2e.ts`, chạy trên cả hai trình duyệt) vào thư mục đó. `make measure-upload`: tải một video ~100 MB
+  (160 s 1080p, ffmpeg sinh trong thư mục tạm) từ Chromium qua `/upload`, in thời gian và thông lượng XHR, CPU main thread
+  của trang và thời gian tới `READY`, JSON ở `web/test-results/`. `make web-lighthouse`: Lighthouse mobile (mặc định của
+  Lighthouse, throttling mô phỏng), một lượt mỗi trang: feed `/` đã đăng nhập (user mới, cookie qua `extraHeaders`, không in)
+  và `/v/{id}` không đăng nhập; ngưỡng LCP 2 500 ms, CLS 0,1, TBT 200 ms (đỏ không chặn PR, chưa vào CI), báo cáo ở
+  `web/test-results/lighthouse/`; không trỏ vào media origin có ghi log header (ADR-0018 §10). **LOCAL LAB ONLY:** seed của
+  e2e, mỗi worker Playwright (`web/e2e/fixtures.ts`), `measure-upload` và `web-lighthouse` xoá khoá
   `svp:gw:rl:register:*` ở db 10 như `make smoke`.
 - `make cover`: `go test -race` như `make test` nhưng ghi coverage vào `cover.out` (đã gitignore) và in tổng; thu hẹp bằng
   `PKGS=`, xem từng dòng bằng `go tool cover -html=cover.out`.
@@ -142,10 +151,14 @@ liệt kê target):
 - `make up` / `make smoke` / `make down`: dựng stack compose profile `core` (bootstrap Postgres, Redpanda + tạo topic,
   MinIO + bucket/user/policy, migrate, gateway, user-service, video-service, media-worker, engagement-service,
   feed-service, web client `web`), chạy luồng đầu-cuối qua gateway ở `127.0.0.1:8080` (gồm refresh token, dùng lại token
-  cũ thì cả họ bị thu hồi, logout, follow, upload video bằng presigned POST lên
-  MinIO, chờ `READY`, tải HLS và thumbnail, video vào feed following và explore, like/unlike, lượt xem, unfollow), rồi
-  gỡ stack (giữ volume). Gateway dùng Redis native db 10 (rate limit), feed-service db 14 (cache feed khám phá), qua
-  `host.docker.internal:6379`; web dùng db 9 (session). Cổng publish chỉ trên `127.0.0.1`: 8080 gateway, 3001 web (mở
+  cũ thì cả họ bị thu hồi, logout, follow, hồ sơ: handle tự chọn, trùng handle 409, handle sinh `u_…`, `GET`/`PATCH /me`
+  không có email, `followed_by_me`, danh sách video theo tác giả chỉ tác giả thấy video chưa `READY`, upload video bằng
+  presigned POST lên MinIO, chờ `READY`, tải HLS và thumbnail, `GET /public/videos/{id}` không token 200 với video `READY`
+  và một 404 cho video chưa `READY` lẫn id ngẫu nhiên, video vào feed following và explore kèm `author`, like/unlike, lượt
+  xem, unfollow), rồi gỡ stack (giữ volume). Gateway dùng Redis native db 10 (rate limit), feed-service db 14 (cache feed
+  khám phá), qua `host.docker.internal:6379`; web dùng db 9 (session). MinIO chỉ nhận CORS từ `http://localhost:3001` và
+  `http://localhost:3002` (`MINIO_API_CORS_ALLOW_ORIGIN`, toàn cục mọi bucket, WEB-10): mở web bằng `127.0.0.1:3001` thì
+  đăng nhập được nhưng không phát và không tải video lên được. Cổng publish chỉ trên `127.0.0.1`: 8080 gateway, 3001 web (mở
   bằng `http://localhost:3001`), 9000 MinIO API, 9001 MinIO console, 19092 Redpanda (Kafka API). `make ps` và `make logs SVC=<tên>` để xem. `make smoke` và mọi script diễn tập cần
   `redis-cli` trên máy và Redis native đang chạy: trước khi chạy, script xoá khoá rate limit đăng ký theo IP
   `svp:gw:rl:register:*` ở db 10 (`SCAN` + `DEL`, không `FLUSHDB`), vì mọi request đi ra từ một IP bridge của Docker và
@@ -388,7 +401,8 @@ Quy ước test:
 - Test web (Vitest) theo cùng quy tắc: helper `web/server/testing/redis.ts` chỉ nhận db 15 của `127.0.0.1:6379` /
   `localhost:6379` qua `SVP_TEST_REDIS_URL` (`make web-check` đặt), mỗi test một tiền tố ngẫu nhiên `svp:test:<hex>:` và
   chỉ xoá khoá của tiền tố đó; thiếu biến thì nhóm test Redis bị bỏ qua (`describe.skipIf`). Request mạng không có handler
-  MSW thì test lỗi. Test e2e (`web/e2e/*.e2e.ts`, Playwright) chỉ chạy trên stack `make up`, mỗi lượt đăng ký user mới.
+  MSW thì test lỗi. Test e2e (`web/e2e/*.e2e.ts`, Playwright) chỉ chạy trên stack `make up`, mỗi lượt đăng ký user mới với
+  handle ngẫu nhiên dạng người chọn (`web/e2e/fixtures.ts`); tác giả do seed tạo có handle sinh `u_…`.
 - Test telemetry không cần Collector, LGTM hay GlitchTip: span, metric đọc bằng exporter và reader trong bộ nhớ của OTel
   SDK (`tracetest.NewSpanRecorder`, `tracetest.NewInMemoryExporter`, `sdkmetric.NewManualReader`); lỗi gửi tới tracker
   đọc bằng transport Sentry giả trong bộ nhớ, hoặc một server `httptest` do test tự mở làm GlitchTip giả (DSN trỏ host

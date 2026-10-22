@@ -19,9 +19,11 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	VideoService_InitUpload_FullMethodName     = "/svp.video.v1.VideoService/InitUpload"
-	VideoService_CompleteUpload_FullMethodName = "/svp.video.v1.VideoService/CompleteUpload"
-	VideoService_GetVideo_FullMethodName       = "/svp.video.v1.VideoService/GetVideo"
+	VideoService_InitUpload_FullMethodName       = "/svp.video.v1.VideoService/InitUpload"
+	VideoService_CompleteUpload_FullMethodName   = "/svp.video.v1.VideoService/CompleteUpload"
+	VideoService_GetVideo_FullMethodName         = "/svp.video.v1.VideoService/GetVideo"
+	VideoService_GetPublicVideo_FullMethodName   = "/svp.video.v1.VideoService/GetPublicVideo"
+	VideoService_ListAuthorVideos_FullMethodName = "/svp.video.v1.VideoService/ListAuthorVideos"
 )
 
 // VideoServiceClient is the client API for VideoService service.
@@ -33,8 +35,8 @@ const (
 //
 // Caller identity: the gateway passes the authenticated user id in the gRPC
 // metadata key `x-user-id`; requests never carry the caller's own id. Every
-// RPC requires it and returns UNAUTHENTICATED when it is missing or not a
-// valid UUID.
+// RPC but GetPublicVideo requires it and returns UNAUTHENTICATED when it is
+// missing or not a valid UUID.
 //
 // All ids are UUIDv7 strings in canonical lowercase form (36 chars). Media
 // locations are object keys (for example `media/<video_id>/master.m3u8`),
@@ -77,6 +79,34 @@ type VideoServiceClient interface {
 	//   same message, so the response does not reveal that a hidden video
 	//   exists.
 	GetVideo(ctx context.Context, in *GetVideoRequest, opts ...grpc.CallOption) (*GetVideoResponse, error)
+	// GetPublicVideo returns a READY video to anyone, for the public share
+	// page. Does not require caller, and ignores `x-user-id`: the answer is the
+	// same for everyone.
+	//
+	// Errors:
+	// - NOT_FOUND: video_id is not a UUID, there is no such video, or it is not
+	//   READY (UPLOADING, PROCESSING or FAILED). Every case returns the same
+	//   reason (`VIDEO_NOT_FOUND`) and the same message as GetVideo, so an
+	//   anonymous caller cannot tell an unpublished video from a missing one.
+	//   A malformed id is still rejected before the database is read.
+	GetPublicVideo(ctx context.Context, in *GetPublicVideoRequest, opts ...grpc.CallOption) (*GetPublicVideoResponse, error)
+	// ListAuthorVideos returns the videos of author_id, newest first by
+	// (created_at, video_id). Requires caller. When the caller is the author
+	// the list holds videos in every status; for anyone else only READY ones,
+	// the rule of GetVideo. An author without videos, or an id no user has
+	// (video-service does not know users), gives an empty page.
+	//
+	// Pagination follows Google AIP-158, like FeedService: page_token is
+	// opaque, pass back next_page_token unchanged; an empty next_page_token
+	// means there are no more videos. page_size 0 means 10; values above 50 are
+	// lowered to 50. The token holds only a position: which videos the caller
+	// may see always comes from author_id and the caller, never from the token.
+	//
+	// Errors:
+	// - INVALID_ARGUMENT: author_id is not a UUID (`INVALID_AUTHOR_ID`),
+	//   page_size is negative (`INVALID_PAGE_SIZE`), or page_token cannot be
+	//   decoded (`INVALID_PAGE_TOKEN`).
+	ListAuthorVideos(ctx context.Context, in *ListAuthorVideosRequest, opts ...grpc.CallOption) (*ListAuthorVideosResponse, error)
 }
 
 type videoServiceClient struct {
@@ -117,6 +147,26 @@ func (c *videoServiceClient) GetVideo(ctx context.Context, in *GetVideoRequest, 
 	return out, nil
 }
 
+func (c *videoServiceClient) GetPublicVideo(ctx context.Context, in *GetPublicVideoRequest, opts ...grpc.CallOption) (*GetPublicVideoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetPublicVideoResponse)
+	err := c.cc.Invoke(ctx, VideoService_GetPublicVideo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *videoServiceClient) ListAuthorVideos(ctx context.Context, in *ListAuthorVideosRequest, opts ...grpc.CallOption) (*ListAuthorVideosResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListAuthorVideosResponse)
+	err := c.cc.Invoke(ctx, VideoService_ListAuthorVideos_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // VideoServiceServer is the server API for VideoService service.
 // All implementations must embed UnimplementedVideoServiceServer
 // for forward compatibility.
@@ -126,8 +176,8 @@ func (c *videoServiceClient) GetVideo(ctx context.Context, in *GetVideoRequest, 
 //
 // Caller identity: the gateway passes the authenticated user id in the gRPC
 // metadata key `x-user-id`; requests never carry the caller's own id. Every
-// RPC requires it and returns UNAUTHENTICATED when it is missing or not a
-// valid UUID.
+// RPC but GetPublicVideo requires it and returns UNAUTHENTICATED when it is
+// missing or not a valid UUID.
 //
 // All ids are UUIDv7 strings in canonical lowercase form (36 chars). Media
 // locations are object keys (for example `media/<video_id>/master.m3u8`),
@@ -170,6 +220,34 @@ type VideoServiceServer interface {
 	//   same message, so the response does not reveal that a hidden video
 	//   exists.
 	GetVideo(context.Context, *GetVideoRequest) (*GetVideoResponse, error)
+	// GetPublicVideo returns a READY video to anyone, for the public share
+	// page. Does not require caller, and ignores `x-user-id`: the answer is the
+	// same for everyone.
+	//
+	// Errors:
+	// - NOT_FOUND: video_id is not a UUID, there is no such video, or it is not
+	//   READY (UPLOADING, PROCESSING or FAILED). Every case returns the same
+	//   reason (`VIDEO_NOT_FOUND`) and the same message as GetVideo, so an
+	//   anonymous caller cannot tell an unpublished video from a missing one.
+	//   A malformed id is still rejected before the database is read.
+	GetPublicVideo(context.Context, *GetPublicVideoRequest) (*GetPublicVideoResponse, error)
+	// ListAuthorVideos returns the videos of author_id, newest first by
+	// (created_at, video_id). Requires caller. When the caller is the author
+	// the list holds videos in every status; for anyone else only READY ones,
+	// the rule of GetVideo. An author without videos, or an id no user has
+	// (video-service does not know users), gives an empty page.
+	//
+	// Pagination follows Google AIP-158, like FeedService: page_token is
+	// opaque, pass back next_page_token unchanged; an empty next_page_token
+	// means there are no more videos. page_size 0 means 10; values above 50 are
+	// lowered to 50. The token holds only a position: which videos the caller
+	// may see always comes from author_id and the caller, never from the token.
+	//
+	// Errors:
+	// - INVALID_ARGUMENT: author_id is not a UUID (`INVALID_AUTHOR_ID`),
+	//   page_size is negative (`INVALID_PAGE_SIZE`), or page_token cannot be
+	//   decoded (`INVALID_PAGE_TOKEN`).
+	ListAuthorVideos(context.Context, *ListAuthorVideosRequest) (*ListAuthorVideosResponse, error)
 	mustEmbedUnimplementedVideoServiceServer()
 }
 
@@ -188,6 +266,12 @@ func (UnimplementedVideoServiceServer) CompleteUpload(context.Context, *Complete
 }
 func (UnimplementedVideoServiceServer) GetVideo(context.Context, *GetVideoRequest) (*GetVideoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetVideo not implemented")
+}
+func (UnimplementedVideoServiceServer) GetPublicVideo(context.Context, *GetPublicVideoRequest) (*GetPublicVideoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetPublicVideo not implemented")
+}
+func (UnimplementedVideoServiceServer) ListAuthorVideos(context.Context, *ListAuthorVideosRequest) (*ListAuthorVideosResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListAuthorVideos not implemented")
 }
 func (UnimplementedVideoServiceServer) mustEmbedUnimplementedVideoServiceServer() {}
 func (UnimplementedVideoServiceServer) testEmbeddedByValue()                      {}
@@ -264,6 +348,42 @@ func _VideoService_GetVideo_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _VideoService_GetPublicVideo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetPublicVideoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(VideoServiceServer).GetPublicVideo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: VideoService_GetPublicVideo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(VideoServiceServer).GetPublicVideo(ctx, req.(*GetPublicVideoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _VideoService_ListAuthorVideos_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAuthorVideosRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(VideoServiceServer).ListAuthorVideos(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: VideoService_ListAuthorVideos_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(VideoServiceServer).ListAuthorVideos(ctx, req.(*ListAuthorVideosRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // VideoService_ServiceDesc is the grpc.ServiceDesc for VideoService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -282,6 +402,14 @@ var VideoService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetVideo",
 			Handler:    _VideoService_GetVideo_Handler,
+		},
+		{
+			MethodName: "GetPublicVideo",
+			Handler:    _VideoService_GetPublicVideo_Handler,
+		},
+		{
+			MethodName: "ListAuthorVideos",
+			Handler:    _VideoService_ListAuthorVideos_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -231,13 +231,13 @@ func newServerWithStorage() (*Server, *fakeStorage, *logBuffer) {
 	return New(testPool, storage, logger), storage, logs
 }
 
-// call runs handler the way the gRPC server does: through the callerid interceptor, with caller
-// as x-user-id metadata (none when caller is "").
+// call runs handler the way the gRPC server does: through CallerInterceptor, with caller as
+// x-user-id metadata (none when caller is "").
 func call[Req, Resp any](ctx context.Context, caller, method string, req Req, handler func(context.Context, Req) (Resp, error)) (Resp, error) {
 	if caller != "" {
 		ctx = metadata.NewIncomingContext(ctx, metadata.Pairs(callerid.MetadataKey, caller))
 	}
-	resp, err := callerid.UnaryServerInterceptor()(ctx, req, &grpc.UnaryServerInfo{FullMethod: method},
+	resp, err := CallerInterceptor()(ctx, req, &grpc.UnaryServerInfo{FullMethod: method},
 		func(ctx context.Context, req any) (any, error) { return handler(ctx, req.(Req)) })
 	if err != nil {
 		var zero Resp
@@ -667,7 +667,9 @@ func TestDatabaseErrorIsGenericInternal(t *testing.T) {
 	_, initErr := initUpload(t, s, ids.New(), validRequest())
 	_, getErr := getVideo(t, s, ids.New(), ids.New())
 	_, completeErr := completeUpload(t.Context(), t, s, ids.New(), ids.New())
-	for _, err := range []error{initErr, getErr, completeErr} {
+	_, publicErr := getPublicVideo(t, s, "", ids.New())
+	_, listErr := listAuthorVideos(t, s, ids.New(), &videov1.ListAuthorVideosRequest{AuthorId: ids.New()})
+	for _, err := range []error{initErr, getErr, completeErr, publicErr, listErr} {
 		if status.Code(err) != codes.Internal || status.Convert(err).Message() != "internal error" {
 			t.Errorf("error = %v, want INTERNAL with message %q", err, "internal error")
 		}
@@ -702,7 +704,10 @@ func TestOverGRPC(t *testing.T) {
 		_, initErr := client.InitUpload(ctx, validRequest())
 		_, getErr := client.GetVideo(ctx, &videov1.GetVideoRequest{VideoId: ids.New()})
 		_, completeErr := client.CompleteUpload(ctx, &videov1.CompleteUploadRequest{VideoId: ids.New()})
-		for name, err := range map[string]error{"InitUpload": initErr, "GetVideo": getErr, "CompleteUpload": completeErr} {
+		_, listErr := client.ListAuthorVideos(ctx, &videov1.ListAuthorVideosRequest{AuthorId: ids.New()})
+		for name, err := range map[string]error{
+			"InitUpload": initErr, "GetVideo": getErr, "CompleteUpload": completeErr, "ListAuthorVideos": listErr,
+		} {
 			if status.Code(err) != codes.Unauthenticated || grpcerr.Reason(err) != callerid.ReasonUnauthenticatedCaller {
 				t.Errorf("%s without x-user-id = %v, want UNAUTHENTICATED", name, err)
 			}
@@ -714,6 +719,17 @@ func TestOverGRPC(t *testing.T) {
 		if err != nil || resp.GetStatus() != healthpb.HealthCheckResponse_SERVING {
 			t.Errorf("Health/Check without x-user-id = (%v, %v), want SERVING", resp, err)
 		}
+	})
+
+	// GetPublicVideo is public: without x-user-id, and with a malformed one, it reaches the handler,
+	// which answers NOT_FOUND for a missing video instead of UNAUTHENTICATED.
+	t.Run("GetPublicVideo needs no caller", func(t *testing.T) {
+		needDB(t)
+		_, err := client.GetPublicVideo(t.Context(), &videov1.GetPublicVideoRequest{VideoId: ids.New()})
+		wantError(t, err, codes.NotFound, ReasonVideoNotFound)
+		ctx := metadata.AppendToOutgoingContext(t.Context(), callerid.MetadataKey, "not-a-uuid")
+		_, err = client.GetPublicVideo(ctx, &videov1.GetPublicVideoRequest{VideoId: ids.New()})
+		wantError(t, err, codes.NotFound, ReasonVideoNotFound)
 	})
 
 	t.Run("CompleteUpload of a missing video", func(t *testing.T) {

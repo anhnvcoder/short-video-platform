@@ -47,6 +47,13 @@ class FakeHls {
 }
 
 const live = () => FakeHls.instances.filter((instance) => !instance.destroyed);
+// Sorted, so a test does not depend on the order the pool creates instances in.
+const liveSources = () =>
+  live()
+    .map((instance) => instance.source)
+    .sort();
+const instanceOf = (source: PoolSource | undefined) =>
+  FakeHls.instances.find((instance) => instance.source === source?.playlistUrl);
 const loader = () => Promise.resolve(FakeHls as unknown as HlsClass);
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -60,6 +67,11 @@ function sources(count: number, origin = mediaOrigin): PoolSource[] {
 
 function hosts(count: number): HTMLElement[] {
   return Array.from({ length: count }, () => document.body.appendChild(document.createElement("div")));
+}
+
+// The video of a host can play: hls.js appended its first data (canplay) or playback began (playing).
+function start(host: HTMLElement | undefined, event: "canplay" | "playing" = "canplay") {
+  host?.querySelector("video")?.dispatchEvent(new Event(event));
 }
 
 function callbacks() {
@@ -129,11 +141,14 @@ describe("PlayerPool", () => {
     const elements = hosts(2);
     pool.sync(1, sources(2), (index) => elements[index] ?? null, true);
     await settle();
+    start(elements[1]);
+    await settle();
     expect(elements.map((host) => host.querySelectorAll("video").length)).toEqual([1, 1]);
     expect(live()).toHaveLength(2);
     const play = vi.mocked(HTMLMediaElement.prototype.play);
-    expect(play).toHaveBeenCalledTimes(1);
-    expect(play.mock.contexts[0]).toBe(elements[1]?.querySelector("video"));
+    // jsdom's stubbed play() leaves the element paused, so the sync after canplay asks again; a browser would not.
+    expect(play).toHaveBeenCalled();
+    expect(new Set(play.mock.contexts)).toEqual(new Set([elements[1]?.querySelector("video")]));
   });
 
   it("does not play when playback is off (paused by the user, page hidden)", async () => {
@@ -173,13 +188,125 @@ describe("PlayerPool", () => {
     const list = sources(5);
     pool.sync(1, list, (index) => elements[index] ?? null, true);
     await settle();
-    const [first, second, third] = FakeHls.instances;
+    start(elements[1]);
+    await settle();
+    const [first, second, third] = [0, 1, 2].map((index) => instanceOf(list[index]));
+    expect(live()).toHaveLength(3);
     pool.sync(2, list, (index) => elements[index] ?? null, true);
     await settle();
     expect(first?.destroyed).toBe(true);
     expect(second?.destroyed).toBe(false);
     expect(third?.destroyed).toBe(false);
+    // Item 3 waits for item 2, now the current one, to start.
+    expect(liveSources()).toEqual([list[1]?.playlistUrl, list[2]?.playlistUrl]);
+    start(elements[2], "playing");
+    await settle();
+    expect(liveSources()).toEqual([list[1]?.playlistUrl, list[2]?.playlistUrl, list[3]?.playlistUrl]);
+    expect(elements[3]?.querySelector("video")).toBeTruthy();
+  });
+
+  it("caps every instance's start level and buffer, so no player downloads a whole clip ahead", async () => {
+    const pool = new PlayerPool(mediaOrigin, callbacks(), loader);
+    const elements = hosts(3);
+    pool.sync(1, sources(3), (index) => elements[index] ?? null, true);
+    await settle();
+    start(elements[1]);
+    await settle();
     expect(live()).toHaveLength(3);
+    for (const instance of live()) {
+      expect(instance.config).toMatchObject({
+        capLevelToPlayerSize: true,
+        startLevel: 0,
+        maxBufferLength: 10,
+        maxBufferSize: 2_000_000,
+        maxMaxBufferLength: 20,
+      });
+      // What hls.js 1.x buffers ahead at a level's bitrate: min(max(8 * size / bitrate, length), max length) seconds.
+      // At either level of the ladder (360p 0.8 Mbit/s, 720p 2.5 Mbit/s) that stays near 3 MB, where a 60 s 720p clip
+      // is about 19 MB.
+      const { maxBufferLength, maxBufferSize, maxMaxBufferLength } = instance.config as Record<
+        "maxBufferLength" | "maxBufferSize" | "maxMaxBufferLength",
+        number
+      >;
+      for (const bitrate of [800_000, 2_500_000]) {
+        const seconds = Math.min(Math.max((8 * maxBufferSize) / bitrate, maxBufferLength), maxMaxBufferLength);
+        expect((seconds * bitrate) / 8).toBeLessThanOrEqual(4_000_000);
+      }
+    }
+  });
+
+  it("loads the neighbours only once the current video starts", async () => {
+    const pool = new PlayerPool(mediaOrigin, callbacks(), loader);
+    const elements = hosts(3);
+    const list = sources(3);
+    pool.sync(1, list, (index) => elements[index] ?? null, true);
+    await settle();
+    expect(liveSources()).toEqual([list[1]?.playlistUrl]);
+    expect(elements[0]?.querySelector("video")).toBeNull();
+    expect(elements[2]?.querySelector("video")).toBeNull();
+    // A sync for another reason (pause, a new page) does not load them early either.
+    pool.sync(1, list, (index) => elements[index] ?? null, false);
+    await settle();
+    expect(live()).toHaveLength(1);
+
+    start(elements[1], "playing");
+    await settle();
+    expect(liveSources()).toEqual(list.map((source) => source.playlistUrl));
+    // A later event of the same video loads nothing more.
+    start(elements[1], "canplay");
+    await settle();
+    expect(FakeHls.instances).toHaveLength(3);
+  });
+
+  it("a neighbour that started before it became current lets the next one load at once", async () => {
+    const pool = new PlayerPool(mediaOrigin, callbacks(), loader);
+    const elements = hosts(5);
+    const list = sources(5);
+    pool.sync(1, list, (index) => elements[index] ?? null, true);
+    await settle();
+    start(elements[1]);
+    await settle();
+    // Item 2 buffered its first segment while a neighbour: that alone loads nothing.
+    start(elements[2]);
+    await settle();
+    expect(live()).toHaveLength(3);
+    pool.sync(2, list, (index) => elements[index] ?? null, true);
+    await settle();
+    expect(liveSources()).toEqual([list[1]?.playlistUrl, list[2]?.playlistUrl, list[3]?.playlistUrl]);
+  });
+
+  it("a current video that fails does not hold its neighbours back", async () => {
+    const pool = new PlayerPool(mediaOrigin, callbacks(), loader);
+    const elements = hosts(3);
+    const list = sources(3);
+    pool.sync(1, list, (index) => elements[index] ?? null, true);
+    await settle();
+    instanceOf(list[1])?.emit(FakeHls.Events.ERROR, { fatal: true });
+    await settle();
+    expect(liveSources()).toEqual([list[0]?.playlistUrl, list[2]?.playlistUrl]);
+  });
+
+  it("on the item after the last video, the last video loads without waiting", async () => {
+    const pool = new PlayerPool(mediaOrigin, callbacks(), loader);
+    const elements = hosts(2);
+    const list = sources(2);
+    pool.sync(2, list, (index) => elements[index] ?? null, true);
+    await settle();
+    expect(liveSources()).toEqual([list[1]?.playlistUrl]);
+    expect(HTMLMediaElement.prototype.play).not.toHaveBeenCalled();
+  });
+
+  it("a video event after destroy() loads nothing", async () => {
+    const pool = new PlayerPool(mediaOrigin, callbacks(), loader);
+    const elements = hosts(3);
+    pool.sync(1, sources(3), (index) => elements[index] ?? null, true);
+    await settle();
+    const video = elements[1]?.querySelector("video");
+    pool.destroy();
+    video?.dispatchEvent(new Event("canplay"));
+    await settle();
+    expect(FakeHls.instances).toHaveLength(1);
+    expect(live()).toHaveLength(0);
   });
 
   it("destroy() releases every instance and takes the videos out of the page", async () => {

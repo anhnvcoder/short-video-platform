@@ -1,5 +1,6 @@
 import { http, HttpResponse } from "msw";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { rateLimitWait } from "@/components/shell/route-error";
 import { server } from "@/lib/test/msw-server";
 import type { BffServices } from "./runtime";
 import { accessTokenBody, fakeTokens, gatewayOrigin, gatewayProblem, testServices } from "./testing/bff";
@@ -24,7 +25,7 @@ vi.mock("next/headers", () => ({
 vi.mock("./runtime", () => ({ bffServices: async () => request.services }));
 vi.mock("./env", () => ({ serverEnv: () => request.services!.env }));
 
-const { getCurrentUser, requireSession } = await import("./current-user");
+const { getCurrentUser, rateLimitedError, requireSession } = await import("./current-user");
 
 const userId = "01928c6e-7b3a-7cde-8f01-23456789abcd";
 
@@ -44,6 +45,21 @@ async function thrownBy(run: Promise<unknown>): Promise<(Error & { digest?: stri
     (thrown: unknown) => thrown as Error & { digest?: string },
   );
 }
+
+// The one error every page throws for the rate limit page (the session refresh, /u/<handle>, /v/<id>).
+describe("rateLimitedError", () => {
+  it.each([
+    [30, 30],
+    [0, 1],
+    [2.9, 2],
+    [999_999, 3600],
+    [undefined, 60],
+  ])("turns %s s into the digest error.tsx counts down from (%d s)", (seconds, wait) => {
+    const error = rateLimitedError(seconds);
+    expect((error as Error & { digest?: string }).digest).toBe(`SVP_RATE_LIMITED;${wait}`);
+    expect(rateLimitWait(error)).toBe(wait);
+  });
+});
 
 describe.skipIf(!testRedisURL)("current user on the test Redis", () => {
   const redis = useTestRedis();

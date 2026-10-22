@@ -1,6 +1,8 @@
 # 0016. Giai đoạn 5b: web client Next.js 16 với BFF và session phía server, refresh token xoay vòng có phát hiện dùng lại
 
-- Trạng thái: Chấp nhận; phần chuẩn bị backend và phần A đã kiểm trên máy ngày 2026-10-22 (mục Kết quả phần A)
+- Trạng thái: Chấp nhận; phần chuẩn bị backend và phần A đã kiểm trên máy ngày 2026-10-22 (mục Kết quả phần A); chi tiết
+  phần B (§6 origin upload, §8 trạng thái follow, §11) chốt ở [0018](0018-web-profiles-public-video-upload.md), phần B
+  đã kiểm trên máy cùng ngày (mục "Kết quả phần B" của 0018); phần C còn làm
 - Ngày: 2026-10-21
 
 ## Bối cảnh
@@ -273,6 +275,7 @@ import nhầm từ component client là lỗi lúc build.
 | `REDIS_URL` | `redis://host.docker.internal:6379/9` | Session; `make web-dev` dùng `redis://127.0.0.1:6379/9` |
 | `APP_ORIGIN` | `http://localhost:3001` | Origin của app: kiểm CSRF, chọn dạng cookie, kiểm `next` |
 | `MEDIA_ORIGIN` | `http://127.0.0.1:9000` | Origin của HLS và thumbnail, cho CSP |
+| `UPLOAD_ORIGIN` | `http://127.0.0.1:9000` | Từ phần B ([ADR-0018](0018-web-profiles-public-video-upload.md) §8), bắt buộc: origin storage nhận presigned POST, cho CSP `connect-src` và kiểm `upload_url` trước khi gửi file; http(s) không path, `http` chỉ cho host loopback (`localhost`, `127.0.0.1`, `[::1]`) |
 
 Phần A **không có biến `NEXT_PUBLIC_*` nào**: trình duyệt không cần cấu hình (URL media đến từ API). `next.config`
 **không dùng khoá `env`**: giá trị khai ở đó luôn được chép vào bundle client lúc build, bất kể tên. `APP_ORIGIN` scheme
@@ -415,7 +418,8 @@ Cache-Control: private, no-store   (HTML có session)
 - `'self'` trong `script-src` chỉ là đường lui cho trình duyệt không hiểu `'strict-dynamic'`.
 - hls.js tải playlist và segment bằng XHR (`connect-src`), đẩy vào `MediaSource` qua URL `blob:` (`media-src blob:`), worker
   dựng từ `blob:` (`worker-src`). iOS dưới 17.1 không có MSE/MMS thì gán thẳng URL HLS cho `<video>` (`media-src
-  <MEDIA_ORIGIN>`). Phần B thêm origin upload vào `connect-src` (XHR presigned POST).
+  <MEDIA_ORIGIN>`). Phần B thêm origin upload `UPLOAD_ORIGIN` vào `connect-src` (XHR presigned POST,
+  [ADR-0018](0018-web-profiles-public-video-upload.md) §8).
 - **Không thuộc tính `style` trong HTML do server render:** CSP chặn thuộc tính `style` khi không có `'unsafe-inline'`, nonce
   không áp cho thuộc tính. Giá trị động (thanh tiến độ, vị trí) gán qua ref (CSSOM), không bị CSP chặn. Kiểm bằng e2e:
   console không có vi phạm CSP.
@@ -454,7 +458,8 @@ Cache-Control: private, no-store   (HTML có session)
   hiện 0.
 - **Follow:** gateway không trả `followed_by_me`. Feed "Đang theo dõi" coi mọi tác giả là đã follow (nút Bỏ theo dõi); feed
   "Khám phá" hiện nút Theo dõi và đổi trạng thái sau khi bấm thành công (trạng thái giữ trong bộ nhớ của trang). Video của
-  chính mình không có nút. Đọc trạng thái follow thật cần API mới, để sau.
+  chính mình không có nút. Đọc trạng thái follow thật cần API mới: phần B thêm `followed_by_me` cho trang hồ sơ
+  (`GET /profiles/{handle}`, [ADR-0018](0018-web-profiles-public-video-upload.md) §3); feed vẫn như trên.
 - Phần A **ẩn** nút chia sẻ, mục Tải lên và Hồ sơ (route của chúng ở phần B); tác giả chỉ có avatar màu sinh từ id.
 - Dữ liệu: `openapi-typescript` sinh `web/gen/api.d.ts` từ `services/gateway/openapi.yaml` (commit, kiểm không lệch như
   code Go sinh ra); `openapi-fetch` dùng ở cả server (gọi gateway) và client (gọi `/api/*` cùng path); TanStack Query cho
@@ -562,7 +567,11 @@ exporter OTLP gRPC và instrumentation `http`/`undici` (trace server qua `instru
   CSP, size-limit đạt, và có số đo thời gian tới khung đầu (vuốt → `playing`, p50/p95 trên 20 lần) cùng bộ nhớ container
   web (cgroup theo `docker stats`).
 - **Phần B:** upload XHR, `/v/:id` công khai có OG (route đọc công khai ở gateway, chỉ video `READY`, rate limit theo IP), hồ
-  sơ tối thiểu và "video của tôi", CORS MinIO đúng origin web (`MINIO_API_CORS_ALLOW_ORIGIN`), Lighthouse CI.
+  sơ tối thiểu và "video của tôi", CORS MinIO đúng origin web (`MINIO_API_CORS_ALLOW_ORIGIN`), Lighthouse CI. Chi tiết
+  chốt ở [ADR-0018](0018-web-profiles-public-video-upload.md): handle không đổi và tên hiển thị, RPC và route hồ sơ, danh
+  sách video theo tác giả, `author` ghép song song `stats`, `GET /public/videos/{id}` với lớp rate limit `public`, route web,
+  upload và `UPLOAD_ORIGIN`, CORS MinIO, Lighthouse chạy local (`make web-lighthouse`, chưa vào CI), ngân sách bundle của
+  `/v/[id]` và `/upload`. Kết quả kiểm ở mục "Kết quả phần B" của ADR-0018.
 - **Phần C (k3d):** image distroless, ký, quét, Kyverno, promote; release Helm `web` (HTTPRoute `svp.localhost`, 2 replica,
   PDB, canary, NetworkPolicy); GlitchTip, OTel, RUM. **Gateway tin `traceparent` chỉ từ pod web** (nguồn tin cậy như
   `TRUSTED_PROXY_CIDRS`); khi làm, ADR-0011 được đánh dấu "chỉnh bởi" ADR ghi chi tiết đó. Trace từ trình duyệt (SDK
@@ -581,7 +590,7 @@ test bật), nên số đo có thêm tải ghi trace và video.
 | Kiểm | Kết quả |
 | --- | --- |
 | e2e (`make measure-web`) | 32/32 pass: Chromium 16/16, WebKit 16/16 (luồng chính, WEB-1/2/4/6, CSP, axe ở login, register, feed, đuôi feed lúc tải trang sau, Back trước và sau 5 s, khung đầu, ảnh chứng cứ) |
-| Thời gian tới khung đầu (vuốt → `playing`, 20 lần mỗi trình duyệt) | Chromium p50 13 ms, p95 21 ms, max 21 ms; WebKit p50 20 ms, p95 141 ms, max 149 ms. Cuộn `instant` và video kế đã được pool tải trước, nên đây là thời gian đổi video trong pool, không gồm tải playlist qua mạng thật |
+| Thời gian tới khung đầu (vuốt → `playing`, 20 lần mỗi trình duyệt) | Chromium p50 13 ms, p95 21 ms, max 21 ms; WebKit p50 20 ms, p95 141 ms, max 149 ms. Cuộn `instant` và video kế đã được pool tải trước, nên đây là thời gian đổi video trong pool, không gồm tải playlist qua mạng thật. Từ phần B video kế chỉ nạp khi video hiện tại đã chạy, nên số này tăng (ADR-0018, mục Kết quả phần B) |
 | Bộ nhớ container `web` (`docker stats`, bộ nhớ cgroup trừ file cache không hoạt động; không phải RSS của tiến trình Node) | 52,8 MiB lúc nghỉ (sau `make up` và `make smoke`, trước e2e), 96,3 MiB ngay sau e2e; giới hạn 256 MiB |
 | size-limit (gzip, `make web-check`) | Feed: 177,19 kB / 200 kB trên runtime, 308,45 kB / 330 kB tải lần đầu. Login: 48,42 kB / 80 kB, 179,68 kB / 200 kB |
 | Cookie `svp_sid` trên `http://localhost:3001` ở WebKit | Nhận và gửi lại bình thường: mọi luồng đăng nhập của WebKit qua; test WEB-6 thấy `HttpOnly`, `SameSite=Lax`, `Path=/`, không `Secure`, sid mới sau login (sid cài sẵn bị thay), cookie cũ sau logout → 401. Dạng `__Host-Http-` + `Secure` kiểm ở k3d (phần C) |

@@ -65,6 +65,7 @@ describe("connecting to the session Redis", () => {
     vi.stubEnv("REDIS_URL", `redis://127.0.0.1:${resetting.port}/15`);
     vi.stubEnv("APP_ORIGIN", "http://localhost:3001");
     vi.stubEnv("MEDIA_ORIGIN", "http://127.0.0.1:9000");
+    vi.stubEnv("UPLOAD_ORIGIN", "http://127.0.0.1:9000");
 
     await expect(sessionRedis()).rejects.toThrow();
     await expect(sessionRedis()).rejects.toThrow();

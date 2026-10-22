@@ -1,6 +1,8 @@
 {
   "navLabel": "Main navigation",
   "home": "Home",
+  "upload": "Upload",
+  "profile": "Profile",
   "logout": "Log out",
   "account": "Your account",
   "shortcuts": {

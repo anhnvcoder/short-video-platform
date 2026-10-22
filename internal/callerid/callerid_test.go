@@ -112,3 +112,80 @@ func TestFromContextWithoutCaller(t *testing.T) {
 		t.Errorf("FromContext() = (%q, %v), want (\"\", false)", id, ok)
 	}
 }
+
+const statsMethod = "/svp.engagement.v1.EngagementService/GetStats"
+
+// callOptional is call with statsMethod as an RPC whose caller is optional, and loginMethod public.
+func callOptional(t *testing.T, method string, pairs ...string) (ran bool, caller string, err error) {
+	t.Helper()
+	ctx := context.Background()
+	if pairs != nil {
+		ctx = metadata.NewIncomingContext(ctx, metadata.Pairs(pairs...))
+	}
+	handler := func(ctx context.Context, _ any) (any, error) {
+		ran = true
+		caller, _ = FromContext(ctx)
+		return "ok", nil
+	}
+	interceptor := NewUnaryServerInterceptor(Methods{Public: []string{loginMethod}, OptionalCaller: []string{statsMethod}})
+	_, err = interceptor(ctx, nil, &grpc.UnaryServerInfo{FullMethod: method}, handler)
+	return ran, caller, err
+}
+
+func TestOptionalCallerAbsentRunsWithoutCaller(t *testing.T) {
+	for name, pairs := range map[string][]string{"no metadata": nil, "metadata without x-user-id": {"other", "x"}} {
+		ran, caller, err := callOptional(t, statsMethod, pairs...)
+		if err != nil || !ran {
+			t.Errorf("%s: ran = %v, err = %v; want handler to run", name, ran, err)
+		}
+		if caller != "" {
+			t.Errorf("%s: caller = %q, want none", name, caller)
+		}
+	}
+}
+
+func TestOptionalCallerPresentAndValidReachesHandler(t *testing.T) {
+	ran, caller, err := callOptional(t, statsMethod, MetadataKey, userID)
+	if err != nil || !ran {
+		t.Fatalf("ran = %v, err = %v; want handler to run", ran, err)
+	}
+	if caller != userID {
+		t.Errorf("FromContext() = %q, want %q", caller, userID)
+	}
+}
+
+// A present x-user-id must be valid: a malformed one is never served as an anonymous call.
+func TestOptionalCallerPresentButInvalidIsUnauthenticated(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		pairs []string
+	}{
+		{"empty", []string{MetadataKey, ""}},
+		{"two values", []string{MetadataKey, userID, MetadataKey, userID}},
+		{"upper case", []string{MetadataKey, strings.ToUpper(userID)}},
+		{"not a UUID", []string{MetadataKey, "admin"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ran, _, err := callOptional(t, statsMethod, tc.pairs...)
+			if ran {
+				t.Error("handler ran")
+			}
+			if status.Code(err) != codes.Unauthenticated || grpcerr.Reason(err) != ReasonUnauthenticatedCaller {
+				t.Errorf("err = %v (reason %q), want UNAUTHENTICATED with %s", err, grpcerr.Reason(err), ReasonUnauthenticatedCaller)
+			}
+		})
+	}
+}
+
+// Listing some RPCs as optional or public changes nothing for the others.
+func TestOptionalCallerLeavesOtherModesAlone(t *testing.T) {
+	if ran, _, err := callOptional(t, followMethod); ran || status.Code(err) != codes.Unauthenticated {
+		t.Errorf("required caller without x-user-id: ran = %v, err = %v; want UNAUTHENTICATED", ran, err)
+	}
+	if ran, caller, err := callOptional(t, followMethod, MetadataKey, userID); err != nil || !ran || caller != userID {
+		t.Errorf("required caller with x-user-id: ran = %v, caller = %q, err = %v", ran, caller, err)
+	}
+	if ran, caller, err := callOptional(t, loginMethod, MetadataKey, "garbage"); err != nil || !ran || caller != "" {
+		t.Errorf("public method with an invalid x-user-id: ran = %v, caller = %q, err = %v; want handler to run without caller", ran, caller, err)
+	}
+}

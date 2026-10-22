@@ -1,5 +1,5 @@
-// Package server implements svp.user.v1.UserService: accounts, login, refresh tokens and the
-// follow graph. A change to the follow graph writes user.followed or user.unfollowed to the outbox
+// Package server implements svp.user.v1.UserService: accounts, login, refresh tokens, the follow
+// graph and public profiles. A change to the follow graph writes user.followed or user.unfollowed to the outbox
 // in the same transaction, so the event is published exactly when the change commits
 // (docs/adr/0009-engagement-feed-stage2b.md, section 1).
 package server
@@ -42,8 +42,16 @@ var PublicMethods = []string{
 	// The refresh token is what authenticates these two: the access token may already be expired.
 	userv1.UserService_Refresh_FullMethodName,
 	userv1.UserService_Logout_FullMethodName,
+	// Profiles are public: the gateway also reads the authors of the public share page, which has
+	// no caller.
+	userv1.UserService_GetProfiles_FullMethodName,
 	healthpb.Health_Check_FullMethodName,
 }
+
+// registerAttempts bounds the inserts of one Register without a picked handle. Only two generated
+// handles can collide (a picked one never has their form), and each insert collides with
+// probability users/2^48, so the third attempt is never reached in practice.
+const registerAttempts = 3
 
 // MaxEmailBytes is the longest email accepted (the SMTP limit on a forward path, RFC 5321).
 const MaxEmailBytes = 254
@@ -60,12 +68,18 @@ const (
 	ReasonInvalidFolloweeID      = "INVALID_FOLLOWEE_ID"
 	ReasonCannotFollowSelf       = "CANNOT_FOLLOW_SELF"
 	ReasonUserNotFound           = "USER_NOT_FOUND"
+	ReasonInvalidHandle          = "INVALID_HANDLE"
+	ReasonHandleAlreadyTaken     = "HANDLE_ALREADY_TAKEN"
+	ReasonInvalidDisplayName     = "INVALID_DISPLAY_NAME"
+	ReasonTooManyUserIDs         = "TOO_MANY_USER_IDS"
+	ReasonInvalidUserID          = "INVALID_USER_ID"
 	ReasonServerBusy             = "SERVER_BUSY"
 )
 
 // Constraint names from migrations/, matched when Postgres rejects a write.
 const (
 	constraintEmailUnique  = "users_email_key"
+	constraintHandleUnique = "users_handle_key"
 	constraintFollowerFKey = "follows_follower_id_fkey"
 	constraintFolloweeFKey = "follows_followee_id_fkey"
 )
@@ -78,7 +92,7 @@ type Hasher interface {
 	VerifyDummy(ctx context.Context, pw secret.String) error
 }
 
-// Server serves UserService. Follow and Unfollow expect the caller id that
+// Server serves UserService. The RPCs outside PublicMethods expect the caller id that
 // callerid.UnaryServerInterceptor puts into the context.
 type Server struct {
 	userv1.UnimplementedUserServiceServer
@@ -91,15 +105,18 @@ type Server struct {
 	// now is the clock refresh tokens are issued and checked against; tests replace it to reach
 	// an expiry without waiting.
 	now func() time.Time
+	// newID returns the id of a new user; tests replace it to make generated handles collide.
+	newID func() uuid.UUID
 }
 
 // New returns a Server reading and writing through pool, hashing with hasher and signing tokens
 // with issuer. logger should come from logx so context attributes reach the log.
 func New(pool *pgxpool.Pool, hasher Hasher, issuer *authtoken.Issuer, logger *slog.Logger) *Server {
-	return &Server{pool: pool, queries: store.New(pool), hasher: hasher, issuer: issuer, logger: logger, now: time.Now}
+	return &Server{pool: pool, queries: store.New(pool), hasher: hasher, issuer: issuer, logger: logger, now: time.Now, newID: uuid.NewV7}
 }
 
-// Register creates an account for a new email.
+// Register creates an account for a new email. Every input is checked before the password is
+// hashed, so bad input never costs a hash.
 func (s *Server) Register(ctx context.Context, req *userv1.RegisterRequest) (*userv1.RegisterResponse, error) {
 	email, ok := normalizeEmail(req.GetEmail())
 	if !ok {
@@ -109,23 +126,58 @@ func (s *Server) Register(ctx context.Context, req *userv1.RegisterRequest) (*us
 	if err := password.CheckLength(pw); err != nil {
 		return nil, grpcerr.New(codes.InvalidArgument, ReasonInvalidPassword, "password must be 8 to 128 characters")
 	}
+	// An empty handle means none was picked: it is generated from the id below.
+	picked := normalizeHandle(req.GetHandle())
+	if picked != "" && !validPickedHandle(picked) {
+		return nil, grpcerr.New(codes.InvalidArgument, ReasonInvalidHandle,
+			"handle must be 3 to 30 of a-z, 0-9 and _, start with a letter, and not have the generated form u_ and 12 hex digits")
+	}
+	displayName, noDisplayName, ok := normalizeDisplayName(req.GetDisplayName())
+	if !ok {
+		return nil, invalidDisplayName()
+	}
 	hash, err := s.hasher.Hash(ctx, pw)
 	if err != nil {
 		return nil, s.hashError(ctx, "hash password", err)
 	}
 
-	userID := uuid.NewV7() // what ids.New returns, kept as a uuid.UUID for the insert
-	id := userID.String()
-	err = s.queries.CreateUser(ctx, store.CreateUserParams{ID: userID, Email: email, PasswordHash: hash})
-	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok && pgErr.ConstraintName == constraintEmailUnique {
-		return nil, grpcerr.New(codes.AlreadyExists, ReasonEmailAlreadyRegistered, "email already registered")
+	// The unique constraints decide every conflict, so two concurrent registrations of the same
+	// email or handle end with one success, without a check-then-insert race.
+	for range registerAttempts {
+		userID := s.newID() // what ids.New returns, kept as a uuid.UUID for the insert
+		handle := picked
+		if handle == "" {
+			handle = generatedHandle(userID)
+		}
+		name := displayName
+		if noDisplayName {
+			name = handle
+		}
+		err = s.queries.CreateUser(ctx, store.CreateUserParams{
+			ID: userID, Email: email, PasswordHash: hash, Handle: handle, DisplayName: name,
+		})
+		if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok {
+			switch {
+			case pgErr.ConstraintName == constraintEmailUnique:
+				return nil, grpcerr.New(codes.AlreadyExists, ReasonEmailAlreadyRegistered, "email already registered")
+			case pgErr.ConstraintName == constraintHandleUnique && picked != "":
+				return nil, grpcerr.New(codes.AlreadyExists, ReasonHandleAlreadyTaken, "handle already taken")
+			case pgErr.ConstraintName == constraintHandleUnique:
+				// Two generated handles collided: a new id gives a new handle, and the client,
+				// which picked none, never sees a handle error.
+				s.logger.WarnContext(ctx, "generated handle taken, retrying with a new user id")
+				continue
+			}
+		}
+		if err != nil {
+			return nil, s.internal(ctx, "insert user", err)
+		}
+		id := userID.String()
+		// The email and the display name never reach the log, only the user id (JWT-8).
+		s.logger.InfoContext(logx.With(ctx, slog.String("user_id", id)), "user registered")
+		return &userv1.RegisterResponse{UserId: id}, nil
 	}
-	if err != nil {
-		return nil, s.internal(ctx, "insert user", err)
-	}
-	// The email never reaches the log, only the user id (JWT-8).
-	s.logger.InfoContext(logx.With(ctx, slog.String("user_id", id)), "user registered")
-	return &userv1.RegisterResponse{UserId: id}, nil
+	return nil, s.internal(ctx, "insert user", err)
 }
 
 // Login returns an access token and a refresh token that opens a new family for a matching email

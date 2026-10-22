@@ -2,7 +2,7 @@
 
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { checkCredentials, failureState, safeNext, signIn } from "./auth";
+import { checkCredentials, checkRegistration, failureState, safeNext, signIn } from "./auth";
 import type { AuthState } from "./auth-state";
 import { bffServices } from "./runtime";
 import { sessionCookieName, sessionCookieOptions } from "./session";
@@ -19,22 +19,27 @@ export async function loginAction(_previous: AuthState, form: FormData): Promise
   return startSession(checked.email, checked.password, form.get("next"));
 }
 
-// Registers, then logs in with the same credentials.
+// Registers with the chosen handle, then logs in with the same credentials.
 export async function registerAction(_previous: AuthState, form: FormData): Promise<AuthState> {
-  const checked = checkCredentials({ email: form.get("email"), password: form.get("password") });
+  const checked = checkRegistration({
+    email: form.get("email"),
+    password: form.get("password"),
+    handle: form.get("handle"),
+  });
   if (!checked.ok) {
     return checked.state;
   }
+  const { email, password, handle } = checked;
   const services = await bffServices().catch(() => null);
   if (!services) {
-    return failureState(checked.email, { ok: false, code: "UNAVAILABLE" });
+    return failureState(email, { ok: false, code: "UNAVAILABLE" }, handle);
   }
   const forwardedFor = (await headers()).get("x-forwarded-for");
-  const registered = await services.gateway.register(checked.email, checked.password, forwardedFor);
+  const registered = await services.gateway.register({ email, password, handle }, forwardedFor);
   if (!registered.ok) {
-    return failureState(checked.email, registered);
+    return failureState(email, registered, handle);
   }
-  return startSession(checked.email, checked.password, form.get("next"));
+  return startSession(email, password, form.get("next"));
 }
 
 async function startSession(email: string, password: string, next: FormDataEntryValue | null): Promise<AuthState> {

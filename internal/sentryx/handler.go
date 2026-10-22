@@ -25,7 +25,7 @@ var allowedMessages = []string{
 	"feed-service failed", "gateway failed", "grpc call failed", "head uploaded file", "insert video",
 	"internal error", "like video", "mark video processing", "marshal ViewEvent", "media-worker failed",
 	"panic in grpc handler", "panic in http handler", "presign upload form", "produce view.recorded",
-	"prune timeline", "rpc", "select explore feed", "select following feed", "select stats", "select video",
+	"prune timeline", "rpc", "select author videos", "select explore feed", "select following feed", "select stats", "select video",
 	"transcode consumer stopped, restarting", "unlike video", "user-service failed", "video-service failed",
 	"views consumer stopped, restarting",
 }

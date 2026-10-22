@@ -21,6 +21,7 @@ vi.stubEnv("GATEWAY_URL", gatewayOrigin);
 vi.stubEnv("REDIS_URL", "redis://127.0.0.1:6379/15");
 vi.stubEnv("APP_ORIGIN", "http://localhost:3001");
 vi.stubEnv("MEDIA_ORIGIN", "http://127.0.0.1:9000");
+vi.stubEnv("UPLOAD_ORIGIN", "http://127.0.0.1:9000");
 
 const { POST } = await import("./route");
 

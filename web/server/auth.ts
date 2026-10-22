@@ -1,6 +1,6 @@
 import "server-only";
 import { z } from "zod";
-import type { AuthState } from "./auth-state";
+import { chosenHandleSchema, normalizeHandle, type AuthState } from "./auth-state";
 import type { AuthFailure } from "./gateway";
 import type { BffServices } from "./runtime";
 
@@ -31,6 +31,7 @@ export function checkCredentials(input: CredentialsInput): Checked {
     ok: false,
     state: {
       email,
+      handle: "",
       fieldErrors: {
         ...(fields.has("email") ? { email: "INVALID_EMAIL" } : {}),
         ...(fields.has("password") ? { password: "INVALID_PASSWORD" } : {}),
@@ -41,12 +42,38 @@ export function checkCredentials(input: CredentialsInput): Checked {
   };
 }
 
-export function failureState(email: string, failure: AuthFailure): AuthState {
-  const state: AuthState = { email, fieldErrors: {}, formError: null, retryAfterSeconds: null };
+export interface RegistrationInput extends CredentialsInput {
+  handle: FormDataEntryValue | null;
+}
+
+type CheckedRegistration =
+  { ok: true; email: string; password: string; handle: string } | { ok: false; state: AuthState };
+
+// The credentials as for login, and the handle the user chose, sent to the gateway in its normalized form.
+export function checkRegistration(input: RegistrationInput): CheckedRegistration {
+  const credentials = checkCredentials(input);
+  const handle = chosenHandleSchema.safeParse(typeof input.handle === "string" ? input.handle : "");
+  if (credentials.ok && handle.success) {
+    return { ...credentials, handle: handle.data };
+  }
+  const state: AuthState = credentials.ok
+    ? { email: credentials.email, handle: "", fieldErrors: {}, formError: null, retryAfterSeconds: null }
+    : credentials.state;
+  state.handle = typeof input.handle === "string" ? normalizeHandle(input.handle) : "";
+  if (!handle.success) {
+    state.fieldErrors.handle = "INVALID_HANDLE";
+  }
+  return { ok: false, state };
+}
+
+export function failureState(email: string, failure: AuthFailure, handle = ""): AuthState {
+  const state: AuthState = { email, handle, fieldErrors: {}, formError: null, retryAfterSeconds: null };
   if (failure.code === "INVALID_EMAIL") {
     state.fieldErrors.email = failure.code;
   } else if (failure.code === "INVALID_PASSWORD") {
     state.fieldErrors.password = failure.code;
+  } else if (failure.code === "INVALID_HANDLE" || failure.code === "HANDLE_ALREADY_TAKEN") {
+    state.fieldErrors.handle = failure.code;
   } else {
     state.formError = failure.code;
     state.retryAfterSeconds = failure.retryAfterSeconds ?? null;
