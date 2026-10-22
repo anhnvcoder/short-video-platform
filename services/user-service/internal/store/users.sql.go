@@ -12,19 +12,91 @@ import (
 )
 
 const createUser = `-- name: CreateUser :exec
-INSERT INTO users (id, email, password_hash)
-VALUES ($1, $2, $3)
+INSERT INTO users (id, email, password_hash, handle, display_name)
+VALUES ($1, $2, $3, $4, $5)
 `
 
 type CreateUserParams struct {
 	ID           uuid.UUID
 	Email        string
 	PasswordHash string
+	Handle       string
+	DisplayName  string
 }
 
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) error {
-	_, err := q.db.Exec(ctx, createUser, arg.ID, arg.Email, arg.PasswordHash)
+	_, err := q.db.Exec(ctx, createUser,
+		arg.ID,
+		arg.Email,
+		arg.PasswordHash,
+		arg.Handle,
+		arg.DisplayName,
+	)
 	return err
+}
+
+const getProfileByHandle = `-- name: GetProfileByHandle :one
+SELECT u.id, u.handle, u.display_name,
+       EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = $1 AND f.followee_id = u.id) AS followed_by_me
+FROM users u
+WHERE u.handle = $2
+`
+
+type GetProfileByHandleParams struct {
+	CallerID uuid.UUID
+	Handle   string
+}
+
+type GetProfileByHandleRow struct {
+	ID           uuid.UUID
+	Handle       string
+	DisplayName  string
+	FollowedByMe bool
+}
+
+// follows has no self edge (follows_no_self_follow), so a caller reading their own profile gets false.
+func (q *Queries) GetProfileByHandle(ctx context.Context, arg GetProfileByHandleParams) (GetProfileByHandleRow, error) {
+	row := q.db.QueryRow(ctx, getProfileByHandle, arg.CallerID, arg.Handle)
+	var i GetProfileByHandleRow
+	err := row.Scan(
+		&i.ID,
+		&i.Handle,
+		&i.DisplayName,
+		&i.FollowedByMe,
+	)
+	return i, err
+}
+
+const getProfiles = `-- name: GetProfiles :many
+SELECT id, handle, display_name FROM users
+WHERE id = ANY($1::uuid[])
+`
+
+type GetProfilesRow struct {
+	ID          uuid.UUID
+	Handle      string
+	DisplayName string
+}
+
+// ANY answers a repeated id once and skips ids without a user.
+func (q *Queries) GetProfiles(ctx context.Context, ids []uuid.UUID) ([]GetProfilesRow, error) {
+	rows, err := q.db.Query(ctx, getProfiles, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetProfilesRow
+	for rows.Next() {
+		var i GetProfilesRow
+		if err := rows.Scan(&i.ID, &i.Handle, &i.DisplayName); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
@@ -41,6 +113,30 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (GetUserByEm
 	row := q.db.QueryRow(ctx, getUserByEmail, email)
 	var i GetUserByEmailRow
 	err := row.Scan(&i.ID, &i.PasswordHash)
+	return i, err
+}
+
+const updateDisplayName = `-- name: UpdateDisplayName :one
+UPDATE users SET display_name = $1
+WHERE id = $2
+RETURNING id, handle, display_name
+`
+
+type UpdateDisplayNameParams struct {
+	DisplayName string
+	ID          uuid.UUID
+}
+
+type UpdateDisplayNameRow struct {
+	ID          uuid.UUID
+	Handle      string
+	DisplayName string
+}
+
+func (q *Queries) UpdateDisplayName(ctx context.Context, arg UpdateDisplayNameParams) (UpdateDisplayNameRow, error) {
+	row := q.db.QueryRow(ctx, updateDisplayName, arg.DisplayName, arg.ID)
+	var i UpdateDisplayNameRow
+	err := row.Scan(&i.ID, &i.Handle, &i.DisplayName)
 	return i, err
 }
 

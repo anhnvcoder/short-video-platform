@@ -3,7 +3,7 @@
 // algorithm in memory for the routes that must stay limited while Redis fails.
 //
 // Each route class decides what happens when Redis fails or takes longer than storeTimeout
-// (threat model RL-2): a soft-closed class (register, login, refresh, upload) falls back to an
+// (threat model RL-2): a soft-closed class (register, login, refresh, upload, public) falls back to an
 // in-memory counter per instance with lower limits; an open class (write, read, view-once) lets
 // the request through.
 package ratelimit
@@ -66,10 +66,16 @@ var (
 	// guessing a 256-bit token is hopeless anyway, so the limit guards user-service, which runs
 	// one transaction per call, rather than the tokens.
 	Refresh = Class{Name: "refresh", Limit: Limit{60, time.Minute, 30}, Fallback: Limit{30, time.Minute, 15}}
+	// Public covers GET /public/videos/{video_id} by client IP, the one route without a caller
+	// outside /auth (ADR-0018 section 6). Opening a shared link is one call, so 120 a minute serves
+	// many people behind one NAT and a burst of 60 a whole chat group opening the same link with
+	// the link-preview bots; a scraper is held to 2 a second per IP. It is soft-closed: a route
+	// anyone can call is never left unlimited, not even while Redis fails.
+	Public = Class{Name: "public", Limit: Limit{120, time.Minute, 60}, Fallback: Limit{60, time.Minute, 30}}
 )
 
 // classes are the classes above, whose decision series New creates at zero.
-var classes = []Class{Register, LoginIP, LoginEmail, Upload, Write, Read, Refresh}
+var classes = []Class{Register, LoginIP, LoginEmail, Upload, Write, Read, Refresh, Public}
 
 // gcraScript is the GCRA step, atomic in Redis. KEYS[1] holds the theoretical arrival time
 // (TAT) in Unix milliseconds; ARGV[1] is the interval T and ARGV[2] the burst. Time comes from

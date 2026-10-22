@@ -1,7 +1,9 @@
 // Package server implements svp.video.v1.VideoService: InitUpload records a new video and signs
 // its upload form, CompleteUpload checks the uploaded object and emits video.uploaded through the
 // outbox, GetVideo reads a video back (ADR-0004, docs/adr/0008-async-upload-pipeline-stage2a.md).
-// HandleTranscode consumes the transcode results that move the video to READY or FAILED.
+// GetPublicVideo serves a READY video to anyone and ListAuthorVideos lists the videos of an author
+// (docs/adr/0018-web-profiles-public-video-upload.md, sections 4 and 6). HandleTranscode consumes
+// the transcode results that move the video to READY or FAILED.
 package server
 
 import (
@@ -33,6 +35,7 @@ import (
 	"github.com/anhnvcoder/short-video-platform/internal/logx"
 	"github.com/anhnvcoder/short-video-platform/internal/objstore"
 	"github.com/anhnvcoder/short-video-platform/internal/outbox"
+	"github.com/anhnvcoder/short-video-platform/internal/pagetoken"
 	"github.com/anhnvcoder/short-video-platform/services/video-service/internal/store"
 )
 
@@ -59,6 +62,12 @@ const (
 	rollbackTimeout = 5 * time.Second
 )
 
+// Page sizes of ListAuthorVideos (AIP-158, video_service.proto), as in the feeds.
+const (
+	DefaultPageSize = 10
+	MaxPageSize     = 50
+)
+
 // readyBuckets are the V buckets of docs/adr/0011-observability-stage3.md, section 5, in seconds.
 // 120 is a boundary because the video-ready SLO counts a sample at or under 120 s as good.
 var readyBuckets = []float64{10, 20, 30, 45, 60, 90, 120, 180, 300, 600}
@@ -74,6 +83,9 @@ const (
 	ReasonUploadNotFound     = "UPLOAD_NOT_FOUND"
 	ReasonUploadMismatch     = "UPLOAD_MISMATCH"
 	ReasonTooManyUploads     = "TOO_MANY_UPLOADS"
+	ReasonInvalidAuthorID    = "INVALID_AUTHOR_ID"
+	ReasonInvalidPageSize    = "INVALID_PAGE_SIZE"
+	ReasonInvalidPageToken   = "INVALID_PAGE_TOKEN"
 	// ReasonDependencyUnavailable goes with UNAVAILABLE when a dependency of the service (object
 	// storage) is down while the service itself runs: the gateway's breaker does not count it.
 	ReasonDependencyUnavailable = "DEPENDENCY_UNAVAILABLE"
@@ -95,8 +107,8 @@ type Storage interface {
 	DeletePrefix(ctx context.Context, prefix string) error
 }
 
-// Server serves VideoService. Every RPC expects the caller id that callerid.UnaryServerInterceptor
-// puts into the context.
+// Server serves VideoService. Every RPC but GetPublicVideo expects the caller id that
+// callerid.UnaryServerInterceptor puts into the context.
 type Server struct {
 	videov1.UnimplementedVideoServiceServer
 
@@ -129,10 +141,14 @@ func New(pool *pgxpool.Pool, storage Storage, logger *slog.Logger) *Server {
 	}
 }
 
-// CallerInterceptor requires the caller's x-user-id on every VideoService RPC. Only the health
-// check is public: the healthcheck subcommand and probes call it without a user.
+// CallerInterceptor requires the caller's x-user-id on every VideoService RPC but the public ones:
+// the health check, which the healthcheck subcommand and probes call without a user, and
+// GetPublicVideo, which answers the same for everyone and so ignores x-user-id.
 func CallerInterceptor() grpc.UnaryServerInterceptor {
-	return callerid.UnaryServerInterceptor(healthpb.Health_Check_FullMethodName)
+	return callerid.UnaryServerInterceptor(
+		healthpb.Health_Check_FullMethodName,
+		videov1.VideoService_GetPublicVideo_FullMethodName,
+	)
 }
 
 // InitUpload creates a video in UPLOADING owned by the caller and returns a form that uploads
@@ -356,6 +372,93 @@ func (s *Server) GetVideo(ctx context.Context, req *videov1.GetVideoRequest) (*v
 		return nil, videoNotFound()
 	}
 	return &videov1.GetVideoResponse{Video: toProto(v)}, nil
+}
+
+// GetPublicVideo returns a READY video to anyone, for the public share page; it has no caller.
+// A malformed id, a missing video and a video not READY all get the same NOT_FOUND as GetVideo, so
+// an anonymous caller cannot tell an unpublished video from a missing one (UP-3). A malformed id
+// is still rejected before the database is read.
+func (s *Server) GetPublicVideo(ctx context.Context, req *videov1.GetPublicVideoRequest) (*videov1.GetPublicVideoResponse, error) {
+	videoID, err := ids.Parse(req.GetVideoId())
+	if err != nil {
+		return nil, videoNotFound()
+	}
+	v, err := s.queries.GetVideo(ctx, videoID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, videoNotFound()
+	}
+	if err != nil {
+		return nil, s.internal(ctx, "select video", err)
+	}
+	if v.Status != statusReady {
+		return nil, videoNotFound()
+	}
+	return &videov1.GetPublicVideoResponse{Video: toProto(v)}, nil
+}
+
+// ListAuthorVideos returns a page of the videos of author_id, newest first by (created_at,
+// video_id). The author sees videos in every status; anyone else only READY ones, the rule of
+// GetVideo (UP-3). Which videos are listed comes from author_id and the caller only: the page
+// token holds a position, so an edited or borrowed token never shows a hidden video.
+func (s *Server) ListAuthorVideos(ctx context.Context, req *videov1.ListAuthorVideosRequest) (*videov1.ListAuthorVideosResponse, error) {
+	caller, err := callerID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	authorID, err := ids.Parse(req.GetAuthorId())
+	if err != nil {
+		return nil, grpcerr.New(codes.InvalidArgument, ReasonInvalidAuthorID, "author_id must be a canonical lowercase UUID")
+	}
+	size, before, err := parsePage(req.GetPageSize(), req.GetPageToken())
+	if err != nil {
+		return nil, err
+	}
+
+	params := store.ListAuthorVideosParams{
+		AuthorID:    authorID,
+		AllStatuses: authorID == caller,
+		// One row more than the page tells whether a next page exists.
+		RowLimit: size + 1,
+	}
+	if before != nil {
+		params.BeforeCreatedAt, params.BeforeID = &before.Time, before.VideoID
+	}
+	rows, err := s.queries.ListAuthorVideos(ctx, params)
+	if err != nil {
+		return nil, s.internal(ctx, "select author videos", err)
+	}
+	next := ""
+	if len(rows) > int(size) {
+		rows = rows[:size]
+		last := rows[len(rows)-1]
+		next = pagetoken.Encode(pagetoken.Cursor{Time: last.CreatedAt, VideoID: last.ID})
+	}
+	videos := make([]*videov1.Video, len(rows))
+	for i, v := range rows {
+		videos[i] = toProto(v)
+	}
+	return &videov1.ListAuthorVideosResponse{Videos: videos, NextPageToken: next}, nil
+}
+
+// parsePage checks page_size (0 means DefaultPageSize, above MaxPageSize means MaxPageSize,
+// negative is rejected) and decodes page_token: "" is the first page, with a nil cursor.
+func parsePage(size int32, token string) (int32, *pagetoken.Cursor, error) {
+	switch {
+	case size < 0:
+		return 0, nil, grpcerr.New(codes.InvalidArgument, ReasonInvalidPageSize, "page_size must not be negative")
+	case size == 0:
+		size = DefaultPageSize
+	case size > MaxPageSize:
+		size = MaxPageSize
+	}
+	if token == "" {
+		return size, nil, nil
+	}
+	c, err := pagetoken.Decode(token)
+	if err != nil {
+		return 0, nil, grpcerr.New(codes.InvalidArgument, ReasonInvalidPageToken, "page_token is not a token this service returned")
+	}
+	return size, &c, nil
 }
 
 // callerID returns the caller put into ctx by the callerid interceptor, which has already

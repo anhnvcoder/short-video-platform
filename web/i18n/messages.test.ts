@@ -12,7 +12,16 @@ function keys(tree: object, prefix = ""): string[] {
 describe("messages", () => {
   it("has one tree per locale with the same namespaces and keys", () => {
     const reference = keys(messagesFor("vi")).sort();
-    expect(Object.keys(messagesFor("vi")).sort()).toEqual(["auth", "common", "errors", "feed", "shell"]);
+    expect(Object.keys(messagesFor("vi")).sort()).toEqual([
+      "auth",
+      "common",
+      "errors",
+      "feed",
+      "profile",
+      "share",
+      "shell",
+      "upload",
+    ]);
     for (const locale of locales) {
       expect(keys(messagesFor(locale)).sort()).toEqual(reference);
     }

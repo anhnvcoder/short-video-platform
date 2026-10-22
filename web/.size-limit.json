@@ -22,5 +22,29 @@
     "path": [".next/size-limit/runtime/*.js", ".next/size-limit/login/*.js"],
     "gzip": true,
     "limit": "200 kB"
+  },
+  {
+    "name": "Video (/v/[id]): the route's JavaScript over Next's runtime, hls.js light included",
+    "path": ".next/size-limit/video/*.js",
+    "gzip": true,
+    "limit": "200 kB"
+  },
+  {
+    "name": "Video (/v/[id]) first load: Next's runtime and the route's JavaScript, hls.js light included",
+    "path": [".next/size-limit/runtime/*.js", ".next/size-limit/video/*.js"],
+    "gzip": true,
+    "limit": "330 kB"
+  },
+  {
+    "name": "Upload (/upload): the route's JavaScript over Next's runtime",
+    "path": ".next/size-limit/upload/*.js",
+    "gzip": true,
+    "limit": "80 kB"
+  },
+  {
+    "name": "Upload (/upload) first load: Next's runtime and the route's JavaScript",
+    "path": [".next/size-limit/runtime/*.js", ".next/size-limit/upload/*.js"],
+    "gzip": true,
+    "limit": "200 kB"
   }
 ]

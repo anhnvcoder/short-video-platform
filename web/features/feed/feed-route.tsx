@@ -28,6 +28,12 @@ export function FeedRoute({ kind }: { kind: FeedKind }) {
   );
 }
 
+// When this render ran: the client counts "2 days ago" from it until its own clock takes over, so hydration reads the
+// text the server wrote.
+function renderTime(): number {
+  return Date.now();
+}
+
 // The media origin is passed down as a prop: it is not a secret, and the browser bundle reads no environment variable.
 // When the first page cannot be had now, the client fetches it, after the Retry-After the gateway gave here if any.
 async function LoadedFeed({ kind }: { kind: FeedKind }) {
@@ -40,6 +46,7 @@ async function LoadedFeed({ kind }: { kind: FeedKind }) {
       initialRetryAfterSeconds={first.retryAfterSeconds}
       mediaOrigin={serverEnv().mediaOrigin}
       currentUserId={user.userId}
+      renderedAt={renderTime()}
     />
   );
 }

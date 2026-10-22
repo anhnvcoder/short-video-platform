@@ -17,6 +17,7 @@ export const testEnv: ServerEnv = {
   redisURL: "redis://127.0.0.1:6379/15",
   appOrigin: "http://localhost:3001",
   mediaOrigin: "http://127.0.0.1:9000",
+  uploadOrigin: "http://127.0.0.1:9000",
   secure: false,
 };
 

@@ -11,6 +11,42 @@ import (
 	"uuid"
 )
 
+const getCounts = `-- name: GetCounts :many
+SELECT
+    COALESCE(v.view_count, 0)::bigint AS view_count,
+    COALESCE(l.like_count, 0)::bigint AS like_count
+FROM unnest($1::uuid[]) WITH ORDINALITY AS r(video_id, ord)
+LEFT JOIN view_counts v ON v.video_id = r.video_id
+LEFT JOIN like_counts l ON l.video_id = r.video_id
+ORDER BY r.ord
+`
+
+type GetCountsRow struct {
+	ViewCount int64
+	LikeCount int64
+}
+
+// GetStats without a caller: the same rows without liked_by_me, and the likes table is not read.
+func (q *Queries) GetCounts(ctx context.Context, videoIds []uuid.UUID) ([]GetCountsRow, error) {
+	rows, err := q.db.Query(ctx, getCounts, videoIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetCountsRow
+	for rows.Next() {
+		var i GetCountsRow
+		if err := rows.Scan(&i.ViewCount, &i.LikeCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getStats = `-- name: GetStats :many
 SELECT
     COALESCE(v.view_count, 0)::bigint AS view_count,

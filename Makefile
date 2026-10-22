@@ -76,7 +76,7 @@ SVP_TEST_REDIS_URL ?= redis://127.0.0.1:6379/15
 
 .PHONY: help tools ci-tools generate generate-go generate-check slo otelcol-validate fmt-check vet lint actionlint buf-lint test \
 	cover check check-go helm-check trivy-config renovate-check hooks web-install web-dev web-generate web-generate-check \
-	web-check web-e2e measure-web
+	web-check web-e2e measure-web measure-upload web-lighthouse
 
 help: ## List the targets
 	@grep -hE '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -256,7 +256,8 @@ web-install: ## Install the web client's packages exactly as web/pnpm-lock.yaml 
 # browser origin is http://localhost:3002, not 127.0.0.1: POST requests from any other origin are refused as CSRF.
 web-dev: ## Run the web client in dev mode at http://localhost:3002 against the gateway at 127.0.0.1:8080
 	@$(WEB) GATEWAY_URL=http://127.0.0.1:8080 REDIS_URL=redis://127.0.0.1:6379/9 APP_ORIGIN=http://localhost:3002 \
-		MEDIA_ORIGIN=http://127.0.0.1:9000 pnpm dev --port 3002 --hostname 127.0.0.1
+		MEDIA_ORIGIN=http://127.0.0.1:9000 UPLOAD_ORIGIN=http://127.0.0.1:9000 \
+		pnpm dev --port 3002 --hostname 127.0.0.1
 
 web-generate: ## Generate web/gen/api.d.ts from services/gateway/openapi.yaml (openapi-typescript)
 	@$(WEB) pnpm generate
@@ -270,14 +271,15 @@ web-generate-check: ## Fail when make web-generate would change web/gen/api.d.ts
 	echo "make web-generate changes web/gen/api.d.ts (run make web-generate and commit the result):"; \
 	diff -u gen/api.d.ts "$$tmp/api.d.ts"; exit 1
 
-# Bundle budgets (docs/adr/0016-web-client.md, section 10) on the output of next build, gzip, checked by size-limit
-# with web/.size-limit.json. Each route has two budgets. The first covers what the route adds to Next's runtime: the
-# chunks the build's client reference manifest lists for the route's layouts, page and error boundaries (the scripts of
-# its HTML), plus the chunks those load lazily (hls.js on the feed). The second covers the whole first load, that set
-# plus the runtime (rootMainFiles of build-manifest.json: React, react-dom, Next's router, the same on every route), so
-# a runtime that grows fails the check too. The nomodule polyfill, which current browsers skip, is left out of both.
-# Turbopack names chunks by a content hash, so each set is copied to .next/size-limit/<set>/ first, where the config's
-# globs find it.
+# Bundle budgets (docs/adr/0016-web-client.md, section 10; for /upload and /v/[id]
+# docs/adr/0018-web-profiles-public-video-upload.md, section 11) on the output of next build, gzip, checked by
+# size-limit with web/.size-limit.json. Each route has two budgets. The first covers what the route adds to Next's
+# runtime: the chunks the build's client reference manifest lists for the route's layouts, page and error boundaries
+# (the scripts of its HTML), plus the chunks those load lazily (hls.js on the feed and /v/[id]). The second covers the
+# whole first load, that set plus the runtime (rootMainFiles of build-manifest.json: React, react-dom, Next's router,
+# the same on every route), so a runtime that grows fails the check too. The nomodule polyfill, which current browsers
+# skip, is left out of both. Turbopack names chunks by a content hash, so each set is copied to .next/size-limit/<set>/
+# first, where the config's globs find it.
 define WEB_SIZE_CHUNKS
 const fs = require("node:fs");
 const runtime = JSON.parse(fs.readFileSync(".next/build-manifest.json", "utf8")).rootMainFiles;
@@ -291,7 +293,13 @@ function routeChunks(page) {
   }
   return [...chunks].filter((chunk) => !runtime.includes(chunk));
 }
-const sets = { runtime, feed: routeChunks("(main)/page"), login: routeChunks("(auth)/login/page") };
+const sets = {
+  runtime,
+  feed: routeChunks("(main)/page"),
+  login: routeChunks("(auth)/login/page"),
+  upload: routeChunks("(main)/upload/page"),
+  video: routeChunks("v/[id]/page"),
+};
 fs.rmSync(".next/size-limit", { recursive: true, force: true });
 for (const [name, chunks] of Object.entries(sets)) {
   fs.mkdirSync(".next/size-limit/" + name, { recursive: true });
@@ -306,13 +314,24 @@ web-check: ## Lint, format check, typecheck, unit tests (Redis db 15 as for test
 		node -e "$$WEB_SIZE_CHUNKS" && pnpm size
 
 # Both need the compose stack (make up) and the Playwright browsers (pnpm exec playwright install chromium webkit in
-# web/). LOCAL LAB ONLY: the seed (web/e2e/seed.sh) deletes the gateway's register rate limit keys in Redis db 10, as
-# make smoke does.
+# web/). LOCAL LAB ONLY: the seed (web/e2e/seed.sh) and every Playwright worker (web/e2e/fixtures.ts) delete the
+# gateway's register rate limit keys in Redis db 10, as make smoke does.
 web-e2e: ## Playwright end-to-end tests of the web client on Chromium and WebKit against the stack of make up (pnpm e2e)
 	@$(WEB) pnpm e2e
 
 measure-web: ## Run web-e2e and print time to first frame after a swipe (p50/p95 per browser) and the memory of container web at rest and after; JSON in web/test-results/
 	@$(WEB) bash e2e/measure-web.sh
+
+# Needs the stack (make up), ffmpeg and jq; LOCAL LAB ONLY like web-e2e (the seed runs first).
+measure-upload: ## Upload a ~100 MB video from Chromium through /upload; print time, throughput, page CPU and time to READY; JSON in web/test-results/
+	@$(WEB) bash e2e/measure-upload.sh
+
+# Needs the stack (make up) and Playwright's Chromium (pnpm exec playwright install chromium in web/); one run per page,
+# so the numbers carry noise. Not in CI until the stack runs there (docs/adr/0018-web-profiles-public-video-upload.md,
+# section 10). LOCAL LAB ONLY like web-e2e: web/lighthouse/run.sh registers a fresh user and deletes the gateway's
+# register rate limit keys in Redis db 10 first.
+web-lighthouse: ## Lighthouse (mobile, one run per page) of the feed logged in and /v/{id} logged out: LCP/CLS/TBT thresholds, reports in web/test-results/lighthouse/
+	@$(WEB) bash lighthouse/run.sh
 
 # Docker and compose targets live in their own file (stage 1, compose card).
 -include deploy/compose/compose.mk

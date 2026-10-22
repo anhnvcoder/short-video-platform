@@ -736,7 +736,10 @@ func TestDatabaseErrorIsGeneric(t *testing.T) {
 	token := newRefreshToken().value.Reveal()
 	_, refreshErr := e.client.Refresh(t.Context(), &userv1.RefreshRequest{RefreshToken: token})
 	_, logoutErr := e.client.Logout(t.Context(), &userv1.LogoutRequest{RefreshToken: token})
-	for _, err := range []error{regErr, loginErr, followErr, refreshErr, logoutErr} {
+	_, profilesErr := e.client.GetProfiles(t.Context(), &userv1.GetProfilesRequest{UserIds: []string{ids.New()}})
+	_, byHandleErr := e.client.GetProfileByHandle(asCaller(t.Context(), ids.New()), &userv1.GetProfileByHandleRequest{Handle: "some_handle"})
+	_, renameErr := e.client.UpdateDisplayName(asCaller(t.Context(), ids.New()), &userv1.UpdateDisplayNameRequest{DisplayName: "Name"})
+	for _, err := range []error{regErr, loginErr, followErr, refreshErr, logoutErr, profilesErr, byHandleErr, renameErr} {
 		st := status.Convert(err)
 		if st.Code() != codes.Internal || st.Message() != "internal error" || len(st.Details()) != 0 {
 			t.Errorf("got %v with details %v, want INTERNAL \"internal error\" without details", err, st.Details())

@@ -4,6 +4,7 @@ import { Skeleton, Spinner } from "@/components/ui";
 import { focusRing } from "@/components/ui/styles";
 import { cn } from "@/lib/cn";
 import { ActionRail, type RailFollow } from "./action-rail";
+import { AuthorLine, type AuthorInfo } from "./author-line";
 import { FeedTitle } from "./feed-title";
 
 // What the player reports for the current item (features/feed/player-pool.ts).
@@ -13,7 +14,12 @@ type FeedItemProps = {
   index: number;
   title: string;
   authorId: string;
-  // Thumbnail already checked against the media origin; null shows the plain background.
+  author: AuthorInfo | null;
+  // Profile link of the author; null where the viewer cannot open profiles.
+  authorHref: string | null;
+  publishedAgo: string | null;
+  // Thumbnail already checked against the media origin; null shows the plain background. The current item's poster
+  // is the page's largest paint, so it loads first; the others wait until they are near the screen.
   posterUrl: string | null;
   current: boolean;
   playback: ItemPlayback | undefined;
@@ -27,9 +33,13 @@ type FeedItemProps = {
   // A rate limit is running: like and follow wait for its Retry-After.
   locked: boolean;
   onLike: () => void;
+  onShare: () => void;
   onStageTap: () => void;
   onToggleMute: () => void;
   onRetry: () => void;
+  // "share": the one video of the share page, which shows the author, title and actions in a side panel on wide
+  // screens (web/design/SVP Desktop.dc.html D04) instead of over and beside the video.
+  variant?: "feed" | "share";
 };
 
 // Overlay pills and scrims over video are fixed shades of black in both themes, like the white of on-media.
@@ -41,6 +51,9 @@ export function FeedItem({
   index,
   title,
   authorId,
+  author,
+  authorHref,
+  publishedAgo,
   posterUrl,
   current,
   playback,
@@ -53,23 +66,36 @@ export function FeedItem({
   follow,
   locked,
   onLike,
+  onShare,
   onStageTap,
   onToggleMute,
   onRetry,
+  variant = "feed",
 }: FeedItemProps) {
   const t = useTranslations("feed");
   const loading = current && (playback === undefined || playback === "loading");
+  const share = variant === "share";
   return (
     <article
       data-index={index}
       aria-label={title || undefined}
-      className="relative flex h-full snap-start snap-always items-center justify-center md:gap-5 md:py-4 md:pl-23"
+      className={cn(
+        "relative flex h-full items-center justify-center",
+        share ? "" : "snap-start snap-always md:gap-5 md:py-4 md:pl-23",
+      )}
     >
       <div className="relative h-full w-full overflow-hidden bg-[oklch(0_0_0)] text-on-media md:aspect-9/16 md:w-auto md:shrink-0 md:rounded-lg">
         {posterUrl && (
           // A plain <img>: next/image always writes a style attribute, which the CSP (no 'unsafe-inline') blocks.
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={posterUrl} alt="" className="absolute inset-0 size-full object-cover" />
+          <img
+            src={posterUrl}
+            alt=""
+            fetchPriority={current ? "high" : undefined}
+            loading={current ? undefined : "lazy"}
+            decoding={current ? undefined : "async"}
+            className="absolute inset-0 size-full object-cover"
+          />
         )}
         {/* The player moves one of its <video> elements in here while the item is near the screen. */}
         <div data-part="video-host" className="absolute inset-0" />
@@ -187,7 +213,13 @@ export function FeedItem({
           </div>
         )}
 
-        <div className="absolute right-21 bottom-4.5 left-4 z-4 md:right-5 md:bottom-5.5 md:left-5">
+        <div
+          className={cn(
+            "absolute right-21 bottom-4.5 left-4 z-4 flex flex-col gap-1.5 md:right-5 md:bottom-5.5 md:left-5",
+            share && "md:hidden",
+          )}
+        >
+          <AuthorLine author={author} href={authorHref} publishedAgo={publishedAgo} />
           <FeedTitle title={title} />
         </div>
 
@@ -205,15 +237,19 @@ export function FeedItem({
         </div>
       </div>
 
-      <ActionRail
-        authorId={authorId}
-        follow={follow}
-        locked={locked}
-        liked={liked}
-        likeCount={likeCount}
-        viewCount={viewCount}
-        onLike={onLike}
-      />
+      <div className={cn("contents", share && "md:hidden")}>
+        <ActionRail
+          authorId={authorId}
+          authorName={author?.displayName}
+          follow={follow}
+          locked={locked}
+          liked={liked}
+          likeCount={likeCount}
+          viewCount={viewCount}
+          onLike={onLike}
+          onShare={onShare}
+        />
+      </div>
     </article>
   );
 }

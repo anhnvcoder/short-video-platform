@@ -57,7 +57,24 @@ describe("proxyApiRequest without a session store", () => {
   it.each([
     ["an unknown route", "GET", "/users"],
     ["the auth routes", "POST", "/auth/login"],
-    ["upload, not in this part", "POST", "/videos"],
+    ["the public video route, server only", "GET", `/public/videos/${videoId}`],
+    ["the videos of no user", "GET", "/users/videos"],
+    ["a non-UUID user id", "GET", "/users/me/videos"],
+    ["an upper case user id", "GET", `/users/${userId.toUpperCase()}/videos`],
+    ["dot segments in the videos of a user", "GET", `/users/${userId}/../videos`],
+    ["an escaped slash in the videos of a user", "GET", `/users/${userId}%2Fvideos`],
+    ["a trailing slash after /me", "GET", "/me/"],
+    ["an upper case handle", "GET", "/profiles/Alice"],
+    ["a handle of two characters", "GET", "/profiles/ab"],
+    ["a handle of 31 characters", "GET", `/profiles/a${"b".repeat(30)}`],
+    ["a handle starting with _", "GET", "/profiles/_bob"],
+    ["a handle starting with a digit", "GET", "/profiles/1bob"],
+    ["a handle with a dot", "GET", "/profiles/bob.smith"],
+    ["a handle with an escape", "GET", "/profiles/b%C3%B3b"],
+    ["an escaped slash after a handle", "GET", "/profiles/bob%2F..%2Fme"],
+    ["escaped dot segments to a short handle", "GET", "/profiles/bob/%2e%2e/ab"],
+    ["a profile without a handle", "GET", "/profiles/"],
+    ["an id after complete", "POST", `/videos/${videoId}/complete/${videoId}`],
     ["a non-UUID id", "GET", "/videos/abc"],
     ["an upper case id", "GET", `/videos/${videoId.toUpperCase()}`],
     ["dot segments", "GET", `/videos/${videoId}/../like`],
@@ -81,6 +98,14 @@ describe("proxyApiRequest without a session store", () => {
     ["POST", `/me/following/${videoId}`, "PUT, DELETE"],
     ["OPTIONS", "/feed/following", "GET"],
     ["HEAD", "/feed/following", "GET"],
+    ["GET", "/videos", "POST"],
+    ["PUT", "/videos", "POST"],
+    ["GET", `/videos/${videoId}/complete`, "POST"],
+    ["PATCH", "/me", "GET"],
+    ["PUT", "/me", "GET"],
+    ["DELETE", "/me/videos", "GET"],
+    ["POST", `/users/${userId}/videos`, "GET"],
+    ["PUT", "/profiles/alice", "GET"],
   ])("answers 405 for %s %s with Allow: %s", async (method, path, allow) => {
     const response = await proxyApiRequest(apiRequest(path, { method }), services);
     expect(response.status).toBe(405);
@@ -91,6 +116,11 @@ describe("proxyApiRequest without a session store", () => {
     ["an unknown parameter", "/feed/explore?limit=5"],
     ["a repeated parameter", "/feed/explore?cursor=a&cursor=b"],
     ["a query on a route without one", `/videos/${videoId}?page_size=3`],
+    ["an unknown parameter on the caller's videos", "/me/videos?status=READY"],
+    ["a repeated parameter on a user's videos", `/users/${userId}/videos?page_size=1&page_size=2`],
+    ["an author filter on a user's videos", `/users/${userId}/videos?author_id=${videoId}`],
+    ["a query on /me", "/me?fields=email"],
+    ["a query on a profile", "/profiles/alice?handle=bob"],
   ])("answers 400 for %s", async (_name, path) => {
     const response = await proxyApiRequest(apiRequest(path), services);
     expect(response.status).toBe(400);
@@ -190,6 +220,13 @@ describe.skipIf(!testRedisURL)("proxyApiRequest on the test Redis", () => {
     ["DELETE", `/me/following/${videoId}`, 204],
     ["GET", `/videos/${videoId}`, 200],
     ["GET", "/feed/explore", 200],
+    ["POST", `/videos/${videoId}/complete`, 202],
+    ["GET", "/me", 200],
+    ["GET", "/me/videos", 200],
+    ["GET", `/users/${userId}/videos`, 200],
+    ["GET", "/profiles/alice", 200],
+    ["GET", `/profiles/a${"b".repeat(29)}`, 200],
+    ["GET", "/profiles/u_23456789abcd", 200],
   ])("passes %s %s and its status on", async (method, path, status) => {
     const { services, sid } = await withSession();
     const seen = gateway(() => (status === 200 ? HttpResponse.json({}) : new HttpResponse(null, { status })));
@@ -197,6 +234,31 @@ describe.skipIf(!testRedisURL)("proxyApiRequest on the test Redis", () => {
     expect(response.status).toBe(status);
     expect(seen[0]?.method).toBe(method);
     expect(new URL(seen[0]!.url).pathname).toBe(path);
+  });
+
+  it("passes the paging query of a user's videos on", async () => {
+    const { services, sid } = await withSession();
+    const seen = gateway(() => HttpResponse.json({ items: [], next_cursor: "" }));
+    const path = `/users/${userId}/videos`;
+    const response = await proxyApiRequest(apiRequest(`${path}?cursor=c%2B1&page_size=18`, { sid }), services);
+    expect(response.status).toBe(200);
+    expect(new URL(seen[0]!.url).pathname).toBe(path);
+    expect(Object.fromEntries(new URL(seen[0]!.url).searchParams)).toEqual({ cursor: "c+1", page_size: "18" });
+  });
+
+  it("passes the JSON body of an upload request on and its 429 TOO_MANY_UPLOADS back", async () => {
+    const { services, sid } = await withSession();
+    const seen = gateway(() => gatewayProblem(429, "TOO_MANY_UPLOADS"));
+    const body = JSON.stringify({ title: "clip", size_bytes: 1024, content_type: "video/mp4" });
+    const response = await proxyApiRequest(
+      apiRequest("/videos", { method: "POST", sid, headers: { "content-type": "application/json" }, body }),
+      services,
+    );
+    expect(seen[0]?.method).toBe("POST");
+    expect(new URL(seen[0]!.url).pathname).toBe("/videos");
+    expect(seen[0]?.body).toBe(body);
+    expect(response.status).toBe(429);
+    expect(await problemCode(response)).toBe("TOO_MANY_UPLOADS");
   });
 
   it("passes a JSON body and its problem answer through", async () => {

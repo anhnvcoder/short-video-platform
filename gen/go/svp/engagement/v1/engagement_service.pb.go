@@ -357,7 +357,8 @@ type VideoStats struct {
 	ViewCount int64 `protobuf:"varint,2,opt,name=view_count,json=viewCount,proto3" json:"view_count,omitempty"`
 	// Total likes.
 	LikeCount int64 `protobuf:"varint,3,opt,name=like_count,json=likeCount,proto3" json:"like_count,omitempty"`
-	// Whether the caller currently likes the video.
+	// Whether the caller currently likes the video; false when the call has no
+	// caller.
 	LikedByMe     bool `protobuf:"varint,4,opt,name=liked_by_me,json=likedByMe,proto3" json:"liked_by_me,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

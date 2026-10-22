@@ -1,10 +1,20 @@
 import { randomBytes } from "node:crypto";
 import type { APIResponse } from "@playwright/test";
-import { authedTest, expect, feedItem, logIn, logOut, playingVideo, registerAccount, test } from "./fixtures";
+import {
+  authedTest,
+  expect,
+  feedItem,
+  logIn,
+  logOut,
+  playingVideo,
+  registerAccount,
+  test,
+  uploadOrigin,
+} from "./fixtures";
 import { seed } from "./seed";
 
 // The web rows of the threat model checked in a browser (docs/threat-model.md, section 4.9): WEB-1, WEB-2, WEB-4,
-// WEB-6, and the CSP of docs/adr/0016-web-client.md, section 6.
+// WEB-6, WEB-10, and the CSP of docs/adr/0016-web-client.md, section 6.
 
 // Compose serves plain http on localhost: the session cookie has no prefix and no Secure (ADR-0016, section 5). The
 // __Host-Http- form with Secure is checked on k3d over https.
@@ -145,12 +155,50 @@ test("CSP: login and register have a nonce on every script, new on every respons
   }
 });
 
-authedTest("CSP: the feed pages have a nonce on every script, new on every response", async ({ page }) => {
-  for (const path of ["/", "/following"]) {
-    const first = await page.request.get(path);
-    const { nonce } = cspOf(first);
-    await expectScriptsCarryNonce(first, nonce);
-    const second = cspOf(await page.request.get(path));
-    expect(second.nonce).not.toBe(nonce);
-  }
+authedTest(
+  "CSP: the pages of a logged-in user have a nonce on every script, new on every response",
+  async ({ page }) => {
+    for (const path of ["/", "/following", "/upload", "/me"]) {
+      const first = await page.request.get(path);
+      const { nonce } = cspOf(first);
+      await expectScriptsCarryNonce(first, nonce);
+      const second = cspOf(await page.request.get(path));
+      expect(second.nonce).not.toBe(nonce);
+    }
+  },
+);
+
+test("CSP: the share page has a nonce on every script for a guest too", async ({ request }) => {
+  const { xss } = seed();
+  const path = `/v/${xss.video_id}`;
+  const first = await request.get(path);
+  const { nonce } = cspOf(first);
+  await expectScriptsCarryNonce(first, nonce);
+  expect(cspOf(await request.get(path)).nonce).not.toBe(nonce);
+});
+
+// The upload form posts to the storage from the page (docs/adr/0018-web-profiles-public-video-upload.md, section 8):
+// UPLOAD_ORIGIN must be in connect-src, or the browser blocks the request.
+authedTest("CSP: connect-src of /upload allows the upload origin", async ({ page }) => {
+  const { csp } = cspOf(await page.request.get("/upload"));
+  const connectSrc = csp
+    .split(";")
+    .map((directive) => directive.trim().split(/\s+/))
+    .find(([name]) => name === "connect-src");
+  expect(connectSrc, "connect-src directive").toBeDefined();
+  expect(connectSrc).toContain(uploadOrigin);
+});
+
+// MinIO's CORS allows only the web's origins (ADR-0018, section 9): the upload's preflight from any other site gets no
+// Access-Control-Allow-Origin, so the browser does not send the file there.
+test("WEB-10: the storage answers a preflight from the web's origin only", async ({ request }) => {
+  const preflight = (origin: string) =>
+    request.fetch(`${uploadOrigin}/uploads`, {
+      method: "OPTIONS",
+      headers: { Origin: origin, "Access-Control-Request-Method": "POST" },
+    });
+  const evil = await preflight("http://evil.example");
+  expect(evil.headers()["access-control-allow-origin"]).toBeUndefined();
+  const web = await preflight("http://localhost:3001");
+  expect(web.headers()["access-control-allow-origin"]).toBe("http://localhost:3001");
 });

@@ -7,66 +7,121 @@ import { messagesFor } from "@/i18n/messages";
 import { BottomNav } from "./bottom-nav";
 import { ErrorsIntlProvider, useBrowserLocale } from "./errors-intl";
 import { RouteError, rateLimitWait } from "./route-error";
-import { SidebarDesktop } from "./sidebar-desktop";
+import { SidebarDesktop, type ShellAccount } from "./sidebar-desktop";
 import { useCountdown } from "./use-countdown";
 
 vi.mock("next/navigation", () => ({ usePathname: vi.fn(() => "/") }));
 
 const userId = "0192f0c1-7a3e-7c4b-9d2e-5f6a7b8c9d0e";
 
+const account = { displayName: "Lan Phương", handle: "lanphuong" };
+
 // Real messages, with the namespace the main layout passes down: a missing key fails here.
-function renderShell(locale: Locale, pathname = "/") {
+function renderShell(locale: Locale, pathname = "/", shellAccount: ShellAccount | null = account) {
   vi.mocked(usePathname).mockReturnValue(pathname);
   return render(
     <NextIntlClientProvider locale={locale} messages={{ shell: messagesFor(locale).shell }}>
-      <SidebarDesktop userId={userId} appName="SVP" />
+      <SidebarDesktop userId={userId} account={shellAccount} appName="SVP" />
       <BottomNav />
     </NextIntlClientProvider>,
   );
 }
 
-afterEach(() => {
-  vi.useRealTimers();
-});
+function sidebar(): HTMLElement {
+  return screen.getByRole("complementary");
+}
 
-describe("navigation of part A", () => {
-  it.each<Locale>(["vi", "en"])("%s: both bars link Home only, no Upload or Profile", (locale) => {
-    renderShell(locale);
-    const shell = messagesFor(locale).shell;
-    const navs = screen.getAllByRole("navigation", { name: shell.navLabel });
-    expect(navs).toHaveLength(2);
-    for (const nav of navs) {
-      const links = within(nav).getAllByRole("link");
-      expect(links.map((link) => [link.textContent, link.getAttribute("href")])).toEqual([[shell.home, "/"]]);
-    }
-    expect(screen.queryByText(/Tải lên|Upload|Hồ sơ|Profile/)).toBeNull();
-  });
+function bottomBar(): HTMLElement {
+  const nav = screen.getAllByRole("navigation").find((element) => !sidebar().contains(element));
+  if (!nav) {
+    throw new Error("no bottom bar");
+  }
+  return nav;
+}
 
-  it.each(["/", "/following"])("marks Home as the current page on %s", (pathname) => {
+// [text, href] of every link of `container`, in order.
+function links(container: HTMLElement): (string | null)[][] {
+  return within(container)
+    .getAllByRole("link")
+    .map((link) => [link.textContent, link.getAttribute("href")]);
+}
+
+function currentLinks(): (string | null)[] {
+  return screen
+    .getAllByRole("link")
+    .filter((link) => link.getAttribute("aria-current") === "page")
+    .map((link) => link.getAttribute("href"));
+}
+
+describe("navigation", () => {
+  it.each<Locale>(["vi", "en"])(
+    "%s: Home, Profile and Upload in the side bar; Home, Upload, Profile below",
+    (locale) => {
+      renderShell(locale);
+      const shell = messagesFor(locale).shell;
+      expect(screen.getAllByRole("navigation", { name: shell.navLabel })).toHaveLength(2);
+      expect(links(sidebar())).toEqual([
+        ["SVP", "/"],
+        [shell.home, "/"],
+        [shell.profile, "/me"],
+        [shell.upload, "/upload"],
+      ]);
+      expect(links(bottomBar())).toEqual([
+        [shell.home, "/"],
+        [shell.upload, "/upload"],
+        [shell.profile, "/me"],
+      ]);
+    },
+  );
+
+  it.each([
+    ["/", ["/", "/"]],
+    ["/following", ["/", "/"]],
+    ["/upload", ["/upload", "/upload"]],
+    ["/me", ["/me", "/me"]],
+    // Another user's profile is not the Profile item, which is the user's own (M35–M37).
+    ["/u/minhanh", []],
+    ["/v/01928c6e-7b3a-7cde-8f01-000000000001", []],
+    ["/me/videos", []],
+    ["/uploads", []],
+    ["/somewhere", []],
+  ])("on %s marks %j as the current page in both bars", (pathname, expected) => {
     renderShell("vi", pathname);
-    for (const link of screen.getAllByRole("link", { name: "Trang chủ" })) {
-      expect(link.getAttribute("aria-current")).toBe("page");
-    }
+    expect(currentLinks()).toEqual(expected);
   });
 
-  it("marks nothing current on another page", () => {
-    renderShell("vi", "/somewhere");
-    for (const link of screen.getAllByRole("link", { name: "Trang chủ" })) {
-      expect(link.hasAttribute("aria-current")).toBe(false);
-    }
+  it("shows the account's name and handle beside its avatar", () => {
+    renderShell("vi");
+    const block = within(sidebar()).getByText("Lan Phương").parentElement!;
+    expect(within(block).getByText("@lanphuong")).toBeTruthy();
+    // The avatar shows the name's first letter.
+    expect(block.parentElement!.querySelector('span.rounded-full[aria-hidden="true"]')?.textContent).toBe("L");
+    expect(screen.queryByText(messagesFor("vi").shell.account)).toBeNull();
   });
 
-  it.each<Locale>(["vi", "en"])("%s: log out is a POST form to /logout in both bars, never a link", (locale) => {
+  it.each<Locale>(["vi", "en"])("%s: without a profile the account block shows the avatar and a label", (locale) => {
+    renderShell(locale, "/", null);
+    expect(within(sidebar()).getByText(messagesFor(locale).shell.account)).toBeTruthy();
+    expect(sidebar().textContent).not.toContain("@");
+  });
+
+  it("renders a name with markup as text", () => {
+    renderShell("vi", "/", { displayName: "<img src=x onerror=alert(1)>", handle: "lanphuong" });
+    expect(within(sidebar()).getByText("<img src=x onerror=alert(1)>")).toBeTruthy();
+    expect(sidebar().querySelector("img")).toBeNull();
+  });
+
+  it.each<Locale>(["vi", "en"])("%s: log out is a POST form to /logout in the side bar, never a link", (locale) => {
     renderShell(locale);
     const label = messagesFor(locale).shell.logout;
     const buttons = screen.getAllByRole("button", { name: label });
-    expect(buttons).toHaveLength(2);
-    for (const button of buttons) {
-      expect(button.getAttribute("type")).toBe("submit");
-      const form = button.closest("form");
-      expect(form?.getAttribute("method")).toBe("post");
-      expect(form?.getAttribute("action")).toBe("/logout");
-    }
+    // The bottom bar has none: log out is on the profile page there, as in the design.
+    expect(buttons).toHaveLength(1);
+    expect(sidebar().contains(buttons[0]!)).toBe(true);
+    expect(buttons[0]!.getAttribute("type")).toBe("submit");
+    const form = buttons[0]!.closest("form");
+    expect(form?.getAttribute("method")).toBe("post");
+    expect(form?.getAttribute("action")).toBe("/logout");
     expect(screen.queryByRole("link", { name: label })).toBeNull();
   });
 
@@ -74,6 +129,11 @@ describe("navigation of part A", () => {
     renderShell("en");
     expect(screen.getByRole("heading", { name: "Keyboard shortcuts" })).toBeTruthy();
     expect(screen.getByText("Mute / unmute")).toBeTruthy();
+  });
+
+  it.each(["/upload", "/me"])("lists no shortcuts on %s", (pathname) => {
+    renderShell("en", pathname);
+    expect(screen.queryByRole("heading", { name: "Keyboard shortcuts" })).toBeNull();
   });
 });
 

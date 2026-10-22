@@ -9,6 +9,7 @@ export type FeedKind = "explore" | "following";
 export type FeedPage = components["schemas"]["FeedPage"];
 export type FeedItem = components["schemas"]["FeedItem"];
 export type VideoStats = components["schemas"]["VideoStats"];
+export type Profile = components["schemas"]["Profile"];
 
 // A refused or failed call. `retryAfterSeconds` is set on 429.
 export class ApiError extends Error {
@@ -40,14 +41,60 @@ function client() {
 }
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const handle = /^[a-z][a-z0-9_]{2,29}$/;
 
 // Ids go into API paths and React keys: an item whose ids are not canonical UUIDs is dropped rather than used.
 function hasValidIds(item: FeedItem): boolean {
   return uuid.test(item.video_id) && uuid.test(item.author_id);
 }
 
+// The handle goes into a /u/<handle> link: an author not in the stored form, or not the item's author, is left out
+// and the item shows the avatar alone, as when user-service did not answer.
+function cleanAuthor(author: Profile | undefined, authorId: string): Profile | undefined {
+  if (
+    !author ||
+    author.user_id !== authorId ||
+    typeof author.handle !== "string" ||
+    !handle.test(author.handle) ||
+    typeof author.display_name !== "string" ||
+    author.display_name === ""
+  ) {
+    return undefined;
+  }
+  return { user_id: author.user_id, handle: author.handle, display_name: author.display_name };
+}
+
+// Only the fields of the schema, so nothing else the gateway may add one day is kept in the page or the browser's
+// cache.
+function cleanItem(item: FeedItem): FeedItem {
+  const { video_id, author_id, title, duration_ms, playlist_url, thumbnail_url, published_at, stats } = item;
+  const cleaned: FeedItem = { video_id, author_id, title, duration_ms, playlist_url, thumbnail_url, published_at };
+  const author = cleanAuthor(item.author, author_id);
+  if (author) {
+    cleaned.author = author;
+  }
+  if (stats) {
+    cleaned.stats = { view_count: stats.view_count, like_count: stats.like_count, liked_by_me: stats.liked_by_me };
+  }
+  return cleaned;
+}
+
 export function cleanPage(page: FeedPage): FeedPage {
-  return { ...page, items: page.items.filter(hasValidIds) };
+  return { items: page.items.filter(hasValidIds).map(cleanItem), next_cursor: page.next_cursor };
+}
+
+// The share link of a video, on the origin the page was opened from (ADR-0018, section 7).
+export function shareUrl(origin: string, videoId: string): string {
+  return `${origin}/v/${videoId}`;
+}
+
+// Copies the share link of a video to the clipboard. Rejects when the browser refuses (no permission, no Clipboard API
+// outside a secure context).
+export async function copyShareLink(videoId: string): Promise<void> {
+  if (!navigator.clipboard) {
+    throw new Error("the Clipboard API is not available");
+  }
+  await navigator.clipboard.writeText(shareUrl(window.location.origin, videoId));
 }
 
 export async function fetchFeedPage(kind: FeedKind, cursor: string, signal?: AbortSignal): Promise<FeedPage> {

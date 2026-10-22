@@ -45,4 +45,6 @@ type User struct {
 	Email        string
 	PasswordHash string
 	CreatedAt    time.Time
+	Handle       string
+	DisplayName  string
 }

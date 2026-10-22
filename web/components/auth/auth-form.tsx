@@ -17,7 +17,7 @@ import { useCountdown } from "@/components/shell/use-countdown";
 import { Button, Field, IconButton, Input } from "@/components/ui";
 import { focusRing } from "@/components/ui/styles";
 import { cn } from "@/lib/cn";
-import { initialAuthState, type AuthState } from "@/server/auth-state";
+import { chosenHandleSchema, initialAuthState, type AuthState } from "@/server/auth-state";
 
 export type AuthMode = "login" | "register";
 
@@ -34,12 +34,15 @@ type AuthFormProps = {
 // A loose shape check: the server's is stricter, this only spares a round trip for an obvious typo.
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function checkFields(form: HTMLFormElement): FieldErrors {
+function checkFields(form: HTMLFormElement, mode: AuthMode): FieldErrors {
   const data = new FormData(form);
   const email = String(data.get("email") ?? "").trim();
   const password = String(data.get("password") ?? "");
+  // The handle gets the server's own rules (server/auth-state.ts); the action normalizes it again before sending it.
+  const handleOk = mode === "login" || chosenHandleSchema.safeParse(String(data.get("handle") ?? "")).success;
   return {
     ...(emailPattern.test(email) ? {} : { email: "INVALID_EMAIL" }),
+    ...(handleOk ? {} : { handle: "INVALID_HANDLE" }),
     ...(password.length >= 8 ? {} : { password: "INVALID_PASSWORD" }),
   };
 }
@@ -71,6 +74,7 @@ export function AuthForm({ mode, action, next }: AuthFormProps) {
   const [clientErrors, setClientErrors] = useState<FieldErrors | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const emailRef = useRef<HTMLInputElement>(null);
+  const handleRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
   const hydrated = useHydrated();
 
@@ -82,17 +86,19 @@ export function AuthForm({ mode, action, next }: AuthFormProps) {
   useEffect(() => {
     if (state.fieldErrors.email || state.formError === "EMAIL_ALREADY_REGISTERED") {
       emailRef.current?.focus();
+    } else if (state.fieldErrors.handle) {
+      handleRef.current?.focus();
     } else if (state.fieldErrors.password) {
       passwordRef.current?.focus();
     }
   }, [state]);
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
-    const errors = checkFields(event.currentTarget);
-    if (errors.email || errors.password) {
+    const errors = checkFields(event.currentTarget, mode);
+    if (errors.email || errors.handle || errors.password) {
       event.preventDefault();
       setClientErrors(errors);
-      (errors.email ? emailRef : passwordRef).current?.focus();
+      (errors.email ? emailRef : errors.handle ? handleRef : passwordRef).current?.focus();
       return;
     }
     setClientErrors(null);
@@ -177,6 +183,33 @@ export function AuthForm({ mode, action, next }: AuthFormProps) {
           />
         )}
       </Field>
+
+      {mode === "register" && (
+        <Field
+          label={t("handle")}
+          hint={t("handleHint")}
+          error={fieldErrors.handle && t(`errors.${fieldErrors.handle}`)}
+        >
+          {(control) => (
+            <Input
+              {...control}
+              ref={handleRef}
+              name="handle"
+              type="text"
+              // Not "username": password managers save that field as the account name, and login asks for the email.
+              autoComplete="nickname"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              // No maxLength: a cut value would register a handle other than the one typed; the check names the limit.
+              placeholder={t("handlePlaceholder")}
+              defaultValue={state.handle}
+              readOnly={pending}
+              className={cn(pending && "opacity-60")}
+            />
+          )}
+        </Field>
+      )}
 
       <Field
         label={t("password")}

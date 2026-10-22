@@ -7,7 +7,10 @@
 # explore, like and unlike it, count views (a repeated view within 60 s is accepted but not
 # counted, RL-3), and check that unfollowing removes it from B's following feed (ADR-0009,
 # ADR-0010); last, rotate refresh tokens, check that replaying a used one revokes its whole
-# family, and that logout revokes a login's tokens (ADR-0016). Prints one ok/FAIL line per step
+# family, and that logout revokes a login's tokens (ADR-0016). Along the way it checks profiles
+# (a picked handle, a taken one, a generated one, the display name, followed_by_me), the lists of
+# an author's videos, the authors added to feed items, and the public video read without a token
+# (ADR-0018). Prints one ok/FAIL line per step
 # and exits non-zero on the first failure. Needs curl, jq, openssl, ffmpeg and redis-cli on the host, and the native Redis on
 # 127.0.0.1:6379 (lib.sh resets the register rate limit there).
 #
@@ -55,6 +58,71 @@ status=$(request GET "/videos/$video_id" "$work/b.auth")
   fail "other user reads unpublished video is 404 VIDEO_NOT_FOUND (status $status, $(problem_summary))"
 ok "other user reads unpublished video: 404 VIDEO_NOT_FOUND"
 
+# 4b. Profiles (ADR-0018). User C registers with a picked handle written in upper case, which
+# user-service lowers; a second account cannot take the same handle.
+c_handle="smoke_$(openssl rand -hex 6)"
+c_email="smoke-$(date +%s)-$(openssl rand -hex 4)@example.test"
+SMOKE_PASSWORD=$(openssl rand -hex 16) jq -n --arg e "$c_email" --arg h "$(printf '%s' "$c_handle" | tr '[:lower:]' '[:upper:]')" \
+  '{email: $e, password: env.SMOKE_PASSWORD, handle: $h, display_name: "Smoke C"}' >"$work/c.reg"
+jq '{email, password}' "$work/c.reg" >"$work/c.cred"
+status=$(request POST /auth/register "" "$work/c.reg")
+[[ $status == 201 && -n $(field user_id) ]] || fail "register with a handle (status $status, $(problem_summary))"
+c_id=$(field user_id)
+ok "register user c with a handle"
+
+SMOKE_PASSWORD=$(openssl rand -hex 16) jq -n --arg e "dup-$c_email" --arg h "$c_handle" \
+  '{email: $e, password: env.SMOKE_PASSWORD, handle: $h}' >"$work/dup.reg"
+status=$(request POST /auth/register "" "$work/dup.reg")
+[[ $status == 409 && $(field code) == HANDLE_ALREADY_TAKEN ]] ||
+  fail "register with a taken handle is 409 HANDLE_ALREADY_TAKEN (status $status, $(problem_summary))"
+ok "register with a taken handle: 409 HANDLE_ALREADY_TAKEN"
+
+status=$(request POST /auth/login "" "$work/c.cred")
+token=$(field access_token)
+: >"$work/body" # the body holds the token: drop it now
+[[ $status == 200 && -n $token ]] || fail "login user c (status $status)"
+printf 'Authorization: Bearer %s\n' "$token" >"$work/c.auth"
+token=""
+
+# GET /me answers the profile only, never the email.
+status=$(request GET /me "$work/c.auth")
+[[ $status == 200 && $(field user_id) == "$c_id" && $(field handle) == "$c_handle" && $(field display_name) == "Smoke C" ]] &&
+  jq -e 'keys == ["display_name", "handle", "user_id"]' "$work/body" >/dev/null ||
+  fail "GET /me is 200 with user_id, lowered handle and display name, no email (status $status, $(problem_summary))"
+ok "GET /me: the profile with the lowered handle, no email"
+
+jq -n '{display_name: "Smoke C renamed"}' >"$work/rename.json"
+status=$(request PATCH /me "$work/c.auth" "$work/rename.json")
+[[ $status == 200 && $(field display_name) == "Smoke C renamed" && $(field handle) == "$c_handle" ]] ||
+  fail "PATCH /me renames (status $status, $(problem_summary))"
+status=$(request GET /me "$work/c.auth")
+[[ $status == 200 && $(field display_name) == "Smoke C renamed" ]] ||
+  fail "GET /me after PATCH has the new name (status $status, $(problem_summary))"
+ok "PATCH /me: display name changed, handle kept"
+
+# A registered without a handle: the generated one is u_ and the last 12 hex digits of the id,
+# and the display name defaults to it.
+status=$(request GET /me "$work/a.auth")
+a_handle=$(field handle)
+[[ $status == 200 && $a_handle == "u_${a_id:24}" && $(field display_name) == "$a_handle" ]] ||
+  fail "user A has the generated handle u_${a_id:24} as handle and display name (status $status, handle $a_handle)"
+ok "user A without a handle: generated handle $a_handle"
+
+status=$(request GET "/profiles/$a_handle" "$work/b.auth")
+[[ $status == 200 && $(field user_id) == "$a_id" ]] && jq -e '.followed_by_me == false' "$work/body" >/dev/null ||
+  fail "B reads A's profile, followed_by_me false (status $status, $(problem_summary))"
+ok "B reads A's profile before following: followed_by_me false"
+
+# A sees the UPLOADING video in their own list; B's list of A's videos holds only READY ones.
+status=$(request GET "/me/videos?page_size=50" "$work/a.auth")
+[[ $status == 200 ]] && jq -e --arg id "$video_id" 'any(.items[]; .video_id == $id and .status == "UPLOADING")' "$work/body" >/dev/null ||
+  fail "GET /me/videos holds A's UPLOADING video (status $status, $(problem_summary))"
+ok "GET /me/videos: A's own UPLOADING video listed"
+status=$(request GET "/users/$a_id/videos?page_size=50" "$work/b.auth")
+[[ $status == 200 ]] && jq -e --arg id "$video_id" 'all(.items[]; .status == "READY") and all(.items[]; .video_id != $id)' "$work/body" >/dev/null ||
+  fail "B's GET /users/{A}/videos holds only READY videos (status $status, $(problem_summary))"
+ok "GET /users/{A}/videos for B: only READY videos"
+
 # 5. B follows A twice (idempotent) before A uploads, so A's upload reaches B's following feed by
 # fan-out. B unfollows in step 15.
 status=$(request PUT "/me/following/$a_id" "$work/b.auth")
@@ -63,6 +131,10 @@ ok "follow"
 status=$(request PUT "/me/following/$a_id" "$work/b.auth")
 [[ $status == 204 ]] || fail "follow again (status $status, $(problem_summary))"
 ok "follow again"
+status=$(request GET "/profiles/$a_handle" "$work/b.auth")
+[[ $status == 200 ]] && jq -e '.followed_by_me == true' "$work/body" >/dev/null ||
+  fail "B reads A's profile after following, followed_by_me true (status $status, $(problem_summary))"
+ok "B reads A's profile after following: followed_by_me true"
 
 # 6. User A uploads a real 10 s 720p video through the presigned form and completes it.
 make_video "$work/clip.mp4" 10 1280x720
@@ -126,6 +198,31 @@ status=$(request GET "/videos/$clip_id" "$work/b.auth")
   fail "other user reads READY video (status $status, $(problem_summary))"
 ok "other user reads READY video"
 
+# 9b. B's list of A's videos now holds the READY video.
+status=$(request GET "/users/$a_id/videos?page_size=50" "$work/b.auth")
+[[ $status == 200 ]] && jq -e --arg id "$clip_id" 'all(.items[]; .status == "READY") and any(.items[]; .video_id == $id)' "$work/body" >/dev/null ||
+  fail "B's GET /users/{A}/videos holds the READY video (status $status, $(problem_summary))"
+ok "GET /users/{A}/videos for B: the READY video listed"
+
+# 9c. The public video needs no token (ADR-0018 section 6): 200 for the READY video, with the
+# author and counters without liked_by_me, which come within 100 ms on a healthy stack, so the
+# check polls; one 404 for a video that is not READY and for a random id.
+public_start=$SECONDS
+until status=$(request GET "/public/videos/$clip_id") && [[ $status == 200 ]] &&
+  jq -e --arg a "$a_id" '.author.user_id == $a and (.stats | keys) == ["like_count", "view_count"]' "$work/body" >/dev/null; do
+  [[ $status == 200 ]] || fail "GET /public/videos/{READY video} without a token is 200 (status $status, $(problem_summary))"
+  ((SECONDS - public_start < 10)) || fail "public video has author and stats without liked_by_me within 10 s"
+  sleep 1
+done
+ok "GET /public/videos/{READY video} without a token: 200 with author, stats without liked_by_me"
+random_id=$(openssl rand -hex 16 | sed -E 's/^(.{8})(.{4})(.{4})(.{4})(.{12})$/\1-\2-\3-\4-\5/')
+for id in "$video_id" "$random_id"; do
+  status=$(request GET "/public/videos/$id")
+  [[ $status == 404 && $(field code) == VIDEO_NOT_FOUND ]] ||
+    fail "GET /public/videos/{not READY or unknown} is 404 VIDEO_NOT_FOUND (status $status, $(problem_summary))"
+done
+ok "GET /public/videos/{UPLOADING video, random id}: 404 VIDEO_NOT_FOUND"
+
 # 10. The storage enforces the declared size: one byte more than declared is refused (UP-1). Any
 # other refusal (an expired policy, a bad signature) would not show that, so the code is pinned.
 create_video big "$work/a.auth" "smoke oversize $(openssl rand -hex 4)" 1024 video/mp4
@@ -143,6 +240,10 @@ feed_playlist_url=$(jq -r '.playlist_url' "$work/item")
 ok "video in B's following feed"
 wait_feed_item explore "$work/b.auth" "$clip_id" 15 '. != null' "video in explore"
 ok "video in explore"
+# Feed items carry their author when user-service answers within 100 ms, so the check polls.
+wait_feed_item following "$work/b.auth" "$clip_id" 15 ".author.user_id == \"$a_id\" and .author.handle == \"$a_handle\"" \
+  "feed item has A as author"
+ok "feed item has A as author"
 status=$(fetch "$feed_playlist_url" "$work/feed-master.m3u8")
 [[ $status == 200 ]] && grep -q '^#EXT-X-STREAM-INF' "$work/feed-master.m3u8" ||
   fail "anonymous GET of the feed item's playlist_url is 200 with #EXT-X-STREAM-INF (status $status)"

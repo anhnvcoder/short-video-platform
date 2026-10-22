@@ -48,6 +48,8 @@ export type AuthFailureCode =
   | "INVALID_EMAIL"
   | "INVALID_PASSWORD"
   | "EMAIL_ALREADY_REGISTERED"
+  | "INVALID_HANDLE"
+  | "HANDLE_ALREADY_TAKEN"
   | "INVALID_CREDENTIALS"
   | "RATE_LIMITED"
   | "UNAVAILABLE";
@@ -69,9 +71,16 @@ export type RefreshResult =
   // Timeout, 5xx, a lost answer: the token may or may not have been rotated.
   | { kind: "unknown" };
 
+// What the register form sends: the handle already normalized and checked.
+export interface NewAccount {
+  email: string;
+  password: string;
+  handle: string;
+}
+
 export interface AuthGateway {
   login(email: string, password: string, forwardedFor: string | null): Promise<LoginResult>;
-  register(email: string, password: string, forwardedFor: string | null): Promise<RegisterResult>;
+  register(account: NewAccount, forwardedFor: string | null): Promise<RegisterResult>;
   // Gives up when `deadline` aborts, whether the answer has started to arrive or not.
   refresh(refreshToken: string, forwardedFor: string | null, deadline: AbortSignal): Promise<RefreshResult>;
   // Revokes the token's family; throws when the gateway did not confirm it.
@@ -79,9 +88,9 @@ export interface AuthGateway {
 }
 
 const knownFailures: Partial<Record<number, readonly AuthFailureCode[]>> = {
-  400: ["INVALID_EMAIL", "INVALID_PASSWORD"],
+  400: ["INVALID_EMAIL", "INVALID_PASSWORD", "INVALID_HANDLE"],
   401: ["INVALID_CREDENTIALS"],
-  409: ["EMAIL_ALREADY_REGISTERED"],
+  409: ["EMAIL_ALREADY_REGISTERED", "HANDLE_ALREADY_TAKEN"],
 };
 
 // Whole seconds of a Retry-After header in seconds; a missing or odd header means one second.
@@ -139,10 +148,11 @@ export function createAuthGateway(origin: string, options: { refreshTimeoutMs?: 
       }
     },
 
-    async register(email, password, forwardedFor) {
+    async register({ email, password, handle }, forwardedFor) {
       try {
+        // No display_name: user-service starts it as the handle.
         const { error, response } = await client(forwardedFor).POST("/auth/register", {
-          body: { email, password },
+          body: { email, password, handle },
           signal: AbortSignal.timeout(authTimeoutMs),
         });
         return response.ok ? { ok: true } : authFailure(response, error);

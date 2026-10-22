@@ -47,6 +47,9 @@ const (
 	testKID = "k1"
 	userA   = "01928c6e-7b3a-7cde-8f01-23456789abcd"
 	userB   = "01928c6e-7b3a-7cde-8f01-000000000000"
+	// userC has no profile: fakeUsers' GetProfiles leaves it out, as user-service leaves out an
+	// id without a user.
+	userC   = "01928c6e-7b3a-7cde-8f01-444444444444"
 	videoID = "01928c6e-7b3a-7cde-8f01-111111111111"
 	// videoID2 is the second item of every feed page fakeFeed answers.
 	videoID2 = "01928c6e-7b3a-7cde-8f01-333333333333"
@@ -221,6 +224,46 @@ func (fakeUsers) Unfollow(context.Context, *userv1.UnfollowRequest) (*userv1.Unf
 	return &userv1.UnfollowResponse{}, nil
 }
 
+// profiles are the users fakeUsers knows, by user id.
+var profiles = map[string]*userv1.Profile{
+	userA: {UserId: userA, Handle: "alice", DisplayName: "Alice"},
+	userB: {UserId: userB, Handle: "bob", DisplayName: "Bob B"},
+}
+
+// GetProfiles answers the known profiles among user_ids, in reverse order, so the gateway must
+// match them by user_id.
+func (fakeUsers) GetProfiles(_ context.Context, req *userv1.GetProfilesRequest) (*userv1.GetProfilesResponse, error) {
+	var out []*userv1.Profile
+	for _, id := range slices.Backward(req.GetUserIds()) {
+		if p, ok := profiles[id]; ok {
+			out = append(out, p)
+		}
+	}
+	return &userv1.GetProfilesResponse{Profiles: out}, nil
+}
+
+// GetProfileByHandle knows only "bob", whom the caller follows.
+func (fakeUsers) GetProfileByHandle(_ context.Context, req *userv1.GetProfileByHandleRequest) (*userv1.GetProfileByHandleResponse, error) {
+	if req.GetHandle() != "bob" {
+		return nil, grpcerr.New(codes.NotFound, "USER_NOT_FOUND", "user not found")
+	}
+	return &userv1.GetProfileByHandleResponse{Profile: profiles[userB], FollowedByMe: true}, nil
+}
+
+// UpdateDisplayName answers the caller's profile with the new name, and refuses an empty one.
+func (fakeUsers) UpdateDisplayName(ctx context.Context, req *userv1.UpdateDisplayNameRequest) (*userv1.UpdateDisplayNameResponse, error) {
+	if req.GetDisplayName() == "" {
+		return nil, grpcerr.New(codes.InvalidArgument, "INVALID_DISPLAY_NAME", "display_name must be 1 to 50 characters")
+	}
+	md, _ := metadata.FromIncomingContext(ctx)
+	ids := md.Get(callerid.MetadataKey)
+	if len(ids) != 1 || profiles[ids[0]] == nil {
+		return nil, grpcerr.New(codes.NotFound, "USER_NOT_FOUND", "user not found")
+	}
+	p := profiles[ids[0]]
+	return &userv1.UpdateDisplayNameResponse{Profile: &userv1.Profile{UserId: p.GetUserId(), Handle: p.GetHandle(), DisplayName: req.GetDisplayName()}}, nil
+}
+
 // fakeVideos answers GetVideo with a READY video for videoID and an UPLOADING one otherwise.
 type fakeVideos struct {
 	videov1.UnimplementedVideoServiceServer
@@ -273,6 +316,36 @@ func (fakeVideos) GetVideo(_ context.Context, req *videov1.GetVideoRequest) (*vi
 		v.PublishedAt = timestamppb.New(publishedAt)
 	}
 	return &videov1.GetVideoResponse{Video: v}, nil
+}
+
+// GetPublicVideo answers the READY video videoID and VIDEO_NOT_FOUND for any other id, like
+// video-service for a video that is not READY.
+func (f fakeVideos) GetPublicVideo(ctx context.Context, req *videov1.GetPublicVideoRequest) (*videov1.GetPublicVideoResponse, error) {
+	if req.GetVideoId() != videoID {
+		return nil, grpcerr.New(codes.NotFound, "VIDEO_NOT_FOUND", "video not found")
+	}
+	resp, _ := f.GetVideo(ctx, &videov1.GetVideoRequest{VideoId: videoID})
+	return &videov1.GetPublicVideoResponse{Video: resp.GetVideo()}, nil
+}
+
+// ListAuthorVideos answers two videos of author_id, the READY videoID and the UPLOADING
+// videoID2, and nextCursor; or an empty last page for emptyCursor. Like video-service, it
+// rejects a negative page_size.
+func (f fakeVideos) ListAuthorVideos(ctx context.Context, req *videov1.ListAuthorVideosRequest) (*videov1.ListAuthorVideosResponse, error) {
+	switch {
+	case req.GetPageSize() < 0:
+		return nil, grpcerr.New(codes.InvalidArgument, "INVALID_PAGE_SIZE", "page_size must not be negative")
+	case req.GetPageToken() == emptyCursor:
+		return &videov1.ListAuthorVideosResponse{}, nil
+	}
+	var videos []*videov1.Video
+	for _, id := range []string{videoID, videoID2} {
+		resp, _ := f.GetVideo(ctx, &videov1.GetVideoRequest{VideoId: id})
+		v := resp.GetVideo()
+		v.AuthorId = req.GetAuthorId()
+		videos = append(videos, v)
+	}
+	return &videov1.ListAuthorVideosResponse{Videos: videos, NextPageToken: nextCursor}, nil
 }
 
 // fakeFeed answers both feeds with the page of fakeFeedPage.
@@ -413,11 +486,17 @@ func newEnvWithLimits(t *testing.T, limits *ratelimit.Limiter, engagementOpts ..
 // newEnvBehind is newEnvWithLimits finding the client's address with clientAddr.
 func newEnvBehind(t *testing.T, clientAddr httpx.ClientAddr, limits *ratelimit.Limiter, engagementOpts ...grpc.DialOption) *env {
 	t.Helper()
+	return newEnvDialed(t, clientAddr, limits, nil, engagementOpts)
+}
+
+// newEnvDialed is newEnvBehind with userOpts added to the dial options of user-service too.
+func newEnvDialed(t *testing.T, clientAddr httpx.ClientAddr, limits *ratelimit.Limiter, userOpts, engagementOpts []grpc.DialOption) *env {
+	t.Helper()
 	key, err := authtoken.GenerateKey()
 	if err != nil {
 		t.Fatal(err)
 	}
-	users, userConn := startBackend(t, func(s *grpc.Server) { userv1.RegisterUserServiceServer(s, fakeUsers{}) })
+	users, userConn := startBackend(t, func(s *grpc.Server) { userv1.RegisterUserServiceServer(s, fakeUsers{}) }, userOpts...)
 	videos, videoConn := startBackend(t, func(s *grpc.Server) { videov1.RegisterVideoServiceServer(s, fakeVideos{}) })
 	feeds, feedConn := startBackend(t, func(s *grpc.Server) { feedv1.RegisterFeedServiceServer(s, fakeFeed{}) })
 	stats := &fakeEngagement{}
@@ -833,13 +912,18 @@ func TestGetVideo(t *testing.T) {
 			"playlist_url":  mediaBase + "/media/" + videoID + "/master.m3u8",
 			"thumbnail_url": mediaBase + "/media/" + videoID + "/thumb.jpg",
 		}
-		if len(got) != len(want) {
-			t.Errorf("body = %v, want %v", got, want)
+		// The author and the stats, with liked_by_me, come from one call each.
+		if len(got) != len(want)+2 {
+			t.Errorf("body = %v, want %v with author and stats", got, want)
 		}
 		for k, v := range want {
 			if got[k] != v {
 				t.Errorf("%s = %v, want %v", k, got[k], v)
 			}
+		}
+		wantAuthor(t, got["author"], userA, "alice", "Alice")
+		if st, _ := got["stats"].(map[string]any); len(st) != 3 || st["view_count"] != float64(100) || st["like_count"] != float64(1) || st["liked_by_me"] != true {
+			t.Errorf("stats = %v", got["stats"])
 		}
 	})
 
@@ -856,11 +940,42 @@ func TestGetVideo(t *testing.T) {
 				t.Errorf("body has %s: %v", k, got)
 			}
 		}
+		if _, ok := got["stats"]; !ok {
+			t.Errorf("body has no stats: %v", got)
+		}
 	})
 
 	calls := e.videos.recorded()
 	if len(calls) != 2 || calls[0].req.(*videov1.GetVideoRequest).GetVideoId() != videoID {
 		t.Errorf("calls = %+v", calls)
+	}
+	for _, b := range []struct {
+		backend *backend
+		method  string
+	}{
+		{e.users, userv1.UserService_GetProfiles_FullMethodName},
+		{e.engagement, engagementv1.EngagementService_GetStats_FullMethodName},
+	} {
+		for _, c := range b.backend.recorded() {
+			if c.method != b.method {
+				t.Errorf("method = %s, want %s", c.method, b.method)
+			}
+			if v := c.md.Get(callerid.MetadataKey); !slices.Equal(v, []string{userA}) {
+				t.Errorf("%s x-user-id = %v, want [%s]", c.method, v, userA)
+			}
+		}
+		if n := len(b.backend.recorded()); n != 2 {
+			t.Errorf("%s calls = %d, want one per request", b.method, n)
+		}
+	}
+}
+
+// wantAuthor checks got is the author profile {user_id, handle, display_name}.
+func wantAuthor(t *testing.T, got any, userID, handle, displayName string) {
+	t.Helper()
+	a, _ := got.(map[string]any)
+	if len(a) != 3 || a["user_id"] != userID || a["handle"] != handle || a["display_name"] != displayName {
+		t.Errorf("author = %v, want {%s %s %s}", got, userID, handle, displayName)
 	}
 }
 
@@ -999,6 +1114,11 @@ func TestAuthenticatedRoutesNeedToken(t *testing.T) {
 		{http.MethodPost, "/videos/" + videoID + "/views", ""},
 		{http.MethodGet, "/feed/following", ""},
 		{http.MethodGet, "/feed/explore", ""},
+		{http.MethodGet, "/me", ""},
+		{http.MethodPatch, "/me", `{"display_name":"x"}`},
+		{http.MethodGet, "/me/videos", ""},
+		{http.MethodGet, "/profiles/bob", ""},
+		{http.MethodGet, "/users/" + userB + "/videos", ""},
 	}
 	for _, rt := range routes {
 		for _, token := range []string{"", "not-a-jwt"} {
@@ -1251,9 +1371,11 @@ func TestFeed(t *testing.T) {
 				t.Fatalf("items = %v, want 2", got.Items)
 			}
 			first := got.Items[0]
-			if len(first) != 8 {
-				t.Errorf("item has %d fields, want 8: %v", len(first), first)
+			if len(first) != 9 {
+				t.Errorf("item has %d fields, want 9: %v", len(first), first)
 			}
+			wantAuthor(t, first["author"], userB, "bob", "Bob B")
+			wantAuthor(t, got.Items[1]["author"], userB, "bob", "Bob B")
 			wantFeedItem(t, first, map[string]any{
 				"video_id":      videoID,
 				"author_id":     userB,
@@ -1299,6 +1421,14 @@ func TestFeed(t *testing.T) {
 			if v := s.md.Get(callerid.MetadataKey); !slices.Equal(v, []string{userA}) {
 				t.Errorf("engagement x-user-id = %v, want [%s]", v, userA)
 			}
+			// Both items have one author: GetProfiles is asked for it once.
+			p := e.users.only(t)
+			if p.method != userv1.UserService_GetProfiles_FullMethodName {
+				t.Errorf("user method = %s", p.method)
+			}
+			if ids := p.req.(*userv1.GetProfilesRequest).GetUserIds(); !slices.Equal(ids, []string{userB}) {
+				t.Errorf("GetProfiles user_ids = %v, want [%s]", ids, userB)
+			}
 		})
 	}
 }
@@ -1321,8 +1451,8 @@ func TestFeedEmptyPage(t *testing.T) {
 	if string(got["items"]) != "[]" || string(got["next_cursor"]) != `""` {
 		t.Errorf("body = %s, want items [] and next_cursor \"\"", rec.Body.String())
 	}
-	if n := len(e.engagement.recorded()); n != 0 {
-		t.Errorf("engagement-service got %d calls for an empty page, want 0", n)
+	if n := len(e.engagement.recorded()) + len(e.users.recorded()); n != 0 {
+		t.Errorf("engagement-service and user-service got %d calls for an empty page, want 0", n)
 	}
 }
 
@@ -1414,7 +1544,7 @@ func TestFeedWithoutStatsWhenEngagementFails(t *testing.T) {
 			if strings.Contains(rec.Body.String(), "10.0.0.9") {
 				t.Errorf("body leaks the internal error: %s", rec.Body.String())
 			}
-			if !strings.Contains(logs.String(), `"level":"WARN","msg":"feed served without stats"`) {
+			if !strings.Contains(logs.String(), `"level":"WARN","msg":"served without stats"`) {
 				t.Errorf("no WARN about the missing stats:\n%s", logs.String())
 			}
 			if strings.Contains(logs.String(), token) {
@@ -1623,6 +1753,10 @@ func TestInvalidUTF8IsBadRequest(t *testing.T) {
 		{http.MethodPost, "/videos/%FF/complete"},
 		{http.MethodPut, "/me/following/%FF"},
 		{http.MethodDelete, "/me/following/%FF"},
+		{http.MethodGet, "/profiles/%FF"},
+		{http.MethodGet, "/users/%FF/videos"},
+		{http.MethodGet, "/me/videos?cursor=%FF"},
+		{http.MethodGet, "/public/videos/%FF"},
 	} {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
 			e := newEnv(t)

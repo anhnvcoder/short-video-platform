@@ -10,8 +10,8 @@ import "google/protobuf/timestamp.proto";
 //
 // Caller identity: the gateway passes the authenticated user id in the gRPC
 // metadata key `x-user-id`; requests never carry the caller's own id. Every
-// RPC requires it and returns UNAUTHENTICATED when it is missing or not a
-// valid UUID.
+// RPC but GetPublicVideo requires it and returns UNAUTHENTICATED when it is
+// missing or not a valid UUID.
 //
 // All ids are UUIDv7 strings in canonical lowercase form (36 chars). Media
 // locations are object keys (for example `media/<video_id>/master.m3u8`),
@@ -56,6 +56,36 @@ service VideoService {
   //   same message, so the response does not reveal that a hidden video
   //   exists.
   rpc GetVideo(GetVideoRequest) returns (GetVideoResponse);
+
+  // GetPublicVideo returns a READY video to anyone, for the public share
+  // page. Does not require caller, and ignores `x-user-id`: the answer is the
+  // same for everyone.
+  //
+  // Errors:
+  // - NOT_FOUND: video_id is not a UUID, there is no such video, or it is not
+  //   READY (UPLOADING, PROCESSING or FAILED). Every case returns the same
+  //   reason (`VIDEO_NOT_FOUND`) and the same message as GetVideo, so an
+  //   anonymous caller cannot tell an unpublished video from a missing one.
+  //   A malformed id is still rejected before the database is read.
+  rpc GetPublicVideo(GetPublicVideoRequest) returns (GetPublicVideoResponse);
+
+  // ListAuthorVideos returns the videos of author_id, newest first by
+  // (created_at, video_id). Requires caller. When the caller is the author
+  // the list holds videos in every status; for anyone else only READY ones,
+  // the rule of GetVideo. An author without videos, or an id no user has
+  // (video-service does not know users), gives an empty page.
+  //
+  // Pagination follows Google AIP-158, like FeedService: page_token is
+  // opaque, pass back next_page_token unchanged; an empty next_page_token
+  // means there are no more videos. page_size 0 means 10; values above 50 are
+  // lowered to 50. The token holds only a position: which videos the caller
+  // may see always comes from author_id and the caller, never from the token.
+  //
+  // Errors:
+  // - INVALID_ARGUMENT: author_id is not a UUID (`INVALID_AUTHOR_ID`),
+  //   page_size is negative (`INVALID_PAGE_SIZE`), or page_token cannot be
+  //   decoded (`INVALID_PAGE_TOKEN`).
+  rpc ListAuthorVideos(ListAuthorVideosRequest) returns (ListAuthorVideosResponse);
 }
 
 // VideoStatus is the lifecycle state. Transitions only move forward:
@@ -126,4 +156,24 @@ message GetVideoRequest {
 
 message GetVideoResponse {
   Video video = 1;
+}
+
+message GetPublicVideoRequest {
+  string video_id = 1;
+}
+
+message GetPublicVideoResponse {
+  // Always READY.
+  Video video = 1;
+}
+
+message ListAuthorVideosRequest {
+  string author_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListAuthorVideosResponse {
+  repeated Video videos = 1;
+  string next_page_token = 2;
 }

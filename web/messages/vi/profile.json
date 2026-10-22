@@ -1,0 +1,86 @@
+{
+  "metaTitle": "Hồ sơ",
+  "my": {
+    "metaTitle": "Video của tôi",
+    "title": "Video của tôi",
+    "logout": "Đăng xuất",
+    "upload": "Tải video lên",
+    "listLabel": "Video của bạn",
+    "columns": {
+      "video": "Video",
+      "status": "Trạng thái",
+      "duration": "Thời lượng",
+      "views": "Lượt xem",
+      "published": "Đăng"
+    },
+    "failed": "Không chuyển mã được video.",
+    "reupload": "Tải lại",
+    "empty": {
+      "title": "Bạn chưa có video nào",
+      "body": "Tải video đầu tiên lên để mọi người cùng xem.",
+      "action": "Tải video lên"
+    }
+  },
+  "status": {
+    "UPLOADING": "Đang tải lên",
+    "PROCESSING": "Đang xử lý",
+    "READY": "Sẵn sàng",
+    "FAILED": "Lỗi"
+  },
+  "progress": {
+    "label": "Tiến độ tải lên",
+    "percent": "{percent}%",
+    "speed": "{speed} MB/s",
+    "preparing": "Đang chuẩn bị",
+    "waiting": "Đang chờ kết nối",
+    "completing": "Đang hoàn tất"
+  },
+  "untitled": "Video không có tiêu đề",
+  "viewCount": "{count} lượt xem",
+  "justNow": "vừa xong",
+  "loadingVideos": "Đang tải danh sách video",
+  "loadMore": "Xem thêm video",
+  "loadFailed": "Chưa tải được danh sách video.",
+  "retry": "Thử lại",
+  "retryIn": "Thử lại sau {seconds} giây",
+  "displayName": {
+    "summary": "Đổi tên hiển thị",
+    "label": "Tên hiển thị",
+    "hint": "Tối đa 50 ký tự. Mọi người thấy tên này cạnh video của bạn.",
+    "submit": "Lưu tên",
+    "submitting": "Đang lưu…",
+    "saved": "Đã đổi tên hiển thị.",
+    "errors": {
+      "REQUIRED": "Nhập tên hiển thị.",
+      "TOO_LONG": "Tên hiển thị tối đa 50 ký tự.",
+      "INVALID_CHARACTERS": "Tên không được có xuống dòng, tab hay ký tự điều khiển.",
+      "INVALID_DISPLAY_NAME": "SVP không nhận tên này. Hãy thử tên khác.",
+      "RATE_LIMITED": "Bạn thao tác hơi nhanh. Thử lại sau {seconds} giây.",
+      "UNAVAILABLE": "Chưa đổi được tên. Thử lại sau ít phút."
+    }
+  },
+  "other": {
+    "back": "Quay lại",
+    "copyLink": "Sao chép liên kết hồ sơ",
+    "follow": "Theo dõi",
+    "following": "Đang theo dõi",
+    "videosLabel": "Video của {name}",
+    "empty": {
+      "title": "Chưa có video nào",
+      "body": "Khi {name} đăng video, video sẽ hiện ở đây."
+    }
+  },
+  "toast": {
+    "region": "Thông báo",
+    "linkCopied": "Đã sao chép liên kết hồ sơ.",
+    "copyFailed": "Chưa sao chép được liên kết.",
+    "followFailed": "Chưa theo dõi được {name}.",
+    "unfollowFailed": "Chưa bỏ theo dõi được {name}.",
+    "rateLimited": "Bạn thao tác hơi nhanh. Thử lại sau ít phút."
+  },
+  "notFound": {
+    "title": "Không tìm thấy hồ sơ",
+    "body": "Tài khoản này không tồn tại hoặc đường dẫn không đúng.",
+    "home": "Về trang chủ"
+  }
+}

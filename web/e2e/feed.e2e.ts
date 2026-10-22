@@ -63,8 +63,8 @@ async function likeThenOpenFollowing(page: Page): Promise<number> {
   await expect(page).toHaveURL("/");
   const renderedAt = Date.now();
   const first = feedItem(page, 0);
-  await first.getByRole("button", { name: "Like video" }).click();
-  await expect(first.getByRole("button", { name: "Unlike video" })).toHaveAttribute("aria-pressed", "true");
+  await first.getByRole("button", { name: /^Like video/, pressed: false }).click();
+  await expect(first.getByRole("button", { name: /^Like video/, pressed: true })).toBeVisible();
   await page.getByRole("tab", { name: "Following" }).click();
   await expect(page).toHaveURL("/following");
   return renderedAt;
@@ -85,7 +85,7 @@ test("Back to Explore more than 5 s after it rendered: the video liked there sho
   // The router replays the page of the first visit, which this tab has shown already: the first page is fetched again
   // in the background.
   expect((await refetched).status()).toBe(200);
-  await expect(feedItem(page, 0).getByRole("button", { name: "Unlike video" })).toHaveAttribute("aria-pressed", "true");
+  await expect(feedItem(page, 0).getByRole("button", { name: /^Like video/, pressed: true })).toBeVisible();
 });
 
 // Without any wait: a replayed page is told apart from a new one by its stamp alone, never by its age on a clock.
@@ -95,5 +95,5 @@ test("Back to Explore right after a like there: the video shows liked", async ({
   await page.goBack();
   await expect(page).toHaveURL("/");
   expect((await refetched).status()).toBe(200);
-  await expect(feedItem(page, 0).getByRole("button", { name: "Unlike video" })).toHaveAttribute("aria-pressed", "true");
+  await expect(feedItem(page, 0).getByRole("button", { name: /^Like video/, pressed: true })).toBeVisible();
 });

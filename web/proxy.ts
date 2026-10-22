@@ -15,6 +15,7 @@ export function proxy(request: NextRequest): NextResponse | Response {
   const csp = contentSecurityPolicy({
     nonce,
     mediaOrigin: env.mediaOrigin,
+    uploadOrigin: env.uploadOrigin,
     secure: env.secure,
     dev: process.env.NODE_ENV === "development",
   });

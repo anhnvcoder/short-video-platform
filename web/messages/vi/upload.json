@@ -1,0 +1,142 @@
+{
+  "metaTitle": "Tải lên",
+  "title": "Tải video lên",
+  "close": "Đóng",
+  "stepOf": "Bước {step}/3",
+  "steps": {
+    "label": "Các bước",
+    "pick": "Chọn file",
+    "details": "Chi tiết",
+    "publish": "Đăng"
+  },
+  "pick": {
+    "title": "Chọn video để tải lên",
+    "titleDesktop": "Kéo thả video vào đây",
+    "drop": "Thả để tải lên",
+    "limits": "Video tối đa 500 MB, dài tối đa 3 phút.",
+    "limitsDesktop": "hoặc chọn file từ máy tính. Video tối đa 500 MB, dài tối đa 3 phút.",
+    "button": "Chọn file",
+    "checking": "Đang kiểm tra file…"
+  },
+  "fileError": {
+    "tooLarge": {
+      "title": "File quá lớn",
+      "body": "“{name}” nặng {size} MB. Chọn video tối đa 500 MB."
+    },
+    "notVideo": {
+      "title": "File không phải video",
+      "body": "“{name}” không phải file video. Hãy chọn một video."
+    },
+    "tooLong": {
+      "title": "Video quá dài",
+      "body": "Video dài {duration}. Chọn clip tối đa 3 phút."
+    },
+    "empty": {
+      "title": "File trống",
+      "body": "“{name}” không có dữ liệu. Hãy chọn một video khác."
+    }
+  },
+  "details": {
+    "change": "Đổi file",
+    "size": "{size} MB",
+    "sizeAndDuration": "{size} MB · {duration}",
+    "titleLabel": "Tiêu đề",
+    "required": "(bắt buộc)",
+    "titlePlaceholder": "Viết vài chữ về video của bạn",
+    "titleHint": "Tối đa 200 ký tự.",
+    "titleRequired": "Nhập tiêu đề trước khi đăng.",
+    "titleTooLong": "Tiêu đề tối đa 200 ký tự.",
+    "submit": "Đăng video",
+    "submitting": "Đang chuẩn bị…"
+  },
+  "failure": {
+    "tooManyUploads": {
+      "title": "Đã có 3 video đang tải",
+      "body": "Mỗi người tải tối đa 3 video trong 15 phút, kể cả video đã huỷ. Đợi một video xong rồi tải tiếp.",
+      "link": "Xem Video của tôi"
+    },
+    "expired": {
+      "title": "Phiên tải lên đã hết hạn",
+      "body": "File và tiêu đề vẫn được giữ. Bấm Đăng video để tải lại với phiên mới."
+    },
+    "mismatch": {
+      "title": "Máy chủ không nhận được đúng file",
+      "body": "File đã tải lên bị thiếu hoặc không khớp với file đã chọn. Bấm Đăng video để tải lại từ đầu."
+    },
+    "rejected": {
+      "title": "Máy chủ lưu trữ từ chối file",
+      "body": "Bấm Đăng video để thử lại. Nếu vẫn lỗi, hãy chọn file khác."
+    },
+    "badOrigin": {
+      "title": "Không tải lên được",
+      "body": "Địa chỉ tải lên không đúng với cấu hình của SVP, nên file chưa được gửi đi. Thử lại sau."
+    },
+    "initFailed": {
+      "title": "Chưa tạo được video",
+      "body": "SVP chưa nhận yêu cầu tải lên. Kiểm tra kết nối rồi bấm Đăng video lần nữa."
+    },
+    "rateLimited": {
+      "title": "Bạn thao tác hơi nhanh",
+      "body": "SVP tạm giới hạn yêu cầu từ thiết bị này. Thử lại sau ít phút."
+    },
+    "sendFailed": {
+      "title": "Tải lên thất bại",
+      "body": "Đã thử lại 3 lần mà chưa được. Kiểm tra kết nối rồi bấm Thử lại."
+    },
+    "completeFailed": {
+      "title": "Chưa xác nhận được video",
+      "body": "File đã lên máy chủ nhưng SVP chưa nhận xác nhận. Bấm Thử lại, file không phải gửi lại."
+    }
+  },
+  "cancelled": {
+    "title": "Đã huỷ tải lên",
+    "body": "Video đã huỷ vẫn tính vào 3 lượt tải trong 15 phút."
+  },
+  "progress": {
+    "sending": "Đang tải lên ({percent}%)",
+    "waiting": "Đang chờ kết nối",
+    "completing": "Đang hoàn tất",
+    "label": "Tiến độ tải lên",
+    "meta": "{loaded} / {total} MB",
+    "speed": "{speed} MB/s",
+    "paused": "tạm dừng",
+    "secondsLeft": "còn khoảng {seconds} giây",
+    "minutesLeft": "còn khoảng {minutes} phút",
+    "keepOpen": "Giữ trang này mở đến khi tải xong. Sau đó SVP sẽ tự xử lý video.",
+    "cancel": "Huỷ tải lên",
+    "cancelNote": "Video đã huỷ vẫn tính vào 3 lượt tải trong 15 phút.",
+    "retry": "Thử lại",
+    "offline": {
+      "title": "Mất kết nối",
+      "body": "Đang chờ có mạng để tải tiếp."
+    },
+    "retrying": {
+      "title": "Tải lên bị gián đoạn",
+      "body": "Đang tự thử lại… lần {retry}/{max}"
+    },
+    "renewed": {
+      "title": "Phiên tải lên đã hết hạn",
+      "body": "SVP đã mở phiên mới và tải lại file từ đầu."
+    }
+  },
+  "result": {
+    "label": "Tiến trình video",
+    "uploaded": "Đã tải lên",
+    "processingTitle": "Đang xử lý video",
+    "processingBadge": "Đang xử lý",
+    "processingBody": "Thường mất từ vài chục giây đến vài phút. Bạn có thể rời trang này, video sẽ hiện trong Video của tôi khi sẵn sàng.",
+    "processed": "Đã xử lý",
+    "readyTitle": "Video đã sẵn sàng",
+    "readyBadge": "Sẵn sàng",
+    "readyBody": "Mọi người đã có thể xem video của bạn trong Khám phá.",
+    "readyPending": "Sẵn sàng",
+    "readyPendingBody": "Video sẽ xuất hiện trong Khám phá.",
+    "failedTitle": "Xử lý video thất bại",
+    "failedBadge": "Lỗi",
+    "failedBody": "SVP không chuyển mã được video này. Hãy thử lại với file khác.",
+    "watch": "Xem video",
+    "another": "Tải video khác",
+    "pickAnother": "Chọn file khác",
+    "myVideos": "Đến Video của tôi"
+  }
+}

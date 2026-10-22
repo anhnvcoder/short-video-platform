@@ -13,7 +13,12 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Create an account */
+        /**
+         * Create an account
+         * @description `handle` and `display_name` are optional, so older clients keep working: without a handle
+         *     the account gets a generated one (`u_` and 12 hex digits), and the display name defaults
+         *     to the handle. Read them back with `GET /me`.
+         */
         post: operations["register"];
         delete?: never;
         options?: never;
@@ -120,6 +125,121 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The caller's own profile
+         * @description The profile of the account in the access token; it never holds the email.
+         */
+        get: operations["getMe"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Change the caller's display name
+         * @description Only `display_name` can change; the handle never does. Idempotent: sending the same name
+         *     again changes nothing. A missing or empty `display_name` is a 400 like any other invalid
+         *     one. Answers with the profile as it is after the change.
+         */
+        patch: operations["updateMe"];
+        trace?: never;
+    };
+    "/me/videos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The caller's own videos, in every status
+         * @description Every video of the caller, UPLOADING, PROCESSING and FAILED ones included, newest first by
+         *     creation time. The same as `GET /users/{user_id}/videos` with the caller's id. See
+         *     `VideoPage` for paging.
+         */
+        get: operations["listMyVideos"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/profiles/{handle}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A user's profile by handle
+         * @description The handle is matched ignoring the case of ASCII letters and surrounding white space. A
+         *     value that cannot be a handle is a 404 like an unknown one.
+         */
+        get: operations["getProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users/{user_id}/videos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A user's videos
+         * @description Newest first by creation time. Only READY videos, unless `user_id` is the caller's own: then
+         *     every status, as in `GET /me/videos`. An id with no user gives an empty page, not a 404:
+         *     find users with `GET /profiles/{handle}`. See `VideoPage` for paging.
+         */
+        get: operations["listUserVideos"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/public/videos/{video_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A READY video, without logging in
+         * @description For the public share page. Needs no Bearer token and ignores the `Authorization` header,
+         *     a wrong token included: the answer is the same for everyone, so it has no `liked_by_me`.
+         *     Rate limited by the client's address before any service is called. A video that is not
+         *     READY, an unknown id and an id that is not a UUID all get the same 404, so nothing tells
+         *     an unpublished video from a missing one.
+         */
+        get: operations["getPublicVideo"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/videos": {
         parameters: {
             query?: never;
@@ -152,7 +272,9 @@ export interface paths {
         };
         /**
          * Get one video
-         * @description A video that is not READY is visible only to its author; to anyone else it is a 404.
+         * @description A video that is not READY is visible only to its author; to anyone else it is a 404. The
+         *     answer carries `author` and `stats` (with `liked_by_me`) when their services answer within
+         *     100 ms; anonymous readers use `GET /public/videos/{video_id}`.
          */
         get: operations["getVideo"];
         put?: never;
@@ -339,6 +461,58 @@ export interface components {
             /** Format: password */
             password: string;
         };
+        /** @description `Credentials` plus an optional handle and display name. */
+        RegisterRequest: {
+            /** Format: email */
+            email: string;
+            /** Format: password */
+            password: string;
+            /**
+             * @description Optional. Surrounding white space is trimmed and ASCII letters lowered first; the
+             *     result must match `^[a-z][a-z0-9_]{2,29}$` and must not match `^u_[0-9a-f]{12}$`, the
+             *     form of generated handles. Absent or empty once trimmed: the account gets a generated
+             *     handle. It can never be changed afterwards.
+             * @example minhanh
+             */
+            handle?: string;
+            /**
+             * @description Optional; absent or empty once trimmed means the handle. Same rules as
+             *     `Profile.display_name`.
+             */
+            display_name?: string;
+        };
+        /**
+         * @description Unique, lowercase and never changed. A generated handle is `u_` and 12 hex digits.
+         * @example minhanh
+         * @example u_23456789abcd
+         */
+        Handle: string;
+        /**
+         * @description 1 to 50 characters (Unicode code points) once trimmed, valid UTF-8, without control
+         *     characters (U+0000-U+001F, U+007F-U+009F), line or paragraph separators (U+2028, U+2029)
+         *     or bidirectional formatting characters (U+061C, U+200E, U+200F, U+202A-U+202E,
+         *     U+2066-U+2069). Not normalized by the server: send NFC. Text chosen by its user: display
+         *     it as text, never as HTML.
+         * @example Minh Anh
+         */
+        DisplayName: string;
+        /** @description What anyone may see of a user; never the email. */
+        Profile: {
+            user_id: components["schemas"]["Id"];
+            handle: components["schemas"]["Handle"];
+            display_name: components["schemas"]["DisplayName"];
+        };
+        /** @description A profile as the caller sees it; field names and types match `Profile`. */
+        UserProfile: {
+            user_id: components["schemas"]["Id"];
+            handle: components["schemas"]["Handle"];
+            display_name: components["schemas"]["DisplayName"];
+            /** @description Whether the caller follows this user; false on the caller's own profile. */
+            followed_by_me: boolean;
+        };
+        ProfileUpdate: {
+            display_name: components["schemas"]["DisplayName"];
+        };
         AccessToken: {
             /** @description JWT signed with Ed25519 (EdDSA), valid for 1 hour. */
             access_token: string;
@@ -389,6 +563,67 @@ export interface components {
              * @description Absolute URL of the thumbnail; present once READY.
              */
             thumbnail_url?: string;
+            /**
+             * @description The author's profile, in `GET /videos/{video_id}` and the video lists; absent from
+             *     `POST /videos/{video_id}/complete`, and whenever user-service does not answer within
+             *     100 ms or has no profile for `author_id`.
+             */
+            author?: components["schemas"]["Profile"];
+            /**
+             * @description In `GET /videos/{video_id}` and the video lists, under the same rule as in the feed
+             *     (see `VideoStats`); a video that is not READY has zero counters. Absent from
+             *     `POST /videos/{video_id}/complete`.
+             */
+            stats?: components["schemas"]["VideoStats"];
+        };
+        /**
+         * @description One page of a user's videos, newest first by (`created_at`, `video_id`): videos created or
+         *     published while paging never shift later pages. Paging works as in `FeedPage`.
+         */
+        VideoPage: {
+            /** @description Empty (never null) when there is nothing more. */
+            items: components["schemas"]["Video"][];
+            /** @description Pass it as `cursor` to get the next page; empty on the last page. */
+            next_cursor: string;
+        };
+        /** @description A READY video for anyone, without logging in; field names and types match `FeedItem`. */
+        PublicVideo: {
+            video_id: components["schemas"]["Id"];
+            author_id: components["schemas"]["Id"];
+            title: string;
+            /** Format: int64 */
+            duration_ms: number;
+            /**
+             * Format: uri
+             * @description Absolute URL of the HLS master playlist.
+             */
+            playlist_url: string;
+            /**
+             * Format: uri
+             * @description Absolute URL of the thumbnail.
+             */
+            thumbnail_url: string;
+            /**
+             * Format: date-time
+             * @description When the video became READY.
+             */
+            published_at: string;
+            /** @description Absent when user-service does not answer within 100 ms. */
+            author?: components["schemas"]["Profile"];
+            stats?: components["schemas"]["PublicVideoStats"];
+        };
+        /**
+         * @description Counters of a public video, without `liked_by_me`: there is no caller. Absent (not zero)
+         *     when engagement-service does not answer within 100 ms.
+         */
+        PublicVideoStats: {
+            /**
+             * Format: int64
+             * @description Total views; lags by up to about a minute.
+             */
+            view_count: number;
+            /** Format: int64 */
+            like_count: number;
         };
         /**
          * @description One page of a feed. Items are newest first by (`published_at`, `video_id`), so videos
@@ -422,6 +657,11 @@ export interface components {
              * @description When the video became READY.
              */
             published_at: string;
+            /**
+             * @description The author's profile; absent from every item of a page when user-service does not
+             *     answer within 100 ms, and from an item whose author has no profile.
+             */
+            author?: components["schemas"]["Profile"];
             stats?: components["schemas"]["VideoStats"];
         };
         /**
@@ -586,6 +826,8 @@ export interface components {
     headers: {
         /** @description Seconds to wait before the request would be allowed; at least 1. */
         RetryAfter: number;
+        /** @description No cache may store the answer. */
+        NoStore: "no-store";
     };
     pathItems: never;
 }
@@ -600,7 +842,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["Credentials"];
+                "application/json": components["schemas"]["RegisterRequest"];
             };
         };
         responses: {
@@ -615,8 +857,23 @@ export interface operations {
                     };
                 };
             };
-            400: components["responses"]["BadRequest"];
-            /** @description The email is already registered (`EMAIL_ALREADY_REGISTERED`). */
+            /**
+             * @description A body that is not one JSON object with known fields (`INVALID_JSON`), or an invalid
+             *     `email` (`INVALID_EMAIL`), `password` (`INVALID_PASSWORD`), `handle` (`INVALID_HANDLE`)
+             *     or `display_name` (`INVALID_DISPLAY_NAME`), checked in that order.
+             */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /**
+             * @description The email is already registered (`EMAIL_ALREADY_REGISTERED`), or the handle is taken
+             *     (`HANDLE_ALREADY_TAKEN`). When both are, either code may come back.
+             */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -799,6 +1056,300 @@ export interface operations {
             500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
             504: components["responses"]["GatewayTimeout"];
+        };
+    };
+    getMe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's profile. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Profile"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            /** @description The caller's account no longer exists (`USER_NOT_FOUND`). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+            504: components["responses"]["GatewayTimeout"];
+        };
+    };
+    updateMe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfileUpdate"];
+            };
+        };
+        responses: {
+            /** @description The caller's profile with the new display name. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Profile"];
+                };
+            };
+            /**
+             * @description A body that is not one JSON object with known fields (`INVALID_JSON`), or a
+             *     `display_name` that breaks its rules (`INVALID_DISPLAY_NAME`).
+             */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description The caller's account no longer exists (`USER_NOT_FOUND`). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            413: components["responses"]["PayloadTooLarge"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+            504: components["responses"]["GatewayTimeout"];
+        };
+    };
+    listMyVideos: {
+        parameters: {
+            query?: {
+                /** @description Items per page; absent or 0 means 10, above 50 means 50, negative is a 400. */
+                page_size?: components["parameters"]["PageSize"];
+                /**
+                 * @description `next_cursor` of the previous page, passed back unchanged; absent for the first page. It is
+                 *     opaque: the gateway does not read it, and a cursor that cannot be decoded is a 400
+                 *     (`INVALID_PAGE_TOKEN`).
+                 */
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of videos. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VideoPage"];
+                };
+            };
+            400: components["responses"]["FeedBadRequest"];
+            401: components["responses"]["Unauthorized"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+            504: components["responses"]["GatewayTimeout"];
+        };
+    };
+    getProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                handle: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The profile, with whether the caller follows that user. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserProfile"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            /** @description No user has this handle (`USER_NOT_FOUND`). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+            504: components["responses"]["GatewayTimeout"];
+        };
+    };
+    listUserVideos: {
+        parameters: {
+            query?: {
+                /** @description Items per page; absent or 0 means 10, above 50 means 50, negative is a 400. */
+                page_size?: components["parameters"]["PageSize"];
+                /**
+                 * @description `next_cursor` of the previous page, passed back unchanged; absent for the first page. It is
+                 *     opaque: the gateway does not read it, and a cursor that cannot be decoded is a 400
+                 *     (`INVALID_PAGE_TOKEN`).
+                 */
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: never;
+            path: {
+                /** @description The author. video-service validates it. */
+                user_id: components["schemas"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of videos. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VideoPage"];
+                };
+            };
+            /**
+             * @description `user_id` is not a UUID (`INVALID_AUTHOR_ID`), `page_size` is not an integer or is
+             *     negative (`INVALID_PAGE_SIZE`), the path or query is not valid UTF-8 (`INVALID_UTF8`),
+             *     or `cursor` cannot be decoded (`INVALID_PAGE_TOKEN`).
+             */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+            504: components["responses"]["GatewayTimeout"];
+        };
+    };
+    getPublicVideo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                video_id: components["schemas"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The video. Cacheable by shared caches for 30 seconds. */
+            200: {
+                headers: {
+                    "Cache-Control"?: "public, max-age=30";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicVideo"];
+                };
+            };
+            /** @description The path is not valid UTF-8 (`INVALID_UTF8`). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /**
+             * @description No such video, not READY, or not a valid id (`VIDEO_NOT_FOUND`). Never stored by a
+             *     cache: the video may become READY a minute later.
+             */
+            404: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Over the rate limit of the client's address (`RATE_LIMITED`). */
+            429: {
+                headers: {
+                    "Retry-After": components["headers"]["RetryAfter"];
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Internal error; `detail` is empty. */
+            500: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description video-service is unavailable (`UNAVAILABLE`). */
+            503: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description video-service did not answer within 3 seconds (`DEADLINE_EXCEEDED`). */
+            504: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
         };
     };
     initUpload: {

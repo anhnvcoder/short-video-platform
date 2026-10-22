@@ -11,6 +11,7 @@ export function newNonce(): string {
 export interface CspOptions {
   nonce: string;
   mediaOrigin: string;
+  uploadOrigin: string;
   // APP_ORIGIN is https.
   secure: boolean;
   // `next dev` only: React rebuilds server error stacks in the browser with eval. A production build never has it, and
@@ -18,7 +19,9 @@ export interface CspOptions {
   dev: boolean;
 }
 
-export function contentSecurityPolicy({ nonce, mediaOrigin, secure, dev }: CspOptions): string {
+export function contentSecurityPolicy({ nonce, mediaOrigin, uploadOrigin, secure, dev }: CspOptions): string {
+  // The upload origin is listed once when it is the media origin (one MinIO serves both in compose).
+  const connect = uploadOrigin === mediaOrigin ? mediaOrigin : `${mediaOrigin} ${uploadOrigin}`;
   const directives = [
     "default-src 'self'",
     // 'self' is only the fallback for browsers that do not know 'strict-dynamic'.
@@ -27,8 +30,8 @@ export function contentSecurityPolicy({ nonce, mediaOrigin, secure, dev }: CspOp
     `img-src 'self' ${mediaOrigin} data: blob:`,
     // hls.js feeds MediaSource through blob: URLs; without MSE the playlist URL goes straight into <video>.
     `media-src 'self' ${mediaOrigin} blob:`,
-    // hls.js loads playlists and segments with XHR.
-    `connect-src 'self' ${mediaOrigin}`,
+    // hls.js loads playlists and segments with XHR; the upload page posts the file to storage with XHR.
+    `connect-src 'self' ${connect}`,
     "worker-src 'self' blob:",
     "font-src 'self'",
     "object-src 'none'",

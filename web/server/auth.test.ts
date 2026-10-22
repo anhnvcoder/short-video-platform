@@ -1,7 +1,7 @@
 import { http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
 import { server } from "@/lib/test/msw-server";
-import { checkCredentials, safeNext, signIn, signOut } from "./auth";
+import { checkCredentials, checkRegistration, failureState, safeNext, signIn, signOut } from "./auth";
 import { createAuthGateway, subjectOf } from "./gateway";
 import {
   accessTokenBody,
@@ -96,6 +96,7 @@ describe("checkCredentials", () => {
       ok: false,
       state: {
         email: "nope",
+        handle: "",
         fieldErrors: { email: "INVALID_EMAIL", password: "INVALID_PASSWORD" },
         formError: null,
         retryAfterSeconds: null,
@@ -121,6 +122,72 @@ describe("checkCredentials", () => {
   });
 });
 
+describe("checkRegistration", () => {
+  const valid = { email: "a@example.com", password: "12345678" };
+
+  // The cases of docs/adr/0018-web-profiles-public-video-upload.md, section 1.
+  it.each([
+    ["Alice", "alice"],
+    ["  bob\t", "bob"],
+    ["MinhAnh_2", "minhanh_2"],
+    ["a".repeat(30), "a".repeat(30)],
+    ["u_bob", "u_bob"],
+    ["u_0123456789abc", "u_0123456789abc"],
+    ["abc", "abc"],
+  ])("accepts the handle %j as %j", (handle, expected) => {
+    expect(checkRegistration({ ...valid, handle })).toEqual({ ok: true, ...valid, handle: expected });
+  });
+
+  it.each([
+    ["missing", null],
+    ["empty", ""],
+    ["blank", "   "],
+    ["starting with _", "_bob"],
+    ["starting with a digit", "1bob"],
+    ["of 2 characters", "ab"],
+    ["of 31 characters", "a".repeat(31)],
+    ["with an accent", "bób"],
+    ["with the Kelvin sign, which Unicode lowering makes k", "\u212Aelvin"],
+    ["with a dash", "minh-anh"],
+    ["with a space inside", "minh anh"],
+    ["of the generated form", "u_0123456789ab"],
+    ["of the generated form in upper case", "U_0123456789AB"],
+    ["a file", new File(["alice"], "handle")],
+  ])("flags a handle %s with INVALID_HANDLE", (_name, handle) => {
+    expect(checkRegistration({ ...valid, handle })).toMatchObject({
+      ok: false,
+      state: { email: "a@example.com", fieldErrors: { handle: "INVALID_HANDLE" } },
+    });
+  });
+
+  it("flags every bad field together and never sends the password back", () => {
+    const checked = checkRegistration({ email: "nope", password: "short", handle: " Bad-Handle " });
+    expect(checked).toEqual({
+      ok: false,
+      state: {
+        email: "nope",
+        handle: "bad-handle",
+        fieldErrors: { email: "INVALID_EMAIL", password: "INVALID_PASSWORD", handle: "INVALID_HANDLE" },
+        formError: null,
+        retryAfterSeconds: null,
+      },
+    });
+    expect(JSON.stringify(checked)).not.toContain("short");
+  });
+});
+
+describe("failureState", () => {
+  it.each(["INVALID_HANDLE", "HANDLE_ALREADY_TAKEN"] as const)("puts %s on the handle field", (code) => {
+    expect(failureState("a@example.com", { ok: false, code }, "alice")).toEqual({
+      email: "a@example.com",
+      handle: "alice",
+      fieldErrors: { handle: code },
+      formError: null,
+      retryAfterSeconds: null,
+    });
+  });
+});
+
 describe("subjectOf", () => {
   it("reads the user id from the access token", () => {
     expect(subjectOf(fakeAccessToken(userId))).toBe(userId);
@@ -140,6 +207,10 @@ describe("AuthGateway.login and register answers", () => {
     [400, "INVALID_JSON", {}, { code: "UNAVAILABLE" }],
     [401, "INVALID_CREDENTIALS", {}, { code: "INVALID_CREDENTIALS" }],
     [409, "EMAIL_ALREADY_REGISTERED", {}, { code: "EMAIL_ALREADY_REGISTERED" }],
+    [409, "HANDLE_ALREADY_TAKEN", {}, { code: "HANDLE_ALREADY_TAKEN" }],
+    [400, "INVALID_HANDLE", {}, { code: "INVALID_HANDLE" }],
+    [400, "INVALID_DISPLAY_NAME", {}, { code: "UNAVAILABLE" }],
+    [409, "CONFLICT", {}, { code: "UNAVAILABLE" }],
     [429, "RATE_LIMITED", { "Retry-After": "42" }, { code: "RATE_LIMITED", retryAfterSeconds: 42 }],
     [503, "UNAVAILABLE", {}, { code: "UNAVAILABLE" }],
   ])("maps %d %s", async (status, code, headers, expected) => {
@@ -148,7 +219,8 @@ describe("AuthGateway.login and register answers", () => {
       http.post(`${gatewayOrigin}/auth/register`, () => gatewayProblem(status, code, headers)),
     );
     expect(await gateway.login("a@example.com", "12345678", null)).toEqual({ ok: false, ...expected });
-    expect(await gateway.register("a@example.com", "12345678", null)).toEqual({ ok: false, ...expected });
+    const account = { email: "a@example.com", password: "12345678", handle: "alice" };
+    expect(await gateway.register(account, null)).toEqual({ ok: false, ...expected });
   });
 
   it("is UNAVAILABLE when the gateway cannot be reached", async () => {
@@ -204,7 +276,13 @@ describe.skipIf(!testRedisURL)("signIn and signOut on the test Redis", () => {
     server.use(http.post(`${gatewayOrigin}/auth/login`, () => gatewayProblem(401, "INVALID_CREDENTIALS")));
     expect(await signIn(services, "a@example.com", "12345678", null, undefined)).toEqual({
       ok: false,
-      state: { email: "a@example.com", fieldErrors: {}, formError: "INVALID_CREDENTIALS", retryAfterSeconds: null },
+      state: {
+        email: "a@example.com",
+        handle: "",
+        fieldErrors: {},
+        formError: "INVALID_CREDENTIALS",
+        retryAfterSeconds: null,
+      },
     });
     expect(await redis.client().keys(`${redis.prefix()}*`)).toEqual([]);
   });

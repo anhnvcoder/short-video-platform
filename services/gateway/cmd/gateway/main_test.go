@@ -115,17 +115,22 @@ var backends = []backend{userBackend, videoBackend, feedBackend, engagementBacke
 
 func TestServiceConfig(t *testing.T) {
 	type name struct{ Service, Method string }
-	// The idempotent methods of ADR-0010 section 4 and Logout (ADR-0016): only these are
-	// retried, as a second try of any other would repeat its effect.
+	// The idempotent methods of ADR-0010 section 4, Logout (ADR-0016) and the reads and the
+	// display name change of ADR-0018 section 5: only these are retried, as a second try of any
+	// other would repeat its effect or overrun a 100 ms budget.
 	want := map[string][]name{
 		"user-service": {
 			{"svp.user.v1.UserService", "Follow"},
 			{"svp.user.v1.UserService", "Unfollow"},
 			{"svp.user.v1.UserService", "Logout"},
+			{"svp.user.v1.UserService", "GetProfileByHandle"},
+			{"svp.user.v1.UserService", "UpdateDisplayName"},
 		},
 		"video-service": {
 			{"svp.video.v1.VideoService", "GetVideo"},
 			{"svp.video.v1.VideoService", "CompleteUpload"},
+			{"svp.video.v1.VideoService", "GetPublicVideo"},
+			{"svp.video.v1.VideoService", "ListAuthorVideos"},
 		},
 		"feed-service": {
 			{"svp.feed.v1.FeedService", "GetFollowingFeed"},
@@ -211,6 +216,7 @@ func TestRetry(t *testing.T) {
 		{userBackend, userv1.UserService_Register_FullMethodName},
 		{userBackend, userv1.UserService_Login_FullMethodName},
 		{userBackend, userv1.UserService_Refresh_FullMethodName},
+		{userBackend, userv1.UserService_GetProfiles_FullMethodName},
 		{videoBackend, videov1.VideoService_InitUpload_FullMethodName},
 		{engagementBackend, engagementv1.EngagementService_RecordView_FullMethodName},
 		{engagementBackend, engagementv1.EngagementService_GetStats_FullMethodName},
@@ -333,6 +339,40 @@ func TestSlowStatsDoNotOpenBreaker(t *testing.T) {
 		}
 		if got := f.count(m); got != 1 {
 			t.Errorf("%s reached engagement-service %d times, want 1", m, got)
+		}
+	}
+}
+
+// TestSlowProfilesDoNotOpenBreaker: GetProfiles running past the authors' 100 ms budget again
+// and again leaves user-service's breaker closed, so logins and follows still reach it
+// (ADR-0018 section 5).
+func TestSlowProfilesDoNotOpenBreaker(t *testing.T) {
+	getProfiles := userv1.UserService_GetProfiles_FullMethodName
+	f, conn := connect(t, userBackend, func(ctx context.Context, method string, _ int) error {
+		if method != getProfiles {
+			return nil
+		}
+		select {
+		case <-time.After(200 * time.Millisecond):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	for range 8 {
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		err := invoke(ctx, conn, getProfiles)
+		cancel()
+		if status.Code(err) != codes.DeadlineExceeded {
+			t.Fatalf("GetProfiles error = %v, want DEADLINE_EXCEEDED", err)
+		}
+	}
+	for _, m := range []string{userv1.UserService_Login_FullMethodName, userv1.UserService_Follow_FullMethodName} {
+		if err := invoke(t.Context(), conn, m); err != nil {
+			t.Fatalf("%s: %v", m, err)
+		}
+		if got := f.count(m); got != 1 {
+			t.Errorf("%s reached user-service %d times, want 1", m, got)
 		}
 	}
 }

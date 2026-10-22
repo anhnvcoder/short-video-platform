@@ -76,14 +76,24 @@ var (
 		name: "user-service", addrVar: "USER_SERVICE_ADDR", addr: defaultUserServiceAddr,
 		// Logout revokes a family that stays revoked, so a second try changes nothing; Refresh is
 		// not retried: a second try reuses the token and revokes its whole family (ADR-0016).
+		// UpdateDisplayName sets a value, so setting it twice is setting it once. GetProfiles is
+		// not retried: it adds authors within a 100 ms budget that holds no second try
+		// (ADR-0018 section 5).
 		retry: []string{
 			userv1.UserService_Follow_FullMethodName, userv1.UserService_Unfollow_FullMethodName,
 			userv1.UserService_Logout_FullMethodName,
+			userv1.UserService_GetProfileByHandle_FullMethodName, userv1.UserService_UpdateDisplayName_FullMethodName,
 		},
+		// A slow but live user-service must not open the breaker through the authors' 100 ms
+		// budget and fail every login and follow.
+		ignoreDeadline: []string{userv1.UserService_GetProfiles_FullMethodName},
 	}
 	videoBackend = backend{
 		name: "video-service", addrVar: "VIDEO_SERVICE_ADDR", addr: defaultVideoServiceAddr,
-		retry: []string{videov1.VideoService_GetVideo_FullMethodName, videov1.VideoService_CompleteUpload_FullMethodName},
+		retry: []string{
+			videov1.VideoService_GetVideo_FullMethodName, videov1.VideoService_CompleteUpload_FullMethodName,
+			videov1.VideoService_GetPublicVideo_FullMethodName, videov1.VideoService_ListAuthorVideos_FullMethodName,
+		},
 	}
 	feedBackend = backend{
 		name: "feed-service", addrVar: "FEED_SERVICE_ADDR", addr: defaultFeedServiceAddr,
@@ -241,11 +251,14 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return err
 	}
 
-	userConn, err := dial(userBackend)
+	// Like engagement-service's below, this connection is opened at start and never left idle:
+	// GetProfiles adds the authors of every feed page within 100 ms (ADR-0018 section 5).
+	userConn, err := dial(userBackend, grpc.WithIdleTimeout(0))
 	if err != nil {
 		return err
 	}
 	defer func() { _ = userConn.Close() }()
+	userConn.Connect()
 	videoConn, err := dial(videoBackend)
 	if err != nil {
 		return err

@@ -11,6 +11,9 @@ import { sessionCookieName } from "./session";
 // client (WEB-7), and only the headers listed here go either way.
 
 const id = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+// A handle as user-service stores it (docs/adr/0018-web-profiles-public-video-upload.md, section 1): the client sends
+// the lowercase form, so upper case, an escape or any other character matches nothing.
+const handle = "[a-z][a-z0-9_]{2,29}";
 
 interface Route {
   // Matched against the path after /api, as received: a percent-escape, `..` or a non-canonical id matches nothing.
@@ -19,13 +22,20 @@ interface Route {
   query: readonly string[];
 }
 
-// The routes of services/gateway/openapi.yaml the web client uses.
+// The routes of services/gateway/openapi.yaml the web client uses. PATCH /me is not one: the display name changes
+// through a Server Action. Nor is GET /public/videos/{id}: only the server of the share page calls it.
 const routes: readonly Route[] = [
   { pattern: /^\/feed\/(?:explore|following)$/, methods: ["GET"], query: ["cursor", "page_size"] },
+  { pattern: /^\/videos$/, methods: ["POST"], query: [] },
   { pattern: new RegExp(`^/videos/${id}$`), methods: ["GET"], query: [] },
+  { pattern: new RegExp(`^/videos/${id}/complete$`), methods: ["POST"], query: [] },
   { pattern: new RegExp(`^/videos/${id}/like$`), methods: ["PUT", "DELETE"], query: [] },
   { pattern: new RegExp(`^/videos/${id}/views$`), methods: ["POST"], query: [] },
   { pattern: new RegExp(`^/me/following/${id}$`), methods: ["PUT", "DELETE"], query: [] },
+  { pattern: /^\/me$/, methods: ["GET"], query: [] },
+  { pattern: /^\/me\/videos$/, methods: ["GET"], query: ["cursor", "page_size"] },
+  { pattern: new RegExp(`^/users/${id}/videos$`), methods: ["GET"], query: ["cursor", "page_size"] },
+  { pattern: new RegExp(`^/profiles/${handle}$`), methods: ["GET"], query: [] },
 ];
 
 // The gateway's own limit on a request body.

@@ -14,6 +14,9 @@ export interface ServerEnv {
   appOrigin: string;
   // Origin of HLS playlists, segments and thumbnails, allowed by the CSP.
   mediaOrigin: string;
+  // Origin of the storage the browser uploads to with a presigned POST, allowed by the CSP. Public configuration: the
+  // upload page hands it to its client component, which sends a file only to an upload_url on this origin.
+  uploadOrigin: string;
   // APP_ORIGIN is https: Secure cookie with the __Host-Http- prefix, HSTS, upgrade-insecure-requests.
   secure: boolean;
 }
@@ -29,6 +32,9 @@ function isOrigin(value: string): boolean {
   return (url.protocol === "http:" || url.protocol === "https:") && url.origin === value;
 }
 
+// Hosts of this machine as URL writes them: an IPv6 address keeps its brackets.
+const loopbackHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
 const origin = z.string({ error: "is required" }).refine(isOrigin, "must be an http(s) origin without a path");
 
 const schema = z.object({
@@ -41,12 +47,20 @@ const schema = z.object({
       return false;
     }
   }, "must be a redis:// or rediss:// URL"),
-  // Plain http is for loopback only (compose and `make web-dev`), where nobody else is on the wire.
+  // Plain http is for loopback only (compose and `make web-dev`), where nobody else is on the wire. Zod runs every
+  // refine even when an earlier one failed: a value that is not an origin passes here, keeping `new URL` from throwing
+  // (a TypeError holding the value, out of safeParse) and leaving the error to the origin check.
   APP_ORIGIN: origin.refine(
-    (value) => !value.startsWith("http:") || new URL(value).hostname === "localhost",
+    (value) => !isOrigin(value) || !value.startsWith("http:") || new URL(value).hostname === "localhost",
     "must be https, or http only on host localhost",
   ),
   MEDIA_ORIGIN: origin,
+  // The browser posts the file and its 15-minute upload credential here, so plain http is for loopback only (MinIO of
+  // compose on 127.0.0.1:9000), where the request never leaves the machine. Not an origin: as for APP_ORIGIN.
+  UPLOAD_ORIGIN: origin.refine(
+    (value) => !isOrigin(value) || !value.startsWith("http:") || loopbackHosts.has(new URL(value).hostname),
+    "must be https, or http only on a loopback host",
+  ),
 });
 
 // Validates the variables; the error names each bad variable and why, never its value (REDIS_URL may hold a password).
@@ -62,6 +76,7 @@ export function parseServerEnv(source: Record<string, string | undefined>): Serv
     redisURL: env.REDIS_URL,
     appOrigin: env.APP_ORIGIN,
     mediaOrigin: env.MEDIA_ORIGIN,
+    uploadOrigin: env.UPLOAD_ORIGIN,
     secure: env.APP_ORIGIN.startsWith("https:"),
   };
 }

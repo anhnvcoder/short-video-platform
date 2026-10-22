@@ -51,6 +51,17 @@ func hasProcessingAt(t *testing.T, pool *pgxpool.Pool) bool {
 	return ok
 }
 
+// hasAuthorIndex reports whether the index of 00005 exists.
+func hasAuthorIndex(t *testing.T, pool *pgxpool.Pool) bool {
+	t.Helper()
+	var ok bool
+	err := pool.QueryRow(t.Context(), "SELECT to_regclass('public.videos_author_created_idx') IS NOT NULL").Scan(&ok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ok
+}
+
 // Every migration goes down and up again cleanly after pgtest applied them.
 func TestMigrationsDownAndUp(t *testing.T) {
 	pool := pgtest.New(t, "svp_video_migrations_test", migrations.FS)
@@ -62,6 +73,9 @@ func TestMigrationsDownAndUp(t *testing.T) {
 	}
 	if !hasProcessingAt(t, pool) {
 		t.Fatal("after up: videos has no processing_at")
+	}
+	if !hasAuthorIndex(t, pool) {
+		t.Fatal("after up: no videos_author_created_idx")
 	}
 
 	db := stdlib.OpenDBFromPool(pool)
@@ -75,6 +89,15 @@ func TestMigrationsDownAndUp(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if _, err := provider.Down(t.Context()); err != nil {
+		t.Fatalf("down 00005: %v", err)
+	}
+	if hasAuthorIndex(t, pool) {
+		t.Fatal("after down 00005: videos_author_created_idx still exists")
+	}
+	if !hasProcessingAt(t, pool) {
+		t.Fatal("after down 00005: videos has no processing_at")
+	}
 	if _, err := provider.Down(t.Context()); err != nil {
 		t.Fatalf("down 00004: %v", err)
 	}
@@ -116,5 +139,8 @@ func TestMigrationsDownAndUp(t *testing.T) {
 	}
 	if !hasProcessingAt(t, pool) {
 		t.Fatal("after up again: videos has no processing_at")
+	}
+	if !hasAuthorIndex(t, pool) {
+		t.Fatal("after up again: no videos_author_created_idx")
 	}
 }

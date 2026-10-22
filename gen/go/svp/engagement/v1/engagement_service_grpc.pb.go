@@ -33,8 +33,10 @@ const (
 //
 // Caller identity: the gateway passes the authenticated user id in the gRPC
 // metadata key `x-user-id`; requests never carry the caller's own id. Every
-// RPC requires it and returns UNAUTHENTICATED when it is missing or not a
-// valid UUID.
+// RPC but GetStats requires it and returns UNAUTHENTICATED when it is missing
+// or not a valid UUID. For GetStats the caller is optional: without
+// `x-user-id` there is no caller, but a present `x-user-id` must still be
+// exactly one valid UUID, or the call fails with UNAUTHENTICATED.
 //
 // All ids are UUIDv7 strings in canonical lowercase form (36 chars).
 // engagement-service does not own videos and does not check that video_id
@@ -65,9 +67,12 @@ type EngagementServiceClient interface {
 	RecordView(ctx context.Context, in *RecordViewRequest, opts ...grpc.CallOption) (*RecordViewResponse, error)
 	// GetStats returns counters for up to 50 videos, plus whether the caller
 	// liked each one. Stats come back in request order, one per requested id;
-	// unknown ids get zero counters.
+	// unknown ids get zero counters. The caller is optional: without one (the
+	// public share page) liked_by_me is false for every video and no like is
+	// read.
 	//
 	// Errors:
+	// - UNAUTHENTICATED: `x-user-id` is present but not exactly one valid UUID.
 	// - INVALID_ARGUMENT: more than 50 ids, or an id that is not a UUID.
 	GetStats(ctx context.Context, in *GetStatsRequest, opts ...grpc.CallOption) (*GetStatsResponse, error)
 }
@@ -128,8 +133,10 @@ func (c *engagementServiceClient) GetStats(ctx context.Context, in *GetStatsRequ
 //
 // Caller identity: the gateway passes the authenticated user id in the gRPC
 // metadata key `x-user-id`; requests never carry the caller's own id. Every
-// RPC requires it and returns UNAUTHENTICATED when it is missing or not a
-// valid UUID.
+// RPC but GetStats requires it and returns UNAUTHENTICATED when it is missing
+// or not a valid UUID. For GetStats the caller is optional: without
+// `x-user-id` there is no caller, but a present `x-user-id` must still be
+// exactly one valid UUID, or the call fails with UNAUTHENTICATED.
 //
 // All ids are UUIDv7 strings in canonical lowercase form (36 chars).
 // engagement-service does not own videos and does not check that video_id
@@ -160,9 +167,12 @@ type EngagementServiceServer interface {
 	RecordView(context.Context, *RecordViewRequest) (*RecordViewResponse, error)
 	// GetStats returns counters for up to 50 videos, plus whether the caller
 	// liked each one. Stats come back in request order, one per requested id;
-	// unknown ids get zero counters.
+	// unknown ids get zero counters. The caller is optional: without one (the
+	// public share page) liked_by_me is false for every video and no like is
+	// read.
 	//
 	// Errors:
+	// - UNAUTHENTICATED: `x-user-id` is present but not exactly one valid UUID.
 	// - INVALID_ARGUMENT: more than 50 ids, or an id that is not a UUID.
 	GetStats(context.Context, *GetStatsRequest) (*GetStatsResponse, error)
 	mustEmbedUnimplementedEngagementServiceServer()

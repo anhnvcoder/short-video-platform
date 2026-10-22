@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Locale } from "@/i18n/config";
@@ -24,13 +24,17 @@ function renderForm({
 }
 
 function state(overrides: Partial<AuthState>): AuthState {
-  return { email: "", fieldErrors: {}, formError: null, retryAfterSeconds: null, ...overrides };
+  return { email: "", handle: "", fieldErrors: {}, formError: null, retryAfterSeconds: null, ...overrides };
 }
 
 const t = (locale: Locale) => messagesFor(locale).auth;
 
 function emailInput(locale: Locale = "vi") {
   return screen.getByLabelText(t(locale).email) as HTMLInputElement;
+}
+
+function handleInput(locale: Locale = "vi") {
+  return screen.getByLabelText(t(locale).handle) as HTMLInputElement;
 }
 
 function passwordInput(locale: Locale = "vi") {
@@ -53,8 +57,12 @@ async function submit(
   mode: AuthMode = "login",
   email = "minhanh@gmail.com",
   password = "12345678",
+  handle = "minhanh",
 ) {
   fireEvent.change(emailInput(locale), { target: { value: email } });
+  if (mode === "register") {
+    fireEvent.change(handleInput(locale), { target: { value: handle } });
+  }
   fireEvent.change(passwordInput(locale), { target: { value: password } });
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: t(locale)[mode].submit }));
@@ -80,6 +88,82 @@ describe("AuthForm", () => {
     expect(passwordInput(locale).type).toBe("password");
     expect(screen.getByRole("button", { name: t(locale)[mode].submit }).getAttribute("type")).toBe("submit");
     expect(screen.getByRole("link", { name: t(locale)[mode].switchLink })).toBeTruthy();
+  });
+
+  it.each<Locale>(["vi", "en"])("%s: register has a handle field with its hint; login has none", (locale) => {
+    renderForm({ locale, mode: "register" });
+    const input = handleInput(locale);
+    expect(input.getAttribute("name")).toBe("handle");
+    expect(input.type).toBe("text");
+    // A handle is a screen name (HTML's "nickname"); "username" would be saved with the password and filled into the
+    // email field of /login.
+    expect(input.getAttribute("autocomplete")).toBe("nickname");
+    expect(input.getAttribute("autocapitalize")).toBe("none");
+    expect(input.hasAttribute("maxlength")).toBe(false);
+    expect(description(input)).toBe(t(locale).handleHint);
+    cleanup();
+    renderForm({ locale, mode: "login" });
+    expect(screen.queryByLabelText(t(locale).handle)).toBeNull();
+    expect(document.querySelector('input[name="handle"]')).toBeNull();
+  });
+
+  it.each([
+    ["empty", ""],
+    ["blank", "   "],
+    ["too short", "ab"],
+    ["starting with _", "_bob"],
+    ["with an accent", "bób"],
+    ["of the generated form", "U_0123456789AB"],
+    ["of 31 characters", "a".repeat(31)],
+  ])("checks the handle before sending: %s never reaches the action", async (_name, handle) => {
+    const action = renderForm({ mode: "register" });
+    await submit("vi", "register", "minhanh@gmail.com", "12345678", handle);
+    expect(action).not.toHaveBeenCalled();
+    expect(handleInput().getAttribute("aria-invalid")).toBe("true");
+    expect(description(handleInput())).toBe(t("vi").errors.INVALID_HANDLE);
+    expect(document.activeElement).toBe(handleInput());
+  });
+
+  it("sends a handle in upper case with spaces around it, leaving its normal form to the action", async () => {
+    const action = renderForm({ mode: "register", action: vi.fn<Action>(async () => state({})) });
+    await submit("vi", "register", "minhanh@gmail.com", "12345678", "  MinhAnh_2 ");
+    expect(action).toHaveBeenCalledOnce();
+    expect(vi.mocked(action).mock.calls[0]?.[1].get("handle")).toBe("  MinhAnh_2 ");
+  });
+
+  it.each<[Locale, "INVALID_HANDLE" | "HANDLE_ALREADY_TAKEN"]>([
+    ["vi", "INVALID_HANDLE"],
+    ["en", "INVALID_HANDLE"],
+    ["vi", "HANDLE_ALREADY_TAKEN"],
+    ["en", "HANDLE_ALREADY_TAKEN"],
+  ])("%s: %s of the server shows on the handle field, keeps the handle and takes the focus", async (locale, code) => {
+    renderForm({
+      locale,
+      mode: "register",
+      action: async () => state({ email: "minhanh@gmail.com", handle: "minhanh", fieldErrors: { handle: code } }),
+    });
+    await submit(locale, "register");
+    const input = handleInput(locale);
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(description(input)).toBe(t(locale).errors[code]);
+    expect(input.value).toBe("minhanh");
+    expect(emailInput(locale).getAttribute("aria-invalid")).toBeNull();
+    expect(document.activeElement).toBe(input);
+  });
+
+  it.each<[Locale, RegExp, RegExp]>([
+    ["vi", /8–128 ký tự/, /ít nhất 8/i],
+    ["en", /8–128 characters/, /at least 8/i],
+  ])("%s: a password over 128 characters is refused with the 8–128 rule", async (locale, rule, minOnly) => {
+    renderForm({
+      locale,
+      mode: "register",
+      action: async () => state({ email: "minhanh@gmail.com", fieldErrors: { password: "INVALID_PASSWORD" } }),
+    });
+    await submit(locale, "register", "minhanh@gmail.com", "x".repeat(129));
+    const message = description(passwordInput(locale)) ?? "";
+    expect(message).toMatch(rule);
+    expect(message).not.toMatch(minOnly);
   });
 
   it("describes the register password by its hint", () => {
