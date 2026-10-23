@@ -2,6 +2,7 @@ import { act, fireEvent, render, renderHook, screen, within } from "@testing-lib
 import { NextIntlClientProvider } from "next-intl";
 import { usePathname } from "next/navigation";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { handleClientError } from "@/features/monitoring/reporter";
 import type { Locale } from "@/i18n/config";
 import { messagesFor } from "@/i18n/messages";
 import { BottomNav } from "./bottom-nav";
@@ -11,6 +12,9 @@ import { SidebarDesktop, type ShellAccount } from "./sidebar-desktop";
 import { useCountdown } from "./use-countdown";
 
 vi.mock("next/navigation", () => ({ usePathname: vi.fn(() => "/") }));
+// What the error screen does with its error is the reporter's business (reload once on a build skew, else report),
+// tested on its own; the real one would send the report to POST /monitoring.
+vi.mock("@/features/monitoring/reporter", () => ({ handleClientError: vi.fn() }));
 
 const userId = "0192f0c1-7a3e-7c4b-9d2e-5f6a7b8c9d0e";
 
@@ -165,6 +169,7 @@ describe("RouteError", () => {
 
   it("handles a thrown value that is not an Error", () => {
     renderError("vi", "boom");
+    expect(handleClientError).toHaveBeenLastCalledWith("boom");
     expect(screen.getByRole("heading", { name: "Đã có lỗi xảy ra" })).toBeTruthy();
     expect(screen.queryByText(/Mã lỗi/)).toBeNull();
     expect(document.body.textContent).not.toContain("boom");

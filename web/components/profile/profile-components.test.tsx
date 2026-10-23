@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { VideoStatus } from "@/features/profile/api";
 import { messagesFor } from "@/i18n/messages";
 import { MyAccount } from "./my-account";
+import { MyVideoRow } from "./my-video-row";
 import { ProfileNotFound } from "./profile-states";
 import { StatusBadge } from "./status-badge";
 
@@ -65,5 +66,49 @@ describe("ProfileNotFound", () => {
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(t.notFound.title);
     expect(screen.getByText(t.notFound.body)).toBeTruthy();
     expect(screen.getByRole("link", { name: t.notFound.home }).getAttribute("href")).toBe("/");
+  });
+});
+
+describe("MyVideoRow", () => {
+  // Display utilities without a breakpoint: two on one element fight, and the one Tailwind emits last wins whatever
+  // the class order says.
+  const baseDisplays = new Set([
+    "hidden",
+    "block",
+    "inline",
+    "inline-block",
+    "flex",
+    "inline-flex",
+    "grid",
+    "contents",
+  ]);
+  const displaysOf = (element: Element) =>
+    (element.getAttribute("class") ?? "").split(/\s+/).filter((name) => baseDisplays.has(name));
+
+  it("shows one status badge at a time: under the title on phones, in the status column on wide screens", () => {
+    const { container } = withMessages(
+      <ul>
+        <MyVideoRow
+          title="Video 1"
+          status="READY"
+          href="/v/1"
+          thumbnailUrl={null}
+          duration="0:58"
+          views="8,3 N lượt xem"
+          publishedAgo="3 ngày trước"
+          progress={null}
+        />
+      </ul>,
+    );
+    const badges = screen.getAllByText(t.status.READY);
+    expect(badges).toHaveLength(2);
+    const [phone, wide] = badges.map((badge) => (badge.getAttribute("class") ?? "").split(/\s+/));
+    expect(phone).toContain("md:hidden");
+    expect(phone).not.toContain("max-md:hidden");
+    expect(wide).toContain("max-md:hidden");
+    expect(wide).not.toContain("md:hidden");
+    for (const element of container.querySelectorAll("*")) {
+      expect(displaysOf(element).length, element.outerHTML).toBeLessThanOrEqual(1);
+    }
   });
 });

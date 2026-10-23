@@ -19,6 +19,9 @@ export const testEnv: ServerEnv = {
   mediaOrigin: "http://127.0.0.1:9000",
   uploadOrigin: "http://127.0.0.1:9000",
   secure: false,
+  sentryDsn: null,
+  sentryEnvironment: "local",
+  buildId: undefined,
 };
 
 // An access token shaped like the gateway's JWT (it starts with eyJ, as every JWT does), with `sub` = userId.

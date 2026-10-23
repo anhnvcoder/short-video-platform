@@ -23,9 +23,9 @@ import (
 	"github.com/anhnvcoder/short-video-platform/internal/callerid"
 	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
 	"github.com/anhnvcoder/short-video-platform/internal/ids"
+	"github.com/anhnvcoder/short-video-platform/internal/pagetoken"
 	"github.com/anhnvcoder/short-video-platform/internal/pgtest"
 	"github.com/anhnvcoder/short-video-platform/internal/redisx"
-	"github.com/anhnvcoder/short-video-platform/services/feed-service/internal/pagetoken"
 	"github.com/anhnvcoder/short-video-platform/services/feed-service/migrations"
 )
 
@@ -275,7 +275,7 @@ func TestInvalidPageTokenIsRejected(t *testing.T) {
 	// No database: validation runs before it is used.
 	s := newServer()
 	caller := ids.New()
-	valid := pagetoken.Encode(pagetoken.Cursor{PublishedAt: now(), VideoID: uuid.MustParse(ids.New())})
+	valid := pagetoken.Encode(pagetoken.Cursor{Time: now(), VideoID: uuid.MustParse(ids.New())})
 	for _, tc := range []struct{ name, token string }{
 		{"65 characters", valid + strings.Repeat("A", pagetoken.MaxLen+1-len(valid))},
 		{"broken base64", "not base64!"},
@@ -387,7 +387,7 @@ func TestEditedTokenStaysInCallersTimeline(t *testing.T) {
 	other, otherVideos := timelineOf(t, 3)
 
 	at := func(v video) string {
-		return pagetoken.Encode(pagetoken.Cursor{PublishedAt: v.published, VideoID: uuid.MustParse(v.id)})
+		return pagetoken.Encode(pagetoken.Cursor{Time: v.published, VideoID: uuid.MustParse(v.id)})
 	}
 	for _, tc := range []struct {
 		name, token string
@@ -396,8 +396,8 @@ func TestEditedTokenStaysInCallersTimeline(t *testing.T) {
 		// The other user's rows are a little newer than user's: reading starts at user's newest.
 		{"another user's row", at(otherVideos[0]), want},
 		{"own row", at(vs[1]), want[2:]},
-		{"far future", pagetoken.Encode(pagetoken.Cursor{PublishedAt: now().AddDate(100, 0, 0)}), want},
-		{"before everything", pagetoken.Encode(pagetoken.Cursor{PublishedAt: now().AddDate(-100, 0, 0)}), nil},
+		{"far future", pagetoken.Encode(pagetoken.Cursor{Time: now().AddDate(100, 0, 0)}), want},
+		{"before everything", pagetoken.Encode(pagetoken.Cursor{Time: now().AddDate(-100, 0, 0)}), nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp, err := following(t, s, user, 10, tc.token)

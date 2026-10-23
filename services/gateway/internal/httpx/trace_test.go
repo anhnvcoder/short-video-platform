@@ -16,6 +16,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -31,6 +32,9 @@ var testTracerProvider = sdktrace.NewTracerProvider()
 
 // testServer is the server name the tests give Trace.
 const testServer = "gateway:8080"
+
+// clientSpanID is the parent span id in clientTraceparent.
+const clientSpanID = "00f067aa0ba902b7"
 
 func TestMain(m *testing.M) {
 	otel.SetTracerProvider(testTracerProvider)
@@ -114,6 +118,120 @@ func TestTraceStartsNewRootIgnoringClientContext(t *testing.T) {
 	}
 	if p := decodeProblem(t, rec); p.TraceID != s.SpanContext().TraceID().String() {
 		t.Errorf("problem trace_id = %q, want the span's %s", p.TraceID, s.SpanContext().TraceID())
+	}
+}
+
+// TestTrustTraceContextContinuesClientTrace: behind TrustTraceContext the server span is a child
+// of the request's traceparent, keeps its tracestate, and baggage stays unread.
+func TestTrustTraceContextContinuesClientTrace(t *testing.T) {
+	spans := recordSpans(t)
+	var gotBaggage string
+	h := TrustTraceContext(Trace(testServer, ClientAddr{})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBaggage = baggage.FromContext(r.Context()).String()
+		WriteProblem(w, r, http.StatusNotFound, "NOT_FOUND", "")
+	})))
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", nil)
+	r.Header.Set("Traceparent", clientTraceparent)
+	r.Header.Set("Tracestate", "web=1,vendor=abc")
+	r.Header.Set("Baggage", "user=a@example.com")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+
+	ended := spans.Ended()
+	if len(ended) != 1 {
+		t.Fatalf("spans = %d, want 1", len(ended))
+	}
+	s := ended[0]
+	if got := s.SpanContext().TraceID().String(); got != clientTraceID {
+		t.Errorf("trace id = %s, want the client's %s", got, clientTraceID)
+	}
+	if p := s.Parent(); p.SpanID().String() != clientSpanID || !p.IsRemote() {
+		t.Errorf("parent = %s (remote %v), want the remote span %s", p.SpanID(), p.IsRemote(), clientSpanID)
+	}
+	if s.SpanContext().SpanID().String() == clientSpanID {
+		t.Error("server span reuses the client's span id")
+	}
+	if ts := s.SpanContext().TraceState().String(); ts != "web=1,vendor=abc" {
+		t.Errorf("tracestate = %q, want web=1,vendor=abc", ts)
+	}
+	if gotBaggage != "" {
+		t.Errorf("baggage = %q, want none", gotBaggage)
+	}
+	if p := decodeProblem(t, rec); p.TraceID != clientTraceID {
+		t.Errorf("problem trace_id = %q, want %s", p.TraceID, clientTraceID)
+	}
+}
+
+// TestTrustTraceContextIgnoresSampledFlag: with the default sampler, parentbased_always_on, a
+// remote parent with flags 00 would drop the span (remoteParentNotSampled is AlwaysOff); the
+// middleware marks the parent sampled, so the client cannot switch tracing off.
+func TestTrustTraceContextIgnoresSampledFlag(t *testing.T) {
+	spans := recordSpans(t)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", nil)
+	r.Header.Set("Traceparent", "00-"+clientTraceID+"-"+clientSpanID+"-00")
+	TrustTraceContext(Trace(testServer, ClientAddr{})(http.NotFoundHandler())).ServeHTTP(httptest.NewRecorder(), r)
+
+	ended := spans.Ended()
+	if len(ended) != 1 {
+		t.Fatalf("spans = %d, want 1 recorded although the client sent flags 00", len(ended))
+	}
+	if sc := ended[0].SpanContext(); sc.TraceID().String() != clientTraceID || !sc.IsSampled() {
+		t.Errorf("span trace %s sampled %v, want %s sampled", sc.TraceID(), sc.IsSampled(), clientTraceID)
+	}
+}
+
+// TestTrustTraceContextInvalidStartsNewRoot: a traceparent that does not parse gives a new root,
+// as without the middleware.
+func TestTrustTraceContextInvalidStartsNewRoot(t *testing.T) {
+	for name, tp := range map[string]string{
+		"garbage":           "not-a-traceparent",
+		"version ff":        "ff-" + clientTraceID + "-" + clientSpanID + "-01",
+		"version not hex":   "zz-" + clientTraceID + "-" + clientSpanID + "-01",
+		"zero trace id":     "00-00000000000000000000000000000000-" + clientSpanID + "-01",
+		"zero span id":      "00-" + clientTraceID + "-0000000000000000-01",
+		"short trace id":    "00-4bf92f3577b34da6a3ce929d0e0e47-" + clientSpanID + "-01",
+		"upper case":        "00-4BF92F3577B34DA6A3CE929D0E0E4736-" + clientSpanID + "-01",
+		"extra field on 00": clientTraceparent + "-extra",
+	} {
+		t.Run(name, func(t *testing.T) {
+			spans := recordSpans(t)
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", nil)
+			r.Header.Set("Traceparent", tp)
+			r.Header.Set("Tracestate", "vendor=abc")
+			TrustTraceContext(Trace(testServer, ClientAddr{})(http.NotFoundHandler())).ServeHTTP(httptest.NewRecorder(), r)
+
+			ended := spans.Ended()
+			if len(ended) != 1 {
+				t.Fatalf("spans = %d, want 1", len(ended))
+			}
+			s := ended[0]
+			if s.SpanContext().TraceID().String() == clientTraceID || s.Parent().IsValid() {
+				t.Errorf("span trace %s, parent %v; want a new root", s.SpanContext().TraceID(), s.Parent())
+			}
+			if ts := s.SpanContext().TraceState().String(); ts != "" {
+				t.Errorf("tracestate = %q, want empty", ts)
+			}
+		})
+	}
+}
+
+// TestTrustTraceContextLeavesOutProbes: the probes still get no span, and no trace id from the
+// request either.
+func TestTrustTraceContextLeavesOutProbes(t *testing.T) {
+	spans := recordSpans(t)
+	h := TrustTraceContext(Trace(testServer, ClientAddr{})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if id := traceID(r.Context()); id != "" {
+			t.Errorf("%s has trace id %s", r.URL.Path, id)
+		}
+		w.WriteHeader(http.StatusOK)
+	})))
+	for _, path := range []string{"/healthz", "/readyz"} {
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil)
+		r.Header.Set("Traceparent", clientTraceparent)
+		h.ServeHTTP(httptest.NewRecorder(), r)
+	}
+	if n := len(spans.Ended()); n != 0 {
+		t.Errorf("spans = %d, want 0", n)
 	}
 }
 

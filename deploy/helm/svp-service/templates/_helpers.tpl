@@ -64,3 +64,11 @@ A peer of .Values.peers as one entry of a NetworkPolicy's `from` or `to`: its na
     matchLabels:
       {{- toYaml .labels | nindent 6 }}
 {{- end }}
+
+{{- /*
+Name of the release's HTTPRoute: httpRoute.name, or the release's name. The gateway keeps the name api it always had,
+which the drills, measure-canary and Argo CD's ignoreDifferences read.
+*/}}
+{{- define "svp-service.routeName" -}}
+{{ .Values.httpRoute.name | default .Release.Name }}
+{{- end }}

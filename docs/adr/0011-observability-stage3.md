@@ -1,6 +1,8 @@
 # 0011. Giai đoạn 3: OpenTelemetry qua Collector riêng tới LGTM, GlitchTip tự host, Pyroscope và cảnh báo SLO bằng Sloth
 
-- Trạng thái: Chấp nhận; §1 chỉnh bởi [0012](0012-elastic-vs-grafana-stage3.md), §11 chỉnh bởi [0013](0013-kafka-metadata-min-age.md)
+- Trạng thái: Chấp nhận; §1 chỉnh bởi [0012](0012-elastic-vs-grafana-stage3.md), §11 chỉnh bởi [0013](0013-kafka-metadata-min-age.md);
+  §3 (gateway nhận `traceparent`/`tracestate` của request đến khi bật `TRUST_TRACE_CONTEXT`) chỉnh bởi
+  [0019](0019-web-k3d-supply-chain-observability.md)
 - Ngày: 2026-10-16
 
 ## Bối cảnh

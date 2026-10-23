@@ -6,8 +6,9 @@ section 11). Grafana keeps no state of its own (no volume), so this is all of it
 {{- if not $dashboards }}
 {{- fail "files/dashboards/*.json matches nothing: the symlink into deploy/observability/grafana/dashboards/ is broken?" }}
 {{- end }}
-# The four dashboards of stage 3, the files compose provisions (symlink files/dashboards), in folder svp as there. They
-# are edited in the repository, not in the UI (the sidecar's provider forbids UI updates and deletion).
+# The five dashboards (the four of stage 3 and svp-web, the web client's RUM), the files compose provisions (symlink
+# files/dashboards), in folder svp as there. They are edited in the repository, not in the UI (the sidecar's provider
+# forbids UI updates and deletion).
 apiVersion: v1
 kind: ConfigMap
 metadata:

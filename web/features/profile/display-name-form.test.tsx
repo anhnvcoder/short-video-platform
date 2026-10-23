@@ -40,6 +40,9 @@ describe("DisplayNameForm", () => {
     ["   ", "REQUIRED"],
     ["Đ".repeat(51), "TOO_LONG"],
     ["Lan‮Phương", "INVALID_CHARACTERS"],
+    // Looks empty: a Hangul filler, then joiners alone.
+    ["\u3164", "INVALID_CHARACTERS"],
+    ["\u200d\ufe0f", "INVALID_CHARACTERS"],
   ] as const)("checks %j before sending: %s on the field", (value, error) => {
     const action = vi.fn();
     renderForm(action);

@@ -60,7 +60,7 @@ spec:
         - protocol: TCP
           port: 8000
 ---
-# Valkey: rate limits of the gateway, the explore cache of feed-service.
+# Valkey: rate limits of the gateway, the explore cache of feed-service, the web client's sessions.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

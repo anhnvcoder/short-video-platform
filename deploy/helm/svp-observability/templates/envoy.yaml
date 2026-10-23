@@ -1,9 +1,10 @@
 {{- /*
-Envoy's metrics for the canary of the gateway (ADR-0014 section 13): Prometheus scrapes the proxy of Gateway svp on
-its metrics port, /stats/prometheus, and AnalysisTemplate gateway-canary (chart svp-service) reads the canary
-backend's 5xx and latency from them. Envoy exposes a few thousand series; only the three families the analysis and
-the drills read are kept, for the clusters of HTTPRoute api (svp): responses by class, all responses, and the
-response time histogram (ms).
+Envoy's metrics for the canaries of the gateway and web (ADR-0014 section 13): Prometheus scrapes the proxy of
+Gateway svp on its metrics port, /stats/prometheus, and AnalysisTemplates <release>-canary (chart svp-service) read
+the canary backend's 5xx and latency from them. Envoy exposes a few thousand series; only the three families the
+analyses and the drills read are kept, for the clusters of HTTPRoutes api and web (svp), the routes of the releases
+with a canary: responses by class, all responses, and the response time histogram (ms). A release that gets a canary
+adds its route to the regex below, or its analysis finds no series and every run ends Inconclusive.
 
 The PodMonitor lives in svp-obs although the pods are in envoy-gateway-system: the Prometheus operator watches svp-obs
 only (deploy/k8s/values/kube-prometheus-stack.yaml), and a PodMonitor elsewhere would never be picked up, with no error
@@ -29,5 +30,5 @@ spec:
           regex: envoy_cluster_upstream_rq_xx|envoy_cluster_upstream_rq_total|envoy_cluster_upstream_rq_time_bucket
           action: keep
         - sourceLabels: [envoy_cluster_name]
-          regex: httproute/svp/api/.*
+          regex: httproute/svp/(api|web)/.*
           action: keep

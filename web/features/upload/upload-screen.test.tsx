@@ -126,6 +126,21 @@ async function flush() {
   }
 }
 
+// Flush rounds until `done` holds, at most 100 (100 ms of the fake clock): a loaded machine may need more rounds than
+// flush's fixed ten before the requests and renders a step waits for have run.
+async function flushUntil(done: () => boolean, what: string) {
+  for (let round = 0; round < 100; round++) {
+    if (done()) {
+      return;
+    }
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw new Error(`still waiting for ${what}`);
+}
+
+const alertText = () => screen.queryByRole("alert")?.textContent ?? "";
+
 async function advance(ms: number) {
   await act(() => vi.advanceTimersByTimeAsync(ms));
   await flush();
@@ -339,22 +354,31 @@ describe("upload screen: uploading", () => {
   });
 
   it("shows the automatic retries (M29), then Retry by hand once they are used up", async () => {
+    // The backoff is a random wait up to 1 s, 2 s, then 4 s. Pinned halfway, the first one is still running when the
+    // alert is read; a wait under the few milliseconds a flush moves the clock (about one run in a hundred) would
+    // already be over, and the next attempt would have replaced the alert.
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
     initServer();
     const { container } = renderScreen();
     await post(container);
+    await flushUntil(() => FakeXHR.instances.length === 1, "the first attempt");
     act(() => FakeXHR.last().fail());
-    await flush();
+    await flushUntil(() => alertText().includes("lần 1/3"), "the first retry");
     expect(screen.getByRole("alert").textContent).toContain("Đang tự thử lại… lần 1/3");
     expect(screen.getByText(t.progress.waiting)).toBeTruthy();
     for (let retry = 1; retry <= 3; retry++) {
       await advance(8000);
+      await flushUntil(() => FakeXHR.instances.length === retry + 1, `attempt ${retry + 1}`);
       act(() => FakeXHR.last().fail());
-      await flush();
+      await flushUntil(
+        () => alertText().includes(retry < 3 ? `lần ${retry + 1}/3` : t.failure.sendFailed.title),
+        `the alert after attempt ${retry + 1}`,
+      );
     }
     expect(FakeXHR.instances).toHaveLength(4);
     expect(screen.getByRole("alert").textContent).toContain(t.failure.sendFailed.title);
     fireEvent.click(screen.getByRole("button", { name: t.progress.retry }));
-    await flush();
+    await flushUntil(() => FakeXHR.instances.length === 5, "the attempt Retry starts");
     expect(FakeXHR.instances).toHaveLength(5);
     expect(screen.getByText("Đang tải lên (0%)")).toBeTruthy();
   });

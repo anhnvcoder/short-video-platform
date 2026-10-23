@@ -4,8 +4,8 @@ from the values, the secret ones from Secret <service>-env, which deploy/k8s/sec
 (deploy/k8s/install.sh restarts this Deployment when that Secret has changed, since a process reads its environment
 only when it starts).
 
-With canary set (the gateway) it is an Argo Rollouts Rollout instead (ADR-0014 section 13): the same pod template, and
-a new revision goes out as a canary behind Envoy rather than as a rolling update. Each revision's ReplicaSet gets the
+With canary set (the gateway, the web client) it is an Argo Rollouts Rollout instead (ADR-0014 section 13): the same
+pod template, and a new revision goes out as a canary behind Envoy rather than as a rolling update. Each revision's ReplicaSet gets the
 label rollouts-pod-template-hash, which the controller adds to the selectors of Services <release> (stable) and
 <release>-canary.
 */}}
@@ -82,11 +82,17 @@ spec:
             - name: {{ .Values.protocol }}
               containerPort: {{ .Values.port }}
           {{- end }}
+          {{- with .Values.preStopSleepSeconds }}
+          lifecycle:
+            preStop:
+              sleep: {seconds: {{ . }}}
+          {{- end }}
           {{- if eq .Values.protocol "http" }}
           # /healthz, not /readyz: /readyz fails when a gRPC service behind the gateway is down, and taking every
           # gateway pod out of the Service then would turn one service's outage into a full one, while the gateway
           # is built to degrade route by route behind its circuit breakers. It answers as soon as the process
-          # listens, so a gateway started before the gRPC services is ready and stays up.
+          # listens, so a gateway started before the gRPC services is ready and stays up. The web client's /healthz
+          # likewise answers from the process alone, without the session store or the gateway.
           readinessProbe:
             httpGet: {path: /healthz, port: http}
             periodSeconds: 5

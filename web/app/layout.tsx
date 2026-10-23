@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { getLocale, getMessages, getTimeZone, getTranslations } from "next-intl/server";
 import { connection } from "next/server";
 import type { ReactNode } from "react";
+import { VitalsReporter } from "@/features/rum/vitals-reporter";
 import { Providers } from "./providers";
 import { beVietnamPro } from "./styles/fonts";
 import "./styles/globals.css";
@@ -22,6 +23,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
         <Providers locale={locale} timeZone={timeZone} messages={{ common: messages.common }}>
           {children}
         </Providers>
+        <VitalsReporter />
       </body>
     </html>
   );

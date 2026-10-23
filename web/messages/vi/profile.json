@@ -53,7 +53,7 @@
     "errors": {
       "REQUIRED": "Nhập tên hiển thị.",
       "TOO_LONG": "Tên hiển thị tối đa 50 ký tự.",
-      "INVALID_CHARACTERS": "Tên không được có xuống dòng, tab hay ký tự điều khiển.",
+      "INVALID_CHARACTERS": "Tên phải có chữ nhìn thấy được, không có xuống dòng, tab, ký tự điều khiển hay ký tự vô hình.",
       "INVALID_DISPLAY_NAME": "SVP không nhận tên này. Hãy thử tên khác.",
       "RATE_LIMITED": "Bạn thao tác hơi nhanh. Thử lại sau {seconds} giây.",
       "UNAVAILABLE": "Chưa đổi được tên. Thử lại sau ít phút."

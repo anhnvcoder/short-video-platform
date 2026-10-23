@@ -1,6 +1,14 @@
 {{- /*
-The public API: https://<host>:8443 on Gateway svp (TLS ends at Envoy, ADR-0014 section 9) to this release's Service.
-Only the gateway sets a host; no route exists for any other service or for an operations UI (OPS-2).
+https://<host>:8443 on Gateway svp (TLS ends at Envoy, ADR-0014 section 9) to this release's Service: the public API
+(route api, listener https) and the web client (route web, listener https-apex). Only those two releases set a host;
+no route exists for any other service or for an operations UI (OPS-2).
+
+The rule removes the trace context a client may send (traceparent, tracestate, baggage, sentry-trace) before the
+request reaches the release: the gateway takes the trace context of a request it gets (TRUST_TRACE_CONTEXT), so a
+caller from outside must not be able to pick the trace id or turn sampling off. With every route through Envoy
+stripping it and only Envoy and the web pods let into the gateway (its NetworkPolicy), the web client is the one source
+of a trace context the gateway sees (ADR-0019 section 7; threat model WEB-24). The filter sits on the rule, beside the
+backendRefs' own filters below, and applies to every backend.
 
 With canary set (ADR-0014 section 13) the one rule has two backendRefs, the stable Service then the canary one, at
 weights 100 and 0: the Gateway API plugin of Argo Rollouts changes the two weights during a canary and puts them back
@@ -14,7 +22,7 @@ of Envoy's config, so the canary's cluster exists only while a canary runs.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: api
+  name: {{ include "svp-service.routeName" $ }}
   namespace: {{ $.Release.Namespace }}
   labels:
     {{- include "svp-service.labels" $ | nindent 4 }}
@@ -24,11 +32,15 @@ spec:
       kind: Gateway
       name: svp
       namespace: svp-edge
-      sectionName: https
+      sectionName: {{ $.Values.httpRoute.sectionName }}
   hostnames:
     - {{ . | quote }}
   rules:
-    - backendRefs:
+    - filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            remove: [traceparent, tracestate, baggage, sentry-trace]
+      backendRefs:
         - name: {{ $.Release.Name }}
           port: {{ $.Values.port }}
           {{- if $.Values.canary }}

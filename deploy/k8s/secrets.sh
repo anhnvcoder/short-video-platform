@@ -34,7 +34,7 @@ vars=(SVP_PG_SUPERUSER_PASSWORD
   SVP_KAFKA_ADMIN_PASSWORD SVP_KAFKA_KEDA_PASSWORD SVP_KAFKA_USER_SERVICE_PASSWORD SVP_KAFKA_VIDEO_SERVICE_PASSWORD
   SVP_KAFKA_ENGAGEMENT_SERVICE_PASSWORD SVP_KAFKA_FEED_SERVICE_PASSWORD SVP_KAFKA_MEDIA_WORKER_PASSWORD
   JWT_SIGNING_KID JWT_SIGNING_KEY JWT_VERIFY_KEYS SVP_GRAFANA_ADMIN_PASSWORD
-  GLITCHTIP_SECRET_KEY GLITCHTIP_ADMIN_EMAIL GLITCHTIP_ADMIN_PASSWORD)
+  GLITCHTIP_SECRET_KEY GLITCHTIP_ADMIN_EMAIL GLITCHTIP_ADMIN_PASSWORD NEXT_SERVER_ACTIONS_ENCRYPTION_KEY)
 missing=
 for v in "${vars[@]}"; do
   # dotenv_value has named the offending line (never a value) on stderr when it fails.
@@ -43,6 +43,12 @@ for v in "${vars[@]}"; do
   printf -v "$v" '%s' "$val"
 done
 [ -z "$missing" ] || fail ".env lacks or has empty:$missing; run make env, then this again"
+# Next decodes the Server Action key with atob and imports it as a raw AES-GCM key the first time an action needs it;
+# make env writes 32 bytes (AES-256) in standard base64. A value edited into another shape stops the script here,
+# rather than failing in the web pods later, on some request. The check is on the text, not on what base64 -d makes of
+# it: macOS base64 -d also decodes the URL-safe alphabet (- and _), on which atob throws.
+[[ $NEXT_SERVER_ACTIONS_ENCRYPTION_KEY =~ ^[A-Za-z0-9+/]{43}=$ ]] ||
+  fail "NEXT_SERVER_ACTIONS_ENCRYPTION_KEY in .env is not the standard base64 of 32 bytes; empty it and run make env, then this again"
 # Telegram is optional: the learner fills in both variables by hand, and without them alerts stay in the UI.
 SVP_ALERT_TELEGRAM_BOT_TOKEN=$(dotenv_value "$env_file" SVP_ALERT_TELEGRAM_BOT_TOKEN) || fail "read $env_file"
 SVP_ALERT_TELEGRAM_CHAT_ID=$(dotenv_value "$env_file" SVP_ALERT_TELEGRAM_CHAT_ID) || fail "read $env_file"
@@ -101,6 +107,10 @@ pg_url() { printf 'postgres://svp_%s_%s:%s@svp-pg-rw.svp-data:5432/svp_%s?sslmod
 # The services' Secrets in svp, one per pod, each with only what that pod uses (ADR section 8). <service>-env goes to
 # the service's container as environment variables; <service>-migrate-env holds the migrator role, for the migrate
 # Job only. The JWT signing key is in user-service-env alone; the gateway gets the public keys (threat model JWT-10).
+# web-env holds the web client's Server Action key alone, set at run time so that the key in use is never in the
+# public image: its other settings are no secret (deploy/k8s/values/services/web.yaml), its DSN comes from Secret
+# sentry, and Valkey, where it keeps sessions, has no password (docs/adr/0019-web-k3d-supply-chain-observability.md,
+# section 5). The Secret must exist in any case: chart svp-service reads <release>-env with envFrom, not optional.
 svp_manifests() {
   secret svp user-service-env Opaque \
     DATABASE_URL="$(pg_url user app "$SVP_USER_APP_DB_PASSWORD")" \
@@ -121,6 +131,8 @@ svp_manifests() {
     S3_SECRET_ACCESS_KEY="$SVP_MEDIA_WORKER_S3_SECRET_KEY"
   secret svp gateway-env Opaque \
     JWT_VERIFY_KEYS="$JWT_VERIFY_KEYS"
+  secret svp web-env Opaque \
+    NEXT_SERVER_ACTIONS_ENCRYPTION_KEY="$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY"
   secret svp user-service-migrate-env Opaque DATABASE_URL="$(pg_url user migrator "$SVP_USER_MIGRATOR_DB_PASSWORD")"
   secret svp video-service-migrate-env Opaque DATABASE_URL="$(pg_url video migrator "$SVP_VIDEO_MIGRATOR_DB_PASSWORD")"
   secret svp engagement-service-migrate-env Opaque \
@@ -279,7 +291,7 @@ ok "Secrets of svp-data applied from .env: pg-superuser, pg-roles, minio-root, m
 
 svp_manifests | kc apply --server-side --field-manager=svp-secrets --force-conflicts -f - >/dev/null ||
   fail "apply the Secrets of namespace svp"
-ok "Secrets of svp applied from .env: <service>-env of each service, <service>-migrate-env of each with a database"
+ok "Secrets of svp applied from .env: <service>-env of each service and of web, <service>-migrate-env of each with a database"
 
 obs_manifests | kc apply --server-side --field-manager=svp-secrets --force-conflicts -f - >/dev/null ||
   fail "apply the Secrets of namespace svp-obs"
@@ -305,9 +317,9 @@ ok "Secret of keda applied from .env: keda-kafka"
 # running pod only through a restart, which Kubernetes does not do by itself. No chart can do it either, by a checksum
 # of the Secret in its pod template: these Secrets are made here, outside Helm and Argo CD, which never see them. So
 # MinIO and Redpanda are restarted here, on the dev and the GitOps path alike, before the init Jobs of svp-data log in
-# to them with the new password. The six services and the KEDA operator are restarted by deploy/k8s/install.sh, after
-# those Jobs have set their new passwords (restarted here, a service would start with a password its backend does not
-# take yet). The init Jobs need none (each run is a new pod), and CloudNativePG sets a changed superuser password in
+# to them with the new password. The six services, the web client and the KEDA operator are restarted by
+# deploy/k8s/install.sh, after those Jobs have set their new passwords (restarted here, a service would start with a
+# password its backend does not take yet). The init Jobs need none (each run is a new pod), and CloudNativePG sets a changed superuser password in
 # Postgres itself, without a restart (Secret pg-superuser carries its label cnpg.io/reload, above).
 
 # stale POD CONTAINER VAR VALUE: true when CONTAINER of POD runs with an environment variable VAR that differs from

@@ -51,6 +51,10 @@ JWT_VARS := JWT_SIGNING_KID JWT_SIGNING_KEY JWT_VERIFY_KEYS
 K8S_SECRET_VARS := SVP_PG_SUPERUSER_PASSWORD SVP_KAFKA_ADMIN_PASSWORD SVP_KAFKA_KEDA_PASSWORD \
 	SVP_KAFKA_USER_SERVICE_PASSWORD SVP_KAFKA_VIDEO_SERVICE_PASSWORD SVP_KAFKA_ENGAGEMENT_SERVICE_PASSWORD \
 	SVP_KAFKA_FEED_SERVICE_PASSWORD SVP_KAFKA_MEDIA_WORKER_PASSWORD SVP_GRAFANA_ADMIN_PASSWORD
+# The web client's Server Action key, set at run time so that the key in use is never in the public image (the one
+# Next writes at build time is): an AES-256 key, which Next takes as the base64 of 32 bytes. Every replica shares it.
+# The cluster gives it to the web pods in Secret svp/web-env (deploy/k8s/secrets.sh).
+WEB_KEY_VARS := NEXT_SERVER_ACTIONS_ENCRYPTION_KEY
 
 .PHONY: env env-required obs-valid obs-exclusive k3d-exclusive db-bootstrap glitchtip-init up down clean-data ps logs compose-config compose-hash slo-check smoke test-stack drill-kill-worker drill-duplicates measure-ready \
 	drill-duplicates-feed drill-engagement-down measure-freshness drill-rate-limit measure-explore-cache drill-upload-cleanup \
@@ -67,6 +71,7 @@ env: ## Create .env (mode 600) with random secrets and a new JWT key, or fill in
 	    for v in $(S3_SECRET_VARS); do pw=$$(openssl rand -hex 20); echo "$$v=$$pw"; done; \
 	    for v in $(GLITCHTIP_SECRET_VARS); do pw=$$(openssl rand -hex 32); echo "$$v=$$pw"; done; \
 	    for v in $(K8S_SECRET_VARS); do pw=$$(openssl rand -hex 24); echo "$$v=$$pw"; done; \
+	    for v in $(WEB_KEY_VARS); do pw=$$(openssl rand -base64 32); echo "$$v=$$pw"; done; \
 	    echo "GLITCHTIP_ADMIN_EMAIL=$(GLITCHTIP_ADMIN_EMAIL)"; \
 	    go run ./tools/jwtkey; } > "$$tmp"; \
 	  chmod 600 "$$tmp"; mv -n "$$tmp" .env; \
@@ -79,6 +84,7 @@ env: ## Create .env (mode 600) with random secrets and a new JWT key, or fill in
 	for v in $(S3_SECRET_VARS); do has $$v || { pw=$$(openssl rand -hex 20); echo "$$v=$$pw" >> "$$tmp"; added="$$added $$v"; }; done; \
 	for v in $(GLITCHTIP_SECRET_VARS); do has $$v || { pw=$$(openssl rand -hex 32); echo "$$v=$$pw" >> "$$tmp"; added="$$added $$v"; }; done; \
 	for v in $(K8S_SECRET_VARS); do has $$v || { pw=$$(openssl rand -hex 24); echo "$$v=$$pw" >> "$$tmp"; added="$$added $$v"; }; done; \
+	for v in $(WEB_KEY_VARS); do has $$v || { pw=$$(openssl rand -base64 32); echo "$$v=$$pw" >> "$$tmp"; added="$$added $$v"; }; done; \
 	has GLITCHTIP_ADMIN_EMAIL || { echo "GLITCHTIP_ADMIN_EMAIL=$(GLITCHTIP_ADMIN_EMAIL)" >> "$$tmp"; added="$$added GLITCHTIP_ADMIN_EMAIL"; }; \
 	jwt_missing=; for v in $(JWT_VARS); do has $$v || jwt_missing="$$jwt_missing $$v"; done; \
 	if [ "$$jwt_missing" = " $(JWT_VARS)" ]; then go run ./tools/jwtkey >> "$$tmp"; added="$$added$$jwt_missing"; \
@@ -116,7 +122,7 @@ k3d-exclusive:
 # the Go services with SENTRY_DSN set (deploy/observability/glitchtip/init.sh).
 GLITCHTIP_INIT = COMPOSE='$(COMPOSE_UP_lgtm)' deploy/observability/glitchtip/init.sh .env
 
-glitchtip-init: env-required db-bootstrap ## Migrate and bootstrap GlitchTip (admin, org/project svp, drill token), add SENTRY_* to .env; idempotent, never changes a set value
+glitchtip-init: env-required db-bootstrap ## Migrate and bootstrap GlitchTip (admin, org/project svp, drill token, source map upload token), add SENTRY_* to .env; idempotent, never changes a set value
 	$(GLITCHTIP_INIT)
 
 up: k3d-exclusive env-required obs-valid obs-exclusive db-bootstrap ## Bootstrap Postgres, build, migrate and start the core stack (web client at http://localhost:3001); OBS=lgtm adds Grafana LGTM (127.0.0.1:3000) and GlitchTip (127.0.0.1:8000), OBS=elastic adds Elasticsearch, Kibana (127.0.0.1:5601) and APM Server instead, OBS=off turns telemetry off (drills keep it off); refuses while a container of a profile not chosen runs (make down first)
@@ -216,7 +222,7 @@ drill-upload-cleanup: env-required ## Abandon an upload with a 20 s limit; check
 drill-alert-to-sentry: env-required ## OBS=lgtm: stop feed-service; time the page alert, then find its trace (Tempo), log line (Loki) and GlitchTip event; T4 - T1 under 5 min
 	COMPOSE='$(DRILL_COMPOSE)' deploy/compose/drills/alert-to-sentry.sh $(SMOKE_URL)
 
-drill-obs-threats: env-required ## OBS=lgtm: JWT-8 (no email, password, token in traces, logs, GlitchTip), UP-8 (log ids), OPS-1 (no pprof, /metrics, loopback ports only), RL-2 (fallback metric and alert)
+drill-obs-threats: env-required ## OBS=lgtm: JWT-8 (no email, password, token in traces, logs, GlitchTip), UP-8 (log ids), OPS-1 (no pprof, /metrics, loopback ports only), RL-2 (fallback metric and alert), WEB-9 (no email, token, sid, ?next= or presigned signature from the web client's forms, /rum and /monitoring in GlitchTip, Tempo, Loki or Prometheus)
 	COMPOSE='$(DRILL_COMPOSE)' deploy/compose/drills/obs-threats.sh $(SMOKE_URL)
 
 measure-ready: env-required ## Time CompleteUpload to READY for N (default 5) 60 s 1080p videos; p50, max, worker CPU/RAM

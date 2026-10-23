@@ -20,9 +20,9 @@ import (
 
 	feedv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/feed/v1"
 	"github.com/anhnvcoder/short-video-platform/internal/ids"
+	"github.com/anhnvcoder/short-video-platform/internal/pagetoken"
 	"github.com/anhnvcoder/short-video-platform/internal/redistest"
 	"github.com/anhnvcoder/short-video-platform/internal/redisx"
-	"github.com/anhnvcoder/short-video-platform/services/feed-service/internal/pagetoken"
 	"github.com/anhnvcoder/short-video-platform/services/feed-service/internal/store"
 )
 
@@ -397,7 +397,7 @@ func TestExploreCacheKeys(t *testing.T) {
 	}
 
 	// A later page reads Postgres every time and writes no key.
-	token := pagetoken.Encode(pagetoken.Cursor{PublishedAt: now()})
+	token := pagetoken.Encode(pagetoken.Cursor{Time: now()})
 	for range 2 {
 		if _, err := explore(t, s, ids.New(), 0, token); err != nil {
 			t.Fatal(err)

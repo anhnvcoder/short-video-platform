@@ -18,9 +18,10 @@
 # rescan or drill off main, services outside build or values_ref outside rescan: refused (the run fails), never
 # guessed. Base of the build (section 3; never github.event.before, which loses the changes of a queued run that was
 # replaced and of a run that failed):
-#   push to main       head_sha of the newest successful push run of images.yml on main (last-success.sh); none → six
+#   push to main       head_sha of the newest successful push run of images.yml on main (last-success.sh); none →
+#                      all seven
 #   pull request       merge-base of HEAD with the PR's base branch
-#   workflow_dispatch  merge-base of HEAD with origin/main; input services (all, or names from the six) overrides
+#   workflow_dispatch  merge-base of HEAD with origin/main; input services (all, or names from the seven) overrides
 set -euo pipefail
 
 # shellcheck source=deploy/ci/common.sh
@@ -65,10 +66,10 @@ build)
     if [ "$INPUT_SERVICES" = all ]; then
       images=("${svp_services[@]}")
     else
-      # read -a splits on blanks without expanding wildcards; every name must be one of the six.
+      # read -a splits on blanks without expanding wildcards; every name must be one of the seven.
       read -r -a names <<<"$INPUT_SERVICES"
       for name in "${names[@]}"; do
-        printf '%s\n' "${svp_services[@]}" | grep -qxF -- "$name" || fail "services: '$name' is not one of the six"
+        printf '%s\n' "${svp_services[@]}" | grep -qxF -- "$name" || fail "services: '$name' is not one of the seven"
       done
       while IFS= read -r name; do images+=("$name"); done < <(printf '%s\n' "${names[@]}" | sort -u)
     fi

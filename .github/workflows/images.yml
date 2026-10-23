@@ -1,4 +1,4 @@
-# Images of the six services (docs/adr/0015-cicd-devsecops-stage5.md, sections 3-7 and 9): build only what changed,
+# Images of the seven services (docs/adr/0015-cicd-devsecops-stage5.md, sections 3-7 and 9): build only what changed,
 # on native amd64 and arm64 runners; scan the local image with trivy and block secrets and CRITICAL vulnerabilities
 # BEFORE anything is pushed; push exactly what was scanned; join a multi-arch index; sign it keyless with cosign and
 # attest the SBOM (syft) and the scan result; promote the signed digests through a pull request; rescan released
@@ -60,7 +60,7 @@ jobs:
   last-success:
     # The base of a push build (section 3): head_sha of the newest successful push run of this workflow on main. A job
     # of its own because only it reads the Actions API; it checks out nothing and runs no code of the repository. When
-    # the API fails the output stays empty and the job green: plan then builds all six (too much, never too little).
+    # the API fails the output stays empty and the job green: plan then builds all seven (too much, never too little).
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5

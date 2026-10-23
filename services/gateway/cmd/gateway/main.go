@@ -250,6 +250,10 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	trustTrace, err := trustTraceContext()
+	if err != nil {
+		return err
+	}
 
 	// Like engagement-service's below, this connection is opened at start and never left idle:
 	// GetProfiles adds the authors of every feed page within 100 ms (ADR-0018 section 5).
@@ -299,7 +303,11 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// The spans and metrics name the gateway by its service name and the port it listens on, a
 	// number even when LISTEN_ADDR names the port.
 	serverName := net.JoinHostPort(serviceName, strconv.Itoa(lis.Addr().(*net.TCPAddr).Port))
-	srv := httpx.NewServer(addr, api.New(userConn, videoConn, feedConn, engagementConn, authtoken.NewVerifier(keys), mediaBase, limits, clientAddr, serverName))
+	handler := api.New(userConn, videoConn, feedConn, engagementConn, authtoken.NewVerifier(keys), mediaBase, limits, clientAddr, serverName)
+	if trustTrace {
+		handler = httpx.TrustTraceContext(handler)
+	}
+	srv := httpx.NewServer(addr, handler)
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(lis) }()
 	logger.InfoContext(ctx, "http server listening", slog.String("addr", lis.Addr().String()))
@@ -385,6 +393,26 @@ func trustedProxies() (httpx.ClientAddr, error) {
 		return httpx.ClientAddr{}, errors.New("TRUSTED_PROXY_CIDRS is set but TRUSTED_PROXY_HOPS is 0")
 	}
 	return httpx.NewClientAddr(hops, trusted), nil
+}
+
+// trustTraceContext reads TRUST_TRACE_CONTEXT: "true" makes the gateway's HTTP spans children of
+// the traceparent and tracestate of each request (httpx.TrustTraceContext), "false" or unset keeps
+// every request a new root trace. Turn it on only where every path into the gateway has already
+// removed the client's trace context (Envoy in k3d strips it on every route, and a NetworkPolicy
+// lets only Envoy and the web pods reach the gateway) or where the gateway listens on loopback and
+// its private network only (compose). Anywhere else a client could pick the trace id of its own
+// requests and attach its spans to other traces. Any other value stops the gateway, so a typo
+// never leaves the setting silently off or on; the error names the variable and never carries
+// its value.
+func trustTraceContext() (bool, error) {
+	switch envcfg.String("TRUST_TRACE_CONTEXT", "false") {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, errors.New("TRUST_TRACE_CONTEXT: want true or false")
+	}
 }
 
 // dial returns a client connection to b at the gRPC address in its variable, with b's dial

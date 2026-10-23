@@ -19,6 +19,14 @@ export interface ServerEnv {
   uploadOrigin: string;
   // APP_ORIGIN is https: Secure cookie with the __Host-Http- prefix, HSTS, upgrade-insecure-requests.
   secure: boolean;
+  // Error tracker (GlitchTip) the server reports to, its own errors and the browser's; null turns reporting off, so
+  // compose and tests run without a tracker.
+  sentryDsn: string | null;
+  // `environment` of every reported error: local (compose, `make web-dev`), k3d.
+  sentryEnvironment: string;
+  // Id of the image's build (a commit or a content hash, not a secret): the `release` of reported errors. Undefined
+  // for a build without one (compose, `make web-check`).
+  buildId: string | undefined;
 }
 
 // A bare origin: http(s), no credentials, path, query or fragment, written the way URL normalizes it.
@@ -34,6 +42,28 @@ function isOrigin(value: string): boolean {
 
 // Hosts of this machine as URL writes them: an IPv6 address keeps its brackets.
 const loopbackHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+// A Sentry DSN: http(s)://<public key>@<host>/<project id>. The public key only lets a client send events.
+function isDsn(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return (
+    (url.protocol === "http:" || url.protocol === "https:") &&
+    url.username !== "" &&
+    url.password === "" &&
+    /^\/[0-9]+$/.test(url.pathname) &&
+    url.search === "" &&
+    url.hash === ""
+  );
+}
+
+// An unset optional variable and an empty one mean the same: compose passes `${NAME:-}`.
+const optional = <T extends z.ZodType<string>>(schema: T) =>
+  z.preprocess((value) => (value === "" ? undefined : value), schema.optional());
 
 const origin = z.string({ error: "is required" }).refine(isOrigin, "must be an http(s) origin without a path");
 
@@ -61,6 +91,9 @@ const schema = z.object({
     (value) => !isOrigin(value) || !value.startsWith("http:") || loopbackHosts.has(new URL(value).hostname),
     "must be https, or http only on a loopback host",
   ),
+  SENTRY_DSN: optional(z.string().refine(isDsn, "must be a DSN like http://<key>@<host>/<project id>")),
+  SENTRY_ENVIRONMENT: optional(z.string().regex(/^[a-z0-9_-]{1,64}$/, "must be 1-64 of a-z, 0-9, _ and -")),
+  SVP_BUILD_ID: optional(z.string().regex(/^[A-Za-z0-9._-]{1,64}$/, "must be 1-64 of A-Z, a-z, 0-9, ., _ and -")),
 });
 
 // Validates the variables; the error names each bad variable and why, never its value (REDIS_URL may hold a password).
@@ -78,6 +111,9 @@ export function parseServerEnv(source: Record<string, string | undefined>): Serv
     mediaOrigin: env.MEDIA_ORIGIN,
     uploadOrigin: env.UPLOAD_ORIGIN,
     secure: env.APP_ORIGIN.startsWith("https:"),
+    sentryDsn: env.SENTRY_DSN ?? null,
+    sentryEnvironment: env.SENTRY_ENVIRONMENT ?? "local",
+    buildId: env.SVP_BUILD_ID,
   };
 }
 

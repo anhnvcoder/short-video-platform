@@ -10,13 +10,15 @@ import {
   test,
 } from "./fixtures";
 import { seed } from "./seed";
+import { stack } from "./stack";
 
 // The public share page /v/{id} (docs/adr/0018-web-profiles-public-video-upload.md, section 7), seen by someone who is
 // not logged in: Playwright's `request` and a new browser context start without any cookie. Every guest page load
 // goes through the web container to the gateway's public rate limit bucket (120 a minute, burst 60, shared by all the
 // browsers of the run), so these tests load few pages.
 
-const appOrigin = "http://localhost:3001";
+// APP_ORIGIN of the web, which its share links and Open Graph URLs name.
+const appOrigin = stack.appOrigin;
 
 // The attributes of every <meta> tag of an HTML document, values unescaped as a browser reads them.
 function metaTags(html: string): Record<string, string>[] {
@@ -44,7 +46,7 @@ test("a guest watches a READY video on /v/{id}, with the author's name and @hand
 }) => {
   const { xss } = seed();
   const handle = generatedHandle(xss.author_id);
-  const context = await browser.newContext({ baseURL: appOrigin, locale: "en-US" });
+  const context = await browser.newContext({ baseURL: appOrigin, locale: "en-US", ...stack.contextOptions });
   try {
     const page = await context.newPage();
     const response = await page.goto(`/v/${xss.video_id}`);

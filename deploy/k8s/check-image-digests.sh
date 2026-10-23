@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Static check that every third-party image the cluster's charts render is pinned by digest
 # (docs/adr/0015-cicd-devsecops-stage5.md, section 8). A tag can be pushed again to other content; a digest cannot, and
-# Kyverno checks only the six service images at admission, so the images of the platform namespaces are held to their
+# Kyverno checks only the seven service images at admission, so the images of the platform namespaces are held to their
 # digests here, before a merge, instead.
 #
 # Renders, with `helm template --include-crds` and the values the GitOps path uses, every component of
@@ -10,7 +10,7 @@
 # image fields (image:, imageName:, ...), and image references inside args, env and config files (an operator's
 # --xxx-image=... flag, an env value it starts pods from). A setting whose name says it holds an image (an env name or
 # upper-case key with the word IMAGE, a flag with "image") counts even without a registry, as busybox:1.37 or alpine.
-# The six service images are left out: CI signs them and Kyverno verifies them. Exits 1 listing every other image
+# The seven service images are left out: CI signs them and Kyverno verifies them. Exits 1 listing every other image
 # without exactly one @sha256:<64 hex>.
 #
 # Usage: deploy/k8s/check-image-digests.sh [ROOT]
@@ -164,14 +164,15 @@ done | sort -u >"$images"
 total=0 pinned=0 excepted=0 services=0
 missing=
 while IFS=$'\t' read -r name ref; do
-  # The six service images: registry k3d-svp-registry:5111 (dev path) or GHCR (releases), any tag or digest.
+  # The seven service images: registry k3d-svp-registry:5111 (dev path) or GHCR (releases), any tag or digest.
   case $ref in
     */svp/gateway[:@]* | */svp/user-service[:@]* | */svp/video-service[:@]* | */svp/engagement-service[:@]* | \
-      */svp/feed-service[:@]* | */svp/media-worker[:@]* | \
+      */svp/feed-service[:@]* | */svp/media-worker[:@]* | */svp/web[:@]* | \
       ghcr.io/anhnvcoder/short-video-platform/gateway[:@]* | ghcr.io/anhnvcoder/short-video-platform/user-service[:@]* | \
       ghcr.io/anhnvcoder/short-video-platform/video-service[:@]* | \
       ghcr.io/anhnvcoder/short-video-platform/engagement-service[:@]* | \
-      ghcr.io/anhnvcoder/short-video-platform/feed-service[:@]* | ghcr.io/anhnvcoder/short-video-platform/media-worker[:@]*)
+      ghcr.io/anhnvcoder/short-video-platform/feed-service[:@]* | \
+      ghcr.io/anhnvcoder/short-video-platform/media-worker[:@]* | ghcr.io/anhnvcoder/short-video-platform/web[:@]*)
       services=$((services + 1))
       continue
       ;;

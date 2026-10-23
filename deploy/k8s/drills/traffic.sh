@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
-# Drill traffic for the gateway's canary on cluster svp (docs/adr/0014-kubernetes-local-stage4.md, section 13): about
-# 10 requests/s from this machine through Envoy (https://api.svp.localhost:8443) to GET /feed/explore and GET
-# /feed/following, the routes whose 5xx and latency AnalysisTemplate gateway-canary judges. A canary needs at least 30
-# responses that are not 4xx a minute to be judged at all; at 25% this traffic brings it about 150.
+# Drill traffic for the canaries on cluster svp (docs/adr/0014-kubernetes-local-stage4.md, section 13;
+# docs/adr/0019-web-k3d-supply-chain-observability.md, section 3), from this machine through Envoy:
+# - the gateway's: about 10 requests/s (https://api.svp.localhost:8443) to GET /feed/explore and GET /feed/following,
+#   the routes whose 5xx and latency AnalysisTemplate gateway-canary judges;
+# - the web client's: about 4 requests/s (https://svp.localhost:8443), GET /login three times a second (a page that
+#   needs no session and calls no gateway) and once a second one static asset (/_next/static/...) named in the HTML of
+#   the latest /login, which AnalysisTemplate web-canary judges. An asset only the other build has answers 404 while a
+#   canary runs: the 404s of route web-asset in the log count the asset requests that crossed builds.
+# A canary needs at least 30 responses that are not 4xx a minute to be judged at all; at 25% this traffic brings the
+# gateway's about 150 and the web client's about 45.
 #
 #   traffic.sh start    starts the traffic in the background (nohup), records its pid and log in .k8s/drills/traffic.pid
 #                       and returns once every user is logged in and requests flow; refuses to start a second one
@@ -18,8 +24,8 @@
 # limited per email, 5 at once then 10 an hour), so the traffic runs for hours, through the push of a release.
 #
 # Every request is one line of the log .k8s/drills/traffic-<UTC start>.log:
-#   <unix time of the request's start, ms> <user u1..u4> <route explore|following|login> <HTTP status, 000 when none>
-#   <time to the response, ms>
+#   <unix time of the request's start, ms> <user u1..u4, web for the web client's> <route explore|following|login, or
+#   web-login|web-asset> <HTTP status, 000 when none> <time to the response, ms>
 # and lines starting with # mark the start and stop. drill-k8s-canary and measure-canary read it; a window where more
 # than 1% of the feed requests got 401 or 429 makes them report "inconclusive".
 #
@@ -30,15 +36,17 @@ set -euo pipefail
 
 cmd=${1:-}
 base=${SVP_TRAFFIC_BASE:-https://api.svp.localhost:8443}
+web_base=${SVP_TRAFFIC_WEB_BASE:-https://svp.localhost:8443}
 
 # shellcheck source=deploy/k8s/lib.sh
 . "$(dirname "$0")/../lib.sh"
 drills="$repo_root/.k8s/drills"
 pidfile="$drills/traffic.pid"
 
-# Four users at one request every 400 ms each.
+# Four users at one request every 400 ms each; the web client's loop one request every 250 ms.
 users=4
 interval_ms=400
+web_interval_ms=250
 
 # running: true when the process recorded in $pidfile runs this script's run mode; sets traffic_pid, traffic_log.
 running() {
@@ -52,12 +60,19 @@ running() {
   esac
 }
 
-# summary LOG: the feed requests of LOG by status, and the logins.
+# summary LOG: the feed requests of LOG by status, the logins, and the web client's requests by route and status.
 summary() {
-  awk '!/^#/ && NF == 5 { if ($3 == "login") l[$4]++; else { n++; c[$4]++ } }
+  awk '!/^#/ && NF == 5 {
+      if ($3 == "login") l[$4]++
+      else if ($3 == "web-login") wl[$4]++
+      else if ($3 == "web-asset") wa[$4]++
+      else { n++; c[$4]++ }
+    }
     END {
       printf "feed requests %d:", n; for (k in c) printf " %s=%d", k, c[k]; printf "\n"
       printf "logins:"; for (k in l) printf " %s=%d", k, l[k]; printf "\n"
+      printf "web /login:"; for (k in wl) printf " %s=%d", k, wl[k]; printf "\n"
+      printf "web assets:"; for (k in wa) printf " %s=%d", k, wa[k]; printf "\n"
     }' "$1"
 }
 
@@ -113,7 +128,7 @@ case $cmd in
       fi
       sleep 1
     done
-    ok "drill traffic started (pid $pid): $users users, ~$((users * 1000 / interval_ms)) requests/s, log $log"
+    ok "drill traffic started (pid $pid): $users users, ~$((users * 1000 / interval_ms)) API requests/s, ~$((1000 / web_interval_ms)) web requests/s, log $log"
     exit 0
     ;;
 
@@ -201,6 +216,34 @@ user_loop() {
   done
 }
 
+# web_loop: the web client's requests until stopped, without a session: three GET /login, then one GET of the asset
+# the latest /login named (a /login again while none is known), every web_interval_ms. The asset's query (?dpl=<build>)
+# is left out: Next serves the file by its path alone.
+web_loop() {
+  local i=0 t0 out route url asset= pause_ms cpid=
+  trap '[ -n "$cpid" ] && kill "$cpid" 2>/dev/null; exit 0' TERM
+  while :; do
+    t0=$(now)
+    if ((i % 4 == 3)) && [ -n "$asset" ]; then
+      route=web-asset url=$web_base$asset
+    else
+      route=web-login url=$web_base/login
+    fi
+    i=$((i + 1))
+    curl -sS --max-time 5 -o "$work/web.body" -w '%{http_code} %{time_total}' "$url" >"$work/web.out" 2>/dev/null &
+    cpid=$!
+    wait "$cpid" || true
+    cpid=
+    out=$(cat "$work/web.out")
+    record "$t0" web "$route" "${out:-000 0}"
+    if [[ $route == web-login && ${out%% *} == 200 ]]; then
+      asset=$(grep -oE '/_next/static/[A-Za-z0-9_./-]+\.js' "$work/web.body" | head -n 1 || true)
+    fi
+    pause_ms=$((web_interval_ms - latency_ms - 20))
+    if ((pause_ms > 0)); then sleep "0.$(printf '%03d' "$pause_ms")"; fi
+  done
+}
+
 loops=
 stop_traffic() {
   trap - TERM INT
@@ -211,7 +254,7 @@ stop_traffic() {
 }
 trap stop_traffic TERM INT
 
-echo "# start $(date -u +%Y-%m-%dT%H:%M:%SZ) base=$base users=$users interval_ms=$interval_ms" >>"$log"
+echo "# start $(date -u +%Y-%m-%dT%H:%M:%SZ) base=$base users=$users interval_ms=$interval_ms web_base=$web_base web_interval_ms=$web_interval_ms" >>"$log"
 for u in $(seq 1 "$users"); do register_user "$u"; done
 for u in $(seq 1 "$users"); do
   login "$u" || fail "first login of drill user u$u"
@@ -224,5 +267,7 @@ for u in $(seq 1 "$users"); do
   loops="$loops $!"
   sleep "0.$(printf '%03d' $((interval_ms / users)))"
 done
+web_loop &
+loops="$loops $!"
 echo "# ready $(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$log"
 wait

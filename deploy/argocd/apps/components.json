@@ -172,7 +172,16 @@
       "namespace": "svp",
       "wave": 7,
       "path": "deploy/helm/svp-service",
-      "values": "deploy/k8s/values/services/gateway.yaml"
+      "values": "deploy/k8s/values/services/gateway.yaml",
+      "canaryRoute": "api"
+    },
+    {
+      "name": "web",
+      "namespace": "svp",
+      "wave": 7,
+      "path": "deploy/helm/svp-service",
+      "values": "deploy/k8s/values/services/web.yaml",
+      "canaryRoute": "web"
     }
   ]
 }

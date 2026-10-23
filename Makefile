@@ -76,7 +76,7 @@ SVP_TEST_REDIS_URL ?= redis://127.0.0.1:6379/15
 
 .PHONY: help tools ci-tools generate generate-go generate-check slo otelcol-validate fmt-check vet lint actionlint buf-lint test \
 	cover check check-go helm-check trivy-config renovate-check hooks web-install web-dev web-generate web-generate-check \
-	web-check web-e2e measure-web measure-upload web-lighthouse
+	web-check web-e2e measure-web measure-upload web-lighthouse web-sourcemaps
 
 help: ## List the targets
 	@grep -hE '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -279,7 +279,8 @@ web-generate-check: ## Fail when make web-generate would change web/gen/api.d.ts
 # whole first load, that set plus the runtime (rootMainFiles of build-manifest.json: React, react-dom, Next's router,
 # the same on every route), so a runtime that grows fails the check too. The nomodule polyfill, which current browsers
 # skip, is left out of both. Turbopack names chunks by a content hash, so each set is copied to .next/size-limit/<set>/
-# first, where the config's globs find it.
+# first, where the config's globs find it. The copy drops each chunk's last line, the sourceMappingURL comment, as the
+# image's build does (deploy/docker/web.Dockerfile): the budgets count the bytes the image serves, debug id included.
 define WEB_SIZE_CHUNKS
 const fs = require("node:fs");
 const runtime = JSON.parse(fs.readFileSync(".next/build-manifest.json", "utf8")).rootMainFiles;
@@ -303,7 +304,10 @@ const sets = {
 fs.rmSync(".next/size-limit", { recursive: true, force: true });
 for (const [name, chunks] of Object.entries(sets)) {
   fs.mkdirSync(".next/size-limit/" + name, { recursive: true });
-  for (const chunk of chunks) fs.copyFileSync(".next/" + chunk, ".next/size-limit/" + name + "/" + chunk.split("/").pop());
+  for (const chunk of chunks) {
+    const served = fs.readFileSync(".next/" + chunk, "utf8").replace(/^\/\/# sourceMappingURL=.*\n?/gm, "");
+    fs.writeFileSync(".next/size-limit/" + name + "/" + chunk.split("/").pop(), served);
+  }
 }
 endef
 export WEB_SIZE_CHUNKS
@@ -332,6 +336,12 @@ measure-upload: ## Upload a ~100 MB video from Chromium through /upload; print t
 # register rate limit keys in Redis db 10 first.
 web-lighthouse: ## Lighthouse (mobile, one run per page) of the feed logged in and /v/{id} logged out: LCP/CLS/TBT thresholds, reports in web/test-results/lighthouse/
 	@$(WEB) bash lighthouse/run.sh
+
+# Needs the stack with GlitchTip (make up OBS=lgtm, which writes SENTRY_SOURCEMAPS_TOKEN to .env); builds the stage
+# sourcemaps of the web image from the working tree, which the build cache answers with the maps of the image make up
+# built (deploy/observability/glitchtip/sourcemaps.sh; docs/adr/0019-web-k3d-supply-chain-observability.md, section 9).
+web-sourcemaps: ## Upload the source maps of the web client's browser bundle, from the build the stack of make up OBS=lgtm runs, to its GlitchTip (http://127.0.0.1:8000); checks first that the web serves that build
+	@$(WEB) bash ../deploy/observability/glitchtip/sourcemaps.sh compose
 
 # Docker and compose targets live in their own file (stage 1, compose card).
 -include deploy/compose/compose.mk

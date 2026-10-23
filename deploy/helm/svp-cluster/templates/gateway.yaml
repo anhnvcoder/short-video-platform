@@ -1,6 +1,10 @@
 {{- /*
-The single entry point (ADR-0014 section 9): Envoy Gateway's GatewayClass svp and Gateway svp in svp-edge, one HTTPS
-listener on 443 for *.svp.localhost, published on the host at 127.0.0.1:8443 through k3d's load balancer. No route
+The single entry point (ADR-0014 section 9): Envoy Gateway's GatewayClass svp and Gateway svp in svp-edge, published
+on the host at 127.0.0.1:8443 through k3d's load balancer, with two HTTPS listeners on 443: https for *.svp.localhost
+(the API, storage) and https-apex for svp.localhost (the web client), which the wildcard does not cover. Each serves a
+certificate naming its own hostnames only. One certificate for both names would be valid for s3.svp.localhost on a
+connection opened to svp.localhost, at the same address, so a browser could send its HLS requests over that HTTP/2
+connection (RFC 9113 section 9.1.1), where Envoy picked the apex listener by SNI and no route of it matches s3. No route
 for any operations UI is ever attached (OPS-2): those are reached through kubectl port-forward and their own login.
 */}}
 # Settings of the Envoy proxy fleet of this class. externalTrafficPolicy Cluster instead of Envoy Gateway's default
@@ -59,6 +63,22 @@ spec:
             name: svp-wildcard-tls
       # Routes attach only from namespaces labelled svp-gateway-routes=true (svp, svp-data): a chart in any other
       # namespace cannot publish a backend on the entry point by itself.
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              svp-gateway-routes: "true"
+    - name: https-apex
+      protocol: HTTPS
+      port: 443
+      hostname: {{ .Values.apexHost | quote }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: svp-apex-tls
+      # As listener https.
       allowedRoutes:
         namespaces:
           from: Selector

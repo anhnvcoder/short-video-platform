@@ -53,7 +53,7 @@
     "errors": {
       "REQUIRED": "Enter a display name.",
       "TOO_LONG": "A display name has at most 50 characters.",
-      "INVALID_CHARACTERS": "A name can't contain line breaks, tabs or control characters.",
+      "INVALID_CHARACTERS": "A name needs visible characters, without line breaks, tabs, control or invisible characters.",
       "INVALID_DISPLAY_NAME": "SVP doesn't accept this name. Try another one.",
       "RATE_LIMITED": "You're going a bit fast. Try again in {seconds} s.",
       "UNAVAILABLE": "Couldn't change the name. Try again in a few minutes."

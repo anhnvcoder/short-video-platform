@@ -3,7 +3,9 @@
 import { RotateCw, Timer, TriangleAlert } from "lucide-react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
+import { useEffect } from "react";
 import { Button } from "@/components/ui";
+import { handleClientError } from "@/features/monitoring/reporter";
 import { ErrorScreen, secondaryAction } from "./error-screen";
 import { useCountdown } from "./use-countdown";
 
@@ -35,9 +37,12 @@ type RouteErrorProps = {
   plainLinks?: boolean;
 };
 
-// Body of error.tsx and global-error.tsx. It shows only translated text and the digest that matches the server log,
-// never the error's message or stack.
+// Body of error.tsx and global-error.tsx, so both report what they catch. It shows only translated text and the
+// digest that matches the server log, never the error's message or stack.
 export function RouteError({ error, retry, plainLinks = false }: RouteErrorProps) {
+  // A chunk or Server Action of another build reloads the page once; anything else goes to the error tracker (a
+  // server error, with its digest, was reported by the server already).
+  useEffect(() => handleClientError(error), [error]);
   const t = useTranslations("errors");
   const appName = useTranslations("common")("appName");
   const wait = rateLimitWait(error);

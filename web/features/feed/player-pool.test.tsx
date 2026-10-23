@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { handleClientError } from "@/features/monitoring/reporter";
 import type { HlsClass } from "./hls-loader";
 import { PlayerPool, poolSize, slotOf, windowIndexes, type PoolCallbacks, type PoolSource } from "./player-pool";
+
+// What the pool does with a loader error is the reporter's business: reload once on a build skew, else report.
+vi.mock("@/features/monitoring/reporter", () => ({ handleClientError: vi.fn() }));
 
 const mediaOrigin = "http://127.0.0.1:9000";
 
@@ -221,16 +225,21 @@ describe("PlayerPool", () => {
         maxBufferSize: 2_000_000,
         maxMaxBufferLength: 20,
       });
-      // What hls.js 1.x buffers ahead at a level's bitrate: min(max(8 * size / bitrate, length), max length) seconds.
-      // At either level of the ladder (360p 0.8 Mbit/s, 720p 2.5 Mbit/s) that stays near 3 MB, where a 60 s 720p clip
-      // is about 19 MB.
+      // What hls.js 1.7 buffers ahead at a level's bitrate: min(max(8 * size / bitrate, length), max length) seconds.
+      // On the media-worker ladder: 360p (0.8 Mbit/s) stretches to the 20 s ceiling, 2 MB; 720p (2.5 Mbit/s) and 1080p
+      // (5 Mbit/s, picked on a wide desktop player) stay at the 10 s floor, about 3.1 MB and 6.3 MB. A 60 s 720p clip is
+      // about 19 MB.
       const { maxBufferLength, maxBufferSize, maxMaxBufferLength } = instance.config as Record<
         "maxBufferLength" | "maxBufferSize" | "maxMaxBufferLength",
         number
       >;
-      for (const bitrate of [800_000, 2_500_000]) {
+      for (const [bitrate, bound] of [
+        [800_000, 4_000_000],
+        [2_500_000, 4_000_000],
+        [5_000_000, 6_500_000],
+      ] as const) {
         const seconds = Math.min(Math.max((8 * maxBufferSize) / bitrate, maxBufferLength), maxMaxBufferLength);
-        expect((seconds * bitrate) / 8).toBeLessThanOrEqual(4_000_000);
+        expect((seconds * bitrate) / 8).toBeLessThanOrEqual(bound);
       }
     }
   });
@@ -373,13 +382,36 @@ describe("PlayerPool", () => {
     expect(host?.querySelector("video")?.getAttribute("src")).toBe(`${mediaOrigin}/media/hls/0/master.m3u8`);
   });
 
-  it("shows a playback error when hls.js cannot be loaded", async () => {
+  it("shows a playback error when hls.js cannot be loaded, after handing the error on", async () => {
+    vi.mocked(handleClientError).mockClear();
     const events = callbacks();
-    const pool = new PlayerPool(mediaOrigin, events, () => Promise.reject(new Error("chunk failed")));
+    // What Turbopack's runtime throws when hls.js's chunk is gone (a page of another build).
+    const error = Object.assign(new Error("Failed to load chunk /_next/static/chunks/hls.js from module 7: 404"), {
+      name: "ChunkLoadError",
+    });
+    const pool = new PlayerPool(mediaOrigin, events, () => Promise.reject(error));
     const [host] = hosts(1);
     pool.sync(0, sources(1), () => host ?? null, true);
     await settle();
+    expect(handleClientError).toHaveBeenCalledExactlyOnceWith(error);
     expect(events.onState).toHaveBeenLastCalledWith(0, "error");
+    expect(host?.querySelector("video")?.dataset.state).toBe("error");
+  });
+
+  it("does not report a loader error of a source it has already left", async () => {
+    vi.mocked(handleClientError).mockClear();
+    let reject: (error: Error) => void = () => {};
+    const pool = new PlayerPool(
+      mediaOrigin,
+      callbacks(),
+      () => new Promise<HlsClass>((_resolve, rejectLoad) => (reject = rejectLoad)),
+    );
+    const [host] = hosts(1);
+    pool.sync(0, sources(1), () => host ?? null, true);
+    pool.destroy();
+    reject(new Error("Failed to load chunk"));
+    await settle();
+    expect(handleClientError).not.toHaveBeenCalled();
   });
 
   it("marks the playing element with data-state=playing and reports it", async () => {

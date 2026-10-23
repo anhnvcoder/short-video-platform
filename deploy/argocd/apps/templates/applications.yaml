@@ -10,7 +10,11 @@ too, so both paths install the same charts, versions and values in the same orde
   repository through a second source with ref "values". Helm OCI repositories are written oci://<registry>/<path> in
   components.json, the form helm takes; Argo CD wants them without the scheme;
 - every targetRevision is quoted: a branch named 2026 or true, or a chart version such as 1.10, would otherwise be read
-  as a number or a boolean (1.10 as 1.1), and the Application CRD wants a string.
+  as a number or a boolean (1.10 as 1.1), and the Application CRD wants a string;
+- canaryRoute names the HTTPRoute of a release of chart svp-service with canary set in its values file (the gateway's
+  api, the web client's web): such a release gets the ignoreDifferences below. The chart cannot read that values file
+  from here, so the two are kept in step by hand, and deploy/k8s/install.sh refuses a release whose values set canary
+  without a canaryRoute here, or the reverse.
 Nothing here names the Secrets deploy/k8s/secrets.sh and deploy/k8s/glitchtip-init.sh make: no chart renders them, so
 no Application tracks them and pruning never deletes them.
 */}}
@@ -73,23 +77,24 @@ spec:
       targetRevision: {{ $.Values.targetRevision | quote }}
       ref: values
     {{- end }}
-  {{- if eq .name "gateway" }}
-  # Argo Rollouts writes into two objects of the gateway's chart (ADR-0014 section 13): its Gateway API plugin moves the
-  # weights of the two backendRefs of HTTPRoute api during a canary, then puts them back to 100/0, and the controller
-  # adds rollouts-pod-template-hash to the selectors of Services gateway and gateway-canary. Ignored here, selfHeal does
-  # not set the weights back in the middle of a canary. RespectIgnoreDifferences also keeps the live values when a sync
-  # applies these objects: Argo CD applies server-side with --force-conflicts, so without it every sync of this
-  # Application (a new release digest) would strip the hash from both selectors, sending each request to stable and
-  # canary pods alike until the controller sets it again, and reset the weights.
+  {{- if .canaryRoute }}
+  # Argo Rollouts writes into two objects of a release with a canary (ADR-0014 section 13): its Gateway API plugin moves
+  # the weights of the two backendRefs of the release's HTTPRoute during a canary, then puts them back to 100/0, and the
+  # controller adds rollouts-pod-template-hash to the selectors of Services <release> and <release>-canary. Ignored
+  # here, selfHeal does not set the weights back in the middle of a canary. RespectIgnoreDifferences also keeps the live
+  # values when a sync applies these objects: Argo CD applies server-side with --force-conflicts, so without it every
+  # sync of this Application (a new release digest) would strip the hash from both selectors, sending each request to
+  # stable and canary pods alike until the controller sets it again, and reset the weights.
   # The price, read in controller/sync.go of Argo CD v3.5.5 (normalizeTargetResources): the live values reach the
   # applied manifest through a JSON merge patch, which replaces a list whole, so the whole spec.rules of the live route
   # is applied, not only its weights. A change of the rules in git (a match, a filter, a timeout) is therefore not
-  # applied while the route exists: delete HTTPRoute svp/api once no canary runs (kubectl --context k3d-svp -n svp
-  # delete httproute api) and selfHeal creates it again from git within seconds, the API unreachable meanwhile.
+  # applied while the route exists: delete the route once no canary runs (kubectl --context k3d-svp -n {{ .namespace }}
+  # delete httproute {{ .canaryRoute }}) and selfHeal creates it again from git within seconds, the release unreachable
+  # meanwhile.
   ignoreDifferences:
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
-      name: api
+      name: {{ .canaryRoute }}
       namespace: {{ .namespace }}
       jqPathExpressions:
         - .spec.rules[].backendRefs[].weight
@@ -130,7 +135,7 @@ spec:
       # Kinds whose CRD an earlier wave installs are unknown at dry-run time on a new cluster.
       - SkipDryRunOnMissingResource=true
       {{- end }}
-      {{- if eq .name "gateway" }}
+      {{- if .canaryRoute }}
       - RespectIgnoreDifferences=true
       {{- end }}
     # An automated sync that failed is not tried again for the same revision unless retries are set. On a new

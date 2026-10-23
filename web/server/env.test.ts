@@ -18,6 +18,32 @@ describe("parseServerEnv", () => {
       mediaOrigin: "http://127.0.0.1:9000",
       uploadOrigin: "http://127.0.0.1:9000",
       secure: false,
+      sentryDsn: null,
+      sentryEnvironment: "local",
+      buildId: undefined,
+    });
+  });
+
+  it("reads the error tracker's DSN, environment and the build id", () => {
+    const env = parseServerEnv({
+      ...valid,
+      SENTRY_DSN: "http://0123abcd@glitchtip:8000/1",
+      SENTRY_ENVIRONMENT: "k3d",
+      SVP_BUILD_ID: "dev-0123456789ab",
+    });
+    expect(env).toMatchObject({
+      sentryDsn: "http://0123abcd@glitchtip:8000/1",
+      sentryEnvironment: "k3d",
+      buildId: "dev-0123456789ab",
+    });
+  });
+
+  // Compose passes `${SENTRY_DSN:-}`: empty is the same as unset, reporting off.
+  it("treats empty optional variables as unset", () => {
+    expect(parseServerEnv({ ...valid, SENTRY_DSN: "", SENTRY_ENVIRONMENT: "", SVP_BUILD_ID: "" })).toMatchObject({
+      sentryDsn: null,
+      sentryEnvironment: "local",
+      buildId: undefined,
     });
   });
 
@@ -48,6 +74,14 @@ describe("parseServerEnv", () => {
     ["UPLOAD_ORIGIN", "http://s3.example.com"],
     ["UPLOAD_ORIGIN", "http://127.0.0.2:9000"],
     ["REDIS_URL", "http://127.0.0.1:6379/9"],
+    ["SENTRY_DSN", "http://glitchtip:8000/1"],
+    ["SENTRY_DSN", "http://key@glitchtip:8000"],
+    ["SENTRY_DSN", "http://key@glitchtip:8000/api/1/envelope/"],
+    ["SENTRY_DSN", "http://key:secret@glitchtip:8000/1"],
+    ["SENTRY_DSN", "ftp://key@glitchtip/1"],
+    ["SENTRY_DSN", "not a dsn"],
+    ["SENTRY_ENVIRONMENT", "K3D prod"],
+    ["SVP_BUILD_ID", "a/b"],
   ])("refuses %s=%s", (name, value) => {
     expect(() => parseServerEnv({ ...valid, [name]: value })).toThrow(new RegExp(`${name} must`));
   });
@@ -82,6 +116,9 @@ describe("parseServerEnv", () => {
   it("never repeats a value in its error", () => {
     const secret = "s3cret-pw";
     expect(() => parseServerEnv({ ...valid, REDIS_URL: `http://svp:${secret}@redis:6379/9` })).toThrow(
+      expect.objectContaining({ message: expect.not.stringContaining(secret) }),
+    );
+    expect(() => parseServerEnv({ ...valid, SENTRY_DSN: `http://${secret}@glitchtip:8000/x` })).toThrow(
       expect.objectContaining({ message: expect.not.stringContaining(secret) }),
     );
   });

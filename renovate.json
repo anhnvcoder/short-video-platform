@@ -153,6 +153,13 @@
       "groupName": "npm packages"
     },
     {
+      "description": "The Sentry SDK of the web client (@sentry/nextjs) and the Sentry CLI that uploads its source maps (sentry, make web-sourcemaps) move together in one pull request, majors included: the CLI matches the bundle's chunks to their maps by the debug IDs the SDK's build plugin writes, so the two are checked as a pair (make web-sourcemaps, SVP_E2E_GLITCHTIP=1 make web-e2e). separateMajorMinor is off for them: otherwise a major of one goes to its own branch (renovate/major-sentry) while a minor of the other released with it goes to renovate/sentry.",
+      "matchManagers": ["npm"],
+      "matchDepNames": ["@sentry/nextjs", "sentry"],
+      "separateMajorMinor": false,
+      "groupName": "sentry"
+    },
+    {
       "description": "Node moves in one pull request in web/.nvmrc (read by the Makefile, actions/setup-node and nvm), in engines of web/package.json and in the base images of deploy/docker/web.Dockerfile: the node builder image and the distroless Node runtime, whose digest updates come here too (this rule comes after the dockerfile one above).",
       "matchDepNames": ["node", "gcr.io/distroless/nodejs*-debian*"],
       "matchManagers": ["nvm", "npm", "dockerfile"],

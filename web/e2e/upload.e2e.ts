@@ -11,6 +11,7 @@ import {
   testClip,
   uploadURL,
 } from "./fixtures";
+import { stack } from "./stack";
 
 // Upload from the browser (docs/adr/0018-web-profiles-public-video-upload.md, section 8): a 60 s 1080p clip goes from
 // /upload to the storage with a presigned POST, the worker transcodes it to READY, and the video plays on its share
@@ -44,7 +45,7 @@ async function watchWhenReady(page: Page, title: string): Promise<void> {
   await expect(page.getByText("Processing the video")).toBeVisible();
   await expect(page.getByText("Your video is ready")).toBeVisible({ timeout: readyTimeout });
   await page.getByRole("link", { name: "Watch video" }).click();
-  await expect(page).toHaveURL(/^http:\/\/localhost:3001\/v\/[0-9a-f-]{36}$/);
+  await expect(page).toHaveURL(new RegExp(`^${RegExp.escape(stack.appOrigin)}/v/[0-9a-f-]{36}$`));
   await expect(page.getByRole("heading", { level: 1, name: title })).toBeVisible();
   await expect(playingVideo(page.locator("article"))).toHaveCount(1);
 }

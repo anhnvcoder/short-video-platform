@@ -13,6 +13,7 @@ import {
   type Account,
 } from "./fixtures";
 import { seed } from "./seed";
+import { stack } from "./stack";
 
 // Screenshots of the screens of the web client for a person to compare with the design frames of web/design (SVP
 // Mobile, SVP Desktop): each screen full page at a phone and a desktop size, in Vietnamese, saved as
@@ -111,8 +112,8 @@ test("evidence: Explore playing, liked, empty Following", async ({ page }, testI
 
   await shoot(page, testInfo, { mobile: "M01", desktop: "D01" }, "kham-pha-dang-phat", playing);
 
-  // Named "Thích video, <count>" or "Bỏ thích video, <count>" with stats, "Thích video" without; aria-pressed tells.
-  const like = first.getByRole("button", { name: /^(Bỏ thích|Thích) video/ });
+  // Named "Thích video, <count>" with stats and "Thích video" without, liked or not: aria-pressed tells which.
+  const like = first.getByRole("button", { name: /^Thích video(, |$)/ });
   await like.click();
   await expect(like).toHaveAttribute("aria-pressed", "true");
   await shoot(page, testInfo, { mobile: "M02", desktop: "M02" }, "da-thich", async () => {
@@ -133,7 +134,11 @@ test("evidence: profiles, the share page for a guest and logged in, its 404", as
   const handle = generatedHandle(xss.author_id);
 
   // A guest, in a context without any cookie.
-  const guestContext = await browser.newContext({ baseURL: testInfo.project.use.baseURL, locale: "vi-VN" });
+  const guestContext = await browser.newContext({
+    baseURL: testInfo.project.use.baseURL,
+    locale: "vi-VN",
+    ...stack.contextOptions,
+  });
   try {
     const guest = await guestContext.newPage();
     await guest.goto(`/v/${xss.video_id}`);
