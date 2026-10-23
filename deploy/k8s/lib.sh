@@ -356,25 +356,111 @@ restart_on_secret_change() {
     fail "record on $kind $ns/$workload the version of Secret $name its pods read"
 }
 
-# The six services whose images the cluster runs, in the order they are built.
-svp_services=(gateway user-service video-service engagement-service feed-service media-worker)
+# The seven services whose images the cluster runs, in the order they are built: web last, since the six Go images
+# share the Go module cache and build fast, so their errors show before the web build, the longest of all.
+svp_services=(gateway user-service video-service engagement-service feed-service media-worker web)
 
 # dockerfile SERVICE: the Dockerfile that builds SERVICE's image, relative to the repository root.
 dockerfile() {
-  if [ "$1" = media-worker ]; then echo deploy/docker/media-worker.Dockerfile; else echo deploy/docker/service.Dockerfile; fi
+  case $1 in
+  media-worker) echo deploy/docker/media-worker.Dockerfile ;;
+  web) echo deploy/docker/web.Dockerfile ;;
+  *) echo deploy/docker/service.Dockerfile ;;
+  esac
+}
+
+# build_context SERVICE: the directory SERVICE's image is built from, relative to the repository root. The Go images
+# need the whole module (go.mod, gen/, internal/); the web image only web/, whose own .dockerignore decides what
+# reaches the build, as compose builds it.
+build_context() {
+  if [ "$1" = web ]; then echo web; else echo .; fi
+}
+
+# web_build_id: prints the build id of the web image on the dev path (SVP_BUILD_ID, which Next uses as its
+# deploymentId and the server as its release name): dev- and the first 12 hex digits of the SHA-256 of the list
+# "<SHA-256 of the content> <path>", sorted by path, of every file the build context web/ sends (by web/.dockerignore,
+# not by git: a .DS_Store git ignores counts, a tracked file .dockerignore leaves out does not) plus the Dockerfile.
+# The same context gives the same id, so the build cache gives the same image ID and `make k8s-up` starts no new
+# ReplicaSet (or canary); any change of the context gives a new id, so two different builds never share one
+# deploymentId through a file git does not see. A symlink counts by the path it points to (the context sends it as it
+# is); file modes do not count.
+#
+# Only the form web/.dockerignore has is understood: each line (blank lines and # comments aside) is a one-level name
+# pattern of letters, digits, . _ - * and ?, which, as in Docker, matches a name at the root of the context only and
+# leaves out its whole tree. Any other line fails, naming it, instead of drifting from what Docker sends unnoticed;
+# a new form means teaching this function the same rule in the same change.
+web_build_id() {
+  local ignore=$repo_root/web/.dockerignore line path name pattern list kept
+  local patterns=() entries=()
+  [ -f "$ignore" ] || {
+    echo "web_build_id: $ignore is missing" >&2
+    return 1
+  }
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in '' | '#'*) continue ;; esac
+    case $line in
+    *[!A-Za-z0-9._*?-]* | *'**'*)
+      echo "web_build_id: web/.dockerignore line '$line' is not a one-level name pattern (letters, digits, . _ - * ?); teach web_build_id of deploy/k8s/lib.sh this form first" >&2
+      return 1
+      ;;
+    esac
+    patterns+=("$line")
+  done <"$ignore"
+  while IFS= read -r -d '' path; do
+    name=${path##*/}
+    kept=yes
+    for pattern in ${patterns[@]+"${patterns[@]}"}; do
+      # Unquoted on the right, so a glob: * and ? match a leading dot too, as Docker's matcher does.
+      # shellcheck disable=SC2053
+      if [[ $name == $pattern ]]; then
+        kept=
+        break
+      fi
+    done
+    [ -z "$kept" ] || entries+=("web/$name")
+  done < <(find "$repo_root/web" -mindepth 1 -maxdepth 1 -print0)
+  [ ${#entries[@]} -gt 0 ] || {
+    echo "web_build_id: web/.dockerignore leaves nothing of web/ in the build context" >&2
+    return 1
+  }
+  # In a subshell with pipefail, so a failed find or shasum fails the whole list. shasum prints "<hash>  <path>"; the
+  # two spaces become one. find does not follow symlinks, so a symlink is hashed by its target path, never its content.
+  list=$(
+    set -o pipefail
+    cd "$repo_root" || exit 1
+    {
+      find "${entries[@]}" deploy/docker/web.Dockerfile -type f -print0 | xargs -0 shasum -a 256 -- |
+        sed 's/^\([0-9a-f]\{64\}\)  /\1 /' || exit 1
+      find "${entries[@]}" -type l -print0 | while IFS= read -r -d '' path; do
+        printf '%s %s\n' "$(readlink "$path" | tr -d '\n' | shasum -a 256 | cut -d' ' -f1)" "$path"
+      done || exit 1
+    } | LC_ALL=C sort -k2
+  ) || {
+    echo "web_build_id: cannot hash the files of the build context web/" >&2
+    return 1
+  }
+  echo "dev-$(printf '%s\n' "$list" | shasum -a 256 | cut -c1-12)"
 }
 
 # build_image SERVICE CONTEXT: builds SERVICE's image from the source tree CONTEXT (native architecture, the
-# Dockerfiles compose uses) and sets image_id to its ID, without the sha256: prefix.
+# Dockerfiles compose uses) and sets image_id to its ID, without the sha256: prefix. The web image gets SVP_BUILD_ID
+# from web_build_id, which reads the working tree: build_dev_images passes that tree as CONTEXT.
 build_image() {
-  local args=(--file "$2/$(dockerfile "$1")")
-  [ "$1" = media-worker ] || args+=(--build-arg "SERVICE=$1")
+  local args=(--file "$2/$(dockerfile "$1")") id
+  case $1 in
+  media-worker) ;;
+  web)
+    id=$(web_build_id) || return 1
+    args+=(--build-arg "SVP_BUILD_ID=$id")
+    ;;
+  *) args+=(--build-arg "SERVICE=$1") ;;
+  esac
   # --quiet prints only the image ID; a failed build still prints its error.
-  image_id=$(docker_ build --quiet "${args[@]}" "$2") || return 1
+  image_id=$(docker_ build --quiet "${args[@]}" "$2/$(build_context "$1")") || return 1
   image_id=${image_id#sha256:}
 }
 
-# build_dev_images: builds the six images from the working tree, pushes each to the registry as
+# build_dev_images: builds the seven images from the working tree, pushes each to the registry as
 # 127.0.0.1:5111/svp/<service>:dev-<first 12 hex digits of its image ID>, and sets dev_tag_<service with _ for -> to
 # that tag (ADR-0014 section 6). The build cache gives the same image ID for the same inputs, so a run with no code
 # change yields the same tags, the pod templates do not change, and no new ReplicaSet (later: no canary) starts. Run
@@ -396,9 +482,15 @@ build_dev_images() {
 
 # image_paths SERVICE: the paths SERVICE's image is built from, relative to the repository root: what its Dockerfile
 # copies (go.mod, go.sum, gen/, internal/, services/<service>/), the Dockerfile itself and .dockerignore, which decides
-# what reaches the build. CI builds a release of SERVICE when one of them changed (deploy/ci/changed-services.sh).
+# what reaches the build. The web image is built from web/ alone (its .dockerignore inside it) and its Dockerfile, so
+# a change of go.mod, internal/ or the root .dockerignore does not build it, and a change under web/ builds only it.
+# CI builds a release of SERVICE when one of them changed (deploy/ci/changed-services.sh).
 image_paths() {
-  printf '%s\n' go.mod go.sum gen internal "services/$1" "$(dockerfile "$1")" .dockerignore
+  if [ "$1" = web ]; then
+    printf '%s\n' web "$(dockerfile web)"
+  else
+    printf '%s\n' go.mod go.sum gen internal "services/$1" "$(dockerfile "$1")" .dockerignore
+  fi
 }
 
 # Release images (docs/adr/0015-cicd-devsecops-stage5.md, sections 5 and 9): built, scanned and signed by CI only,

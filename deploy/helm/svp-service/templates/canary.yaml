@@ -1,23 +1,24 @@
 {{- /*
-Canary of a release with canary set, the gateway (ADR-0014 section 13): the Rollout's strategy, Service
-<release>-canary, and AnalysisTemplates <release>-canary (background) and <release>-canary-gate (the step before 100%)
-that decide from Envoy's metrics whether the canary is promoted or aborted. HTTPRoute api splits the traffic between
-the two Services (templates/httproute.yaml).
+Canary of a release with canary set, the gateway and the web client (ADR-0014 section 13, ADR-0019 section 3): the
+Rollout's strategy, Service <release>-canary, and AnalysisTemplates <release>-canary (background) and
+<release>-canary-gate (the step before 100%) that decide from Envoy's metrics whether the canary is promoted or aborted.
+The release's HTTPRoute (api for the gateway, web for the web client) splits the traffic between the two Services
+(templates/httproute.yaml).
 
-The canary backend has an Envoy cluster of its own, httproute/<namespace>/api/rule/0/backend/1, only because each
+The canary backend has an Envoy cluster of its own, httproute/<namespace>/<route>/rule/0/backend/1, only because each
 backendRef of the route carries a filter (Envoy Gateway otherwise puts both Services in one cluster, which no metric
 can tell apart). Its counters exist while the canary's weight is above 0.
 */}}
 {{- define "svp-service.canaryCluster" -}}
-httproute/{{ .Release.Namespace }}/api/rule/0/backend/1
+httproute/{{ .Release.Namespace }}/{{ include "svp-service.routeName" . }}/rule/0/backend/1
 {{- end }}
 
 {{- /*
 spec of the Rollout beside selector and template. Each new revision:
 - setWeight 25: the controller scales the canary ReplicaSet to 25% of the replicas (rounded up, so one pod of two) and,
-  once it is ready, has the Gateway API plugin set HTTPRoute api to 75/25; pause 60 s; setWeight 50 (still one pod),
-  pause 60 s; the gate (an analysis step, below); then 100%: the canary becomes stable, the route goes back to 100/0
-  and the old ReplicaSet is scaled down 30 s later.
+  once it is ready, has the Gateway API plugin set the release's HTTPRoute to 75/25; pause 60 s; setWeight 50 (still
+  one pod), pause 60 s; the gate (an analysis step, below); then 100%: the canary becomes stable, the route goes back
+  to 100/0 and the old ReplicaSet is scaled down 30 s later.
 - The analysis runs in the background from the first step to the end, and catches a broken canary early. The background
   run alone cannot keep a canary from 100%: the steps do not wait for it, and when the Rollout completes it is stopped
   and ends Successful whatever it has measured (none at all if every query so far timed out). The gate is what
@@ -42,7 +43,7 @@ strategy:
     trafficRouting:
       plugins:
         argoproj-labs/gatewayAPI:
-          httpRoute: api
+          httpRoute: {{ include "svp-service.routeName" . }}
           namespace: {{ .Release.Namespace }}
     analysis:
       templates:
@@ -68,9 +69,10 @@ Two metrics of the canary backend over the last minute, in two AnalysisTemplates
 inconclusiveLimit stays 0 in both, so the first inconclusive measurement stops the Rollout.
 
 Each query answers -1 while the canary has had fewer than 30 responses that are not 4xx in the window: neither
-condition holds, the measurement is Inconclusive and the canary is not promoted. The drill traffic, about 10 requests/s
-(deploy/k8s/drills/traffic.sh), brings about 150 a minute at 25%; traffic that is mostly 401 or 429 (expired tokens,
-rate limited) does not reach 30, so a broken canary cannot pass on broken traffic. 4xx are left out of the ratio's
+condition holds, the measurement is Inconclusive and the canary is not promoted. The drill traffic
+(deploy/k8s/drills/traffic.sh) brings the gateway about 150 a minute at 25% (about 10 API requests/s) and the web
+client about 45 (/login about 3 times a second); traffic that is mostly 401 or 429 (expired tokens, rate limited) does
+not reach 30, so a broken canary cannot pass on broken traffic. 4xx are left out of the ratio's
 denominator so they do not dilute the 5xx.
 
 A query that Prometheus does not answer, or answers with an error, is a measurement in Error, retried 10 s after it
@@ -86,9 +88,9 @@ whole run, which aborts the Rollout. timeout 10 gives up a hanging query after 1
 - a good canary, Prometheus up: the background run measures at 60 and 90 (and 120 when the pod was slow to start); the
   gate measures at once and promotes as soon as the query returns, a second or so later than the two pauses alone.
 
-The latency limit is the SLO of the feed, p99 150 ms (deploy/observability/slo/svp-slos.yaml); Envoy's default
-histogram buckets around it are 100 and 250 ms, so the p99 is a coarse interpolation and the 5xx ratio is the main
-criterion. 1% of 5xx is the 99.9% availability SLO loosened for a sample of about a hundred responses.
+The two limits are the release's canaryLimits (its values file says why its numbers): p99Ms, the p99 in ms, and
+errorRatio, the share of 5xx. Envoy's default histogram buckets are coarse (100, 250, 500, 1000 ms), so the p99 is an
+interpolation between two of them and the 5xx ratio is the main criterion.
 */}}
 {{- define "svp-service.canaryCadence" -}}
 {{- if . }}
@@ -105,12 +107,15 @@ consecutiveErrorLimit: 2
 {{- /* The metrics of both AnalysisTemplates; dict "ctx" (the chart's root context) and "gate" (true for the gate). */}}
 {{- define "svp-service.canaryMetrics" -}}
 {{- $c := include "svp-service.canaryCluster" .ctx }}
+{{- $limits := .ctx.Values.canaryLimits }}
+{{- $ratio := required (printf "canaryLimits.errorRatio is empty for release %s" .ctx.Release.Name) $limits.errorRatio }}
+{{- $p99 := required (printf "canaryLimits.p99Ms is empty for release %s" .ctx.Release.Name) $limits.p99Ms }}
 {{- $prom := "http://kps-prometheus.svp-obs:9090" }}
 # 5xx among the canary's responses that are not 4xx.
 - name: canary-5xx-ratio
   {{- include "svp-service.canaryCadence" .gate | nindent 2 }}
-  successCondition: result[0] >= 0 && result[0] < 0.01
-  failureCondition: result[0] >= 0.01
+  successCondition: result[0] >= 0 && result[0] < {{ $ratio }}
+  failureCondition: result[0] >= {{ $ratio }}
   provider:
     prometheus:
       address: {{ $prom }}
@@ -125,8 +130,8 @@ consecutiveErrorLimit: 2
 # p99 of the time Envoy waited for the canary's response, in ms.
 - name: canary-p99-ms
   {{- include "svp-service.canaryCadence" .gate | nindent 2 }}
-  successCondition: result[0] >= 0 && result[0] < 150
-  failureCondition: result[0] >= 150
+  successCondition: result[0] >= 0 && result[0] < {{ $p99 }}
+  failureCondition: result[0] >= {{ $p99 }}
   provider:
     prometheus:
       address: {{ $prom }}

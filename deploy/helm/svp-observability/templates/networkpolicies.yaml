@@ -34,8 +34,8 @@ podSelector:
   matchLabels:
     {{- toYaml (index .root.Values.pods .name) | nindent 4 }}
 {{- end }}
-# The Collector: OTLP from the six services, out to the three backends, and Redpanda's /public_metrics (no login is
-# needed or held; ADR section 5).
+# The Collector: OTLP from the seven releases of svp (services.otlp), out to the three backends, and Redpanda's
+# /public_metrics (no login is needed or held; ADR section 5).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -304,7 +304,7 @@ spec:
       ports:
         - {protocol: TCP, port: 443}
 ---
-# GlitchTip: errors from the five services that report them (not media-worker), on 8000; people come in by
+# GlitchTip: errors from the releases that report them (services.errors: not media-worker), on 8000; people come in by
 # port-forward only (`make k8s-ui-glitchtip`), and log in (OPS-2). Out: its database on Postgres svp-pg, nothing else
 # (the policy of its init Job is a hook in templates/glitchtip.yaml).
 apiVersion: networking.k8s.io/v1

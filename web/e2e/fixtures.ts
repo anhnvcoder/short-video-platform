@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { test as base, expect, type BrowserContext, type Locator, type Page } from "@playwright/test";
+import { stack } from "./stack";
 
 // Shared helpers of the end-to-end tests.
 //
@@ -14,10 +15,13 @@ import { test as base, expect, type BrowserContext, type Locator, type Page } fr
 // of this machine, also a burst of 20 refilled one a minute: a whole run registers more users than that within a few
 // minutes (28 in an evidence run), so every worker resets the register buckets again before its first test (the
 // registerLimitReset fixture, LOCAL LAB ONLY). A worker runs one project, at most 9 registrations (chromium or webkit in
-// an evidence run, its sessionAccount included); a new test still reuses the worker's sessionAccount when it can.
+// an evidence run, its sessionAccount included); a new test still reuses the worker's sessionAccount when it can. On
+// k3d every registration of a worker, through the BFF or straight at the gateway, lands in one bucket: the BFF passes
+// X-Forwarded-For on as it received it and the gateway reads the address Envoy wrote (server/gateway.ts), the same for
+// both. The budget is tighter there than on compose; the reset before each worker's first test keeps it under the burst.
 
-// The gateway as e2e/seed.sh reaches it, on the host's loopback.
-export const gatewayURL = "http://127.0.0.1:8080";
+// The gateway as e2e/seed.sh reaches it: its loopback port on compose, through Envoy on k3d (e2e/stack.ts).
+export const gatewayURL = stack.gatewayURL;
 
 export type Credentials = { email: string; password: string };
 export type Account = Credentials & { handle: string; userId: string };
@@ -128,8 +132,9 @@ export async function publicVideo(
   return (await response.json()) as { title: string; playlist_url: string; thumbnail_url: string };
 }
 
-// UPLOAD_ORIGIN of the compose stack: the storage the browser sends files to (MinIO's published port).
-export const uploadOrigin = "http://127.0.0.1:9000";
+// UPLOAD_ORIGIN of the stack: the storage the browser sends files to (MinIO's published port on compose, its route
+// through Envoy on k3d).
+export const uploadOrigin = stack.uploadOrigin;
 
 // The URL of the presigned upload form: the uploads bucket, path-style. The media the pages play (MEDIA_ORIGIN) are on
 // the same origin under /media, so a test that holds back uploads matches this URL, not the origin.
@@ -223,9 +228,10 @@ type StorageState = Awaited<ReturnType<BrowserContext["storageState"]>>;
 
 type WorkerFixtures = {
   // LOCAL LAB ONLY: before the first test of every worker (one per project, and a new one after a failed test), the
-  // gateway's register rate limit keys (svp:gw:rl:register:*) in Redis db 10 on 127.0.0.1:6379 are deleted with SCAN +
-  // DEL, by reset_register_limit of deploy/compose/lib.sh as e2e/seed.sh and `make smoke` do; the limit itself is not
-  // raised. Never point the e2e run at a shared stack.
+  // gateway's register rate limit keys (svp:gw:rl:register:*) in Redis db 10 on 127.0.0.1:6379 (on k3d: Valkey db 10
+  // of cluster svp, through kubectl, as SVP_STACK=k3d tells lib.sh) are deleted with SCAN + DEL, by
+  // reset_register_limit of deploy/compose/lib.sh as e2e/seed.sh and `make smoke` do; the limit itself is not raised.
+  // Never point the e2e run at a shared stack.
   registerLimitReset: void;
   // A user of this worker, logged in once through the login page; its cookie is kept for the tests of `authedTest`.
   sessionAccount: Account & { storageState: StorageState };
@@ -276,7 +282,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
     async ({ browser }, provide, workerInfo) => {
       const account = await registerAccount();
       const { baseURL, locale } = workerInfo.project.use;
-      const context = await browser.newContext({ baseURL, locale });
+      const context = await browser.newContext({ baseURL, locale, ...stack.contextOptions });
       const page = await context.newPage();
       await logIn(page, account);
       await page.waitForURL("/");

@@ -1,3 +1,4 @@
+import { handleClientError } from "@/features/monitoring/reporter";
 import { loadHls, type HlsClass, type HlsConfig, type HlsInstance } from "./hls-loader";
 import { isMediaUrl } from "./media-url";
 
@@ -237,8 +238,11 @@ export class PlayerPool {
     let Hls: HlsClass;
     try {
       Hls = await this.hlsLoader();
-    } catch {
+    } catch (error) {
       if (slot.generation === generation) {
+        // No error boundary sees this rejection: hls.js's chunk of another build reloads the page once, anything else
+        // is reported here. The video shows its error either way.
+        handleClientError(error);
         this.fail(slot);
       }
       return;

@@ -73,5 +73,8 @@ nodeSubnet: 10.200.0.0/24
 # ClusterIP of Service kubernetes (first address of k3s's service range 10.43.0.0/16).
 kubeAPIServiceIP: 10.43.0.1
 
-# Hostnames served by the single HTTPS listener; *.localhost resolves to loopback on the host.
+# Hostnames of the two HTTPS listeners of Gateway svp; *.localhost resolves to loopback on the host. wildcardHost: the
+# API and storage (api., s3.); apexHost: the web client. A wildcard does not cover the name it is under, so
+# svp.localhost has a listener and a certificate of its own (templates/gateway.yaml).
 wildcardHost: "*.svp.localhost"
+apexHost: svp.localhost

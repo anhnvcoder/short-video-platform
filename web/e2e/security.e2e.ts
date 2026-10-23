@@ -12,13 +12,14 @@ import {
   uploadOrigin,
 } from "./fixtures";
 import { seed } from "./seed";
+import { stack } from "./stack";
 
 // The web rows of the threat model checked in a browser (docs/threat-model.md, section 4.9): WEB-1, WEB-2, WEB-4,
 // WEB-6, WEB-10, and the CSP of docs/adr/0016-web-client.md, section 6.
 
-// Compose serves plain http on localhost: the session cookie has no prefix and no Secure (ADR-0016, section 5). The
-// __Host-Http- form with Secure is checked on k3d over https.
-const sessionCookie = "svp_sid";
+// Compose serves plain http on localhost: the session cookie has no prefix and no Secure (ADR-0016, section 5). On k3d,
+// over https, it is __Host-Http-svp_sid with Secure (e2e/stack.ts).
+const sessionCookie = stack.sessionCookie;
 
 authedTest("WEB-1: an HTML title renders as text and runs nothing", async ({ page }) => {
   const { xss } = seed();
@@ -92,15 +93,16 @@ test("WEB-6: login sets a new session id; after logout the old cookie is refused
 }) => {
   const account = await registerAccount();
 
-  // A session id planted before login (fixation) is replaced, not adopted.
+  // A session id planted before login (fixation) is replaced, not adopted. HttpOnly, as the browser takes a
+  // __Host-Http- cookie only with it (and Secure, which an https url gives); the plain name does not mind.
   const planted = randomBytes(32).toString("base64url");
-  await context.addCookies([{ name: sessionCookie, value: planted, url: baseURL! }]);
+  await context.addCookies([{ name: sessionCookie, value: planted, url: baseURL!, httpOnly: true }]);
   await logIn(page, account);
   await expect(page).toHaveURL("/");
   const cookie = (await context.cookies()).find((candidate) => candidate.name === sessionCookie);
   expect(cookie?.value).toBeTruthy();
   expect(cookie?.value).not.toBe(planted);
-  expect(cookie).toMatchObject({ httpOnly: true, sameSite: "Lax", path: "/", secure: false });
+  expect(cookie).toMatchObject({ httpOnly: true, sameSite: "Lax", path: "/", secure: stack.secureCookie });
   const sid = cookie!.value;
 
   expect((await page.request.get("/api/feed/explore")).status()).toBe(200);
@@ -110,9 +112,9 @@ test("WEB-6: login sets a new session id; after logout the old cookie is refused
   expect((await context.cookies()).some((candidate) => candidate.name === sessionCookie)).toBe(false);
 
   // The old cookie, sent again from another browser context, no longer opens a session.
-  const replay = await browser.newContext({ baseURL });
+  const replay = await browser.newContext({ baseURL, ...stack.contextOptions });
   try {
-    await replay.addCookies([{ name: sessionCookie, value: sid, url: baseURL! }]);
+    await replay.addCookies([{ name: sessionCookie, value: sid, url: baseURL!, httpOnly: true }]);
     const answer = await replay.request.get("/api/feed/explore");
     expect(answer.status()).toBe(401);
   } finally {
@@ -199,6 +201,6 @@ test("WEB-10: the storage answers a preflight from the web's origin only", async
     });
   const evil = await preflight("http://evil.example");
   expect(evil.headers()["access-control-allow-origin"]).toBeUndefined();
-  const web = await preflight("http://localhost:3001");
-  expect(web.headers()["access-control-allow-origin"]).toBe("http://localhost:3001");
+  const web = await preflight(stack.appOrigin);
+  expect(web.headers()["access-control-allow-origin"]).toBe(stack.appOrigin);
 });

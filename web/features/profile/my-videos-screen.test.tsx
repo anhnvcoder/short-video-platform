@@ -307,8 +307,9 @@ describe("MyVideosScreen refreshing", () => {
   });
 
   it("does not ask while the tab is hidden", async () => {
-    const calls = listServer(() => HttpResponse.json(apiPage([video(1, "UPLOADING")])));
-    renderScreen({ initialPage: { items: [video(1, "UPLOADING")], next_cursor: "" } });
+    const uploading = video(1, "UPLOADING", { created_at: new Date(renderedAt).toISOString() });
+    const calls = listServer(() => HttpResponse.json(apiPage([uploading])));
+    renderScreen({ initialPage: { items: [uploading], next_cursor: "" } });
     hidden = true;
     await act(() => document.dispatchEvent(new Event("visibilitychange")));
     await advance(60_000);
@@ -359,6 +360,65 @@ describe("MyVideosScreen refreshing", () => {
     await advance(5000);
     expect(calls).toHaveLength(2);
     expect(rows()).toHaveLength(2);
+    await advance(5000);
+    expect(calls).toHaveLength(3);
+    expect(within(rows()[0]!).getAllByText(t.status.READY)).toHaveLength(2);
+    await advance(60_000);
+    expect(calls).toHaveLength(3);
+  });
+
+  // An UPLOADING video created `minutes` before the page was rendered.
+  const uploadingSince = (n: number, minutes: number) =>
+    video(n, "UPLOADING", { created_at: new Date(renderedAt - minutes * 60_000).toISOString() });
+
+  it("asks for an UPLOADING video of another tab while its form lasts, then stops", async () => {
+    const calls = listServer(() => HttpResponse.json(apiPage([uploadingSince(1, 14)])));
+    renderScreen({ initialPage: { items: [uploadingSince(1, 14)], next_cursor: "" } });
+
+    await advance(5000);
+    expect(calls).toHaveLength(1);
+    // The form of 15 minutes runs out 60 s after the page was rendered: the answer of that tick is the last.
+    await advance(55_000);
+    expect(calls).toHaveLength(12);
+    await advance(60_000);
+    expect(calls).toHaveLength(12);
+  });
+
+  it("never asks for an UPLOADING video whose form ran out long ago", async () => {
+    const calls = listServer();
+    renderScreen({ initialPage: { items: [uploadingSince(1, 3 * 24 * 60)], next_cursor: "" } });
+    await advance(60_000);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("asks while a video is PROCESSING beside one given up, and stops once it is done", async () => {
+    const calls = listServer(
+      () => HttpResponse.json(apiPage([video(1, "PROCESSING"), uploadingSince(2, 60)])),
+      () => HttpResponse.json(apiPage([ready(1), uploadingSince(2, 60)])),
+    );
+    renderScreen({ initialPage: { items: [video(1, "PROCESSING"), uploadingSince(2, 60)], next_cursor: "" } });
+
+    await advance(5000);
+    expect(calls).toHaveLength(1);
+    await advance(5000);
+    expect(calls).toHaveLength(2);
+    await advance(60_000);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("keeps asking for the video this tab just completed while the list still says UPLOADING", async () => {
+    // The form is older than its 15 minutes (a slow upload): only this tab's upload keeps the list asked.
+    const calls = listServer(
+      () => HttpResponse.json(apiPage([uploadingSince(9, 20)])),
+      () => HttpResponse.json(apiPage([video(9, "PROCESSING")])),
+      () => HttpResponse.json(apiPage([ready(9)])),
+    );
+    const store = fakeStore([upload({ videoId: id(9), status: "processing", progress: 1 })]);
+    renderScreen({ initialPage: { items: [uploadingSince(9, 20)], next_cursor: "" }, store });
+
+    await advance(5000);
+    expect(calls).toHaveLength(1);
+    await advance(5000);
     await advance(5000);
     expect(calls).toHaveLength(3);
     expect(within(rows()[0]!).getAllByText(t.status.READY)).toHaveLength(2);

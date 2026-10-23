@@ -2,7 +2,7 @@
 # The GitOps path of docs/adr/0014-kubernetes-local-stage4.md, section 12: a new cluster svp on which Argo CD builds
 # everything from GitHub. This script installs only what git cannot hold or what must exist before Argo CD:
 #   1. the release images, before anything is created (docs/adr/0015-cicd-devsecops-stage5.md, sections 7 and 9):
-#      image.repository and image.digest of the six values files at the revision Argo CD will follow, which the
+#      image.repository and image.digest of the seven values files at the revision Argo CD will follow, which the
 #      promote pull request writes; each must be a release of ghcr.io/anhnvcoder/short-video-platform/<service> that
 #      GHCR serves to an anonymous pull (the nodes pull without credentials), signed by images.yml on main, with a
 #      vuln attestation that is clean and at most 48 hours old (Kyverno refuses new pods at 72);
@@ -29,11 +29,12 @@
 # Application svp-data, whose init Jobs set the new passwords in Postgres, MinIO and Redpanda
 # (kubectl --context k3d-svp -n argocd patch applications.argoproj.io svp-data --type merge
 #  -p '{"operation":{"sync":{}}}'), then `kubectl --context k3d-svp -n <namespace> rollout restart deployment/<name>` of
-# each workload whose Secret changed: five of the services, kps-grafana, glitchtip, keda-operator. The gateway is an
-# Argo Rollouts Rollout: a restart that stamps its pod template is a new revision, hence a canary, so it restarts
-# through spec.restartAt instead (its pods are evicted one at a time, the template unchanged):
-#   kubectl --context k3d-svp -n svp patch rollout gateway --type merge \
-#     -p "{\"spec\":{\"restartAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}}"
+# each workload whose Secret changed: five of the services, kps-grafana, glitchtip, keda-operator. The gateway and the
+# web client (Secret web-env) are Argo Rollouts Rollouts: a restart that stamps the pod template is a new revision,
+# hence a canary, so each restarts through spec.restartAt instead (its pods are evicted one at a time, the template
+# unchanged):
+#   for r in gateway web; do kubectl --context k3d-svp -n svp patch rollout "$r" --type merge \
+#     -p "{\"spec\":{\"restartAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}}"; done
 # `make k8s-up` does the same on the dev path and refuses a cluster Argo CD manages.
 set -euo pipefail
 
@@ -89,7 +90,7 @@ if git -C "$repo_root" cat-file -e "$sha:$values_dir" 2>/dev/null; then
   done
   [ -z "$unready" ] ||
     fail "a release at ${sha:0:12} is not signed, or its vuln attestation is not clean and fresh (above); nothing was created. Refresh the attestations of these values: gh workflow run images.yml --ref main -f rescan=true -f values_ref=$sha, then run this again once that run is green"
-  ok "release images at ${sha:0:12}: GHCR serves all six anonymously, each signed with a fresh, clean vuln attestation"
+  ok "release images at ${sha:0:12}: GHCR serves all seven anonymously, each signed with a fresh, clean vuln attestation"
 else
   echo "skip  release images: ${sha:0:12} has no $values_dir; Argo CD will report what the revision lacks"
 fi

@@ -31,7 +31,7 @@ build_dev_images
 
 # image_sets SERVICE: sets the array image_sets to the --set flags of SERVICE's dev image. The upgrade and canary_ahead
 # both use them, so the template canary_ahead compares is the one the upgrade applies: any difference there would be
-# a new revision of the gateway, a canary of unchanged code.
+# a new revision of the release, a canary of unchanged code.
 image_sets() {
   local tag_var="dev_tag_${1//-/_}"
   [ -n "${!tag_var:-}" ] || fail "no image was built for $1 (not in svp_services of deploy/k8s/lib.sh)"
@@ -72,11 +72,12 @@ watch_migrate() {
   done
 }
 
-# The gateway is an Argo Rollouts Rollout (docs/adr/0014-kubernetes-local-stage4.md, section 13): an upgrade that
-# changes its pod template (new code, or a value a drill left in the release) is a new revision, which goes out as a
-# canary only when Envoy has measured enough responses of it, and helm --wait does not know Rollouts. So when the
-# Rollout already exists and a canary is ahead (canary_ahead), drill traffic (deploy/k8s/drills/traffic.sh) runs
-# before the gateway's upgrade, the upgrade is followed by wait_rollout, and the traffic stops once that is over, a
+# The gateway and the web client are Argo Rollouts Rollouts (docs/adr/0014-kubernetes-local-stage4.md, section 13;
+# docs/adr/0019-web-k3d-supply-chain-observability.md, section 3): an upgrade that changes the pod template (new code,
+# or a value a drill left in the release) is a new revision, which goes out as a canary only when Envoy has measured
+# enough responses of it, and helm --wait does not know Rollouts. So when the Rollout already exists and a canary is
+# ahead (canary_ahead), drill traffic (deploy/k8s/drills/traffic.sh, which requests both) runs before the release's
+# upgrade, the upgrade is followed by wait_rollout, and the traffic stops once that is over, a
 # failure included (the EXIT trap). An upgrade that leaves the template alone makes no revision (the dev tags follow
 # the image ID) and starts no traffic. Traffic that was already running (make k8s-traffic-start) is used and left
 # running; only the pid this script started is stopped.
@@ -192,10 +193,12 @@ wait_rollout() {
 after_install() {
   case $1 in
     svp-cluster)
-      # The wildcard certificate is issued asynchronously by cert-manager, and Envoy Gateway programs the Gateway and
-      # creates its proxy Deployment after the release is applied.
-      kc -n svp-edge wait --for=condition=Ready certificate/svp-wildcard --timeout=120s >/dev/null ||
-        fail "certificate svp-edge/svp-wildcard Ready within 120s"
+      # The two certificates of Gateway svp are issued asynchronously by cert-manager, and Envoy Gateway programs the
+      # Gateway and creates its proxy Deployment after the release is applied.
+      for cert in svp-wildcard svp-apex; do
+        kc -n svp-edge wait --for=condition=Ready "certificate/$cert" --timeout=120s >/dev/null ||
+          fail "certificate svp-edge/$cert Ready within 120s"
+      done
       # The CloudNativePG operator (wave 2) serves its webhooks from this certificate's Secret; started without it, it
       # would make one of its own, which cert-manager then overwrites (templates/cnpg-webhook-certificate.yaml of
       # svp-cluster).
@@ -206,7 +209,7 @@ after_install() {
       wait_until 120 "Envoy proxy Deployment of gateway svp available" \
         kc -n envoy-gateway-system wait --for=condition=Available deployment \
         -l gateway.envoyproxy.io/owning-gateway-name=svp --timeout=5s
-      ok "certificates svp-wildcard and cnpg-webhook Ready, gateway svp Programmed, Envoy proxy available"
+      ok "certificates svp-wildcard, svp-apex and cnpg-webhook Ready, gateway svp Programmed, Envoy proxy available"
       export_ca
       # The Secrets go into the namespaces this chart has just created, before any later wave reads them.
       "$repo_root/deploy/k8s/secrets.sh"
@@ -334,9 +337,9 @@ ok "namespaces of wave 0 ($(jq -r 'map(.name) | join(", ")' <<<"$wave0")) and th
 sep=$'\x1f'
 lines=$(jq -r '.components | sort_by(.wave) | .[]
   | [.name, .namespace, (.wave | tostring), (.path // ""), (.repo // ""), (.chart // ""), (.version // ""),
-     (.values // "")] | join("\u001f")' "$components") || fail "read $components"
+     (.values // ""), (.canaryRoute // "")] | join("\u001f")' "$components") || fail "read $components"
 
-while IFS=$sep read -r name namespace wave path repo chart version values; do
+while IFS=$sep read -r name namespace wave path repo chart version values canary_route; do
   args=(upgrade --install "$name")
   helm_wait=--wait
   if [ -n "$path" ]; then
@@ -359,15 +362,23 @@ while IFS=$sep read -r name namespace wave path repo chart version values; do
   if [ "$path" = "$service_chart" ]; then
     image_sets "$name"
     args+=("${image_sets[@]}")
-    # A release with canary set (the gateway) is applied client-side. Argo Rollouts writes into two objects of the
-    # chart: the selectors of Services <release> and <release>-canary (rollouts-pod-template-hash) and the weights in
-    # HTTPRoute api. Helm 4's server-side apply sends the chart's whole selector and rules, both atomic fields now
-    # managed by the controller and its plugin, and the upgrade fails on the conflict (with --force-conflicts it would
-    # strip the selectors instead, sending every request to stable and canary pods alike until the controller notices).
+    # A release with canary set (the gateway, the web client) is applied client-side. Argo Rollouts writes into two
+    # objects of the chart: the selectors of Services <release> and <release>-canary (rollouts-pod-template-hash) and
+    # the weights in the release's HTTPRoute. Helm 4's server-side apply sends the chart's whole selector and rules,
+    # both atomic fields now managed by the controller and its plugin, and the upgrade fails on the conflict (with
+    # --force-conflicts it would strip the selectors instead, sending every request to stable and canary pods alike
+    # until the controller notices).
     # A client-side upgrade patches only what changed between the previous release's manifest and this one, so an
     # unchanged Service or route is left as the controller set it. Helm's --wait (kstatus) never sees the Rollout as
     # ready and would hold until --timeout: Helm waits for hooks only, wait_rollout below for the Rollout.
-    if grep -qx 'canary: true' "$repo_root/$values"; then args+=(--server-side=false) helm_wait=--wait=hookOnly; fi
+    if grep -qx 'canary: true' "$repo_root/$values"; then
+      args+=(--server-side=false) helm_wait=--wait=hookOnly
+      # The GitOps path ignores the weights of the route components.json names (deploy/argocd/apps): without it there,
+      # Argo CD's selfHeal would set them back in the middle of every canary.
+      [ -n "$canary_route" ] || fail "$values sets canary: true, but component $name has no canaryRoute in $components"
+    elif [ -n "$canary_route" ]; then
+      fail "component $name has canaryRoute $canary_route in $components, but $values does not set canary: true"
+    fi
     : >"$migrate_log"
     old_job=$(kc -n "$namespace" get job "$name-migrate" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
     watch_migrate "$namespace" "$name-migrate" "$old_job" &
@@ -414,6 +425,8 @@ while IFS=$sep read -r name namespace wave path repo chart version values; do
     # The release may have just turned a Deployment into the Rollout (or the reverse): read the kind again.
     kind=$(workload_kind "$namespace" "$name")
     if [ "$kind" = rollout ]; then
+      kc -n "$namespace" get httproute "$canary_route" >/dev/null 2>&1 ||
+        fail "canaryRoute $canary_route of component $name in $components names no HTTPRoute of release $name"
       wait_rollout "$namespace" "$name"
       stop_canary_traffic
     fi

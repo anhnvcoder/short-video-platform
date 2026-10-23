@@ -10,7 +10,7 @@
 #     two manifest digests.
 #
 #   rescan.sh run OUT MAIN_REF [REF...]   (CI only: it attests)
-#     For image.repository + image.digest of the six files deploy/k8s/values/services/*.yaml at each git REF (MAIN_REF
+#     For image.repository + image.digest of the seven files deploy/k8s/values/services/*.yaml at each git REF (MAIN_REF
 #     is main's; others are the open promote PR and the dispatch input values_ref), read as data with `git show`, never
 #     run: an empty digest is skipped; a repository other than ghcr.io/anhnvcoder/short-video-platform/<service>, a
 #     malformed digest, or a digest without a signature of images.yml on main is not attested and fails the run, so

@@ -29,7 +29,7 @@ import (
 	feedv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/feed/v1"
 	"github.com/anhnvcoder/short-video-platform/internal/callerid"
 	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
-	"github.com/anhnvcoder/short-video-platform/services/feed-service/internal/pagetoken"
+	"github.com/anhnvcoder/short-video-platform/internal/pagetoken"
 	"github.com/anhnvcoder/short-video-platform/services/feed-service/internal/store"
 )
 
@@ -334,7 +334,7 @@ func (p page) cursorArgs() (*time.Time, uuid.UUID) {
 	if p.before == nil {
 		return nil, uuid.UUID{}
 	}
-	return &p.before.PublishedAt, p.before.VideoID
+	return &p.before.Time, p.before.VideoID
 }
 
 // pageOf turns up to size+1 rows into the items of the page and the token of the next one: an
@@ -344,7 +344,7 @@ func pageOf(rows []store.GetFollowingFeedRow, size int32) ([]*feedv1.FeedItem, s
 	if len(rows) > int(size) {
 		rows = rows[:size]
 		last := rows[len(rows)-1]
-		next = pagetoken.Encode(pagetoken.Cursor{PublishedAt: last.PublishedAt, VideoID: last.VideoID})
+		next = pagetoken.Encode(pagetoken.Cursor{Time: last.PublishedAt, VideoID: last.VideoID})
 	}
 	items := make([]*feedv1.FeedItem, len(rows))
 	for i, r := range rows {

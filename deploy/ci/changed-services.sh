@@ -4,16 +4,17 @@
 # section 3).
 #
 # A service is built when a changed path is one of its image paths (`image_paths` of deploy/k8s/lib.sh: go.mod,
-# go.sum, gen/, internal/, services/<svc>/, its Dockerfile, .dockerignore), or when the pipeline that builds, scans and
-# signs changed: then all six. The pipeline is .github/workflows/images.yml, anything under deploy/ci/, the helpers
-# deploy/ci/ sources from deploy/k8s/lib.sh (docker_, values_field, values_set_image, ghcr_prefix), and the lines of
-# the Makefile pinning the images the gate runs (TRIVY_IMAGE, SYFT_IMAGE, COSIGN_IMAGE); other Makefile changes do not
-# count. So the weekly Renovate pull request that bumps those tools builds and scans every image with the new trivy
-# before it merges, instead of the next daily rescan on main meeting it first. The cost is on main too: such a change
-# releases all six images again (and opens their promote pull request) although no service code changed. Comparing is
-# only done when BASE is HEAD or an ancestor of it:
+# go.sum, gen/, internal/, services/<svc>/, its Dockerfile, .dockerignore for a Go service; web/ and its Dockerfile for
+# web, whose build context is web/ alone), or when the pipeline that builds, scans and signs changed: then all seven.
+# The pipeline is .github/workflows/images.yml, anything under deploy/ci/, the helpers deploy/ci/ sources from
+# deploy/k8s/lib.sh (docker_, values_field, values_set_image, ghcr_prefix), and the lines of the Makefile pinning the
+# images the gate runs (TRIVY_IMAGE, SYFT_IMAGE, COSIGN_IMAGE); other Makefile changes do not count. So the weekly
+# Renovate pull request that bumps those tools builds and scans every image with the new trivy before it merges,
+# instead of the next daily rescan on main meeting it first. The cost is on main too: such a change releases all seven
+# images again (and opens their promote pull request) although no service code changed. Comparing is only done when
+# BASE is HEAD or an ancestor of it:
 #   - BASE empty, all zeros, unknown to this clone, or not comparable with HEAD (force push, rewritten history): all
-#     six. Building too much costs runner minutes; missing a change would ship an image without it.
+#     seven. Building too much costs runner minutes; missing a change would ship an image without it.
 #   - HEAD a proper ancestor of BASE (an older run started again after a newer one succeeded): nothing, the newer run
 #     built every change up to its own commit.
 set -euo pipefail

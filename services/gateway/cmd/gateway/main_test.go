@@ -377,6 +377,38 @@ func TestSlowProfilesDoNotOpenBreaker(t *testing.T) {
 	}
 }
 
+func TestTrustTraceContext(t *testing.T) {
+	for _, tc := range []struct {
+		value   string
+		want    bool
+		wantErr bool
+	}{
+		{value: "", want: false},
+		{value: "false", want: false},
+		{value: "true", want: true},
+		{value: "TRUE", wantErr: true},
+		{value: "True", wantErr: true},
+		{value: "1", wantErr: true},
+		{value: "yes", wantErr: true},
+		{value: " true", wantErr: true},
+		{value: "true ", wantErr: true},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv("TRUST_TRACE_CONTEXT", tc.value)
+			got, err := trustTraceContext()
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "TRUST_TRACE_CONTEXT") {
+					t.Fatalf("error = %v, want one naming TRUST_TRACE_CONTEXT", err)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Errorf("trustTraceContext() = %v, %v; want %v, nil", got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestTrustedProxies(t *testing.T) {
 	for _, tc := range []struct {
 		name, hops, cidrs string

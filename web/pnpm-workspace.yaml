@@ -22,6 +22,9 @@ allowBuilds:
   # Pulled in by next-intl (message extractor); postinstall only checks the native binding, which comes as an optional
   # platform package.
   "@swc/core": false
+  # Pulled in by the OTLP gRPC exporters (@grpc/proto-loader); postinstall only warns about a version scheme of the
+  # package that depends on it.
+  protobufjs: false
   # Pulled in by eslint-config-next (import resolver); postinstall only fetches the native binding when the optional
   # platform package is missing.
   unrs-resolver: false

@@ -19,13 +19,13 @@ pods:
   # Chart svp-observability's own: the GlitchTip server (component init is its init Job).
   glitchtip: {app.kubernetes.io/name: glitchtip, app.kubernetes.io/component: server}
 
-# The services in svp that send telemetry: all six send OTLP to the Collector; all but media-worker push profiles to
-# Pyroscope, as in compose (media-worker has no profiler and no error tracker).
+# The releases in svp that send telemetry: all seven send OTLP to the Collector; the Go services but media-worker, five,
+# push profiles to Pyroscope, as in compose (media-worker has no profiler, the web client pushes no profile).
 services:
-  otlp: [gateway, user-service, video-service, engagement-service, feed-service, media-worker]
+  otlp: [gateway, user-service, video-service, engagement-service, feed-service, media-worker, web]
   profiles: [gateway, user-service, video-service, engagement-service, feed-service]
-  # Errors to GlitchTip, the same five (media-worker reports none, as in compose).
-  errors: [gateway, user-service, video-service, engagement-service, feed-service]
+  # Errors to GlitchTip: the same five and the web client (media-worker reports none, as in compose).
+  errors: [gateway, user-service, video-service, engagement-service, feed-service, web]
 
 # Docker network of the k3d nodes (subnet in deploy/k8s/k3d.yaml): Prometheus scrapes each node's kubelet (cAdvisor,
 # probes) on 10250.
@@ -71,9 +71,9 @@ glitchtip:
     VTASKS_CONCURRENCY: "2"
     DATABASE_POOL_MAX_SIZE: "4"
 
-# The canary of the gateway (ADR-0014 section 13): Prometheus scrapes the Envoy proxy of Gateway svp (PodMonitor
-# envoy-svp, on its metrics port), and the Argo Rollouts controller queries Prometheus for each AnalysisRun. Labels of
-# the pods Envoy Gateway and the argo-rollouts chart make (checked on the cluster).
+# The canaries of the gateway and web (ADR-0014 section 13): Prometheus scrapes the Envoy proxy of Gateway svp
+# (PodMonitor envoy-svp, on its metrics port), and the Argo Rollouts controller queries Prometheus for each AnalysisRun.
+# Labels of the pods Envoy Gateway and the argo-rollouts chart make (checked on the cluster).
 envoy:
   namespace: envoy-gateway-system
   labels: {app.kubernetes.io/name: envoy, gateway.envoyproxy.io/owning-gateway-name: svp}

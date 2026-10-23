@@ -192,18 +192,18 @@ fi
 # --- init.sh: fills in SENTRY_* or stops, naming the variable, with the env file untouched. ---
 cat > "$work/fake-compose" <<'EOF'
 #!/usr/bin/env bash
-# Stands in for `docker compose run ... glitchtip-init`: writes a test DSN and token into the
-# output directory init.sh mounts at /out.
+# Stands in for `docker compose run ... glitchtip-init`: writes a test DSN and the two test tokens
+# into the output directory init.sh mounts at /out.
 while [ $# -gt 0 ]; do
   case $1 in -v) out=${2%:/out} ;; esac
   shift
 done
-printf 'dsn=http://testkey@127.0.0.1:8000/1\ntoken=testtoken\n' > "$out/credentials"
+printf 'dsn=http://testkey@127.0.0.1:8000/1\ntoken=testtoken\nsourcemaps_token=testtoken2\n' > "$out/credentials"
 EOF
 chmod 700 "$work/fake-compose"
 dsn=http://testkey@glitchtip:8000/1
-sentry_vars="SENTRY_DSN SENTRY_AUTH_TOKEN SENTRY_ORG SENTRY_PROJECT SENTRY_API_URL"
-sentry_want="SENTRY_DSN=$dsn SENTRY_AUTH_TOKEN=testtoken SENTRY_ORG=svp SENTRY_PROJECT=svp SENTRY_API_URL=http://127.0.0.1:8000"
+sentry_vars="SENTRY_DSN SENTRY_AUTH_TOKEN SENTRY_ORG SENTRY_PROJECT SENTRY_API_URL SENTRY_SOURCEMAPS_TOKEN"
+sentry_want="SENTRY_DSN=$dsn SENTRY_AUTH_TOKEN=testtoken SENTRY_ORG=svp SENTRY_PROJECT=svp SENTRY_API_URL=http://127.0.0.1:8000 SENTRY_SOURCEMAPS_TOKEN=testtoken2"
 # sentry_values prints NAME=value for every SENTRY_* variable of an env file, as dotenv_value reads it.
 sentry_values() {
   local name out=
@@ -262,7 +262,7 @@ init_fills "no SENTRY_* variable" "OTHER=1" "# comment"
 init_fills "an empty file"
 init_fills 'SENTRY_DSN="" and SENTRY_AUTH_TOKEN='"''" "OTHER=1" 'SENTRY_DSN=""' "SENTRY_AUTH_TOKEN=''" "LAST=2"
 init_fills "every variable already set" "SENTRY_DSN=$dsn" "SENTRY_AUTH_TOKEN=testtoken" "SENTRY_ORG=svp" \
-  "SENTRY_PROJECT=svp" "SENTRY_API_URL=http://127.0.0.1:8000"
+  "SENTRY_PROJECT=svp" "SENTRY_API_URL=http://127.0.0.1:8000" "SENTRY_SOURCEMAPS_TOKEN=testtoken2"
 init_refuses SENTRY_DSN 'SENTRY_DSN=${UNSET:-}' 'SENTRY_DSN=${REVIEW_UNSET_VARIABLE:-}'
 init_refuses SENTRY_AUTH_TOKEN 'SENTRY_AUTH_TOKEN=${UNSET:-}' 'SENTRY_AUTH_TOKEN=${REVIEW_UNSET_VARIABLE:-}'
 init_refuses "env:2:" "a set SENTRY_DSN then an indented empty one" "SENTRY_DSN=http://s3cr3t@glitchtip:8000/1" " SENTRY_DSN="

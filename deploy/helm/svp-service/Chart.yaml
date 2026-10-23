@@ -1,9 +1,9 @@
 apiVersion: v2
 name: svp-service
 description: >-
-  One Go service of the short-video platform on k3d, namespace svp: its Deployment, Service, ServiceAccount,
+  One service of the short-video platform on k3d, namespace svp: its Deployment, Service, ServiceAccount,
   NetworkPolicies, the migrate Job of a service with a database, the HTTPRoute of the gateway and, where a release asks
-  for them, its HPA, PodDisruptionBudget or KEDA ScaledObject, or an Argo Rollouts canary in place of the Deployment. One chart for the six services, one release and one
+  for them, its HPA, PodDisruptionBudget or KEDA ScaledObject, or an Argo Rollouts canary in place of the Deployment. One chart for the six Go services and the web client, one release and one
   values file (deploy/k8s/values/services/<service>.yaml) each.
 type: application
 version: 0.1.0

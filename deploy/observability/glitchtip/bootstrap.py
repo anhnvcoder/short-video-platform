@@ -2,13 +2,15 @@
 # is blocked on this machine on purpose, self-hosted Sentry needs far more RAM than the lab has, and GlitchTip speaks
 # the Sentry protocol, so the SDKs only need another DSN to switch
 # (docs/adr/0011-observability-stage3.md, section 7): the admin user, organization `svp`, team and
-# project `svp` with its DSN, and the API token `svp-drill` (event:read, project:read).
+# project `svp` with its DSN, the API token `svp-drill` (event:read, project:read), and the API token
+# `svp-sourcemaps` (project:releases) that uploads the web client's source maps
+# (docs/adr/0019-web-k3d-supply-chain-observability.md, section 9).
 # Idempotent: a second run creates nothing and changes no key, token or password.
 #
 # Run inside the glitchtip-init container: python manage.py shell < /init/bootstrap.py
 # Reads GLITCHTIP_ADMIN_EMAIL and GLITCHTIP_ADMIN_PASSWORD. When SVP_GLITCHTIP_OUT names a file,
-# writes the DSN and the token there (mode 600, `dsn=` and `token=` lines) for
-# deploy/observability/glitchtip/init.sh; they are never printed. Prints only object counts.
+# writes the DSN and the two tokens there (mode 600, `dsn=`, `token=` and `sourcemaps_token=` lines)
+# for deploy/observability/glitchtip/init.sh; they are never printed. Prints only object counts.
 import os
 
 from allauth.account.models import EmailAddress
@@ -22,6 +24,11 @@ from apps.users.models import User
 SLUG = "svp"
 TOKEN_LABEL = "svp-drill"
 TOKEN_SCOPES = ["event:read", "project:read"]
+# The one scope GlitchTip asks of the source map upload: its chunk upload and its artifact bundle
+# assemble endpoints accept project:releases (or project:write, project:admin, which also change
+# projects). It reads no event, so the drills keep their own read-only token.
+SOURCEMAPS_TOKEN_LABEL = "svp-sourcemaps"
+SOURCEMAPS_TOKEN_SCOPES = ["project:releases"]
 
 email = os.environ["GLITCHTIP_ADMIN_EMAIL"]
 password = os.environ["GLITCHTIP_ADMIN_PASSWORD"]
@@ -70,14 +77,24 @@ if token is None:
     token = APIToken.objects.create(user=admin, label=TOKEN_LABEL)
 token.add_permissions(TOKEN_SCOPES)
 
+# 5. Write token of the source map upload, looked up the same way as the drills' token.
+sourcemaps_token = (
+    APIToken.objects.filter(label=SOURCEMAPS_TOKEN_LABEL).order_by("pk").first()
+)
+if sourcemaps_token is None:
+    sourcemaps_token = APIToken.objects.create(user=admin, label=SOURCEMAPS_TOKEN_LABEL)
+sourcemaps_token.add_permissions(SOURCEMAPS_TOKEN_SCOPES)
+
 out = os.environ.get("SVP_GLITCHTIP_OUT")
 if out:
     fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as f:
-        f.write(f"dsn={dsn}\ntoken={token.token}\n")
+        f.write(
+            f"dsn={dsn}\ntoken={token.token}\nsourcemaps_token={sourcemaps_token.token}\n"
+        )
 
 print(
-    "bootstrap: users={} organizations={} members={} teams={} projects={} active_keys={} tokens={}".format(
+    "bootstrap: users={} organizations={} members={} teams={} projects={} active_keys={} tokens={} sourcemaps_tokens={}".format(
         User.objects.filter(email=email).count(),
         Organization.objects.filter(slug=SLUG).count(),
         OrganizationUser.objects.filter(organization=org, user=admin).count(),
@@ -85,5 +102,6 @@ print(
         Project.objects.filter(organization=org, slug=SLUG).count(),
         ProjectKey.objects.filter(project=project, is_active=True).count(),
         APIToken.objects.filter(label=TOKEN_LABEL).count(),
+        APIToken.objects.filter(label=SOURCEMAPS_TOKEN_LABEL).count(),
     )
 )

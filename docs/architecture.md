@@ -4,7 +4,10 @@
 > [§5.2](#52-cicd-và-chuỗi-cung-ứng-giai-đoạn-5)) đang làm: phần chạy được trên máy đã kiểm ngày 2026-10-21, phần chạy
 > trên GitHub và cluster GitOps kiểm sau push. Giai đoạn 5b (web client, [ADR-0016](adr/0016-web-client.md)): phần A
 > (đăng nhập, feed, like, follow trên compose) và phần B (upload, hồ sơ, trang chia sẻ công khai,
-> [ADR-0018](adr/0018-web-profiles-public-video-upload.md)) đã kiểm trên máy ngày 2026-10-22; phần C (k3d) còn làm. ADR 0001–0018, contract ở [`proto/`](../proto/)
+> [ADR-0018](adr/0018-web-profiles-public-video-upload.md)) đã kiểm trên máy ngày 2026-10-22; phần C (web trên k3d ở
+> `https://svp.localhost:8443`, image `web` thứ bảy của pipeline, lỗi, trace và RUM của web,
+> [ADR-0019](adr/0019-web-k3d-supply-chain-observability.md), [§5.3](#53-quan-sát-web-giai-đoạn-5b-phần-c)) đã kiểm trên máy
+> ngày 2026-10-24, phần cần cluster GitOps và RAM lớn hơn dời giai đoạn 7. ADR 0001–0019, contract ở [`proto/`](../proto/)
 > ([§8](#8-contract)), threat model ở [`threat-model.md`](threat-model.md). `make up` chạy luồng đồng bộ (đăng ký, đăng
 > nhập, tạo và đọc video, follow), luồng upload bất đồng bộ (presigned POST lên MinIO, outbox → Redpanda, media-worker
 > transcode ra HLS, video `READY` hoặc `FAILED`, job dọn upload bỏ dở), luồng feed (follow qua outbox, feed-service
@@ -13,7 +16,7 @@
 > service đẩy trace, metric, log qua OpenTelemetry tới Collector; `make up OBS=lgtm` thêm Grafana LGTM, Alertmanager và
 > GlitchTip với SLO, cảnh báo burn rate và dashboard ([ADR-0011](adr/0011-observability-stage3.md),
 > [§5](#5-c4-mức-container)). `make k8s-up` chạy cùng hệ thống trên cluster k3d với dữ liệu trong cluster, Envoy Gateway,
-> observability tách thành từng thành phần và canary của gateway ([ADR-0014](adr/0014-kubernetes-local-stage4.md),
+> observability tách thành từng thành phần, canary của gateway và từ giai đoạn 5b web ([ADR-0014](adr/0014-kubernetes-local-stage4.md),
 > [§5.1](#51-triển-khai-trên-k3d-giai-đoạn-4)). Phần còn lại của tài liệu (CDN, cloud) là thiết kế đích.
 
 Tài liệu này mô tả hệ thống sẽ được xây và lý do. Mỗi quyết định lớn có một ADR trong [`adr/`](adr/); ở đây chỉ tóm tắt
@@ -167,7 +170,7 @@ flowchart LR
         fdb[("svp_feed")]
     end
 
-    browser -->|"HTML, /api/*, cookie svp_sid"| web
+    browser -->|"HTML, /api/*, cookie svp_sid;<br/>POST /monitoring, /rum"| web
     browser -->|"GET HLS, thumbnail; POST file bằng presigned URL (CORS chỉ origin web)"| obj
     web -->|"REST/JSON + Bearer"| gw
     web -->|"session, khoá refresh (db 9)"| redis
@@ -228,7 +231,8 @@ CDN (client đọc thẳng MinIO). Redpanda và MinIO chạy trong compose profi
   tố `svp:web:`, khoá là `sha256(sid)`). Container chỉ đọc, bỏ mọi capability, non-root, 256 MB, 64 pid. Nằm trong mạng
   compose riêng `web` chỉ chung với gateway (không tới service gRPC, Redpanda, MinIO theo tên compose), nhưng có
   `host.docker.internal` để tới Redis của máy, nên vẫn tới mọi cổng publish trên loopback của máy (threat model WEB-13,
-  chấp nhận ở compose).
+  chấp nhận ở compose). Từ giai đoạn 5b phần C ([ADR-0019](adr/0019-web-k3d-supply-chain-observability.md)): `otelcol` và `glitchtip` (profile `obs`) cũng nằm trong mạng `web`
+  để web gửi OTLP và lỗi; gateway compose bật `TRUST_TRACE_CONTEXT` ([§5.3](#53-quan-sát-web-giai-đoạn-5b-phần-c)).
 - **Mạng riêng của media-worker:** worker chạy ffmpeg trên file người dùng tải lên, nên chỉ nằm trong mạng compose `worker`
   (`internal`, không route ra ngoài) cùng Redpanda, MinIO và Collector `otelcol`; nó không tới được gateway, các service
   gRPC, Postgres hay internet. Container chỉ đọc, bỏ mọi capability, giới hạn 2 CPU, 2 GB.
@@ -250,7 +254,7 @@ CDN (client đọc thẳng MinIO). Redpanda và MinIO chạy trong compose profi
 
 ### 5.1 Triển khai trên k3d (giai đoạn 4)
 
-Cùng 6 service, cùng image và cùng biến môi trường như compose, chạy trên cluster k3d `svp` (1 server + 1 agent, k3s
+Cùng 6 service (từ giai đoạn 5b phần C thêm web, [ADR-0019](adr/0019-web-k3d-supply-chain-observability.md)), cùng image và cùng biến môi trường như compose, chạy trên cluster k3d `svp` (1 server + 1 agent, k3s
 v1.36.5, node arm64) theo [ADR-0014](adr/0014-kubernetes-local-stage4.md). Compose vẫn là đường dev chính; hai đường không
 chạy cùng lúc (máy 16 GB). Cổng chỉ trên `127.0.0.1`: API 6550, HTTPS 8443, registry 5111. Lệnh ở
 [`CLAUDE.md`](../CLAUDE.md) mục Kiểm tra.
@@ -263,6 +267,7 @@ flowchart LR
             envoy["Envoy proxy<br/>Gateway svp, TLS *.svp.localhost"]
         end
         subgraph app["svp"]
+            web["web<br/>Argo Rollout, 2 replica"]
             gw["gateway<br/>Argo Rollout, 2 replica"]
             svc["user-, video-,<br/>engagement-, feed-service"]
             mw["media-worker<br/>KEDA 1–2"]
@@ -279,9 +284,13 @@ flowchart LR
             ui["Grafana, Alertmanager,<br/>GlitchTip"]
         end
     end
+    browser["Trình duyệt"] -->|"127.0.0.1:8443<br/>svp.localhost"| envoy
     client -->|"127.0.0.1:8443<br/>api.svp.localhost"| envoy
     client -->|"s3.svp.localhost<br/>presigned POST, HLS"| envoy
+    envoy -->|"HTTPRoute web<br/>stable / canary"| web
     envoy -->|"HTTPRoute api<br/>stable / canary"| gw
+    web --> gw
+    web -->|"session db 9"| vk
     envoy -->|"HTTPRoute s3"| minio
     gw -->|gRPC| svc
     gw --> vk
@@ -294,7 +303,7 @@ flowchart LR
     ui --> prom
 ```
 
-- **Namespace:** `svp` (6 service), `svp-data` (Postgres, Valkey, Redpanda, MinIO), `svp-obs` (observability, GlitchTip),
+- **Namespace:** `svp` (6 service và web), `svp-data` (Postgres, Valkey, Redpanda, MinIO), `svp-obs` (observability, GlitchTip),
   `svp-edge` (`Gateway`, chứng chỉ wildcard); công cụ ở `cert-manager`, `envoy-gateway-system`, `cnpg-system`, `keda`,
   `argo-rollouts`, `kyverno` (giai đoạn 5) và `argocd` (chỉ đường GitOps). Mọi namespace trừ `kube-system` chạy Pod
   Security `restricted`; bốn
@@ -304,16 +313,22 @@ flowchart LR
   của k3d và `svclb` tới Envoy proxy do Envoy Gateway dựng từ `Gateway` `svp`; TLS dùng chứng chỉ wildcard do cert-manager
   ký bằng CA local (`make k8s-ca` xuất CA ra `.k8s/ca.crt`). HTTPRoute `api` chia traffic giữa Service `gateway` và
   `gateway-canary`; HTTPRoute `s3` (`s3.svp.localhost`) đưa presigned POST và GET HLS tới MinIO, nên URL ký có host công khai
-  thay `127.0.0.1:9000`. Gateway tin đúng một hop `X-Forwarded-For` từ dải pod `10.42.0.0/16` (threat model RL-1); mọi
+  thay `127.0.0.1:9000`. Từ giai đoạn 5b phần C, trình duyệt mở web ở `https://svp.localhost:8443`: listener `https-apex` của
+  Gateway với chứng chỉ riêng chỉ có tên `svp.localhost` (wildcard không phủ tên gốc; chứng chỉ chung cho cả hai tên làm trình
+  duyệt gộp kết nối HTTP/2 của `s3` vào listener khác), HTTPRoute `web` tới Service `web:3001`; mọi route của chart service bỏ
+  `traceparent`, `tracestate`, `baggage`, `sentry-trace` của client. MinIO chỉ nhận CORS từ `https://svp.localhost:8443`. Gateway
+  tin đúng một hop `X-Forwarded-For` từ dải pod `10.42.0.0/16` (threat model RL-1); mọi
   client trên máy đi ra cùng địa chỉ node nên rơi vào tối đa hai bucket rate limit (ADR-0014 §9).
 - **Dữ liệu trong cluster** (ADR-0014 §4, §5), không đụng Postgres/Redis native: Postgres `svp-pg` một instance do
   CloudNativePG quản, cùng tên database `svp_<svc>` và cặp role migrator/app như compose, đăng nhập `scram-sha-256`;
-  Valkey không persistence, gateway db 10, feed-service db 14; Redpanda một broker, SASL SCRAM mỗi service một user, ACL
+  Valkey không persistence, gateway db 10, feed-service db 14, web db 9 (session, từ giai đoạn 5b phần C); Redpanda một broker, SASL SCRAM mỗi service một user, ACL
   theo bảng của ADR-0014 §5 (compose không SASL); MinIO cùng bucket, user và policy như compose. Mật khẩu sinh bằng
   `make env`, đưa vào Secret bằng `deploy/k8s/secrets.sh`, không nằm trong git.
-- **Workload** (ADR-0014 §10): một chart chung `deploy/helm/svp-service` cho 6 service (probe, `requests`/`limits`,
+- **Workload** (ADR-0014 §10): một chart chung `deploy/helm/svp-service` cho 6 service và web (probe, `requests`/`limits`,
   securityContext `restricted`, không token ServiceAccount); gateway 2 replica có PDB và HPA theo CPU, feed-service HPA
-  theo CPU, media-worker 1–2 replica do KEDA scale theo lag của group `media-worker` (topic vẫn 3 partition; 3 worker
+  theo CPU, web 2 replica cố định có PDB, trải hai node, chờ 5 s trước khi tắt (server Next thoát ngay khi nhận SIGTERM),
+  NetworkPolicy chỉ nhận từ Envoy và chỉ ra gateway, Valkey, Collector, GlitchTip (threat model WEB-13); media-worker 1–2
+  replica do KEDA scale theo lag của group `media-worker` (topic vẫn 3 partition; 3 worker
   cùng transcode làm Docker VM hết CPU và k3s server chết, [ADR-0017](adr/0017-gitops-capacity-media-worker-max2.md)).
   Node bão hoà CPU thì probe 1 s của service cùng node có thể quá hạn và pod bị restart (thấy ở lượt kiểm cuối, plan Tiến
   độ giai đoạn 4).
@@ -322,16 +337,21 @@ flowchart LR
   Tempo, scrape `/public_metrics` của Redpanda), kube-prometheus-stack (Prometheus, Alertmanager gửi Telegram, Grafana),
   Loki, Tempo có metrics-generator, Pyroscope, GlitchTip trên database `svp_glitchtip` của `svp-pg`. Không UI nào có route
   hay cổng node: chỉ `make k8s-ui-*` (port-forward trên `127.0.0.1`), Grafana và GlitchTip có đăng nhập.
-- **Cài đặt và GitOps** (ADR-0014 §7, §12): `deploy/argocd/apps/components.json` liệt kê 22 thành phần theo wave 0–7
+- **Cài đặt và GitOps** (ADR-0014 §7, §12): `deploy/argocd/apps/components.json` liệt kê 23 thành phần theo wave 0–7
   (cert-manager và Envoy Gateway; namespace, CA, policy; operator và Kyverno; backend dữ liệu, observability và policy
-  image `svp-policy`; chart dữ liệu; chart observability; Collector; 6 service). Đường dev `make k8s-up` cài file đó bằng
+  image `svp-policy`; chart dữ liệu; chart observability; Collector; 6 service và web, web đứng sau gateway). Đường dev `make k8s-up` cài file đó bằng
   Helm, image tag `dev-<image ID>` build từ working tree vào registry k3d; đường GitOps `make k8s-gitops-up` dựng cluster
   mới mà Argo CD (app-of-apps, root `svp-root`, AppProject `svp`) đồng bộ từ GitHub, image kéo từ GHCR theo digest mà PR
   promote ghi vào values (giai đoạn 5, [§5.2](#52-cicd-và-chuỗi-cung-ứng-giai-đoạn-5)).
 - **Canary của gateway** (ADR-0014 §13): Argo Rollouts đổi trọng số HTTPRoute `api` qua plugin Gateway API: 25% → 60 s →
   50% → 60 s → bước phân tích chặn → 100%. Phân tích đọc metric Envoy của backend canary trong Prometheus: tỉ lệ 5xx < 1%
   và p99 < 150 ms (SLO feed), cần ít nhất 30 response không phải 4xx mỗi phút; hỏng hay Prometheus không trả lời thì
-  abort, route về 100/0, pod stable không bị đụng.
+  abort, route về 100/0, pod stable không bị đụng. Web có canary cùng bước trên HTTPRoute `web`, p99 < 500 ms. Điều hướng
+  gặp bản build khác thì Next tự tải lại trang (so build ID của payload RSC); `deploymentId` theo commit thay build ID ngẫu
+  nhiên đó bằng một id đã biết, dùng làm khoá tải lại, `release` và `service.version`. Server Action tới bản khác (409) và
+  chunk lệch (404, gồm chunk hls.js mà player bắt lỗi) thì một helper dùng chung tải lại trang một lần cho mỗi bản build,
+  gọi từ error boundary, `unhandledrejection` và nhánh `catch` của `loadHls()` trong player pool (ADR-0019 §3). Chunk tải
+  lười thứ hai, `web-vitals` của RUM, 404 thì lỗi bị nuốt: không tải lại, không báo lỗi, chỉ mất số đo của lần tải đó.
 - **Client Kafka** ([ADR-0013](adr/0013-kafka-metadata-min-age.md)): mọi client franz-go đặt `MetadataMinAge` 1 s, nên
   produce có hạn trả về gần hạn hơn khi kết nối tới broker chết giữa chừng; áp cho cả compose và k3d.
 - **Chi phí:** RAM của cả cluster lúc nghỉ 5,9–6,8 GiB theo `docker stats` (gồm ~1–2 GiB page cache; phần anon ~3,9 GiB),
@@ -389,7 +409,8 @@ flowchart LR
   Mọi job của lượt PR, kể cả PR từ fork, chỉ có `contents: read` và không secret; quyền ghi (`packages`, `id-token`,
   `contents`, `pull-requests`, `security-events`) chỉ ở job chạy trên `main` với code đã qua PR.
 - **Build** (§3, §4, §6): chỉ service có thay đổi so với lần push `main` thành công cuối (tập đường dẫn `image_paths` của
-  `deploy/k8s/lib.sh`; đổi đường build, quét, ký thì cả sáu). Mỗi service build native trên runner amd64 và arm64, trivy
+  `deploy/k8s/lib.sh`; đổi đường build, quét, ký thì cả sáu; từ giai đoạn 5b phần C `web` là image thứ bảy, build từ context
+  `web/`, trivy quét cả gói npm của `node_modules`, ADR-0019 §1). Mỗi service build native trên runner amd64 và arm64, trivy
   quét tar cục bộ của từng kiến trúc: bí mật (mọi severity) và lỗ hổng CRITICAL chặn **trước** push, HIGH chỉ báo
   (SARIF lên tab Security của `main`); ngoại lệ chỉ qua `.trivyignore.yaml` có lý do, tối đa 30 ngày. Push đúng image đã
   quét (so config digest), rồi ghép index đa kiến trúc `ghcr.io/anhnvcoder/short-video-platform/<svc>:<12 hex commit>`.
@@ -416,6 +437,51 @@ flowchart LR
   các script CI chạy trên máy hay trên repo git tạm, đường dev có Kyverno, các ca từ chối của diễn tập chuỗi cung ứng với
   policy Enforce tạm. Workflow chạy thật, chữ ký thật, PR promote, cluster GitOps Enforce, Renovate **kiểm sau push**
   (ADR-0015, mục "Kiểm chứng sau phát hành").
+
+### 5.3 Quan sát web (giai đoạn 5b phần C)
+
+Thiết kế ở [ADR-0019](adr/0019-web-k3d-supply-chain-observability.md) §7–§11; lệnh ở [`CLAUDE.md`](../CLAUDE.md) mục Kiểm tra.
+
+```mermaid
+flowchart LR
+    browser["Trình duyệt"]
+    subgraph webpod["web (server Next)"]
+        mon["POST /monitoring"]
+        rum["POST /rum"]
+        bff["Trang, BFF"]
+    end
+    gw["gateway"]
+    svc["service gRPC"]
+    col["Collector"]
+    gt["GlitchTip"]
+    prom["Prometheus, Tempo"]
+    browser -->|"báo cáo lỗi JSON"| mon
+    browser -->|"beacon web-vitals"| rum
+    browser -->|"request (traceparent của client bị bỏ)"| bff
+    bff -->|"traceparent của span web"| gw
+    gw -->|"cùng trace"| svc
+    mon -->|"event đã che"| gt
+    bff -->|"lỗi server"| gt
+    rum -->|"histogram"| col
+    bff -->|"span OTLP"| col
+    gw --> col
+    col --> prom
+```
+
+- **Trace:** server Next dựng OTel (`@opentelemetry/sdk-node`, instrumentation `http`, `undici`, `service.name=web`). Request
+  đến web luôn mở trace gốc mới (web không đọc trace context đến); lời gọi BFF tới gateway mang `traceparent` của span web, và
+  gateway nhận nó khi bật `TRUST_TRACE_CONTEXT`, nên một trace đi từ web qua gateway xuống service. Ở k3d Envoy bỏ trace
+  context của client trên mọi route và chỉ Envoy, web vào được gateway; ở compose gateway chỉ publish trên loopback (threat
+  model WEB-24). Span không ghi header, query hay id người dùng.
+- **Lỗi:** trình duyệt không có SDK Sentry: một reporter nhỏ gửi báo cáo JSON (tên, message, stack, pathname, debug ID của
+  chunk) tới `/monitoring` cùng origin; server dựng event và gửi GlitchTip bằng `@sentry/nextjs` ở server, cùng bộ luật che
+  với lỗi server nhưng ngân sách gửi riêng, nhỏ hơn, để báo cáo rác không đẩy lỗi server ra ngoài (WEB-9, WEB-20). Source map trình duyệt sinh kèm debug ID, không nằm trong image, tải lên GlitchTip bằng
+  `make web-sourcemaps` (compose) hay `make k8s-web-sourcemaps` (k3d).
+- **RUM:** `web-vitals` gửi LCP, INP, CLS, FCP, TTFB trong một beacon khi trang bị ẩn (`visibilitychange` → hidden, cả khi rời
+  trang: sự kiện đó đến sau `pagehide` và sau lúc `web-vitals` chốt CLS, INP; gửi ở `pagehide` thì thiếu hai số này); `/rum` kiểm schema, map đường sang
+  8 route template cố định và ghi histogram `svp.web.vital.*` (Prometheus `svp_web_vital_*`), nhãn duy nhất `route`;
+  dashboard Grafana `svp-web` vẽ p75 theo route (WEB-21). Chưa có SLO trên RUM.
+- **Log:** web chỉ ghi stdout, không gửi log OTLP; Loki không có dòng của web.
 
 ## 6. Sở hữu dữ liệu và event
 
@@ -709,8 +775,9 @@ Thân lỗi theo RFC 9457 (`Content-Type: application/problem+json`):
 
 - `type` là `about:blank` và `title` là tên chuẩn của mã HTTP; `detail` là message của service; `code` là
   `ErrorInfo.reason`, không có thì là tên mã gRPC (`NOT_FOUND`); `trace_id` để tra log và trace.
-- `trace_id` là trace ID của span OpenTelemetry mà gateway mở cho request, luôn là trace gốc mới (`traceparent` của
-  client bị bỏ qua, [ADR-0011](adr/0011-observability-stage3.md) §3); cùng giá trị với trace trong Tempo, field
+- `trace_id` là trace ID của span OpenTelemetry mà gateway mở cho request: trace gốc mới (`traceparent` của client bị bỏ
+  qua, [ADR-0011](adr/0011-observability-stage3.md) §3), trừ khi gateway bật `TRUST_TRACE_CONTEXT` (compose và k3d, từ
+  giai đoạn 5b phần C, [ADR-0019](adr/0019-web-k3d-supply-chain-observability.md) §7): khi đó request từ web mang trace của web; cùng giá trị với trace trong Tempo, field
   `trace_id` của log và tag `trace_id` của event lỗi. `/healthz`, `/readyz` không có span, nên problem của chúng (503
   `NOT_READY`) có `trace_id` rỗng.
 - Với mã 5xx, gateway **không** trả message gốc và lý do của service (tránh lộ chi tiết nội bộ): `detail` bỏ trống, `code`

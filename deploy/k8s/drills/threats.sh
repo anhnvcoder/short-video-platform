@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 # Drill: the stage 4 rows of the threat model (docs/threat-model.md, section 5) on cluster svp
-# (docs/adr/0014-kubernetes-local-stage4.md, sections 3 to 5 and 8 to 10). Every item prints ok and FAIL lines, and
+# (docs/adr/0014-kubernetes-local-stage4.md, sections 3 to 5 and 8 to 10), and the web client's rows of stage 5b part C
+# (section 4.9; docs/adr/0019-web-k3d-supply-chain-observability.md). Every item prints ok and FAIL lines, and
 # "ok    control:" lines: a target a check finds closed answers a client the policy lets in, so "closed" means the
 # policy, not a service that is down. An item that fails does not stop the next ones; a table of PASS/FAIL per item
 # ends the run, which exits non-zero when any failed:
 #   IN-2/IN-4  a pod in namespace svp-probe (created by the drill, PSA restricted enforced, the image media-worker runs:
 #              busybox nc and nslookup) resolves every name below but connects to none: gRPC 9101-9104, gateway 8080,
-#              Redpanda Kafka 9092 and Admin API 9644, Postgres 5432, Valkey 6379, MinIO 9000. Controls: /readyz
-#              through Envoy (the gateway reaches user-, video- and feed-service), the explore feed of a drill user
-#              with stats on every item, in one of up to 3 pages (the gateway reaches engagement-service, which
+#              web 3001, Redpanda Kafka 9092 and Admin API 9644, Postgres 5432, Valkey 6379, MinIO 9000. Controls:
+#              /readyz through Envoy (the gateway reaches user-, video- and feed-service), the explore feed of a drill
+#              user with stats on every item, in one of up to 3 pages (the gateway reaches engagement-service, which
 #              /readyz leaves out on purpose), /healthz (Envoy reaches the gateway), media-worker reaches Kafka and
-#              MinIO, Prometheus has up{job="redpanda"} == 1 from a scrape under 120 s old (the Collector scrapes
-#              9644), GlitchTip's pod opens 5432, a login leaves its rate limit key in Valkey (the gateway reaches
-#              6379), MinIO's health through Envoy;
+#              MinIO, Prometheus has up{job="redpanda"} == 1 from a scrape under 120 s old (the Collector scrapes 9644),
+#              GlitchTip's pod opens 5432, a login leaves its rate limit key in Valkey (the gateway reaches 6379),
+#              MinIO's health through Envoy, the web client's /healthz through Envoy (Envoy reaches web:3001);
 #   IN-4/FF-6  each Kafka user (password from Secret svp-data/kafka-users, passed on stdin, never printed) runs rpk in
 #              the broker container: producing to a topic not its own is TOPIC_AUTHORIZATION_FAILED (svp-keda, which may
 #              write no topic, gets no producer id: CLUSTER_AUTHORIZATION_FAILED), producing to its own topic works
@@ -30,11 +31,12 @@
 #              hostPath, and no ServiceAccount token reaches it: automount off, no volume of a projected
 #              serviceAccountToken or of a Secret of type service-account-token (on its own or as a source of a
 #              projected volume) mounted at any path, no such Secret in its env or envFrom; the project's namespaces
-#              enforce PSA restricted; the kubelet of every node has podPidsLimit as in deploy/k8s/k3d.yaml.
-#              Controls: the same check flags every rule on a bare pod, and on a pod that is restricted but for a
-#              container's runAsNonRoot false and a token reaching a container in each of those ways, while a
-#              container with an ordinary Secret as a volume and in envFrom passes; a server-side dry run of a root
-#              pod in svp is Forbidden while a restricted one is admitted;
+#              enforce PSA restricted; the kubelet of every node has podPidsLimit as in deploy/k8s/k3d.yaml. Every pod
+#              of svp is checked, not a list, and each pod of the web client (labels app.kubernetes.io/name=web,
+#              component=server) must be among them, its containers named. Controls: the same check flags every rule on
+#              a bare pod, and on a pod that is restricted but for a container's runAsNonRoot false and a token reaching
+#              a container in each of those ways, while a container with an ordinary Secret as a volume and in envFrom
+#              passes; a server-side dry run of a root pod in svp is Forbidden while a restricted one is admitted;
 #   IN-9       the pg_hba rules of the primary have no trust, every TCP rule is scram-sha-256 or cert, the last rule is
 #              host all all all scram-sha-256 (CloudNativePG's default, ADR section 4); from GlitchTip's pod (allowed
 #              to 5432) a connection without a password, as postgres and as svp_user_app, with and without TLS, is
@@ -58,7 +60,8 @@
 #              restarted one: the instance label of the samples, random per process, names no pod); the drill tries
 #              again once the bucket is full, at most 3 attempts in all;
 #   OPS-1      /debug/pprof/, /debug/pprof/heap and /metrics through Envoy are 404; control: /healthz 200;
-#   OPS-2      the only routes are HTTPRoute svp/api and svp-data/s3 (to gateway and minio), no other route kind or
+#   OPS-2      the only routes are HTTPRoute svp/api, svp/web and svp-data/s3 (to gateway, web and minio; svp.localhost
+#              to web and web-canary), no other route kind or
 #              Ingress, the only LoadBalancer or NodePort Service is Envoy's, no pod outside kube-system uses the
 #              host network or a hostPort; grafana, prometheus, alertmanager, glitchtip and argocd .svp.localhost are
 #              404 at Envoy; Grafana without a login is 401 (port-forward on 127.0.0.1:13000, started and stopped by
@@ -82,7 +85,47 @@
 #              no PSA label and the cluster default (deploy/k8s/pod-security-admission.yaml) refuses a privileged pod
 #              with the node's / as hostPath there, restricted at that version (server-side dry run). Control: a
 #              restricted pod is admitted in each. kube-system, exempt from the default, is printed as info with its
-#              reason.
+#              reason;
+#   WEB-7      a drill user registers through the web client's /register form at https://svp.localhost:8443 (posted as a
+#              browser without JavaScript posts it: the form's hidden Server Action fields, read from the page, then the
+#              user's fields; the session cookie __Host-Http-svp_sid stays in a private cookie jar). With that session,
+#              /api/ paths outside the BFF's list are 400 or 404: unknown and gateway-only routes, `..` (sent as is),
+#              %2F, an internal host in the path, an unknown query parameter; a path with %2F may instead get Envoy's
+#              own 307 to the unescaped path (Envoy Gateway's default UnescapeAndRedirect), whose Location must stay on
+#              the web client's origin with no escaped slash and answer 400 or 404 in turn. Its HTML pages (/, /me,
+#              /upload, /u/<handle>), the RSC payloads of / and /me and the JSON of /api/me and /api/feed/explore hold
+#              no string shaped like a JWT (eyJ.., three dot-separated parts), nor the session's own access token,
+#              refresh token or session id (read from the session in Valkey db 9, never printed). Controls:
+#              /api/feed/explore and /api/me are 200 (handle of the drill user), /me renders the handle (the pages were
+#              rendered with the session), the RSC answers are text/x-component, and the same JWT search finds the token
+#              of a login answered by the gateway itself (https://api.svp.localhost:8443) and the session's access
+#              token;
+#   WEB-2      POSTs carrying the drill user's session cookie to a Server Action (the /login form), /api/videos (an
+#              empty JSON object), /logout, /rum and /monitoring with Sec-Fetch-Site cross-site or same-site, Origin
+#              https://evil.example, https://s3.svp.localhost:8443 (same site: it serves files users uploaded) or null,
+#              or with neither header, are 403 CSRF_REJECTED, and after the refused logouts the session still works.
+#              Controls: the same POSTs with Sec-Fetch-Site same-origin and the app's Origin are not refused: the login
+#              action renders its form with "Wrong email or password" in the form's alert (200), the empty upload
+#              request reaches the gateway (400, its own code), /rum takes a beacon (204), /monitoring checks the body
+#              (400 INVALID_REPORT), and /logout (303) clears the cookie and ends the session on the server: the old
+#              session id sent again gets 401 from /api/me;
+#   WEB-10     preflights (OPTIONS) to MinIO through Envoy, /media/... (GET) and /uploads (POST) at
+#              https://s3.svp.localhost:8443, from https://evil.example and from the compose origins
+#              http://localhost:3001 and :3002 get no Access-Control-Allow-Origin; control: from
+#              https://svp.localhost:8443 they get exactly that origin;
+#   WEB-13     from each web pod (kubectl exec of the image's node, /nodejs/bin/node -e: distroless has no shell; a name
+#              is resolved first, so a closed port with a name that resolves is the policy): the internet (an IP and a
+#              name), Postgres, Redpanda (9092, 9644), MinIO, the four gRPC services, Pyroscope and the API server are
+#              closed; the gateway 8080, Valkey 6379, the Collector 4317 and GlitchTip 8000 open (the controls of the
+#              closed ones). The probe pod of svp-probe cannot open web:3001; control: Envoy reaches it (/healthz 200);
+#   WEB-8      once every login-ip bucket has expired, 40 wrong logins through the web client's /login form (the Server
+#              Action, each with a new email and its own forged X-Forwarded-For) over one HTTP/2 connection to Envoy, 8
+#              in flight at a time: every answer is the form whose alert reads "Wrong email or password" or "Too many
+#              tries" (any 429 of the gateway), at least one is a 429 of login-ip (no login-email key for its email),
+#              every 401 left its login-email key; the login-ip keys added are 1 or 2, on the pod network of a node and
+#              none the address of a web pod (which would put every web user in one bucket), no key is for a forged
+#              address, and the login-email key of every login that passed names one of those addresses: the gateway
+#              counts the address Envoy wrote, which the web client passes on unchanged.
 #
 # Test records: the drill writes one empty record (key drill-threats-<run>, header svp-drill=threats) to the
 # dead-letter topic of each user that has one; nothing consumes a dead-letter topic, and the dead-letter metric is
@@ -93,13 +136,15 @@
 # service consumes; the high watermarks of the four topics are compared before and after (a topic rpk cannot read
 # fails the check rather than counting as unchanged).
 #
-# On any exit the drill deletes namespace svp-probe (waiting until it is gone) and stops its two port-forwards
-# (Prometheus 127.0.0.1:19090, Grafana 127.0.0.1:13000) by their pids. Its whole output goes to
-# .k8s/drills/threats-<time>.log too, which is searched afterwards for every Secret value the drill read: a line
-# holding one fails the run. Reads Postgres (SELECT on pg_hba_file_rules) and Valkey (SCAN, PTTL) only.
+# On any exit the drill deletes namespace svp-probe (waiting until it is gone), stops its two port-forwards
+# (Prometheus 127.0.0.1:19090, Grafana 127.0.0.1:13000) by their pids and logs the web session out if it is still on.
+# Its whole output goes to .k8s/drills/threats-<time>.log too, which is searched afterwards for every Secret value the
+# drill read: a line holding one fails the run. Reads Postgres (SELECT on pg_hba_file_rules) and Valkey (SCAN, PTTL,
+# MGET in db 10; GET of the drill user's own session in db 9) only.
 #
 # Usage (from the repo root, cluster up): make drill-k8s-threats. LOCAL LAB ONLY: the drill deletes the register rate
-# limit keys in the cluster's Valkey db 10 (deploy/compose/lib.sh).
+# limit keys in the cluster's Valkey db 10 (deploy/compose/lib.sh), and registers two users (one at the gateway, one
+# through the web client).
 set -euo pipefail
 
 # The drill runs twice over: this first part runs the second as a child, its output through tee to the log, then
@@ -168,6 +213,12 @@ drill_exit() {
     kill "$grafana_pid" 2>/dev/null || true
     wait "$grafana_pid" 2>/dev/null || true
   fi
+  # The web session lives 30 days; an item that failed before WEB-2's logout leaves it on.
+  if [ -n "$(web_sid)" ]; then
+    [[ $(web_post /logout "$work/web-logout" -H "Sec-Fetch-Site: same-origin" -H "Origin: $web_base") == 303 ]] &&
+      ok "web session of the drill user logged out" ||
+      echo "info  the web session's logout did not answer 303: it ends with its TTL"
+  fi
   if [ -n "$probe_created" ]; then
     if probe_delete; then
       ok "namespace $probe_ns deleted"
@@ -204,6 +255,174 @@ email_hash() { printf '%s' "$1" | tr 'A-Z' 'a-z' | shasum -a 256 | cut -c1-32; }
 wrong_login() {
   DRILL_PASSWORD=$(openssl rand -hex 16) jq -n --arg e "$1" '{email: $e, password: env.DRILL_PASSWORD}' >"$work/login.json"
   request POST /auth/login "" "$work/login.json"
+}
+
+# The web client, behind listener https-apex of Gateway svp, and MinIO's route, which is the same site.
+web_base=https://svp.localhost:8443
+s3_origin=https://s3.svp.localhost:8443
+web_cookie=__Host-Http-svp_sid
+# The web pods: a Rollout's, so kubectl exec names a pod, not deploy/web.
+web_selector=app.kubernetes.io/name=web,app.kubernetes.io/component=server
+
+# web_get PATH OUT [CURL_ARGS...] / web_post PATH OUT [CURL_ARGS...]: a request to the web client with the drill user's
+# session (the private cookie jar $work/web.jar, kept up to date; web_jar names another one, such as an empty one for a
+# logged-out request); the body goes to OUT, the response headers to OUT.headers, and the HTTP status is printed (000
+# when nothing answered). Accept-Language en: the form errors the drill reads are the English copy. Redirects are not
+# followed.
+web_get() { web_curl GET "$@"; }
+web_post() { web_curl POST "$@"; }
+web_curl() {
+  local method=$1 path=$2 out=$3 jar=${web_jar:-$work/web.jar}
+  shift 3
+  : >"$out"
+  touch "$jar"
+  curl -sS --max-time 15 -X "$method" -o "$out" -D "$out.headers" -w '%{http_code}' -b "$jar" -c "$jar" \
+    -H 'Accept-Language: en' "$@" "$web_base$path" || true
+}
+
+# web_sid: the session id in the cookie jar, "" when there is none. Never printed: callers only test or hash it.
+web_sid() {
+  [[ -f $work/web.jar ]] || return 0
+  awk -F '\t' -v n="$web_cookie" '$6 == n { v = $7 } END { print v }' "$work/web.jar"
+}
+
+# form_fields HTML_FILE: the hidden inputs of the form that has a password field in HTML_FILE, as curl config lines
+# (form-string = "NAME=VALUE", HTML entities decoded); fails when there is none. A form whose action is a Server Action
+# carries the action's id and bound state in such inputs ($ACTION_...), which is how a browser without JavaScript posts
+# it: a multipart POST of those fields and the user's, to the page's own URL.
+form_fields() {
+  perl -0777 -ne '
+    my $form;
+    while (/(<form\b.*?<\/form>)/sg) { my $f = $1; if ($f =~ /name="password"/) { $form = $f; last } }
+    defined $form or exit 1;
+    my $n = 0;
+    while ($form =~ /<input\b([^>]*)>/sg) {
+      my $a = $1;
+      next unless $a =~ /\btype="hidden"/;
+      my ($name) = $a =~ /\bname="([^"]*)"/ or next;
+      my ($value) = $a =~ /\bvalue="([^"]*)"/;
+      $value = "" unless defined $value;
+      for ($name, $value) {
+        s/&quot;/"/g; s/&#x27;|&#39;/\x27/g; s/&lt;/</g; s/&gt;/>/g; s/&amp;/&/g;
+        s/\\/\\\\/g; s/"/\\"/g;
+      }
+      print "form-string = \"$name=$value\"\n";
+      $n++;
+    }
+    exit($n ? 0 : 1);
+  ' "$1"
+}
+
+# web_form_config PAGE FIELDS_FILE OUT: a curl config (written to OUT) that posts the form of PAGE as a browser without
+# JavaScript does, with the fields of FIELDS_FILE (a JSON object, as new_user writes credentials: values reach curl in
+# this private file, never on a command line). No Origin or Sec-Fetch-Site: the caller adds them. Reads the page first
+# (with the session of the cookie jar, or of web_jar).
+web_form_config() {
+  local status
+  status=$(web_get "$1" "$work/form.html")
+  [[ $status == 200 ]] || fail "GET $1 of the web client is 200 (status $status)"
+  {
+    echo "url = \"$web_base$1\""
+    echo 'header = "Accept-Language: en"'
+    form_fields "$work/form.html" || fail "the form of $1 has hidden Server Action fields"
+    jq -r 'to_entries[] | "form-string = \("\(.key)=\(.value)" | @json)"' "$2"
+  } >"$3"
+}
+
+# web_form PAGE FIELDS_FILE: posts the form of PAGE (web_form_config) with the session of the cookie jar and the app's own
+# Origin, as the CSRF check wants; the answer goes
+# to $work/form.out, and form_status is set to the HTTP status: 303 when the action redirects (signed in), 200 when the
+# form comes back with an error. Sets a variable instead of printing, like key_records of the compose drills: a fail
+# inside $(...) would only end the subshell. Call it as a plain command.
+web_form() {
+  web_form_config "$1" "$2" "$work/form.curl"
+  : >"$work/form.out"
+  form_status=$(curl -sS --max-time 15 -o "$work/form.out" -w '%{http_code}' -b "$work/web.jar" -c "$work/web.jar" \
+    -K "$work/form.curl" -H "Origin: $web_base" || true)
+}
+
+# form_error FILE: the error the form with a password field in FILE shows, by its English copy (messages/en/auth.json):
+# wrong-credentials, rate-limited, unavailable (the box of the whole form, role="alert", by its title), email-taken,
+# handle-taken, invalid (the red note under a field, class text-danger), other (an alert or note with other copy), none
+# (neither), no-form (FILE has no such form: a redirect, an error page). Only the form's own markup is read: every
+# page of /login and /register also carries all the auth messages, unrendered, in its RSC payload (scripts outside the
+# form), so a search of the whole page finds "Wrong email or password" in a form that shows nothing.
+form_error() {
+  perl -0777 -ne '
+    my $form;
+    while (/(<form\b.*?<\/form>)/sg) { my $f = $1; if ($f =~ /name="password"/) { $form = $f; last } }
+    defined $form or do { print "no-form\n"; exit 0 };
+    my $alert = $form =~ /\brole="alert"[^>]*>(.*?)<\/strong>/s ? $1 : "";
+    my $notes = join " ", $form =~ /<p\b[^>]*\bclass="[^"]*\btext-danger\b[^"]*"[^>]*>(.*?)<\/p>/sg;
+    s/<[^>]*>//g for $alert, $notes;
+    if ($alert =~ /Wrong email or password/) { print "wrong-credentials\n" }
+    elsif ($alert =~ /Too many tries/) { print "rate-limited\n" }
+    elsif ($alert =~ /The service is busy/) { print "unavailable\n" }
+    elsif ($notes =~ /This email is already in use/) { print "email-taken\n" }
+    elsif ($notes =~ /This username is taken/) { print "handle-taken\n" }
+    elsif ($notes =~ /Enter a valid email|The password needs|A username needs/) { print "invalid\n" }
+    elsif ($alert =~ /\S/ || $notes =~ /\S/) { print "other\n" }
+    else { print "none\n" }
+  ' "$1"
+}
+
+# web_user: the drill's web user, registered through the web client's /register form on first use (the register action
+# logs the new user in); its credentials and handle stay in $work/web.cred, its session in the cookie jar.
+web_user() {
+  local handle email
+  [[ -s $work/web.cred && -n $(web_sid) ]] && return 0
+  handle=drill_$(openssl rand -hex 6)
+  email="drill-web-$run_id-$(openssl rand -hex 4)@example.test"
+  DRILL_PASSWORD=$(openssl rand -hex 16) jq -n --arg e "$email" --arg h "$handle" \
+    '{email: $e, password: env.DRILL_PASSWORD, handle: $h}' >"$work/web-new.cred"
+  : >"$work/web.jar"
+  web_form /register "$work/web-new.cred"
+  [[ $form_status == 303 && -n $(web_sid) ]] ||
+    fail "register a user through the web client's /register form: 303 with cookie $web_cookie (status $form_status, form error $(form_error "$work/form.out"))"
+  mv "$work/web-new.cred" "$work/web.cred"
+  ok "user @$handle registered through the web client's /register form (no JavaScript, Server Action): 303, session cookie $web_cookie in the drill's cookie jar"
+}
+
+# web_tokens: the drill user's web session, read from Valkey db 9 (key svp:web:sess:<SHA-256 of the sid>, the web
+# client's session store), as "NAME<TAB>VALUE" lines in $work/web.tokens: access-token, refresh-token, sid. The values
+# stay in that private file; the sid reaches jq through its environment.
+web_tokens() {
+  local sid key
+  sid=$(web_sid)
+  [[ -n $sid ]] || fail "the web session cookie is in the drill's cookie jar"
+  key="svp:web:sess:$(printf '%s' "$sid" | shasum -a 256 | cut -c1-64)"
+  kc -n svp-data exec deploy/valkey -c valkey -- valkey-cli -n 9 GET "$key" >"$work/web.session" ||
+    fail "read the drill user's web session in Valkey db 9"
+  WEB_SID=$sid jq -r '"access-token\t\(.access_token // "")", "refresh-token\t\(.refresh_token // "")", "sid\t\(env.WEB_SID)"' \
+    "$work/web.session" >"$work/web.tokens" 2>/dev/null || : >"$work/web.tokens"
+  rm -f "$work/web.session"
+  [[ $(awk -F '\t' '$2 != ""' "$work/web.tokens" | wc -l | tr -d ' ') == 3 ]] ||
+    fail "the drill user's web session in Valkey db 9 (svp:web:sess:<SHA-256 of the sid>) has an access and a refresh token"
+}
+
+# holds VALUES_FILE FILE: the names of the values of VALUES_FILE ("NAME<TAB>VALUE[<TAB>i]" lines; i: any case) that
+# FILE holds, space-separated, "" when none. awk reads the values from the file, never from its command line.
+holds() {
+  awk -F '\t' 'NR == FNR { n++; name[n] = $1; val[n] = $2; ci[n] = ($3 == "i"); next }
+    { s = s $0 "\n" }
+    END {
+      l = tolower(s)
+      for (i = 1; i <= n; i++) {
+        if (val[i] == "") continue
+        if (ci[i] ? index(l, tolower(val[i])) : index(s, val[i])) out = out " " name[i]
+      }
+      print substr(out, 2)
+    }' "$1" "$2"
+}
+
+# jwt_shaped FILE: true when FILE holds a string shaped like a JWT: eyJ (base64url of {") and three dot-separated
+# base64url parts, as every token of the gateway is.
+jwt_shaped() { grep -qE 'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+' "$1"; }
+
+# web_pods: "NAME IP" of every running web pod.
+web_pods() {
+  kc -n svp get pods -l "$web_selector" --field-selector status.phase=Running \
+    -o jsonpath='{range .items[*]}{.metadata.name} {.status.podIP}{"\n"}{end}'
 }
 
 # probe_delete: deletes namespace svp-probe and waits until it is gone; true when it is.
@@ -376,13 +595,19 @@ control_minio_edge() {
   [[ $status == 200 ]] && control "MinIO's /minio/health/live through Envoy 200: Envoy reaches minio:9000" ||
     miss "control: MinIO's /minio/health/live through Envoy is 200 (status $status)"
 }
+control_web_edge() {
+  local status
+  status=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "$web_base/healthz" || true)
+  [[ $status == 200 ]] && control "the web client's /healthz through Envoy ($web_base) 200: Envoy reaches web:3001" ||
+    miss "control: the web client's /healthz through Envoy is 200 (status $status)"
+}
 
 in2() {
   local t
   local targets=(
     user-service.svp.svc.cluster.local:9101 video-service.svp.svc.cluster.local:9102
     engagement-service.svp.svc.cluster.local:9103 feed-service.svp.svc.cluster.local:9104
-    gateway.svp.svc.cluster.local:8080 redpanda.svp-data.svc.cluster.local:9092
+    gateway.svp.svc.cluster.local:8080 web.svp.svc.cluster.local:3001 redpanda.svp-data.svc.cluster.local:9092
     redpanda-0.redpanda.svp-data.svc.cluster.local:9644 svp-pg-rw.svp-data.svc.cluster.local:5432
     valkey.svp-data.svc.cluster.local:6379 minio.svp-data.svc.cluster.local:9000
   )
@@ -398,6 +623,7 @@ in2() {
   control_postgres
   control_valkey
   control_minio_edge
+  control_web_edge
 }
 
 ff5() {
@@ -707,7 +933,7 @@ EOF
 }
 
 ff3() {
-  local line n bad ns label out want node pids tokens
+  local line n bad ns label out want node pids tokens pod
   # Names only: no Secret value is printed or kept.
   tokens=$(kc -n svp get secrets --field-selector type=kubernetes.io/service-account-token -o json | jq -c '[.items[].metadata.name]') ||
     fail "FF-4: list the Secrets of type service-account-token in svp"
@@ -718,6 +944,14 @@ ff3() {
     set -- $line
     [[ $2 == ok ]] && ok "FF-3/FF-4: $1: $3 $4" || miss "FF-3/FF-4: $1 breaks: $2"
   done <"$work/pods"
+  # The web client's pods (a Rollout's, beside the six services') are among those checked.
+  web_pods >"$work/web-pods" || miss "FF-3/FF-4: list the web client's pods ($web_selector)"
+  [[ -s $work/web-pods ]] || miss "FF-3/FF-4: namespace svp has running pods of the web client ($web_selector)"
+  while read -r pod _; do
+    out=$(awk -v p="$pod/" 'index($1, p) == 1 { sub(p, "", $1); printf "%s ", $1 }' "$work/pods")
+    [[ -n $out ]] && ok "FF-3/FF-4: the checks above cover web pod $pod (containers: ${out% })" ||
+      miss "FF-3/FF-4: web pod $pod is among the pods checked"
+  done <"$work/web-pods"
   # Controls: the same rules on a pod that sets none of them flag each one; on a pod restricted in every respect but
   # six containers (one sets runAsNonRoot false over the pod's true; three mount a token at a path of their own, from a
   # projected serviceAccountToken, from a Secret of type service-account-token and from that Secret as a source of a
@@ -940,9 +1174,10 @@ ops2() {
   out=$(kc get httproutes.gateway.networking.k8s.io -A -o json | jq -r '.items[]
     | "\(.metadata.namespace)/\(.metadata.name) \(.spec.hostnames | join(",")) \([.spec.rules[].backendRefs[]? | "\(.namespace // "-")/\(.name)"] | unique | join(","))"' | LC_ALL=C sort)
   want="svp-data/s3 s3.svp.localhost -/minio
-svp/api api.svp.localhost -/gateway,-/gateway-canary"
-  [[ $out == "$want" ]] && ok "OPS-2: HTTPRoutes are exactly svp/api (api.svp.localhost to gateway, gateway-canary) and svp-data/s3 (s3.svp.localhost to minio)" ||
-    miss "OPS-2: HTTPRoutes are exactly svp/api and svp-data/s3 (got: $(tr '\n' ';' <<<"$out"))"
+svp/api api.svp.localhost -/gateway,-/gateway-canary
+svp/web svp.localhost -/web,-/web-canary"
+  [[ $out == "$want" ]] && ok "OPS-2: HTTPRoutes are exactly svp/api (api.svp.localhost to gateway, gateway-canary), svp/web (svp.localhost to web, web-canary) and svp-data/s3 (s3.svp.localhost to minio)" ||
+    miss "OPS-2: HTTPRoutes are exactly svp/api, svp/web and svp-data/s3 (got: $(tr '\n' ';' <<<"$out"))"
   for kind in grpcroutes.gateway.networking.k8s.io tlsroutes.gateway.networking.k8s.io tcproutes.gateway.networking.k8s.io \
     udproutes.gateway.networking.k8s.io ingresses.networking.k8s.io; do
     if out=$(kc get "$kind" -A -o name 2>&1); then
@@ -1286,6 +1521,421 @@ psa_platform() {
   info "PSA-platform: kube-system is exempt from the cluster default (deploy/k8s/pod-security-admission.yaml): k3s's svclb-* pods need NET_ADMIN, local-path-provisioner's helper pods a hostPath of the node; whoever may create pods there (cert-manager's controller, which may in every namespace, among them) can still start a privileged pod"
 }
 
+# rand_uuid: a random id in the canonical UUID form (the BFF's id pattern).
+rand_uuid() { openssl rand -hex 16 | sed -E 's/^(.{8})(.{4})(.{4})(.{4})/\1-\2-\3-\4-/'; }
+
+# web7_redirect PATH STATUS: the check of a probe with %2F that answered a redirect (STATUS) rather than 400 or 404.
+# Envoy Gateway's default for a path with an escaped slash (%2F, %5C) is UnescapeAndRedirect (ClientTrafficPolicy
+# path.escapedSlashesAction; the repo sets none): Envoy answers 307 to the unescaped, normalised path itself, before the
+# web client sees the request. That is no way past the BFF's list as long as the Location stays on the web client's
+# origin (a path, or https://svp.localhost:8443/...), holds no escaped slash, and answers 400 or 404 there in turn.
+web7_redirect() {
+  local p=$1 status=$2 loc follow
+  loc=$(tr -d '\r' <"$work/web7-probe.headers" | awk 'tolower($1) == "location:" { v = $2 } END { print v }')
+  loc=${loc#"$web_base"}
+  if [[ $loc != /* || $loc == //* || $loc == *\\* ]] || grep -qiE '%2f|%5c' <<<"$loc"; then
+    miss "WEB-7: GET $p redirects ($status) to a path of the web client's origin with no escaped slash left (Location '${loc}')"
+    return 0
+  fi
+  follow=$(web_get "$loc" "$work/web7-follow" --path-as-is)
+  [[ $follow == 400 || $follow == 404 ]] &&
+    ok "WEB-7: GET $p through the web client with a session: $status to $loc (same origin, slash unescaped), which answers $follow" ||
+    miss "WEB-7: GET $p redirects ($status) to $loc, which is 400 or 404 (status $follow)"
+}
+
+# web7: the BFF is no open proxy and no token reaches the browser (threat model WEB-7).
+web7() {
+  local p status code i ct handle id what f n=0
+  web_user
+  handle=$(jq -r .handle "$work/web.cred")
+  id=$(rand_uuid)
+  # Paths outside the BFF's list, with the session, so a refusal is the list and not a missing login. `..` goes as is
+  # (--path-as-is); should Envoy or Next normalise it, the path left is /debug/pprof or /api/internal, neither of which
+  # the app has: 404 as well. No path ends in / or holds //: Next answers those with a 308 to the normalised path. A
+  # path with %2F may get Envoy's redirect instead (web7_redirect); none of them unescapes to a route on the list
+  # (/api/videos/{id} is one, but of a random id: 404), so wherever the redirect leads is 400 or 404 too.
+  local paths=(
+    /api/internal/secrets /api/healthz /api/readyz /api/metrics /api/debug/pprof /api/auth/login
+    "/api/public/videos/$id" "/api/videos/..%2Finternal" "/api/videos%2F$id" "/api/me%2F..%2F..%2Fdebug%2Fpprof"
+    /api/feed/explore/../../../debug/pprof /api/feed/../internal /api/gateway.svp.svc.cluster.local:8080/healthz
+    "/api/http:%2F%2Fuser-service.svp.svc.cluster.local:9101%2Freadyz" /api/@user-service.svp.svc.cluster.local:9101/readyz
+    "/api/feed/explore?page_size=1&url=http://gateway.svp.svc.cluster.local:8080/healthz"
+    "/api/feed/explore?page_size=1&page_size=2"
+  )
+  for p in "${paths[@]}"; do
+    status=$(web_get "$p" "$work/web7-probe" --path-as-is)
+    code=$(jq -r '.code // ""' "$work/web7-probe" 2>/dev/null || true)
+    if [[ $status == 3?? && $p == *%2F* ]]; then
+      web7_redirect "$p" "$status"
+    elif [[ $status == 400 || $status == 404 ]]; then
+      ok "WEB-7: GET $p through the web client with a session: $status${code:+ $code}"
+    else
+      miss "WEB-7: GET $p through the web client with a session is 400 or 404 (status $status${code:+, code $code})"
+    fi
+  done
+  status=$(web_get "/api/feed/explore?page_size=1" "$work/web7-api-explore")
+  [[ $status == 200 && $(jq -r '.items | type' "$work/web7-api-explore" 2>/dev/null) == array ]] &&
+    control "GET /api/feed/explore?page_size=1 through the web client with the session: 200 with items (the BFF passes a listed route)" ||
+    miss "control: GET /api/feed/explore?page_size=1 through the web client is 200 with items (status $status)"
+  status=$(web_get /api/me "$work/web7-api-me")
+  [[ $status == 200 && $(jq -r '.handle // ""' "$work/web7-api-me" 2>/dev/null) == "$handle" ]] &&
+    control "GET /api/me through the web client: 200, handle @$handle (the session reaches the gateway)" ||
+    miss "control: GET /api/me through the web client is 200 with handle @$handle (status $status)"
+
+  # What the browser gets: the HTML of the pages, the RSC payloads of client navigation, the JSON of /api.
+  : >"$work/web7-files"
+  for p in / /me /upload "/u/$handle"; do
+    i=$((i + 1))
+    status=$(web_get "$p" "$work/web7-page-$i")
+    [[ $status == 200 ]] && echo "$work/web7-page-$i HTML of $p" >>"$work/web7-files" ||
+      miss "WEB-7: GET $p through the web client with the session is 200 (status $status)"
+  done
+  grep -qF "$handle" "$work/web7-page-2" &&
+    control "the HTML of /me shows @$handle: the pages were rendered with the session" ||
+    miss "control: the HTML of /me shows the drill user's handle (rendered with the session)"
+  for p in / /me; do
+    i=$((i + 1))
+    # Next may answer an RSC request without its cache-busting parameter with a redirect to the URL that has it.
+    status=$(web_get "$p" "$work/web7-page-$i" -H 'RSC: 1' -L --max-redirs 2)
+    ct=$(tr -d '\r' <"$work/web7-page-$i.headers" | awk 'tolower($1) == "content-type:" { v = $2 } END { print v }')
+    if [[ $status == 200 && $ct == text/x-component* ]]; then
+      control "GET $p with RSC: 1: 200 text/x-component (the RSC payload of client navigation)"
+      echo "$work/web7-page-$i RSC payload of $p" >>"$work/web7-files"
+    else
+      miss "control: GET $p with RSC: 1 is 200 text/x-component (status $status, content type '${ct}')"
+    fi
+  done
+  echo "$work/web7-api-explore JSON of /api/feed/explore" >>"$work/web7-files"
+  echo "$work/web7-api-me JSON of /api/me" >>"$work/web7-files"
+
+  web_tokens
+  while read -r f what; do
+    n=$((n + 1))
+    jwt_shaped "$f" && miss "WEB-7: the $what holds no string shaped like a JWT (it does)" ||
+      ok "WEB-7: the $what holds no string shaped like a JWT"
+    p=$(holds "$work/web.tokens" "$f")
+    [[ -z $p ]] && ok "WEB-7: the $what holds none of the session's access token, refresh token and sid" ||
+      miss "WEB-7: the $what holds none of the session's tokens (found: $p)"
+  done <"$work/web7-files"
+  ((n >= 8)) || miss "WEB-7: 8 answers searched (4 pages, 2 RSC payloads, 2 /api JSON; got $n)"
+  # Controls of the search: it finds the token of a login answered by the gateway itself, and the session's access
+  # token. The gateway's answer is dropped at once.
+  jq '{email, password}' "$work/web.cred" >"$work/web7-login.json"
+  status=$(request POST /auth/login "" "$work/web7-login.json")
+  if [[ $status == 200 ]] && jwt_shaped "$work/body"; then
+    control "the same search finds a JWT in the gateway's own login answer ($base/auth/login, 200)"
+  else
+    miss "control: the same search finds a JWT in the gateway's own login answer (status $status)"
+  fi
+  : >"$work/body"
+  awk -F '\t' '$1 == "access-token" { print $2 }' "$work/web.tokens" >"$work/web7-access"
+  jwt_shaped "$work/web7-access" && control "the same search finds the session's access token (shaped like a JWT)" ||
+    miss "control: the session's access token is shaped like a JWT, as the search expects"
+  rm -f "$work/web7-access" "$work/web7-login.json"
+}
+
+# The ways WEB-2 sends a POST from outside the app, as "HEADER|HEADER" (none: neither Sec-Fetch-Site nor Origin).
+web2_variants=(
+  "Sec-Fetch-Site: cross-site|Origin: https://evil.example"
+  "Sec-Fetch-Site: same-site|Origin: $s3_origin"
+  "Origin: https://evil.example"
+  "Origin: $s3_origin"
+  "Origin: null"
+  ""
+)
+
+# web2_send TARGET VARIANT OUT: POSTs to TARGET (action, api, logout, rum, monitoring) with the session cookie and the
+# headers of VARIANT ("HEADER|HEADER"); the body to OUT, prints the HTTP status. action is the /login form's Server
+# Action, posted with the config of $work/web2-login.curl (web_form_config). args stays empty for the variant with
+# neither header: ${args[@]+...} expands it to nothing, where a plain "${args[@]}" of an empty array stops bash 3.2
+# (macOS /bin/bash) under set -u with "unbound variable".
+web2_send() {
+  local h hs args=()
+  if [[ -n $2 ]]; then
+    IFS='|' read -r -a hs <<<"$2"
+    for h in "${hs[@]}"; do args+=(-H "$h"); done
+  fi
+  case $1 in
+    action)
+      : >"$3"
+      curl -sS --max-time 15 -o "$3" -w '%{http_code}' -b "$work/web.jar" -K "$work/web2-login.curl" \
+        ${args[@]+"${args[@]}"} || true
+      ;;
+    api) web_post /api/videos "$3" -H 'Content-Type: application/json' --data-binary '{}' ${args[@]+"${args[@]}"} ;;
+    logout) web_post /logout "$3" ${args[@]+"${args[@]}"} ;;
+    rum)
+      web_post /rum "$3" -H 'Content-Type: text/plain;charset=UTF-8' \
+        --data-binary '{"path":"/","metrics":[{"name":"LCP","value":1200}]}' ${args[@]+"${args[@]}"}
+      ;;
+    monitoring)
+      web_post /monitoring "$3" -H 'Content-Type: text/plain;charset=UTF-8' --data-binary '{}' ${args[@]+"${args[@]}"}
+      ;;
+  esac
+}
+
+# web2: no request from another site, or from s3.svp.localhost, changes state with the session (threat model WEB-2).
+web2() {
+  local t v what status code same="Sec-Fetch-Site: same-origin|Origin: $web_base"
+  web_user
+  # The login form's Server Action, logged out: AuthPage sends a logged-in visitor of /login to the home page.
+  DRILL_PASSWORD=$(openssl rand -hex 16) jq -n --arg e "drill-web2-$run_id-$(openssl rand -hex 4)@example.test" \
+    '{email: $e, password: env.DRILL_PASSWORD}' >"$work/web2-wrong.cred"
+  web_jar=$work/anon.jar web_form_config /login "$work/web2-wrong.cred" "$work/web2-login.curl"
+  for t in action api logout rum monitoring; do
+    for v in "${web2_variants[@]}"; do
+      what=${v:-neither Sec-Fetch-Site nor Origin}
+      status=$(web2_send "$t" "$v" "$work/web2.out")
+      code=$(jq -r '.code // ""' "$work/web2.out" 2>/dev/null || true)
+      [[ $status == 403 && $code == CSRF_REJECTED ]] &&
+        ok "WEB-2: POST $t with the session cookie and ${what//|/, }: 403 CSRF_REJECTED" ||
+        miss "WEB-2: POST $t with the session cookie and ${what//|/, } is 403 CSRF_REJECTED (status $status, code '${code}')"
+    done
+    if [[ $t == logout ]]; then
+      status=$(web_get /api/me "$work/web2.out")
+      [[ $status == 200 ]] && ok "WEB-2: after the refused logouts the session still works (GET /api/me 200)" ||
+        miss "WEB-2: after the refused logouts the session still works (GET /api/me: status $status)"
+    fi
+  done
+
+  # Controls: the same POSTs from the app's own pages pass the check.
+  : >"$work/web2.out"
+  status=$(curl -sS --max-time 15 -o "$work/web2.out" -w '%{http_code}' -K "$work/web2-login.curl" \
+    -H 'Sec-Fetch-Site: same-origin' -H "Origin: $web_base" || true)
+  [[ $status == 200 && $(form_error "$work/web2.out") == wrong-credentials ]] &&
+    control "POST of the /login form's Server Action from the app's origin (logged out, wrong password): 200, the form shows \"Wrong email or password\" (the action ran and asked the gateway)" ||
+    miss "control: the /login form's Server Action from the app's origin answers 200 with \"Wrong email or password\" (status $status, form error $(form_error "$work/web2.out"))"
+  status=$(web2_send api "$same" "$work/web2.out")
+  code=$(jq -r '.code // ""' "$work/web2.out" 2>/dev/null || true)
+  [[ $status == 400 && $code != CSRF_REJECTED ]] &&
+    control "POST /api/videos with an empty object from the app's origin: 400 ${code} from the gateway, past the check" ||
+    miss "control: POST /api/videos with an empty object from the app's origin reaches the gateway, 400 (status $status, code '${code}')"
+  status=$(web2_send rum "$same" "$work/web2.out")
+  [[ $status == 204 ]] && control "POST /rum with a beacon from the app's origin: 204" ||
+    miss "control: POST /rum with a beacon from the app's origin is 204 (status $status)"
+  status=$(web2_send monitoring "$same" "$work/web2.out")
+  code=$(jq -r '.code // ""' "$work/web2.out" 2>/dev/null || true)
+  [[ $status == 400 && $code == INVALID_REPORT ]] &&
+    control "POST /monitoring with an empty object from the app's origin: 400 INVALID_REPORT (checked, nothing sent)" ||
+    miss "control: POST /monitoring with an empty object from the app's origin is 400 INVALID_REPORT (status $status, code '${code}'; 404 means SENTRY_DSN is empty in Secret svp/sentry)"
+  # The logout clears the cookie (Max-Age=0), so curl drops it from the jar; a copy of the jar from before sends the old
+  # sid again, which shows the server deleted the session, not only the cookie.
+  cp "$work/web.jar" "$work/web2-old.jar"
+  status=$(web2_send logout "$same" "$work/web2.out")
+  [[ $status == 303 ]] && control "POST /logout from the app's origin: 303" ||
+    miss "control: POST /logout from the app's origin is 303 (status $status)"
+  [[ -z $(web_sid) ]] && control "the logout cleared the session cookie (no $web_cookie left in the cookie jar)" ||
+    miss "control: the logout clears the session cookie (it is still in the cookie jar)"
+  status=$(web_jar=$work/web2-old.jar web_get /api/me "$work/web2.out")
+  rm -f "$work/web2-old.jar"
+  [[ $status == 401 ]] && control "after it the old session id sent again is refused: GET /api/me 401 (the session was deleted on the server)" ||
+    miss "control: after the logout GET /api/me with the old session id is 401 (status $status)"
+}
+
+# web10: MinIO's CORS answers the web client's origin only (threat model WEB-10).
+web10() {
+  local t path method origin status acao
+  for t in "/media/media/drill-threats-$run_id/master.m3u8 GET" "/uploads POST"; do
+    read -r path method <<<"$t"
+    for origin in https://evil.example http://localhost:3001 http://localhost:3002 "$web_base"; do
+      : >"$work/cors.headers"
+      status=$(curl -s --max-time 5 -o /dev/null -D "$work/cors.headers" -w '%{http_code}' -X OPTIONS \
+        -H "Origin: $origin" -H "Access-Control-Request-Method: $method" "$s3_origin$path" || true)
+      acao=$(tr -d '\r' <"$work/cors.headers" | awk 'tolower($1) == "access-control-allow-origin:" { print $2 }')
+      if [[ $origin == "$web_base" ]]; then
+        [[ $status == 2?? && $acao == "$origin" ]] &&
+          control "OPTIONS $s3_origin$path ($method) from $origin: $status, Access-Control-Allow-Origin $acao" ||
+          miss "control: OPTIONS $s3_origin$path ($method) from $origin is 2xx with Access-Control-Allow-Origin $origin (status $status, got '${acao}')"
+      else
+        [[ $status != 000 && -z $acao ]] &&
+          ok "WEB-10: OPTIONS $s3_origin$path ($method) from $origin: $status without Access-Control-Allow-Origin" ||
+          miss "WEB-10: OPTIONS $s3_origin$path ($method) from $origin answers without Access-Control-Allow-Origin (status $status, got '${acao}')"
+      fi
+    done
+  done
+}
+
+# The probes of WEB-13, run by the web image's node (distroless: no shell, no nc): for each HOST:PORT argument one line
+# "HOST PORT DNS STATE" as reach() writes them: DNS dns when the name resolves, nodns when not, ip for an address; STATE
+# open when a TCP connection opens within 3 s, closed otherwise.
+# shellcheck disable=SC2016 # JavaScript
+web13_js='
+const net = require("node:net");
+const dns = require("node:dns");
+const probe = (target) => new Promise((done) => {
+  const i = target.lastIndexOf(":");
+  const host = target.slice(0, i);
+  const port = Number(target.slice(i + 1));
+  const connect = (resolved) => {
+    const socket = net.connect({ host, port, timeout: 3000 });
+    const end = (state) => { socket.destroy(); done(`${host} ${port} ${resolved} ${state}`); };
+    socket.once("connect", () => end("open"));
+    socket.once("timeout", () => end("closed"));
+    socket.once("error", () => end("closed"));
+  };
+  if (net.isIP(host) !== 0) connect("ip");
+  else dns.lookup(host, (error) => connect(error ? "nodns" : "dns"));
+});
+Promise.all(process.argv.slice(1).map(probe)).then((lines) => console.log(lines.join("\n")));
+'
+
+# web13: the web pods reach only the gateway, Valkey, the Collector and GlitchTip; only Envoy reaches them (threat model
+# WEB-13).
+web13() {
+  local pod t
+  local closed=(
+    1.1.1.1:443 example.com:443 svp-pg-rw.svp-data.svc.cluster.local:5432 redpanda.svp-data.svc.cluster.local:9092
+    redpanda-0.redpanda.svp-data.svc.cluster.local:9644 minio.svp-data.svc.cluster.local:9000
+    user-service.svp.svc.cluster.local:9101 video-service.svp.svc.cluster.local:9102
+    engagement-service.svp.svc.cluster.local:9103 feed-service.svp.svc.cluster.local:9104
+    pyroscope.svp-obs.svc.cluster.local:4040 kubernetes.default.svc.cluster.local:443
+  )
+  local open=(
+    gateway.svp.svc.cluster.local:8080 valkey.svp-data.svc.cluster.local:6379
+    otel-collector.svp-obs.svc.cluster.local:4317 glitchtip.svp-obs.svc.cluster.local:8000
+  )
+  web_pods >"$work/web-pods" || fail "WEB-13: list the web pods ($web_selector)"
+  [[ -s $work/web-pods ]] || fail "WEB-13: namespace svp has running web pods ($web_selector)"
+  while read -r pod _; do
+    if ! kc -n svp exec "$pod" -c web -- /nodejs/bin/node -e "$web13_js" "${closed[@]}" "${open[@]}" \
+      </dev/null >"$work/reach"; then
+      miss "WEB-13: run the connection probes with node in web pod $pod"
+      continue
+    fi
+    for t in "${closed[@]}"; do expect_reach "$t" closed "WEB-13: from web pod $pod"; done
+    for t in "${open[@]}"; do expect_reach "$t" open "WEB-13: from web pod $pod (control of the closed ones)"; done
+  done <"$work/web-pods"
+  info "WEB-13: the internet has no control case from the web pods: example.com resolved there, so its failure is the connection"
+  reach "$probe_ns" pod/probe web.svp.svc.cluster.local:3001
+  expect_reach web.svp.svc.cluster.local:3001 closed "WEB-13: from $probe_ns, the web client"
+  control_web_edge
+}
+
+# The logins of one WEB-8 attempt and how many are in flight at once over the one connection (as RL-1).
+web8_n=40
+web8_parallel=8
+
+# web8_send ATTEMPT: waits until no login-ip bucket is left in Valkey, sends the logins of attempt ATTEMPT through the
+# web client's /login form and reads, right after them, what the checks need: Valkey's time around the burst and the
+# gateway's pods as it starts (rl1_t_start, rl1_t_end, rl1_pods_before, for rl1_fallback), the login keys
+# ($work/rl-keys) and each answer's form error ($work/web8.answers: "I STATUS ERROR").
+web8_send() {
+  local a=$1 deadline i email connects versions status
+  deadline=$((SECONDS + 45))
+  until valkey --scan --pattern 'svp:gw:rl:login-ip:*' >"$work/ip-keys" && [[ ! -s $work/ip-keys ]]; do
+    ((SECONDS < deadline)) || fail "WEB-8: every login-ip bucket in Valkey db 10 expired within 45 s (still: $(tr '\n' ' ' <"$work/ip-keys"))"
+    sleep 2
+  done
+  ok "WEB-8: attempt $a: no login-ip bucket in Valkey db 10"
+
+  # The form's hidden Server Action fields, read once and logged out (they are the same for every post of a build).
+  status=$(web_jar=$work/anon.jar web_get /login "$work/web8-login.html")
+  [[ $status == 200 ]] || fail "WEB-8: GET /login of the web client is 200 (status $status)"
+  form_fields "$work/web8-login.html" >"$work/web8-hidden" || fail "WEB-8: the /login form has hidden Server Action fields"
+  : >"$work/web8.curl"
+  : >"$work/web8.hashes"
+  for ((i = 1; i <= web8_n; i++)); do
+    ((i == 1)) || echo next >>"$work/web8.curl"
+    email="drill-web8-$run_id-$a-$i@example.test"
+    DRILL_PASSWORD=$(openssl rand -hex 16) jq -n --arg e "$email" '{email: $e, password: env.DRILL_PASSWORD}' >"$work/web8-$i.json"
+    echo "$i $(email_hash "$email")" >>"$work/web8.hashes"
+    {
+      echo "url = \"$web_base/login\""
+      echo http2
+      echo "max-time = 30"
+      echo "header = \"Origin: $web_base\""
+      echo 'header = "Accept-Language: en"'
+      # Two forged hops per request, new ones each time (TEST-NET addresses, RFC 5737), as RL-1.
+      echo "header = \"X-Forwarded-For: 198.51.100.$i, 203.0.113.$i\""
+      cat "$work/web8-hidden"
+      jq -r 'to_entries[] | "form-string = \("\(.key)=\(.value)" | @json)"' "$work/web8-$i.json"
+      echo "output = \"$work/web8-$i.out\""
+      echo "write-out = \"$i %{http_code} %{num_connects} %{http_version}\\n\""
+    } >>"$work/web8.curl"
+  done
+  rl1_t_start=$(valkey_now)
+  # As RL-1: the logins start a second after the drill's last exec in the Valkey container.
+  sleep 1
+  rl1_pods_before=$(gateway_pods) || rl1_pods_before=
+  curl -sS --parallel --parallel-max "$web8_parallel" -K "$work/web8.curl" >"$work/web8.wo" || true
+  rl1_t_end=$(valkey_now)
+  [[ $rl1_t_start =~ ^[0-9]+$ && $rl1_t_end =~ ^[0-9]+$ ]] ||
+    fail "WEB-8: read Valkey's clock around the burst (got '$rl1_t_start', '$rl1_t_end')"
+  connects=$(awk '{ n += $3 } END { print n + 0 }' "$work/web8.wo")
+  versions=$(awk '{ print $4 }' "$work/web8.wo" | sort -u | tr '\n' ' ')
+  [[ $connects == 1 && $versions == "2 " && $(wc -l <"$work/web8.wo" | tr -d ' ') == "$web8_n" ]] ||
+    fail "WEB-8: the $web8_n logins went over one HTTP/2 connection to Envoy (connections $connects, HTTP versions $versions, answers $(wc -l <"$work/web8.wo" | tr -d ' '))"
+  valkey --scan --pattern 'svp:gw:rl:login-*' >"$work/rl-keys" || fail "WEB-8: scan the login keys"
+  : >"$work/web8.answers"
+  while read -r i status _; do
+    echo "$i $status $(form_error "$work/web8-$i.out")" >>"$work/web8.answers"
+  done <"$work/web8.wo"
+}
+
+# web8_judge: the checks of WEB-8 on what web8_send read, for an attempt that counts.
+web8_judge() {
+  local i status error h key ip node passed=0 busy=0 limited=0 wrong=0 other=0 keys
+  : >"$work/web8.email-ips"
+  while read -r i status error; do
+    h=$(awk -v i="$i" '$1 == i { print $2 }' "$work/web8.hashes")
+    key=$(grep ":$h\$" "$work/rl-keys" | head -n 1 || true)
+    case "$status $error" in
+      "200 wrong-credentials") if [[ -n $key ]]; then passed=$((passed + 1)); else wrong=$((wrong + 1)); fi ;;
+      # Any 429 of the gateway reads "Too many tries": with a login-email key it passed the rate limit (user-service's
+      # bound on concurrent password hashes), without one login-ip refused it.
+      "200 rate-limited") if [[ -n $key ]]; then busy=$((busy + 1)); else limited=$((limited + 1)); fi ;;
+      *) other=$((other + 1)) && echo "      request $i: status $status, form error $error" ;;
+    esac
+    [[ -z $key ]] || echo "${key#svp:gw:rl:login-email:}" | sed 's/:[0-9a-f]*$//' >>"$work/web8.email-ips"
+  done <"$work/web8.answers"
+  ((other == 0 && wrong == 0)) &&
+    ok "WEB-8: every answer is the /login form with \"Wrong email or password\" ($passed, each left its login-email key) or \"Too many tries\" ($((busy + limited)))" ||
+    miss "WEB-8: every answer is the form with \"Wrong email or password\" and a login-email key, or \"Too many tries\" (other $other, wrong password without a key $wrong)"
+  ((limited >= 1)) &&
+    ok "WEB-8: $limited of the $web8_n logins through the web client got 429 from login-ip (no login-email key), $passed passed (burst of login-ip $rl1_burst), $busy were refused by user-service's hash bound past the limit: the forged X-Forwarded-For of each did not give it a bucket of its own" ||
+    miss "WEB-8: at least one login through the web client got 429 from login-ip (limited $limited, passed $passed, busy $busy)"
+  ((passed + busy >= 1)) && control "$((passed + busy)) logins through the web client passed the rate limit and reached the gateway's limiter and user-service" ||
+    miss "control: logins through the web client pass the rate limit (none did)"
+
+  grep '^svp:gw:rl:login-ip:' "$work/rl-keys" | sed 's/^svp:gw:rl:login-ip://' >"$work/web8.ips" || true
+  keys=$(wc -l <"$work/web8.ips" | tr -d ' ')
+  ((keys >= 1 && keys <= 2)) && ok "WEB-8: login-ip keys added by the burst: $keys ($(tr '\n' ' ' <"$work/web8.ips"))" ||
+    miss "WEB-8: the burst added 1 or 2 login-ip keys (got $keys: $(tr '\n' ' ' <"$work/web8.ips"))"
+  kc get nodes -o jsonpath='{range .items[*]}{.metadata.name} {.spec.podCIDR}{"\n"}{end}' >"$work/nodes"
+  web_pods >"$work/web-pods" || true
+  while read -r ip; do
+    node=$(awk -v ip="$ip" '{ split($2, c, "."); split(ip, a, "."); if (a[1] == c[1] && a[2] == c[2] && a[3] == c[3]) print $1 " (pod range " $2 ")" }' "$work/nodes")
+    [[ $ip == 10.42.* && -n $node ]] && ok "WEB-8: $ip, the address the gateway counts, is on the pod network of node $node" ||
+      miss "WEB-8: the login-ip key's address $ip is on the pod network of a node"
+    awk -v ip="$ip" '$2 == ip { found = 1 } END { exit !found }' "$work/web-pods" &&
+      miss "WEB-8: $ip is not a web pod's address (it is: every web user would share its bucket)" ||
+      ok "WEB-8: $ip is none of the web pods' addresses ($(awk '{ printf "%s ", $2 }' "$work/web-pods")): the gateway counts the hop Envoy wrote, not the web pod"
+  done <"$work/web8.ips"
+  grep -qE ':(198\.51\.100|203\.0\.113)\.' "$work/rl-keys" &&
+    miss "WEB-8: no login-ip or login-email key is for a forged address ($(grep -cE ':(198\.51\.100|203\.0\.113)\.' "$work/rl-keys") are)" ||
+    ok "WEB-8: no login-ip or login-email key is for a forged address (198.51.100.0/24, 203.0.113.0/24)"
+  if [[ -s $work/web8.email-ips ]]; then
+    sort -u "$work/web8.email-ips" | while read -r ip; do grep -qxF "$ip" "$work/web8.ips" || echo "$ip"; done >"$work/web8.stray"
+    [[ ! -s $work/web8.stray ]] &&
+      ok "WEB-8: the login-email keys of the logins that passed name the login-ip address(es) only ($(sort -u "$work/web8.email-ips" | tr '\n' ' '))" ||
+      miss "WEB-8: the login-email keys of the logins that passed name a login-ip address (others: $(tr '\n' ' ' <"$work/web8.stray"))"
+  fi
+}
+
+web8() {
+  local a
+  for ((a = 1; a <= rl1_attempts; a++)); do
+    web8_send "$a"
+    rl1_fallback
+    if [[ $rl1_fell == 0 ]]; then
+      ok "WEB-8: attempt $a of $rl1_attempts counts: no login decision fell back to a gateway pod's in-memory limiter (as RL-1, on each of the $rl1_pods gateway pods)"
+      web8_judge
+      return 0
+    fi
+    info "WEB-8: attempt $a of $rl1_attempts does not count: $rl1_fell"
+  done
+  miss "WEB-8: an attempt in which no login decision fell back to a gateway pod's in-memory limiter, within $rl1_attempts attempts (each is above)"
+}
+
 : >"$work/results"
 failed=
 # run_item NAME FUNCTION: runs FUNCTION in a subshell, where fail ends the item only and miss marks it failed.
@@ -1326,7 +1976,14 @@ run_item IN-9 in9
 run_item RBAC rbac
 run_item OPS-1 ops1
 run_item OPS-2 ops2
+# WEB-7 before WEB-2: WEB-2 ends with the logout of the web session WEB-7 reads. WEB-8 after RL-1: both spend the
+# login-ip bucket and wait for it to be full again.
+run_item WEB-7 web7
+run_item WEB-2 web2
+run_item WEB-10 web10
+run_item WEB-13 web13
 run_item RL-1 rl1
+run_item WEB-8 web8
 run_item PSA-platform psa_platform
 
 echo

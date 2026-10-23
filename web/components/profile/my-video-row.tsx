@@ -86,7 +86,9 @@ export function MyVideoRow({
         {meta && <span className="text-[13px] text-muted md:hidden">{meta}</span>}
         {status === "FAILED" && <FailedLine />}
       </div>
-      <StatusBadge status={status} className="hidden md:inline-flex" />
+      {/* max-md:hidden rather than "hidden md:inline-flex": Tailwind emits .inline-flex, the badge's own display, after
+          .hidden, so a plain hidden would lose and phones would show this badge under the first one. */}
+      <StatusBadge status={status} className="max-md:hidden" />
       <span className="hidden font-mono text-[13px] text-muted md:block">{duration}</span>
       <span className="hidden text-sm text-muted md:block">{views}</span>
       <span className="hidden text-sm text-muted md:block">{publishedAgo}</span>

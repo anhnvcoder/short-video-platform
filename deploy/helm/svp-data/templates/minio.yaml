@@ -37,6 +37,9 @@ spec:
             - name: MINIO_ROOT_PASSWORD
               valueFrom:
                 secretKeyRef: {name: minio-root, key: MINIO_ROOT_PASSWORD}
+            # Read at start only too; a change here changes the pod template, so the StatefulSet rolls MinIO itself.
+            - name: MINIO_API_CORS_ALLOW_ORIGIN
+              value: {{ .Values.minio.corsAllowOrigin | quote }}
           ports:
             - name: s3
               containerPort: 9000

@@ -2,7 +2,9 @@
 
 - Trạng thái: Chấp nhận; §6 (tag phát hành, `make k8s-release`) và đường image của §12 chỉnh bởi [0015](0015-cicd-devsecops-stage5.md);
   §2 (tiêu chí ổn định (c), cửa sổ đỉnh 2 worker, bước cắt 3 đã áp) và §10 (`maxReplicaCount` 2, topic giữ 3 partition)
-  chỉnh bởi [0017](0017-gitops-capacity-media-worker-max2.md)
+  chỉnh bởi [0017](0017-gitops-capacity-media-worker-max2.md); §3 (luồng của web), §9 (listener `https-apex` và Certificate
+  `svp-apex` cho `svp.localhost`, tên HTTPRoute theo release, Envoy bỏ trace context của client), §10 (release `web`, PDB khi
+  số replica cố định) và §13 (canary của web, ngưỡng theo release) chỉnh bởi [0019](0019-web-k3d-supply-chain-observability.md)
 - Ngày: 2026-10-18
 
 ## Bối cảnh
@@ -1552,7 +1554,8 @@ giá: không phát hiện được Valkey treo mà cổng vẫn mở, lab chấp
   `envoy_cluster_upstream_rq_time_bucket` (đơn vị ms). Prometheus scrape bằng `PodMonitor` `envoy-svp` (chart
   `svp-observability`; nằm ở `svp-obs` vì operator chỉ watch namespace đó, `namespaceSelector` chọn pod Envoy ở
   `envoy-gateway-system`, mục 11), `metricRelabelings` chỉ giữ ba họ metric trên với
-  `envoy_cluster_name=~"httproute/svp/api/.*"`.
+  `envoy_cluster_name=~"httproute/svp/(api|web)/.*"` (route `web` thêm ở giai đoạn 5b phần C,
+  [ADR-0019](0019-web-k3d-supply-chain-observability.md) §3; trước đó chỉ `api`).
 - **AnalysisTemplate `gateway-canary`** (nền), hai metric, `interval: 30s`, `initialDelay: 60s` (lần đo đầu đã có đủ một cửa
   sổ traffic ở 25%; không có thì lần đo ngay khi bắt đầu luôn thiếu mẫu), `failureLimit: 1` (cho qua một lần đo hỏng lẻ, lần
   hỏng thứ hai thì Failed → abort); **`gateway-canary-gate`** cùng hai truy vấn, `count: 1`, `failureLimit: 0` (một lần đo,

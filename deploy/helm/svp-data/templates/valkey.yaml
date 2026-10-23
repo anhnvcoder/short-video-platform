@@ -1,11 +1,18 @@
 {{- /*
 Valkey in place of the host's Redis (ADR-0014 section 4), at valkey.svp-data:6379 with the same db numbers and key
-prefixes: gateway db 10 (svp:gw:), feed-service db 14 (svp:feed:). Rate limits and a cache only, so nothing is
-persisted. noeviction as on the host (ADR-0010 section 1): when full, writes fail and the gateway falls back to its
-in-process counter with a metric, rather than rate-limit keys being dropped silently.
+prefixes: gateway db 10 (svp:gw:), feed-service db 14 (svp:feed:), the web client db 9 (svp:web:, its sessions and
+refresh locks). Rate limits, a cache and sessions, none worth persisting: when the pod restarts, every web session is
+lost and users log in again. noeviction as on the host (ADR-0010 section 1): when full, writes fail (the gateway falls
+back to its in-process counter with a metric, a login fails) rather than rate-limit keys or someone's session being
+dropped silently.
 
 No password: db numbers are no boundary between clients (IN-7, accepted locally); the NetworkPolicy lets only the
-gateway and feed-service reach it.
+gateway, feed-service and the web client reach it. A session holds the user's access and refresh tokens, so every one
+of the three can read and write every session. Accepted on a one-user lab machine (threat model WEB-22,
+docs/adr/0019-web-k3d-supply-chain-observability.md section 5): a taken gateway pod can already act as any user
+through gRPC (IN-2), and a taken feed-service pod, which reaches neither the gateway nor the internet, could only copy
+someone's tokens into a session of the attacker's own. Revisit on the cloud (Valkey with AUTH, per-client ACLs and
+TLS, or an instance of its own for sessions), or sooner if feed-service gets a new way out.
 */}}
 apiVersion: apps/v1
 kind: Deployment

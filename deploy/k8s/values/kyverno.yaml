@@ -53,7 +53,7 @@ admissionController:
       # reports, kilobytes) would be kept, and every new pod would reach TUF and GHCR again. The same flag also sizes
       # ristretto's frequency sketch and bloom filter (NumCounters = 10 x budget, rounded up to powers of two), which
       # Go counts as heap from the start: about 48 MiB for 1 MiB, but 3 GiB for 64 MiB, far past the GOMEMLIMIT
-      # Kyverno derives from the 384Mi limit, so the GC would run without pause. 1 MiB keeps the payloads of the six
+      # Kyverno derives from the 384Mi limit, so the GC would run without pause. 1 MiB keeps the payloads of the seven
       # services and the two drill images several times over. A result is then trusted for up to 60 minutes, so an
       # attestation older than 72 hours by less than that, or Sigstore failing after it was cached, still admits a pod
       # (ADR-0015 section 8).

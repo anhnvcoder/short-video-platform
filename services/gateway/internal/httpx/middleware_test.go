@@ -22,7 +22,8 @@ const (
 	testKID     = "k1"
 	userID      = "01928c6e-7b3a-7cde-8f01-23456789abcd"
 	otherUserID = "01928c6e-7b3a-7cde-8f01-000000000000"
-	// clientTraceparent is a valid traceparent a client might send; it must never be used.
+	// clientTraceparent is a valid traceparent a client might send. Only TrustTraceContext may make
+	// it the parent; everywhere else the gateway must ignore it.
 	clientTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 	clientTraceID     = "4bf92f3577b34da6a3ce929d0e0e4736"
 )
@@ -288,5 +289,27 @@ func TestValidUTF8(t *testing.T) {
 		if p := decodeProblem(t, rec); p.Code != "INVALID_UTF8" || p.Detail == "" {
 			t.Errorf("%q: problem = %+v, want code INVALID_UTF8 with a detail", target, p)
 		}
+	}
+}
+
+// TestTrustTraceContextAcceptsLaterVersion: W3C TraceContext asks a reader to parse a version it
+// does not know (01 to fe) as 00, so such a traceparent continues the sender's trace; only ff
+// and a version that is not hex start a new root (TestTrustTraceContextInvalidStartsNewRoot).
+func TestTrustTraceContextAcceptsLaterVersion(t *testing.T) {
+	spans := recordSpans(t)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", nil)
+	r.Header.Set("Traceparent", "01-"+clientTraceID+"-"+clientSpanID+"-01")
+	TrustTraceContext(Trace(testServer, ClientAddr{})(http.NotFoundHandler())).ServeHTTP(httptest.NewRecorder(), r)
+
+	ended := spans.Ended()
+	if len(ended) != 1 {
+		t.Fatalf("spans = %d, want 1", len(ended))
+	}
+	s := ended[0]
+	if got := s.SpanContext().TraceID().String(); got != clientTraceID {
+		t.Errorf("trace id = %s, want the client's %s", got, clientTraceID)
+	}
+	if p := s.Parent(); p.SpanID().String() != clientSpanID || !p.IsRemote() {
+		t.Errorf("parent = %s (remote %v), want the remote span %s", p.SpanID(), p.IsRemote(), clientSpanID)
 	}
 }

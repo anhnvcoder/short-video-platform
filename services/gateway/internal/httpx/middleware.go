@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
@@ -22,8 +23,9 @@ import (
 
 // Trace returns the otelhttp handler around next: every request gets a server span and the
 // http.server.request.duration metric (docs/adr/0011-observability-stage3.md, sections 2 and 3).
-// The span is always a new root trace: the propagator is empty, so a traceparent, tracestate or
-// baggage the client sent is neither read nor linked (ADR-0007 section 8). logx writes the
+// Trace itself never reads a traceparent, tracestate or baggage the client sent: its propagator
+// is empty, so the span is a new root trace without links (ADR-0007 section 8) unless
+// TrustTraceContext, in front of it, has put a trusted parent into the request's context. logx writes the
 // span's trace_id and span_id into every record logged with the request's context, and the
 // stats handler of ClientTelemetry continues the trace in the services. The span is named after
 // the method until Routes names the matched route. Its client.address comes from clientAddr,
@@ -45,11 +47,49 @@ func Trace(server string, clientAddr ClientAddr) func(http.Handler) http.Handler
 		}), "",
 			otelhttp.WithServerName(server),
 			otelhttp.WithPropagators(propagation.NewCompositeTextMapPropagator()),
-			otelhttp.WithFilter(func(r *http.Request) bool {
-				return r.URL.Path != "/healthz" && r.URL.Path != "/readyz"
-			}),
+			// Without a provider otelhttp takes the one of the span already in the request's
+			// context; the remote parent TrustTraceContext puts there is a non-recording span whose
+			// provider records nothing. The global provider delegates to the one telemetry.Setup
+			// installs, even when that happens after this handler is built.
+			otelhttp.WithTracerProvider(otel.GetTracerProvider()),
+			otelhttp.WithFilter(func(r *http.Request) bool { return !isProbe(r) }),
 		)
 	}
+}
+
+// isProbe reports whether r is one of the probes /healthz and /readyz, by its exact path.
+func isProbe(r *http.Request) bool {
+	return r.URL.Path == "/healthz" || r.URL.Path == "/readyz"
+}
+
+// TrustTraceContext, in front of Trace, makes the gateway's server span a child of the W3C
+// traceparent and tracestate of the request, so a trace started by the web server continues
+// through the gateway into the services (docs/adr/0019-web-k3d-supply-chain-observability.md,
+// section 7). Baggage is never read. A traceparent that does not parse (version ff or not hex,
+// all-zero trace or span id) leaves the context as it is, and Trace starts a new root as without
+// this middleware. Versions 01 to fe are read as W3C TraceContext asks of a future version, so
+// they continue the sender's trace like 00. The probes get no parent, the same as they get no span.
+//
+// The sender's sampled flag is dropped: the parent is marked sampled, so the default sampler
+// (parentbased_always_on) records the gateway's span as it records a root span. Otherwise a
+// client sending flags 00 would switch off tracing in the gateway and below it. A parent-based
+// ratio sampler (OTEL_TRACES_SAMPLER=parentbased_traceidratio) takes the sampled-remote-parent
+// branch for it too, so every request carrying a traceparent is recorded whatever the ratio;
+// compose and the k3d cluster set no sampler today.
+//
+// It is safe only where every path into the gateway has already removed the client's trace
+// context, or reaches it on loopback only; the caller decides that.
+func TrustTraceContext(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isProbe(r) {
+			ctx := propagation.TraceContext{}.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+			if sc := trace.SpanContextFromContext(ctx); sc.IsValid() && sc.IsRemote() {
+				ctx = trace.ContextWithRemoteSpanContext(ctx, sc.WithTraceFlags(sc.TraceFlags().WithSampled(true)))
+				r = r.WithContext(ctx)
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Recover turns a panic in next into a 500 problem response; the panic value and stack go to

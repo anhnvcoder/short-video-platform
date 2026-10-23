@@ -118,7 +118,7 @@ describe("proxy", () => {
     ["no header", {}],
   ])("refuses a POST with %s: 403 CSRF_REJECTED, nothing reaches the route", async (_name, headers) => {
     const { proxy } = await loadProxy();
-    for (const path of ["/login", "/api/videos/x/like", "/logout"]) {
+    for (const path of ["/login", "/api/videos/x/like", "/logout", "/monitoring", "/rum"]) {
       const response = proxy(request(path, "POST", headers));
       expect(response.status).toBe(403);
       expect(response.headers.get("content-type")).toBe("application/problem+json");
@@ -126,6 +126,18 @@ describe("proxy", () => {
       expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
       expect(((await response.json()) as { code: string }).code).toBe("CSRF_REJECTED");
     }
+  });
+
+  it("lets the browser's same-origin beacon to /rum through: sendBeacon sends Sec-Fetch-Site, or Origin without it", async () => {
+    const { proxy } = await loadProxy();
+    const beacon = { "content-type": "text/plain;charset=UTF-8" };
+    expect(
+      proxy(request("/rum", "POST", { ...beacon, "sec-fetch-site": "same-origin" })).headers.get("x-middleware-next"),
+    ).toBe("1");
+    expect(
+      proxy(request("/rum", "POST", { ...beacon, origin: "http://localhost:3001" })).headers.get("x-middleware-next"),
+    ).toBe("1");
+    expect(proxy(request("/rum", "POST", { ...beacon, origin: "http://localhost:3002" })).status).toBe(403);
   });
 
   it("lets a same-origin POST and a cross-site GET or HEAD through", async () => {

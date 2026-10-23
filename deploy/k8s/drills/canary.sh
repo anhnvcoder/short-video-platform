@@ -123,9 +123,10 @@ traffic_log() {
 }
 
 # client_stats LOG FROM_MS TO_MS: "<feed requests> <5xx> <401 or 429> <no answer> <first 5xx ms> <last 5xx ms>" of
-# the feed requests of LOG that started between the two times (0 when no 5xx).
+# the feed requests of LOG that started between the two times (0 when no 5xx). Only explore and following count: the
+# log also holds the logins and the web client's requests (web-login, web-asset), which go to route web, not route api.
 client_stats() {
-  awk -v a="$2" -v b="$3" '!/^#/ && $3 != "login" && $1 >= a && $1 <= b {
+  awk -v a="$2" -v b="$3" '!/^#/ && ($3 == "explore" || $3 == "following") && $1 >= a && $1 <= b {
       n++
       if ($4 ~ /^5/) { e++; if (!f) f = $1; l = $1 }
       if ($4 == "401" || $4 == "429") x++

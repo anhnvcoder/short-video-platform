@@ -1,0 +1,64 @@
+# Release web of chart deploy/helm/svp-service (docs/adr/0019-web-k3d-supply-chain-observability.md): the web client,
+# Next's standalone server built from web/ by deploy/docker/web.Dockerfile.
+image:
+  # Releases on GHCR, built, scanned and signed by CI (.github/workflows/images.yml). The promote pull request
+  # writes the three lines below; the GitOps cluster pulls the digest, the tag names the commit for people. Empty:
+  # no release yet. The dev path (make k8s-up) ignores them and passes its own registry, tag and an empty digest.
+  repository: ghcr.io/anhnvcoder/short-video-platform/web
+  tag: ""
+  digest: ""
+protocol: http
+# The image's port (PORT of deploy/docker/web.Dockerfile), as in compose.
+port: 3001
+resources:
+  # Compose measured 53 MiB at rest and 96 MiB after the end-to-end tests, before the OTel SDK and Sentry's server SDK;
+  # the limit leaves room for both until the cluster's memory is measured again.
+  requests: {cpu: 100m, memory: 128Mi}
+  limits: {cpu: "1", memory: 384Mi}
+env:
+  # Kubernetes sets HOSTNAME to the pod's name, which overrides the image's HOSTNAME=0.0.0.0: Next's standalone server
+  # would then listen on the pod's address only, not on loopback, where kubectl port-forward connects.
+  HOSTNAME: 0.0.0.0
+  # The only host the BFF calls: the gateway's Service, inside the cluster (docs/adr/0016-web-client.md, section 5).
+  GATEWAY_URL: http://gateway:8080
+  # Sessions and refresh locks in Valkey db 9 (keys svp:web:), beside the gateway's db 10 and feed-service's db 14.
+  REDIS_URL: redis://valkey.svp-data:6379/9
+  # What the browser uses: the CSRF check, the __Host-Http- cookie with Secure, HSTS and the post-login redirect check
+  # compare against it.
+  APP_ORIGIN: https://svp.localhost:8443
+  # HLS, thumbnails and the presigned upload form: MinIO through route s3 of Gateway svp, the origin the gateway's
+  # MEDIA_PUBLIC_BASE_URL and video-service's S3_PUBLIC_ENDPOINT name; the Content-Security-Policy allows it.
+  MEDIA_ORIGIN: https://s3.svp.localhost:8443
+  UPLOAD_ORIGIN: https://s3.svp.localhost:8443
+  SENTRY_ENVIRONMENT: k3d
+# SENTRY_DSN from Secret sentry (server errors and the browser's reports to GlitchTip in svp-obs). Secret web-env holds
+# NEXT_SERVER_ACTIONS_ENCRYPTION_KEY, set when the process starts so the key the image carries is never the one in use.
+errorTracking: true
+# Reached from Envoy only, on 3001; reaches the gateway, Valkey, the Collector and GlitchTip, nothing else: no
+# Postgres, Redpanda, MinIO, gRPC service, profiler, API server or internet (threat model WEB-13).
+ingressFrom: [envoy]
+egressTo: [gateway, valkey, collector, glitchtip]
+# https://svp.localhost:8443: listener https-apex of Gateway svp, whose certificate names svp.localhost alone (chart
+# svp-cluster). Route web, the release's name.
+httpRoute:
+  host: svp.localhost
+  sectionName: https-apex
+# A Rollout with an analysed canary, the steps of the gateway's (ADR-0019 section 3). `make k8s-up` runs drill traffic
+# while a canary is in progress (deploy/k8s/install.sh); it requests /login and one static asset through Envoy.
+canary: true
+# 5xx below 1%, as for the gateway. p99 below 500 ms rather than the gateway's 150: a page is rendered on the server
+# after a call to the gateway, a new canary pod starts cold, and the web client has no latency SLO yet; 500 ms is one of
+# Envoy's default bucket bounds, so the interpolated p99 is close to the truth around it.
+canaryLimits:
+  p99Ms: 500
+  errorRatio: 0.01
+# Two replicas on the two nodes, no autoscaler: the lab's server-side rendering load is small and there is no
+# measurement yet to set an HPA from. Always two, so a node drain or a crash leaves one serving and the budget lets one
+# go at a time.
+replicas: 2
+pdb:
+  minAvailable: 1
+spreadAcrossNodes: true
+# The standalone server exits at once on SIGTERM, without waiting for requests in flight: 5 s for Envoy to drop the
+# terminating pod from its endpoints first.
+preStopSleepSeconds: 5

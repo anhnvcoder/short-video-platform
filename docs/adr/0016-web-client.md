@@ -2,7 +2,12 @@
 
 - Trạng thái: Chấp nhận; phần chuẩn bị backend và phần A đã kiểm trên máy ngày 2026-10-22 (mục Kết quả phần A); chi tiết
   phần B (§6 origin upload, §8 trạng thái follow, §11) chốt ở [0018](0018-web-profiles-public-video-upload.md), phần B
-  đã kiểm trên máy cùng ngày (mục "Kết quả phần B" của 0018); phần C còn làm
+  đã kiểm trên máy cùng ngày (mục "Kết quả phần B" của 0018); chi tiết phần C chốt ở
+  [0019](0019-web-k3d-supply-chain-observability.md), trong đó §6 (Trusted Types dời), §7 (chứng chỉ riêng cho
+  `svp.localhost` thay SAN của chứng chỉ wildcard), §10 (`@sentry/nextjs` chỉ ở server, thêm dev dependency `sentry`, CLI getsentry/cli; ngân sách tải lần đầu của login nới lên
+  210 kB) và
+  §11 (cơ chế tin `traceparent`) chỉnh bởi 0019; phần C hiện thực và đã kiểm trên máy ngày 2026-10-24 (mục "Kết quả phần C"
+  của 0019), phần cần cluster GitOps và RAM lớn hơn dời giai đoạn 7 (0019 §12)
 - Ngày: 2026-10-21
 
 ## Bối cảnh
@@ -519,7 +524,7 @@ ngoài danh sách này cần hỏi trước. Phần A **chỉ cài gói của ph
 | Route | Lớp 1: JS của route trên runtime của Next | Lớp 2: tải lần đầu (runtime + lớp 1) |
 | --- | --- | --- |
 | Feed `/` (gồm hls.js light tải lười) | ≤ 200 kB | ≤ 330 kB |
-| Login `/login` | ≤ 80 kB | ≤ 200 kB |
+| Login `/login` | ≤ 80 kB | ≤ 210 kB (≤ 200 kB tới phần B; nới ở phần C, [ADR-0019](0019-web-k3d-supply-chain-observability.md) §12) |
 
 - Lớp 1 là mọi `entryJSFiles` trong client reference manifest của route (layout gốc và nhóm, page, boundary error,
   not-found, global-error) cộng chunk chúng tải lười, trừ `rootMainFiles` của `build-manifest.json` (React, react-dom,
@@ -530,8 +535,14 @@ ngoài danh sách này cần hỏi trước. Phần A **chỉ cài gói của ph
 
 **Phần B:** `@lhci/cli` (Lighthouse CI trên container đã build). Upload là XHR tự viết, không thêm gói.
 
-**Phần C:** `@sentry/nextjs` (lỗi tới GlitchTip qua tunnel cùng origin), `@opentelemetry/api`, `@opentelemetry/sdk-node`,
-exporter OTLP gRPC và instrumentation `http`/`undici` (trace server qua `instrumentation.ts`), `web-vitals` (RUM).
+**Phần C** (chi tiết ở [ADR-0019](0019-web-k3d-supply-chain-observability.md)):
+
+| Gói | Lý do |
+| --- | --- |
+| `@sentry/nextjs` 11.8.0 | Lỗi server tới GlitchTip; chỉ import ở code server. Trình duyệt không có SDK Sentry: một reporter nhỏ gửi báo cáo JSON tới `/monitoring` cùng origin, server dựng event (ADR-0019 §8) |
+| `@opentelemetry/api` 1.9.1, `@opentelemetry/sdk-node`, `@opentelemetry/exporter-trace-otlp-grpc`, `@opentelemetry/exporter-metrics-otlp-grpc`, `@opentelemetry/instrumentation-http` 0.223.0, `@opentelemetry/instrumentation-undici` 0.33.0 | Trace và metric của server Next qua `instrumentation.ts` (ADR-0019 §10). Bản mới hơn lúc cài (0.300.0, api 1.10.0, undici 0.34.0) chưa đủ 3 ngày (`minimumReleaseAge`), nên ghim bản liền trước |
+| `web-vitals` 6.2.3 | RUM (ADR-0019 §11) |
+| `sentry` 0.45.0 (dev; CLI getsentry/cli, giấy phép FSL-1.1-Apache-2.0) | Tải source map lên GlitchTip (`make web-sourcemaps`, `make k8s-web-sourcemaps`); `@sentry/nextjs` 11.8.0 đã kéo đúng bản này qua `@sentry/bundler-plugins`, dependency trực tiếp để `pnpm exec` thấy lệnh; không script cài đặt |
 
 **Công cụ:**
 
@@ -575,7 +586,10 @@ exporter OTLP gRPC và instrumentation `http`/`undici` (trace server qua `instru
 - **Phần C (k3d):** image distroless, ký, quét, Kyverno, promote; release Helm `web` (HTTPRoute `svp.localhost`, 2 replica,
   PDB, canary, NetworkPolicy); GlitchTip, OTel, RUM. **Gateway tin `traceparent` chỉ từ pod web** (nguồn tin cậy như
   `TRUSTED_PROXY_CIDRS`); khi làm, ADR-0011 được đánh dấu "chỉnh bởi" ADR ghi chi tiết đó. Trace từ trình duyệt (SDK
-  OTel browser còn 0.x) chưa làm.
+  OTel browser còn 0.x) chưa làm. Chi tiết chốt ở [ADR-0019](0019-web-k3d-supply-chain-observability.md), trong đó cơ chế tin
+  trace context đổi (§7: Envoy bỏ trace context của client trên mọi route, chỉ Envoy và web vào được gateway, web chỉ
+  inject, vì pod Envoy và pod web cùng dải pod); kết quả kiểm ở mục "Kết quả phần C" của ADR-0019, việc dời giai đoạn 7 ở
+  §12 của nó.
 - **E2E trong CI:** giai đoạn 6, cùng "stack chạy trong CI" mà ADR-0015 §12 đã dời. 5b chạy e2e local; CI chạy lint, type,
   unit, size-limit và kiểm `web/gen/api.d.ts` không lệch.
 - **MinIO community đã archive:** ngoài phạm vi 5b; quyết ở giai đoạn 6/7 bằng ADR riêng. CORS toàn cục đủ cho lab.

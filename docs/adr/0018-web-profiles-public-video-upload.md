@@ -297,8 +297,8 @@ Chọn **A**.
   của `GET /videos/{video_id}`, `GET /public/videos/{video_id}`.
 - **Một** `GetProfiles` với các `author_id` **đã khử trùng** của trang (trang rỗng: không gọi), chạy **song song** với
   `GetStats`; mỗi lời gọi có hạn **100 ms** riêng (`statsTimeout`), không retry. Lỗi hay quá hạn → mọi item vắng `author`, log
-  WARN `served without authors` (có `grpc_code`; dòng của `GetStats` đổi từ `feed served without stats` thành
-  `served without stats` vì giờ dùng cho cả danh sách và một video); id user-service không trả → item đó vắng `author`. Lỗi này không đi qua
+  WARN `served without authors` (có `grpc_code`; dòng WARN của `GetStats` cũng bỏ chữ "feed" ở đầu, thành
+  `served without stats`, vì giờ dùng cho cả danh sách và một video); id user-service không trả → item đó vắng `author`. Lỗi này không đi qua
   bảng [§8.4](../architecture.md#84-mã-lỗi-grpc-sang-http-ở-gateway).
 - `author` = `{user_id, handle, display_name}` (schema `Profile`). Mọi field mới là tuỳ chọn: client cũ không vỡ.
 - **Gateway, retry và breaker** (ADR-0010 §4):
@@ -539,7 +539,7 @@ Hai lớp như ADR-0016 §10 (`web/.size-limit.json`, `make web-check`, gzip, kB
 | Route | Lớp 1: JS của route trên runtime của Next | Lớp 2: tải lần đầu |
 | --- | --- | --- |
 | `/v/[id]` (player hls.js light tải lười, như feed) | ≤ 200 kB | ≤ 330 kB |
-| `/upload` (XHR tự viết, không gói mới) | ≤ 80 kB | ≤ 200 kB |
+| `/upload` (XHR tự viết, không gói mới) | ≤ 80 kB | ≤ 210 kB (≤ 200 kB tới phần B; nới ở phần C cùng login, [ADR-0019](0019-web-k3d-supply-chain-observability.md) §12) |
 
 `/v/[id]` dùng cùng player và cùng cách tải lười với feed nên cùng ngân sách; `/upload` chỉ có form và XHR nên như login.
 
@@ -594,7 +594,7 @@ thêm tải ghi trace và video. Trình duyệt tới MinIO qua loopback, không
 | --- | --- |
 | e2e (`make measure-web`, lượt duy nhất) | 68/68 pass trong 5,8 phút, không chạy lại test nào: Chromium 30/30 + 4/4 (project `chromium-publishing`), WebKit 30/30 + 4/4 (`webkit-publishing`). Mới ở phần B: upload clip 60 s 1080p qua `/upload` tới `READY` rồi phát ở `/v/{id}`; mất mạng lúc upload thì trang tự gửi lại và video vẫn `READY`; `/v/{id}` cho khách (tên, `@handle`, không nhận cookie), HTML thô không cookie có thẻ Open Graph, title HTML escape trong trang và thẻ meta, id ngẫu nhiên và video chưa `READY` cùng một 404, khách bấm like được mời đăng nhập rồi quay lại video; `/me` liệt kê video kèm trạng thái, `/u/{handle}` theo dõi rồi bỏ theo dõi, `/u/{handle của mình}` → `/me`, handle chữ hoa → chữ thường; tên hiển thị chứa HTML hiện như text ở `/me` và feed; CSP `connect-src` của `/upload` có origin upload, nonce trên mọi `<script>` của `/v/{id}` cho khách; WEB-10 (preflight); axe không lỗi serious/critical ở `/upload`, `/me`, `/u/{handle}`, `/v/{id}` |
 | Cắt mạng lúc upload | Playwright không cắt được upload "giữa chừng" trên loopback: Chromium (CDP `Fetch`) cắt sau khi body đã gửi hết, WebKit (`page.route`) cắt trước byte đầu. Cả hai kiểm đường mất mạng → chờ `online` → gửi lại → `READY` |
-| Upload ~100 MB (`make measure-upload`, Chromium, 1 lượt) | File 102,5 MB (160 s 1080p); XHR start → `load` 1 224 ms, 83,8 MB/s; main thread của trang trong cửa sổ 1 287 ms: TaskDuration 83 ms, ScriptDuration 16 ms (6 %; tiến trình mạng không tính); XHR start → `READY` 156,9 s (transcode 160 s 1080p chiếm gần hết). Hai lượt đo trước trên cùng máy: 1 091 / 1 311 ms tải lên, `READY` 158,5 / 159,5 s |
+| Upload ~100 MB (`make measure-upload`, Chromium, 1 lượt) | File 102,5 MB (160 s 1080p); XHR start → `load` 1 224 ms, 83,8 MB/s; main thread của trang trong cửa sổ 1 287 ms: TaskDuration 83 ms, ScriptDuration 16 ms (6 %; tiến trình mạng không tính); XHR start → `READY` 156,9 s (transcode 160 s 1080p chiếm gần hết). Ba lượt đo trước trên cùng máy: 1 091 / 1 311 / 1 166 ms tải lên, `READY` lần lượt 158,5 / 159,5 / 163,0 s |
 | Lighthouse (`make web-lighthouse`, 12.6.1, mobile mặc định: throttling mô phỏng RTT 150 ms, 1,6 Mbit/s, CPU ×4; benchmarkIndex ~3 100; một lượt mỗi trang) | `/` (đã đăng nhập): LCP **4 061 ms**, CLS 0, TBT 129 ms. `/v/{id}` (khách): LCP **3 167 ms**, CLS 0, TBT 69 ms. LCP trượt ngưỡng 2 500 ms ở cả hai, CLS và TBT đạt. Phần tử LCP ở cả hai trang: poster `<img fetchpriority="high">` (`thumbnail.jpg` 88,8 kB từ MinIO) |
 | Lighthouse, các lượt trước | Trước khi sửa cách tải poster và player: `/` LCP 6 012 ms, TBT 542 ms, tổng byte 75,6 MB (cả 10 poster và 30 segment HLS tải ngay); `/v/{id}` LCP 2 918 ms, TBT 69 ms. Sau khi sửa (poster đầu ưu tiên, poster khác lazy, hls.js bắt đầu ở 360p với đệm ~3 MB, video kế chỉ nạp khi video hiện tại đã `canplay`/`playing`): `/` LCP 3 692 ms, TBT 64 ms, tổng byte 14,6 MB; `/v/{id}` LCP 3 018 ms, TBT 50 ms. Lượt này (cùng code) `/` 4 061 ms: chênh 370 ms giữa hai lượt cùng code là nhiễu của một lượt |
 | Vì sao LCP còn trượt (phân tích báo cáo JSON của lượt sau khi sửa) | LCP thấy thật không throttle chỉ 118–178 ms; số mô phỏng do **byte cần trước LCP** trên 1,6 Mbit/s: `/` ~472 kB (script ~200 kB, hai poster 177,5 kB vì poster kế nằm trong lề lazy của Chrome, font Be Vietnam Pro 4 weight 67,5 kB, HTML, CSS), `/v/{id}` ~376 kB. Riêng truyền đã ~2,0–2,6 s, cộng TTFB mô phỏng ~460 ms và bắt tay tới origin thứ hai (MinIO) |
@@ -609,7 +609,8 @@ thêm tải ghi trace và video. Trình duyệt tới MinIO qua loopback, không
 Chứng cứ của lượt e2e (report HTML, `results.json`, trace, video, 44 ảnh màn mỗi trình duyệt ở cỡ mobile 390×844 và
 desktop 1440×900, gồm M20–M39 và D03–D11 của phần B) nằm ở thư mục làm việc của máy, không commit (repo public, ~400 MB).
 
-**Chưa kiểm ở phần B:** CORS MinIO và `UPLOAD_ORIGIN` ở k3d (phần C); kiểm `upload_url` khác origin chỉ có ở unit test
+**Chưa kiểm ở phần B:** CORS MinIO và `UPLOAD_ORIGIN` ở k3d (phần C; đã kiểm ngày 2026-10-24, mục "Kết quả phần C" của
+[ADR-0019](0019-web-k3d-supply-chain-observability.md)); kiểm `upload_url` khác origin chỉ có ở unit test
 của web (trang báo lỗi, không gửi byte nào), không có e2e; `make up OBS=lgtm` + `drill-obs-threats` (WEB-9) dời lên giai
 đoạn cloud như phần A.
 

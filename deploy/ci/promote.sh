@@ -78,7 +78,7 @@ if [ -d "$releases" ]; then
     fi
     svc=${r#"$ghcr_prefix"/}
     if ! printf '%s\n' "${svp_services[@]}" | grep -qxF -- "$svc" || [ "$r" != "$ghcr_prefix/$svc" ]; then
-      fail "$dir: $r is not the repository of one of the six services"
+      fail "$dir: $r is not the repository of one of the seven services"
     fi
     [[ $t =~ ^[0-9a-f]{12}$ ]] || fail "$dir: tag '$t' is not the 12 hex digits of a commit"
     is_digest "$d" || fail "$dir: digest '$d' is not sha256:<64 hex>"

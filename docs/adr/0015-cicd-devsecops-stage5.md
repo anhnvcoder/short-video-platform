@@ -2,7 +2,8 @@
 
 - Trạng thái: Chấp nhận; §2 (job `web`, job `check` chạy `make check-go`, `ci-ok` bảy job) chỉnh bởi [0016](0016-web-client.md);
   thứ tự cắt RAM của §8 chỉnh bởi [0017](0017-gitops-capacity-media-worker-max2.md) (thiếu tiêu chí (c) thì đi thẳng tới
-  media-worker tối đa 2)
+  media-worker tối đa 2); §3–§9 (image thứ bảy `web`: context `web/`, `image_paths`, build arg `SVP_BUILD_ID`) chỉnh bởi
+  [0019](0019-web-k3d-supply-chain-observability.md)
 - Ngày: 2026-10-20
 
 ## Bối cảnh

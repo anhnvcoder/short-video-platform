@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# values-check.sh BASE: for every file of deploy/k8s/values/services/ that changed from commit BASE to HEAD (all six
+# values-check.sh BASE: for every file of deploy/k8s/values/services/ that changed from commit BASE to HEAD (all seven
 # when BASE is empty), a non-empty image.digest must name a release that may enter main: right repository, signed by
 # images.yml on main, one vuln attestation covering both platforms, no CRITICAL, at most 48 hours old
 # (verify-release.sh; docs/adr/0015-cicd-devsecops-stage5.md, section 7). Kyverno accepts attestations up to 72 hours,
@@ -32,7 +32,7 @@ while IFS= read -r file; do
     continue
   fi
   if [ ! -f "$repo_root/$file" ]; then
-    echo "FAIL  $file was removed: the GitOps path needs the values of all six services" >&2
+    echo "FAIL  $file was removed: the GitOps path needs the values of all seven services" >&2
     failed=1
     continue
   fi

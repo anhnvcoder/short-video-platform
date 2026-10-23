@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Runs the glitchtip-init job (migrations, cache table, partitions, bootstrap.py) once with a
-# private output directory mounted, then puts the DSN and API token it wrote there into the env
+# private output directory mounted, then puts the DSN and API tokens it wrote there into the env
 # file (docs/adr/0011-observability-stage3.md, section 7):
 #   SENTRY_DSN         the project DSN with host glitchtip:8000, for the Go services in compose
 #   SENTRY_AUTH_TOKEN  read-only API token (event:read, project:read) for the drills
+#   SENTRY_SOURCEMAPS_TOKEN  API token svp-sourcemaps (project:releases) of make web-sourcemaps
+#                      (docs/adr/0019-web-k3d-supply-chain-observability.md, section 9)
 #   SENTRY_ORG, SENTRY_PROJECT, SENTRY_API_URL  svp, svp, http://127.0.0.1:8000
 # The env file is read with the strict rule of dotenv.sh, the same as `make env`: a line it refuses
 # stops the script, naming the variable, with the env file untouched. A variable that already has
@@ -33,8 +35,9 @@ $COMPOSE run --rm --no-deps -T --user "$(id -u):$(id -g)" -v "$out:/out" \
 
 dsn=$(sed -n 's/^dsn=//p' "$out/credentials")
 token=$(sed -n 's/^token=//p' "$out/credentials")
+sourcemaps_token=$(sed -n 's/^sourcemaps_token=//p' "$out/credentials")
 rm -f "$out/credentials"
-if [[ -z $dsn || -z $token ]]; then
+if [[ -z $dsn || -z $token || -z $sourcemaps_token ]]; then
   echo "glitchtip-init: bootstrap.py wrote no DSN or token" >&2
   exit 1
 fi
@@ -60,6 +63,7 @@ want() {
 }
 want SENTRY_DSN "$service_dsn"
 want SENTRY_AUTH_TOKEN "$token"
+want SENTRY_SOURCEMAPS_TOKEN "$sourcemaps_token"
 want SENTRY_ORG svp
 want SENTRY_PROJECT svp
 want SENTRY_API_URL "$api_url"

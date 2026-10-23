@@ -4,7 +4,8 @@ Scaling and disruption of the service (ADR-0014 section 10).
 hpa: a HorizontalPodAutoscaler on CPU, read from the metrics-server k3s ships. Utilization is a percentage of the
 container's CPU request, which every release sets, so a gateway asking 100m scales out once its pods average 70m.
 
-pdb: a PodDisruptionBudget, only where at least two replicas always run. A voluntary disruption (a node drain, an
+pdb: a PodDisruptionBudget, only where at least two replicas always run: an HPA whose minimum is two or more, or a
+fixed replica count of two or more without any autoscaler (the web client). A voluntary disruption (a node drain, an
 eviction) may then take one pod at a time, never the last one serving. It selects pods by label, so for a Rollout it
 counts the stable and the canary pods alike; Argo Rollouts' own restart (spec.restartAt) evicts through it too.
 
@@ -46,8 +47,14 @@ spec:
           averageUtilization: {{ required (printf "hpa.cpuUtilization is empty for release %s" $.Release.Name) .cpuUtilization }}
 {{- end }}
 {{- with .Values.pdb }}
-{{- if lt (int ($.Values.hpa.minReplicas | default 0)) 2 }}
-{{- fail (printf "release %s sets pdb without hpa.minReplicas >= 2: a budget on one replica blocks every drain or allows everything" $.Release.Name) }}
+{{- $min := 0 }}
+{{- if $.Values.hpa }}
+{{- $min = int ($.Values.hpa.minReplicas | default 0) }}
+{{- else if not $.Values.keda }}
+{{- $min = int $.Values.replicas }}
+{{- end }}
+{{- if lt $min 2 }}
+{{- fail (printf "release %s sets pdb without at least two replicas always running (hpa.minReplicas >= 2, or replicas >= 2 without hpa or keda): a budget on one replica blocks every drain or allows everything" $.Release.Name) }}
 {{- end }}
 ---
 apiVersion: policy/v1

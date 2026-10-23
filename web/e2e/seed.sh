@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # Test data for the web client's end-to-end tests (web/e2e/*.e2e.ts), run once per `playwright test` by
-# e2e/global-setup.ts against the compose stack of `make up`, through the gateway at 127.0.0.1:8080.
+# e2e/global-setup.ts against the compose stack of `make up`, through the gateway at 127.0.0.1:8080. On cluster svp
+# (`make k8s-web-e2e`) global-setup passes https://api.svp.localhost:8443 in SVP_E2E_GATEWAY_URL, curl trusts the
+# cluster's CA through CURL_CA_BUNDLE (for the gateway and the storage alike), and SVP_STACK=k3d makes lib.sh reset the
+# limit in the cluster's Valkey, as `make k8s-smoke` does.
 #
-# - Explore must hold at least 21 READY videos, so the feed has a third page and 20 moves from video to video each
-#   reach a video not played yet in the run. Videos of earlier runs count; only the missing ones are uploaded, by
+# - Explore must start with at least 21 READY videos that play, so the feed has a third page and 20 moves from video
+#   to video each reach a video not played yet in the run. Only the run of videos from the top of explore whose master
+#   playlist answers 200 counts, up to the first one that does not: the tests walk the feed from video 0, and an older
+#   video may be READY in Postgres while the storage that held its HLS files was emptied (a deleted MinIO volume).
+#   Videos of earlier runs count; only the missing ones are uploaded, by
 #   fresh authors, at most per_author each: the gateway's upload class allows a burst of 10 per user and at most 3
 #   open uploads, so each upload waits for READY before the next one starts, and a 429 waits for its Retry-After.
 # - Every run uploads one more video by a fresh author with an HTML title (threat model WEB-1). It is the newest READY
@@ -13,9 +19,9 @@
 # Writes {"xss": {"video_id", "author_id", "title"}, "explore_ready": N} to the file named by the first argument.
 #
 # LOCAL LAB ONLY: sourcing lib.sh deletes the gateway's register rate limit keys (svp:gw:rl:register:*) in Redis db 10
-# on 127.0.0.1:6379 with SCAN + DEL, as `make smoke` does. The web's BFF reaches the gateway from one container
-# address, so every browser of every run shares one register bucket (burst 20 per hour). Never point it at a shared
-# stack.
+# on 127.0.0.1:6379 (Valkey db 10 of the cluster on k3d) with SCAN + DEL, as `make smoke` does. The web's BFF reaches
+# the gateway from one container address, so every browser of every run shares one register bucket (burst 20 per
+# hour). Never point it at a shared stack.
 set -euo pipefail
 
 out=${1:?usage: seed.sh OUTPUT_FILE}
@@ -30,15 +36,25 @@ ready_timeout=180
 
 wait_gateway_ready 60
 
-# count_explore AUTH_FILE: prints how many READY videos explore holds, reading pages of 50 until the last one or
-# min_ready.
+# count_explore AUTH_FILE: prints how many videos from the top of explore play in a row: each item's playlist_url
+# answers 200, counting stops at the first that does not, at min_ready, or at the last page (pages of 50). A storage
+# that does not answer at all (status 000) stops the seed: every upload would need it too.
 count_explore() {
-  local cursor="" n=0 status
+  local cursor="" n=0 status url
   while :; do
     status=$(request GET "/feed/explore?page_size=50${cursor:+&cursor=$cursor}" "$1")
     [[ $status == 200 ]] || fail "count explore (status $status, $(problem_summary))"
-    n=$((n + $(jq '.items | length' "$work/body")))
     cursor=$(jq -r '.next_cursor | @uri' "$work/body")
+    while read -r url; do
+      status=$(fetch "$url" "$work/playlist")
+      [[ $status != 000 ]] || fail "GET playlist $url answers (no answer from the storage)"
+      [[ $status == 200 ]] || {
+        printf '%s' "$n"
+        return
+      }
+      n=$((n + 1))
+      ((n < min_ready)) || break
+    done < <(jq -r '.items[].playlist_url' "$work/body")
     [[ -n $cursor && $n -lt $min_ready ]] || break
   done
   printf '%s' "$n"
@@ -89,9 +105,9 @@ if ((missing > 0)); then
     fi
     upload_ready "fill$i" "$work/filler$((i / per_author)).auth" "e2e clip $(openssl rand -hex 4)"
   done
-  ok "uploaded $missing videos for explore (had $ready READY)"
+  ok "uploaded $missing videos for explore (it started with $ready that play)"
 else
-  ok "explore holds at least $min_ready READY videos"
+  ok "explore starts with at least $min_ready videos that play"
 fi
 
 new_user xss_author
@@ -111,7 +127,7 @@ done
 ok "WEB-1 video first in explore"
 
 ready=$(count_explore "$work/reader.auth")
-((ready >= min_ready)) || fail "explore holds at least $min_ready READY videos (got $ready)"
+((ready >= min_ready)) || fail "explore starts with at least $min_ready videos that play (got $ready)"
 jq -n --arg v "$xss_id" --arg a "$xss_author_id" --arg t "$xss_title" --argjson n "$ready" \
   '{xss: {video_id: $v, author_id: $a, title: $t}, explore_ready: $n}' >"$out"
-ok "seed written (explore holds at least $ready READY videos)"
+ok "seed written (explore starts with at least $ready videos that play)"

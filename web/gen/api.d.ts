@@ -488,11 +488,22 @@ export interface components {
          */
         Handle: string;
         /**
-         * @description 1 to 50 characters (Unicode code points) once trimmed, valid UTF-8, without control
-         *     characters (U+0000-U+001F, U+007F-U+009F), line or paragraph separators (U+2028, U+2029)
-         *     or bidirectional formatting characters (U+061C, U+200E, U+200F, U+202A-U+202E,
-         *     U+2066-U+2069). Not normalized by the server: send NFC. Text chosen by its user: display
-         *     it as text, never as HTML.
+         * @description 1 to 50 characters (Unicode code points) once trimmed, valid UTF-8, without:
+         *     - control characters (general category Cc: U+0000-U+001F, U+007F-U+009F);
+         *     - the line and paragraph separators U+2028 and U+2029;
+         *     - format characters (general category Cf), among them the bidirectional formatting
+         *       characters (U+061C, U+200E, U+200F, U+202A-U+202E, U+2066-U+2069), the invisible
+         *       U+200B, U+2060 and U+FEFF, and the tag characters (U+E0001, U+E0020-U+E007F);
+         *     - the other default-ignorable code points (Unicode property
+         *       Other_Default_Ignorable_Code_Point, such as the Hangul fillers U+115F, U+1160, U+3164,
+         *       U+FFA0 and the combining grapheme joiner U+034F);
+         *     - the blank Braille pattern U+2800.
+         *
+         *     The zero width joiner U+200D and the variation selectors (Unicode property
+         *     Variation_Selector: U+180B-U+180D, U+180F, U+FE00-U+FE0F, U+E0100-U+E01EF) are allowed,
+         *     as emoji need them, but are not visible: the name must hold at least one character that is
+         *     neither one of them nor white space. Not normalized by the server: send NFC. Text chosen by
+         *     its user: display it as text, never as HTML.
          * @example Minh Anh
          */
         DisplayName: string;

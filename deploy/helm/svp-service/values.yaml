@@ -1,6 +1,7 @@
-# Defaults shared by the six releases of svp-service (docs/adr/0014-kubernetes-local-stage4.md, sections 6, 8, 9, 10
-# and 11). Each release's own values are deploy/k8s/values/services/<service>.yaml; the release name is the service
-# name, which names the pods' label app.kubernetes.io/name, the Service, the ServiceAccount and the Secrets.
+# Defaults shared by the seven releases of svp-service (docs/adr/0014-kubernetes-local-stage4.md, sections 6, 8, 9, 10
+# and 11; the web client's release: docs/adr/0019-web-k3d-supply-chain-observability.md, section 2). Each release's own
+# values are deploy/k8s/values/services/<service>.yaml; the release name is the service name, which names the pods'
+# label app.kubernetes.io/name, the Service, the ServiceAccount and the Secrets.
 # Installed by deploy/k8s/install.sh as wave 7 of deploy/argocd/apps/components.json, once every dependency runs.
 
 image:
@@ -14,8 +15,8 @@ image:
   tag: ""
   digest: ""
 
-# http: the gateway (probes on /healthz). grpc: the four gRPC services (Kubernetes' own grpc probe on the standard
-# health service). none: media-worker (no port, no probe, no Service).
+# http: the gateway and the web client (probes on /healthz). grpc: the four gRPC services (Kubernetes' own grpc probe
+# on the standard health service). none: media-worker (no port, no probe, no Service).
 protocol: none
 # Port the process listens on (LISTEN_ADDR) and the Service exposes; unused with protocol none.
 port: 0
@@ -29,9 +30,9 @@ replicas: 1
 # HorizontalPodAutoscaler on CPU (metrics-server of k3s): {minReplicas, maxReplicas, cpuUtilization}. The utilization
 # is a percentage of the container's CPU request, so resources.requests.cpu must be set (it always is, see below).
 hpa: {}
-# PodDisruptionBudget {minAvailable}: only for a workload that always runs at least two replicas (hpa.minReplicas >= 2).
-# With one replica a budget either blocks every node drain for good (minAvailable: 1) or allows everything (0), so a
-# single-replica service has none.
+# PodDisruptionBudget {minAvailable}: only for a workload that always runs at least two replicas: hpa.minReplicas >= 2,
+# or no autoscaler at all (neither hpa nor keda) and replicas >= 2. With one replica a budget either blocks every node
+# drain for good (minAvailable: 1) or allows everything (0), so a single-replica service has none.
 pdb: {}
 # Spread the replicas over the nodes (topologySpreadConstraints on kubernetes.io/hostname, ScheduleAnyway): with two
 # replicas on two nodes, losing one node leaves one replica serving. Soft, so a one-node cluster still schedules them.
@@ -42,9 +43,14 @@ spreadAcrossNodes: false
 keda: {}
 
 # Run the service as an Argo Rollouts Rollout with an analysed canary instead of a Deployment (ADR section 13): Service
-# <release>-canary beside the stable one, HTTPRoute api split between the two, AnalysisTemplate <release>-canary on
-# Envoy's metrics of the canary backend. Only the gateway sets it: its route is the one Envoy measures per backend.
+# <release>-canary beside the stable one, the release's HTTPRoute split between the two, AnalysisTemplate
+# <release>-canary on Envoy's metrics of the canary backend. Only a release with an HTTPRoute can set it (the gateway,
+# the web client): Envoy measures the canary on that route.
 canary: false
+# Limits of the canary's analysis, per release since what a good response time is depends on the service: p99Ms, the
+# p99 in ms the canary must stay under; errorRatio, the share of 5xx among its responses that are not 4xx it must stay
+# under. Required with canary set; the release's values file says why its numbers.
+canaryLimits: {}
 
 # Annotations of the pod template. A changed value makes a new revision without a new image: the canary drill
 # (deploy/k8s/drills/canary.sh) changes one to run a canary of the code already running.
@@ -78,6 +84,10 @@ scratch: {}
 
 # terminationGracePeriodSeconds of the pod; empty keeps Kubernetes' 30 s.
 terminationGracePeriodSeconds: null
+# Seconds the container waits in a preStop sleep before it gets SIGTERM, for a process that exits at once on SIGTERM
+# while Envoy may still send it requests: Envoy routes to pod addresses from the EndpointSlices, and needs a moment to
+# drop a terminating pod. Kubernetes' own sleep action, so it needs no shell in the image. Empty: no preStop.
+preStopSleepSeconds: null
 
 # Pods each release may be reached from (ingressFrom) and may reach (egressTo), by name of the peers below; DNS is
 # open to every pod of svp already (chart svp-cluster). The namespace denies everything else in both directions, so
@@ -98,6 +108,11 @@ peers:
   gateway:
     namespace: svp
     labels: {app.kubernetes.io/name: gateway, app.kubernetes.io/component: server}
+    ports: [8080]
+  web:
+    namespace: svp
+    labels: {app.kubernetes.io/name: web, app.kubernetes.io/component: server}
+    ports: [3001]
   user-service:
     namespace: svp
     labels: {app.kubernetes.io/name: user-service, app.kubernetes.io/component: server}
@@ -143,6 +158,11 @@ peers:
     labels: {app.kubernetes.io/name: glitchtip, app.kubernetes.io/component: server}
     ports: [8000]
 
-# HTTPRoute on Gateway svp (svp-edge) to this release's Service; only the gateway sets a host.
+# HTTPRoute on Gateway svp (svp-edge) to this release's Service, for a release that sets a host (the gateway, the web
+# client); no other service is reached from outside the cluster. name: the route's name, empty for the release's name
+# (the canary's Envoy cluster and the Rollout's traffic routing follow it). sectionName: the listener of Gateway svp it
+# attaches to (chart svp-cluster): https for *.svp.localhost, https-apex for svp.localhost alone.
 httpRoute:
   host: ""
+  name: ""
+  sectionName: https
