@@ -56,9 +56,9 @@ done <<<"$files"
 if [ "$failed" -ne 0 ]; then
   ref=refs/pull/${PR_NUMBER:-}/head
   [ -n "${PR_NUMBER:-}" ] || ref=$(git -C "$repo_root" rev-parse HEAD)
-  refresh="gh workflow run images.yml --ref main -f rescan=true -f values_ref=$ref"
+  refresh=$(ci_dispatch_hint images.yml main rescan=true "values_ref=$ref") || exit 1
   echo "Refresh the attestations of these values, then run this check again:" >&2
   echo "  $refresh" >&2
-  summary "values-check failed: refresh with \`$refresh\`"
+  ci_summary "values-check failed: refresh with \`$refresh\`"
 fi
 exit "$failed"

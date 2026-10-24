@@ -76,7 +76,9 @@
 #              Rollouts controller's right to list pods in svp, to which can-i says yes as well. Operators: the
 #              CloudNativePG operator may get and list Secrets in cnpg-system and svp-data only, create pods, exec
 #              into them, patch Deployments, create ServiceAccounts and delete Secrets in svp-data only, and create a
-#              ServiceAccount token nowhere; as it, in cnpg-system (server-side dry runs), a token Secret for
+#              ServiceAccount token nowhere; it may not create, update, patch or delete a ValidatingAdmissionPolicy
+#              or binding, svp-cnpg-operator-secrets by name included (control: as the same user, can-i says yes to
+#              create secrets in cnpg-system); as it, in cnpg-system (server-side dry runs), a token Secret for
 #              ServiceAccount plugin-barman-cloud, the same named cnpg-ca-secret and an Opaque Secret of another name
 #              are refused by ValidatingAdmissionPolicy svp-cnpg-operator-secrets, and so is a label on another TLS
 #              Secret there (controls: as it, an Opaque cnpg-ca-secret passes the policy and is AlreadyExists, a
@@ -1157,6 +1159,28 @@ rbac() {
         miss "RBAC: cnpg-system/cloudnative-pg may not $v $r (got '$out')"
     done
   done
+  # Admission policies are cluster-scoped as well. Updating or deleting ValidatingAdmissionPolicy
+  # svp-cnpg-operator-secrets or its binding (same name) would lift the only limit on the operator's Secret writes in
+  # cnpg-system (cnpg_secrets below), and a policy or binding of its own could refuse any write of the cluster. Asked
+  # without a name and by that name: a Role that grants only named objects gets no from can-i without a name.
+  local cnpg_as=system:serviceaccount:cnpg-system:cloudnative-pg target
+  for r in validatingadmissionpolicies validatingadmissionpolicybindings; do
+    for v in create update patch delete; do
+      for target in "$r.admissionregistration.k8s.io" "$r.admissionregistration.k8s.io/svp-cnpg-operator-secrets"; do
+        # A name means nothing to create: RBAC does not narrow create by name.
+        [[ $v == create && $target == */* ]] && continue
+        out=$(kc auth can-i "$v" "$target" -A --as="$cnpg_as" 2>&1 || true)
+        [[ $out == no ]] && ok "RBAC: cnpg-system/cloudnative-pg may not $v ${target%%.*}${target##*.k8s.io}" ||
+          miss "RBAC: cnpg-system/cloudnative-pg may not $v ${target%%.*}${target##*.k8s.io} (got '$out')"
+      done
+    done
+  done
+  # The same user is answered yes for a right it must have, so the no above is not that of a misspelled ServiceAccount
+  # (can-i answers no for a user that does not exist): it creates cnpg-ca-secret in cnpg-system at start.
+  out=$(kc auth can-i create secrets -n cnpg-system --as="$cnpg_as" 2>&1 || true)
+  [[ $out == yes ]] &&
+    control "as the same user, can-i says yes to create secrets in cnpg-system (the operator's CA Secret)" ||
+    miss "control: as $cnpg_as, can-i says yes to create secrets in cnpg-system (got '$out')"
   info "RBAC exception: Envoy Gateway reads the Secrets of svp and svp-data, which it watches for routes api and s3 (its Secret cache covers every watched namespace; deploy/k8s/values/envoy-gateway.yaml)"
   info "RBAC exception: cert-manager's controller and cainjector read Secrets in every namespace, cainjector patches every webhook configuration, the controller creates pods in every namespace (Certificates in cert-manager, svp-edge, keda and cnpg-system, ClusterIssuers svp-selfsigned and svp-ca; deploy/k8s/values/cert-manager.yaml); its pods are held to PSA restricted everywhere but kube-system (PSA-platform)"
   info "RBAC exception: Argo CD's application controller and server (GitOps path) hold rights on every resource of the cluster, Secrets included: they apply every chart (ADR-0014 section 12)"

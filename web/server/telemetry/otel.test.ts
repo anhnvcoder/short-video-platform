@@ -1,4 +1,7 @@
-import { NodeSDK, api, metrics, tracing } from "@opentelemetry/sdk-node";
+import * as api from "@opentelemetry/api";
+import * as metrics from "@opentelemetry/sdk-metrics";
+import { NodeSDK } from "@opentelemetry/sdk-node";
+import * as tracing from "@opentelemetry/sdk-trace";
 import { http, HttpResponse } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { server } from "@/lib/test/msw-server";
@@ -6,7 +9,9 @@ import { gatewayClient } from "../gateway";
 import { fakeAccessToken, gatewayOrigin, testEnv } from "../testing/bff";
 import {
   addTraceTags,
+  batchSpanProcessorFromEnv,
   injectOnlyPropagator,
+  samplerFromEnv,
   ScrubbingSpanProcessor,
   skipUnrecordedPaths,
   telemetryConfig,
@@ -21,7 +26,7 @@ function startInMemory() {
   const config = telemetryConfig(
     { ...testEnv, buildId: "0123456789ab" },
     {
-      spans: new tracing.SimpleSpanProcessor(exporter),
+      spans: new tracing.SimpleSpanProcessor({ exporter }),
       metrics: new metrics.PeriodicExportingMetricReader({ exporter: new metrics.InMemoryMetricExporter(0) }),
     },
   );
@@ -165,6 +170,67 @@ describe("sampler", () => {
   });
 });
 
+describe("sampler from the environment", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const parentBased = (root: string) =>
+    `ParentBased{root=${root}, remoteParentSampled=AlwaysOnSampler, remoteParentNotSampled=AlwaysOffSampler, ` +
+    "localParentSampled=AlwaysOnSampler, localParentNotSampled=AlwaysOffSampler}";
+
+  it.each([
+    ["", "", parentBased("AlwaysOnSampler")],
+    ["parentbased_always_on", "", parentBased("AlwaysOnSampler")],
+    ["always_on", "", "AlwaysOnSampler"],
+    ["always_off", "", "AlwaysOffSampler"],
+    ["parentbased_always_off", "", parentBased("AlwaysOffSampler")],
+    ["traceidratio", "0.25", "TraceIdRatioBased{0.25}"],
+    ["parentbased_traceidratio", "0.5", parentBased("TraceIdRatioBased{0.5}")],
+    ["parentbased_traceidratio", "", parentBased("TraceIdRatioBased{1}")],
+    ["traceidratio", "1.5", "TraceIdRatioBased{1}"],
+    ["traceidratio", "-0.1", "TraceIdRatioBased{1}"],
+    ["jaeger_remote", "", parentBased("AlwaysOnSampler")],
+  ])("OTEL_TRACES_SAMPLER=%j with OTEL_TRACES_SAMPLER_ARG=%j is %s", (name, arg, expected) => {
+    vi.stubEnv("OTEL_TRACES_SAMPLER", name);
+    vi.stubEnv("OTEL_TRACES_SAMPLER_ARG", arg);
+    expect(samplerFromEnv().toString()).toBe(expected);
+  });
+
+  it("is the sampler the SDK is configured with, inside the path filter", () => {
+    vi.stubEnv("OTEL_TRACES_SAMPLER", "always_off");
+    const config = telemetryConfig(testEnv, null);
+    expect(config.sampler?.toString()).toBe("SkipUnrecordedPaths{AlwaysOffSampler}");
+  });
+});
+
+describe("batch span processor from the environment", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ["", 5000],
+    ["abc", 5000],
+    ["0", 0],
+    ["250", 250],
+  ])("OTEL_BSP_SCHEDULE_DELAY=%j sends an ended span after %d ms", async (delay, ms) => {
+    vi.useFakeTimers();
+    vi.stubEnv("OTEL_BSP_SCHEDULE_DELAY", delay);
+    const exporter = new tracing.InMemorySpanExporter();
+    const provider = new tracing.TracerProvider({ spanProcessors: [batchSpanProcessorFromEnv(exporter)] });
+    provider.getTracer("test").startSpan("GET").end();
+    if (ms > 0) {
+      await vi.advanceTimersByTimeAsync(ms - 1);
+      expect(exporter.getFinishedSpans()).toHaveLength(0);
+    }
+    await vi.advanceTimersByTimeAsync(ms > 0 ? 1 : 0);
+    expect(exporter.getFinishedSpans()).toHaveLength(1);
+    await provider.shutdown();
+  });
+});
+
 describe("scrubbing", () => {
   it.each([
     ["/v/abc?next=%2Fme", "/v/abc"],
@@ -194,8 +260,10 @@ describe("scrubbing", () => {
   });
 
   it("runs no regular expression over a span's name and attributes, which the client controls", () => {
-    const provider = new tracing.BasicTracerProvider({
-      spanProcessors: [new ScrubbingSpanProcessor(new tracing.SimpleSpanProcessor(new tracing.InMemorySpanExporter()))],
+    const provider = new tracing.TracerProvider({
+      spanProcessors: [
+        new ScrubbingSpanProcessor(new tracing.SimpleSpanProcessor({ exporter: new tracing.InMemorySpanExporter() })),
+      ],
     });
     const tracer = provider.getTracer("test");
     // Every match of a regular expression (replace, split, test, match) goes through exec once it is replaced.
@@ -212,8 +280,8 @@ describe("scrubbing", () => {
 
   it("strips every query from a span's name and attributes, on start and on end", () => {
     const exporter = new tracing.InMemorySpanExporter();
-    const provider = new tracing.BasicTracerProvider({
-      spanProcessors: [new ScrubbingSpanProcessor(new tracing.SimpleSpanProcessor(exporter))],
+    const provider = new tracing.TracerProvider({
+      spanProcessors: [new ScrubbingSpanProcessor(new tracing.SimpleSpanProcessor({ exporter }))],
     });
     const tracer = provider.getTracer("test");
     // Next's fetch span names the full URL; its request span keeps the raw URL in http.target.

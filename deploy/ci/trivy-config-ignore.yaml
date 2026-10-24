@@ -1,0 +1,81 @@
+# Findings of make trivy-config that are deliberate choices, ignored for a limited time
+# (docs/adr/0021-deferred-verification-stage6b.md, section 9). A finding that can be fixed without changing behaviour is
+# fixed, not listed here. make trivy-config passes this file to trivy config with --ignorefile; it is never read by the
+# image gate, so nothing here can let a vulnerability or a secret through.
+#
+# Rules, checked on every pull request by deploy/ci/scan-gate.sh --check-ignorefile (job config of ci.yml): only the
+# misconfigurations section; each entry has an id (DS-..., KSV-...), the paths it applies to (an id is never ignored for
+# the whole repository), a statement giving the reason and an expired_at (yyyy-mm-dd) at most 90 days after the day of
+# the check. A misconfiguration changes only when the repository does, so 90 days, about one stage, instead of the 30 of
+# a vulnerability. On expired_at trivy drops the entry and the finding shows again on the next run of main.
+misconfigurations:
+  # Kubernetes and compose check health, never the image: Kubernetes ignores HEALTHCHECK, and compose gives each
+  # container its own (/app healthcheck for the Go services, a fetch of /healthz with node for the web client, none for
+  # the one-shot migrate containers, which run the service images with command migrate, and none for media-worker, a
+  # consumer with no port). A HEALTHCHECK in the image would start checks in containers that have none today, the
+  # migrate ones marked unhealthy while they run. The drill image never runs.
+  - id: DS-0026
+    paths:
+      - deploy/docker/service.Dockerfile
+      - deploy/docker/media-worker.Dockerfile
+      - deploy/docker/web.Dockerfile
+      - deploy/ci/drill/vulnerable.Dockerfile
+    statement: health is checked by Kubernetes probes and compose healthchecks per container, not by the image
+    expired_at: 2027-01-22
+  # The Role of the CloudNativePG operator in svp-data is the chart's commonRules unchanged
+  # (docs/adr/0020-reliability-stage6.md section 5, docs/adr/0014-kubernetes-local-stage4.md section 12); in cnpg-system
+  # it reads only, but for its own PKI Secrets, held to two names by ValidatingAdmissionPolicy svp-cnpg-operator-secrets.
+  # Each write below is one the operator v1.30.1 makes for Cluster svp-pg (paths in its source tree).
+  - id: KSV-0048
+    paths:
+      - deploy/helm/svp-cluster/templates/cnpg-rbac.yaml
+    statement: >-
+      the operator creates, patches and deletes the pods and Jobs of Cluster svp-pg in svp-data (instances; initdb, join
+      and recovery Jobs: internal/controller/cluster_controller.go) and the Deployments of a Pooler
+      (internal/controller/pooler_controller.go); creating a pod already gives what a Deployment would
+    expired_at: 2027-01-22
+  - id: KSV-0049
+    paths:
+      - deploy/helm/svp-cluster/templates/cnpg-rbac.yaml
+    statement: >-
+      the operator copies its default monitoring queries ConfigMap into svp-data and deletes it with the Cluster
+      (internal/controller/cluster_create.go, cluster_delete.go)
+    expired_at: 2027-01-22
+  - id: KSV-0053
+    paths:
+      - deploy/helm/svp-cluster/templates/cnpg-rbac.yaml
+    statement: >-
+      a backup of method plugin, the only method svp-pg uses, starts with an exec of /controller/manager backup in the
+      primary's pod (internal/controller/backup_controller.go, startInstanceManagerBackup); granted in svp-data only
+    expired_at: 2027-01-22
+  - id: KSV-0056
+    paths:
+      - deploy/helm/svp-cluster/templates/cnpg-rbac.yaml
+    statement: >-
+      the operator creates and patches the rw, ro and r Services of svp-pg, which the services and GlitchTip connect to
+      (internal/controller/cluster_create.go, reconcilePostgresServices); granted in svp-data only
+    expired_at: 2027-01-22
+  - id: KSV-0113
+    paths:
+      - deploy/helm/svp-cluster/templates/cnpg-rbac.yaml
+    statement: >-
+      svp-data: the operator writes the app user Secret and the CA, server and replication certificate Secrets of
+      svp-pg (internal/controller/cluster_create.go, cluster_pki.go); cnpg-system: it creates and renews its own CA
+      Secret (pkg/certs/k8s.go), and policy svp-cnpg-operator-secrets admits no other Secret it writes there
+    expired_at: 2027-01-22
+  # Images of the data charts come from their upstream publishers, pinned by the digest of their multi-arch index
+  # (deploy/k8s/check-image-digests.sh, Renovate proposes each new digest). The check trusts only ECR, GCR and ACR, so
+  # trusting a registry here means copying the image into a private one, a decision of the cloud stage.
+  - id: KSV-0125
+    paths:
+      - deploy/helm/svp-data/templates/valkey.yaml
+    statement: >-
+      Valkey's official image from Docker Hub, pinned by digest; a private registry mirror is for the cloud stage
+    expired_at: 2027-01-22
+  - id: KSV-0125
+    paths:
+      - deploy/helm/svp-data/templates/minio.yaml
+    statement: >-
+      Chainguard's MinIO image, pinned by digest, and MinIO is being replaced as the local object store
+      (docs/adr/0022-local-object-store-minio-replacement.md); the entry goes with the chart's MinIO
+    expired_at: 2027-01-22

@@ -1,6 +1,6 @@
 # Hand-written alerts of docs/adr/0011-observability-stage3.md, section 8; the SLO burn-rate alerts
 # are in slo-generated.yaml. Evaluated every 15 s. Tested by svp-alerts.test.yaml
-# (`make slo-check`). Every alert pages but PostgresBackupTooOld (ticket); annotations name the
+# (`make slo-check`). Every alert pages but PostgresBackupTooOld and RateLimitFallbackElevated (ticket); annotations name the
 # service, target or pod, never a user value, and runbook_url points to the runbook of the alert
 # name in docs/runbooks/ on main.
 #
@@ -42,19 +42,57 @@ groups:
           summary: "Kafka consumer group {{ $labels.redpanda_group }} has had lag for 20 minutes"
           runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/kafka-consumer-lag-high.md"
 
-      # A gateway counter on the in-memory fallback store means Redis is unreachable (ADR-0010,
-      # section 2). The `unless ... offset` branch catches a series whose first sample is already
-      # above 0 (a burst before the first export, or a restart), per full label set.
+      # Rate limiting runs on the in-memory fallback store (ADR-0010, section 2) when a Redis command
+      # fails or exceeds its 50 ms limit. One slow command is not an outage: under load a few a minute
+      # time out (about 3 in 1 200 decisions in the game day of 2026-10-24), so the page is on the share
+      # of fallback decisions, per gateway instance (a pod that lost Redis is not diluted by a healthy
+      # one; every restart brings a new service_instance_id):
+      # - increase branch: over 2 m, fallback decisions are at least half of all decisions and at least
+      #   3. Redis gone makes the share 1, a few timeouts make it a few thousandths. The floor of 3
+      #   keeps a quiet instance (2 decisions a minute, one on the fallback) from paging.
+      # - new-series branch: series with no sample 2 m ago (`X unless X offset 2m`, all labels
+      #   matched before summing) with the same two thresholds on their values. A burst before the
+      #   first export (every series is created at 0 at start, but that 0 reaches Prometheus only if an
+      #   export ran) is born above 0 and then stays flat, so its `increase` is 0. 2 m, not 1 m: the
+      #   branch has to stay true longer than `for` plus two evaluations, or it never fires.
+      # `for: 1m` covers both branches (same labels after summing, so switching branch keeps the
+      # alert). A dead instance's last samples keep the increase branch true for up to 2 m after it
+      # stops. A division by zero is NaN, which no comparison accepts: no traffic never fires.
       - alert: RateLimitFallbackActive
         expr: >-
-          sum(increase(svp_ratelimit_decisions_total{service_name="gateway",store="fallback"}[1m])) > 0
+          (
+            sum by (service_instance_id) (increase(svp_ratelimit_decisions_total{service_name="gateway",store="fallback"}[2m]))
+              / sum by (service_instance_id) (increase(svp_ratelimit_decisions_total{service_name="gateway"}[2m])) >= 0.5
+            and sum by (service_instance_id) (increase(svp_ratelimit_decisions_total{service_name="gateway",store="fallback"}[2m])) >= 3
+          )
           or
-          sum(svp_ratelimit_decisions_total{service_name="gateway",store="fallback"}
-              unless svp_ratelimit_decisions_total{service_name="gateway",store="fallback"} offset 1m) > 0
+          (
+            sum by (service_instance_id) (svp_ratelimit_decisions_total{service_name="gateway",store="fallback"}
+                unless svp_ratelimit_decisions_total{service_name="gateway",store="fallback"} offset 2m)
+              / sum by (service_instance_id) (svp_ratelimit_decisions_total{service_name="gateway"}
+                unless svp_ratelimit_decisions_total{service_name="gateway"} offset 2m) >= 0.5
+            and sum by (service_instance_id) (svp_ratelimit_decisions_total{service_name="gateway",store="fallback"}
+                unless svp_ratelimit_decisions_total{service_name="gateway",store="fallback"} offset 2m) >= 3
+          )
+        for: 1m
         labels:
           severity: page
         annotations:
-          summary: "gateway: rate limiting runs on the in-memory fallback, Redis is unreachable"
+          summary: "gateway {{ $labels.service_instance_id }}: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
+          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+
+      # The slow trickle the page ignores: at least 1% of an instance's decisions on the fallback over
+      # 30 minutes, and at least 30 of them. Redis commands that time out now and then, not an outage;
+      # Redis gone for long fires it too, after the page.
+      - alert: RateLimitFallbackElevated
+        expr: >-
+          sum by (service_instance_id) (increase(svp_ratelimit_decisions_total{service_name="gateway",store="fallback"}[30m]))
+            / sum by (service_instance_id) (increase(svp_ratelimit_decisions_total{service_name="gateway"}[30m])) >= 0.01
+          and sum by (service_instance_id) (increase(svp_ratelimit_decisions_total{service_name="gateway",store="fallback"}[30m])) >= 30
+        labels:
+          severity: ticket
+        annotations:
+          summary: "gateway {{ $labels.service_instance_id }}: at least 1% of rate limit decisions in 30 minutes ran on the in-memory fallback"
           runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
 
       # Same shape: a record went to a dead-letter topic in the last 10 minutes.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # plan.sh: the first job of images.yml (docs/adr/0015-cicd-devsecops-stage5.md, sections 3, 4 and 7). Decides what
-# this run does and writes it to $GITHUB_OUTPUT (stdout on a machine):
+# this run does and hands it to the jobs after it as outputs (ci_output of platform.sh; stdout on a machine):
 #   mode            build | rescan | drill
 #   images          JSON array of the images to build (build: changed services; drill: the two drill images)
 #   legs            JSON matrix {"include": [{image, arch, runner}]}, every image on amd64 and arm64 (native runners)
@@ -55,7 +55,7 @@ rescan) ;;
 build)
   if [ "$event" = push ] && [ "$on_main" = true ]; then
     base=$(printf '%s' "${LAST_SUCCESS_JSON:-}" | "$ci_dir/last-success.sh")
-    [ -n "$base" ] || summary "No successful push run of images.yml on main to compare with: every service is built."
+    [ -n "$base" ] || ci_summary "No successful push run of images.yml on main to compare with: every service is built."
   elif [ "$event" = pull_request ]; then
     base=$(git -C "$repo_root" merge-base HEAD "origin/${PR_BASE_REF:?}") ||
       base=
@@ -73,14 +73,14 @@ build)
       done
       while IFS= read -r name; do images+=("$name"); done < <(printf '%s\n' "${names[@]}" | sort -u)
     fi
-    summary "Images chosen by the dispatch input services: ${images[*]}"
+    ci_summary "Images chosen by the dispatch input services: ${images[*]}"
   else
     reason=$(mktemp) || fail "create a temporary file"
     list=$("$ci_dir/changed-services.sh" "$base" HEAD 2>"$reason") || {
       cat "$reason" >&2
       fail "choose the services to build"
     }
-    summary "Base: \`${base:-none}\`." "$(sed 's/^/- /' "$reason")"
+    ci_summary "Base: \`${base:-none}\`." "$(sed 's/^/- /' "$reason")"
     rm -f "$reason"
     read -r -a names <<<"$list"
     images=(${names[@]+"${names[@]}"})
@@ -99,14 +99,12 @@ legs=$(jq -nc --argjson images "$json_images" '{include: [$images[] as $i
   | {image: $i, arch: "amd64", runner: "ubuntu-24.04"}, {image: $i, arch: "arm64", runner: "ubuntu-24.04-arm"}]}')
 has_images=false
 [ ${#images[@]} -eq 0 ] || has_images=true
-summary "Mode: $mode. Images: ${images[*]:-none}."
+ci_summary "Mode: $mode. Images: ${images[*]:-none}."
 
-{
-  echo "mode=$mode"
-  echo "images=$json_images"
-  echo "legs=$legs"
-  echo "has_images=$has_images"
-  echo "base=$base"
-  echo "values_changed=$values_changed"
-  echo "values_ref=$values_ref"
-} >>"${GITHUB_OUTPUT:-/dev/stdout}"
+ci_output mode "$mode"
+ci_output images "$json_images"
+ci_output legs "$legs"
+ci_output has_images "$has_images"
+ci_output base "$base"
+ci_output values_changed "$values_changed"
+ci_output values_ref "$values_ref"

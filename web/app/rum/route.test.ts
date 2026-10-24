@@ -1,4 +1,5 @@
-import { api, metrics } from "@opentelemetry/sdk-node";
+import * as api from "@opentelemetry/api";
+import * as metrics from "@opentelemetry/sdk-metrics";
 import { afterEach, describe, expect, it } from "vitest";
 import * as route from "./route";
 

@@ -5,14 +5,16 @@
 # Namespace svp-load is outside svp, so Kyverno's image policy does not apply, and runs under PSA restricted. 20 pods of
 # one Indexed Job, each running its own execution segment of profile cloud: k6 splits the rates, and each pod registers
 # its own pool from its own pod IP (no rate limit key is ever deleted on the cloud). 20 is `pods` of profile cloud in
-# lib/config.js, which sizes VUs and pools per pod; setup() refuses a run with another number of segments. The pods call Envoy's Service inside
-# the cluster: hostAliases point the public names at its ClusterIP, so TLS checks the real certificate while the load
-# never crosses the public load balancer or the internet.
+# lib/config.js, which sizes VUs and pools per pod; setup() refuses a run with another number of segments. The pods
+# call Envoy's Service inside the cluster: hostAliases point the public names at its ClusterIP, so TLS checks the real
+# certificate while the load never crosses the public load balancer or the internet.
 #
 # The lines marked @CA@ stay only with render.sh --ca-file, for an Envoy whose certificate a private CA signs (a cluster
 # CA behind a load balancer that holds the public certificate): they mount ConfigMap svp-k6-ca and point SSL_CERT_FILE
-# at it. k6 has no flag for a CA; Go's crypto/x509, which k6 uses on Linux, reads that variable and then trusts the CAs
-# of that file instead of the image's roots. TLS is still checked, never skipped.
+# at it. k6 has no flag for a CA; Go's crypto/x509, which k6 uses on Linux, reads that file in place of the image's
+# bundle file, but still reads every certificate file in /etc/ssl/certs and /etc/pki/tls/certs (only SSL_CERT_DIR
+# would replace those directories). So the private CA is trusted in addition to whatever roots the image holds in
+# those directories, not instead of them. TLS is still checked, never skipped.
 apiVersion: v1
 kind: Namespace
 metadata:

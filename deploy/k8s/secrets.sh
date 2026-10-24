@@ -110,13 +110,14 @@ manifests() {
 # checked (that is IN-3, stage 6). The passwords are hex, so nothing needs URL-encoding.
 pg_url() { printf 'postgres://svp_%s_%s:%s@svp-pg-rw.svp-data:5432/svp_%s?sslmode=require' "$1" "$2" "$3" "$1"; }
 
-# The services' Secrets in svp, one per pod, each with only what that pod uses (ADR-0014 section 8), so one compromised pod exposes no more than its own credentials. <service>-env goes to
-# the service's container as environment variables; <service>-migrate-env holds the migrator role, for the migrate
-# Job only. The JWT signing key is in user-service-env alone; the gateway gets the public keys (threat model JWT-10).
-# web-env holds the web client's Server Action key alone, set at run time so that the key in use is never in the
-# public image: its other settings are no secret (deploy/k8s/values/services/web.yaml), its DSN comes from Secret
-# sentry, and Valkey, where it keeps sessions, has no password (docs/adr/0019-web-k3d-supply-chain-observability.md,
-# section 5). The Secret must exist in any case: chart svp-service reads <release>-env with envFrom, not optional.
+# The services' Secrets in svp, one per pod, each with only what that pod uses (ADR-0014 section 8), so one compromised
+# pod exposes no more than its own credentials. <service>-env goes to the service's container as environment variables;
+# <service>-migrate-env holds the migrator role, for the migrate Job only. The JWT signing key is in user-service-env
+# alone; the gateway gets the public keys (threat model JWT-10). web-env holds the web client's Server Action key alone,
+# set at run time so that the key in use is never in the public image: its other settings are no secret
+# (deploy/k8s/values/services/web.yaml), its DSN comes from Secret sentry, and Valkey, where it keeps sessions, has no
+# password (docs/adr/0019-web-k3d-supply-chain-observability.md, section 5). The Secret must exist in any case: chart
+# svp-service reads <release>-env with envFrom, not optional.
 svp_manifests() {
   secret svp user-service-env Opaque \
     DATABASE_URL="$(pg_url user app "$SVP_USER_APP_DB_PASSWORD")" \
@@ -325,8 +326,9 @@ ok "Secret of keda applied from .env: keda-kafka"
 # MinIO and Redpanda are restarted here, on the dev and the GitOps path alike, before the init Jobs of svp-data log in
 # to them with the new password. The six services, the web client and the KEDA operator are restarted by
 # deploy/k8s/install.sh, after those Jobs have set their new passwords (restarted here, a service would start with a
-# password its backend does not take yet). The init Jobs need none (each run is a new pod), and CloudNativePG sets a changed superuser password in
-# Postgres itself, without a restart (Secret pg-superuser carries its label cnpg.io/reload, above).
+# password its backend does not take yet). The init Jobs need none (each run is a new pod), and CloudNativePG sets a
+# changed superuser password in Postgres itself, without a restart (Secret pg-superuser carries its label
+# cnpg.io/reload, above).
 
 # stale POD CONTAINER VAR VALUE: true when CONTAINER of POD runs with an environment variable VAR that differs from
 # VALUE. VALUE goes to the container on stdin and is compared there, never printed nor on a command line. A pod that

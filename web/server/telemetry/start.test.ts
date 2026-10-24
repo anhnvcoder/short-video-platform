@@ -1,5 +1,6 @@
 import { createServer } from "node:net";
-import { api, core } from "@opentelemetry/sdk-node";
+import * as api from "@opentelemetry/api";
+import * as core from "@opentelemetry/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { testEnv } from "../testing/bff";
 import { startTelemetry } from "./otel";

@@ -52,7 +52,9 @@ spec:
     - {group: rbac.authorization.k8s.io, kind: ClusterRoleBinding}
     - {group: admissionregistration.k8s.io, kind: ValidatingWebhookConfiguration}
     - {group: admissionregistration.k8s.io, kind: MutatingWebhookConfiguration}
-    # Envoy Gateway: safe-upgrades.gateway.networking.k8s.io, which refuses an older Gateway API CRD over a newer one.
+    # Envoy Gateway's chart: safe-upgrades.gateway.networking.k8s.io, which refuses an older Gateway API CRD over a
+    # newer one. Chart svp-cluster: svp-cnpg-operator-secrets (templates/cnpg-rbac.yaml), which keeps the CloudNativePG
+    # operator's Secret writes in cnpg-system to its own two Secrets. No other chart renders either kind.
     - {group: admissionregistration.k8s.io, kind: ValidatingAdmissionPolicy}
     - {group: admissionregistration.k8s.io, kind: ValidatingAdmissionPolicyBinding}
     # KEDA's external metrics API.

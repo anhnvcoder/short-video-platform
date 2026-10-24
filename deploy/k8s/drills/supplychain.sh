@@ -588,7 +588,8 @@ if [[ -n $vulnerable ]]; then
   elif [[ ! $age =~ ^-?[0-9]+$ ]]; then
     result c FAIL "$vulnerable: read scanFinishedOn of its vuln attestation as RFC 3339 (got '$scanned')"
   elif ((age > max_age_s)); then
-    result c FAIL "$vulnerable: its vuln attestation was scanned at $scanned, more than $max_age ago, so a refusal for CRITICAL would not show the age rule holds; build the drill images again (gh workflow run images.yml --ref main -f drill=true) and once that run is green run this with SUPPLYCHAIN_VULNERABLE set to the digest it pushed for drill-vulnerable"
+    rebuild=$(ci_dispatch_hint images.yml main drill=true) || exit 1
+    result c FAIL "$vulnerable: its vuln attestation was scanned at $scanned, more than $max_age ago, so a refusal for CRITICAL would not show the age rule holds; build the drill images again ($rebuild) and once that run is green run this with SUPPLYCHAIN_VULNERABLE set to the digest it pushed for drill-vulnerable"
   else
     dry_run drill-supplychain-c svp "$vulnerable"
     refused c "vuln attestation reports a CRITICAL vulnerability" "$vulnerable (scanned at $scanned, within $max_age)"

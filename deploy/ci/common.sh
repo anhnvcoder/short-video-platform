@@ -11,15 +11,26 @@
 ci_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=deploy/k8s/lib.sh
 . "$ci_dir/../k8s/lib.sh"
+# Everything that depends on the CI platform (outputs, job summary, run links, pull requests): ci_* functions.
+# shellcheck source=deploy/ci/platform.sh
+. "$ci_dir/platform.sh"
 
 # Every image of the project lives under ghcr_prefix (deploy/k8s/lib.sh, ADR-0015 section 5).
 # The images built only to drill admission (ADR-0015 section 7): never run by any chart.
 # shellcheck disable=SC2034 # read by the scripts that source this file
 drill_images=(drill-vulnerable drill-unsigned)
-# The keyless identity every signature and attestation must carry: the workflow images.yml on main, through GitHub's
-# OIDC issuer (ADR-0015 section 7). Kyverno checks the same two values.
-sign_issuer=https://token.actions.githubusercontent.com
-sign_subject=https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main
+# sign_identity: sets sign_issuer and sign_subject, the keyless identity every signature and attestation must carry
+# (the OIDC issuer of the CI platform, and the workflow that signs releases on main). Kyverno checks the same two
+# values, so both are read from imageVerification.issuer and .subject of deploy/helm/svp-policy/values.yaml, the one
+# place to change them when CI moves to another platform. Read when a check needs them, not when this file is sourced:
+# most scripts never verify a signature. Fails unless each is one https:// URL.
+sign_identity() {
+  local values=$repo_root/deploy/helm/svp-policy/values.yaml
+  sign_issuer=$(sed -n 's/^  issuer: *//p' "$values") && sign_subject=$(sed -n 's/^  subject: *//p' "$values") ||
+    fail "read $values"
+  [[ $sign_issuer =~ ^https://[^[:space:]]+$ && $sign_subject =~ ^https://[^[:space:]]+$ ]] ||
+    fail "imageVerification.issuer and subject of $values must each be one plain https:// URL"
+}
 # Where trivy looks for its vulnerability DB, in this order (its default for v0.76.0, written out so the attestation
 # can name it): mirror.gcr.io first, GHCR on 429 or 5xx.
 trivy_db_repository=mirror.gcr.io/aquasec/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2
@@ -106,32 +117,6 @@ fetch_manifest() {
   echo "sha256:$(shasum -a 256 "$2" | cut -d' ' -f1)"
 }
 
-# summary LINE...: appends lines to the job summary in CI, or prints them on a machine.
-summary() {
-  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then printf '%s\n' "$@" >>"$GITHUB_STEP_SUMMARY"; else printf '%s\n' "$@"; fi
-}
-
-# promote_pr_list REPOSITORY: prints, as JSON, the open pull requests into main whose branch is named bot/promote.
-# open_promote_pr: reads such a list on stdin and prints the number of the release pull request of the job promote
-# (ADR-0015 section 9), or nothing. gh's --head matches the bare branch name, so a fork's pull request from a branch of
-# that name is listed too; only one from this repository, opened by github-actions[bot], is the bot's. Counting a fork's
-# would bring the stale values of bot/promote back, and put the bot's release title on a diff that is the fork's.
-# gh lists 30 by default, newest first: 30 fork pull requests from a branch bot/promote opened after the bot's would hide
-# it. So the list goes up to 500 (gh pages through), and a list that comes back full fails rather than guess.
-promote_pr_list() {
-  local prs
-  prs=$(gh pr list --repo "$1" --head bot/promote --base main --state open --limit 500 \
-    --json number,isCrossRepository,author) || return 1
-  [ "$(jq length <<<"$prs")" -lt 500 ] || {
-    echo "FAIL  500 or more open pull requests from a branch bot/promote: close the forks' before promoting" >&2
-    return 1
-  }
-  echo "$prs"
-}
-open_promote_pr() {
-  jq -r '[.[] | select(.isCrossRepository == false and .author.login == "app/github-actions")][0].number // empty'
-}
-
 # values_field (the strict reader of image.repository, image.tag and image.digest in a service's values file) is in
 # deploy/k8s/lib.sh, shared with the GitOps path.
 
@@ -149,6 +134,7 @@ cosign_() {
 
 # verify_signature REPOSITORY DIGEST: true when REPOSITORY@DIGEST carries a signature of the identity above.
 verify_signature() {
+  sign_identity
   cosign_ verify --certificate-oidc-issuer "$sign_issuer" --certificate-identity "$sign_subject" "$1@$2" >/dev/null
 }
 

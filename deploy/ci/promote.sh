@@ -19,17 +19,22 @@
 # newer packages such as Alpine's ffmpeg). A tag that is not a commit of main, or candidates none of which descends
 # from all the others, leave the service as main has it and fail the job, saying why.
 #
-# The branch is one commit on top of origin/main, by github-actions[bot], made with git plumbing on a temporary index:
-# neither the working tree nor the index of the checkout changes, so this run keeps running its own scripts. It is
-# pushed with --force-with-lease on the commit of bot/promote read at the start: a change made since (another run, or
-# the owner by hand) fails the push instead of being overwritten. When nothing differs from main: no push, no pull
-# request. When bot/promote already holds exactly this on top of main: no push (each push makes the owner approve the
-# pull request's workflow runs again).
+# The branch is one commit on top of origin/main, by the CI platform's bot (ci_bot_name, ci_bot_email of platform.sh),
+# made with git plumbing on a temporary index: neither the working tree nor the index of the checkout changes, so this
+# run keeps running its own scripts. It is pushed with --force-with-lease on the commit of bot/promote read at the
+# start: a change made since (another run, or the owner by hand) fails the push instead of being overwritten. When
+# nothing differs from main: no push, no pull request. When bot/promote already holds exactly this on top of main: no
+# push (each push makes the owner approve the pull request's workflow runs again).
 #
-# Environment: GITHUB_REPOSITORY, GITHUB_SERVER_URL, GITHUB_RUN_ID (the link to this run), GH_TOKEN (gh).
-# PROMOTE_DRY_RUN=1 prints the gh commands that would open or edit the pull request instead of running them, and takes
-# the open pull requests of bot/promote from PROMOTE_DRY_RUN_PRS, as promote_pr_list (common.sh) prints them (empty:
-# none): for trying the script on a scratch repository. git runs for real either way.
+# Environment: the CI platform's own (the repository, the link to this run: ci_repo, ci_run_url of platform.sh) and the
+# token its pull requests are written with (GH_TOKEN on GitHub). A machine writes no pull request: it prints the
+# command instead. PROMOTE_DRY_RUN=1 does the same in CI, and takes the open pull requests of bot/promote from
+# PROMOTE_DRY_RUN_PRS, as ci_change_request_list prints them (empty: none): for trying the script on a scratch
+# repository. git runs for real either way, with one limit: a machine pushes bot/promote only to an origin on its own
+# disk (the scratch repository of a test). The real origin's bot/promote is the branch of the release pull request CI
+# keeps up to date: a push from a machine would put new commits under that pull request's title and body, which only
+# CI writes. So with any other origin (https, ssh, host:path) a machine refuses before reading anything, and with
+# PROMOTE_DRY_RUN=1 prints the push instead of running it.
 set -euo pipefail
 
 # shellcheck source=deploy/ci/common.sh
@@ -40,12 +45,23 @@ releases=$1
 branch=bot/promote
 values_dir=deploy/k8s/values/services
 dry=${PROMOTE_DRY_RUN:-}
-repo=${GITHUB_REPOSITORY:-anhnvcoder/short-video-platform}
-run_url=${GITHUB_SERVER_URL:-https://github.com}/$repo/actions/runs/${GITHUB_RUN_ID:-}
-bot_name='github-actions[bot]'
-bot_email='41898282+github-actions[bot]@users.noreply.github.com'
+run_url=$(ci_run_url) && bot_name=$(ci_bot_name) && bot_email=$(ci_bot_email) && platform=$(ci_platform) || exit 1
 
 git_() { git -C "$repo_root" "$@"; }
+
+# push: empty when this run must not push (a machine, an origin off this machine, a dry run; see the top of this
+# file). The URL is git's own, with insteadOf and pushInsteadOf applied, and is never printed: it may hold a token.
+push=yes
+if [ "$platform" = local ]; then
+  origin_url=$(git_ remote get-url --push origin) || fail "this clone has no remote origin"
+  case $origin_url in
+  /* | ./* | ../* | file://*) ;;
+  *)
+    [ -n "$dry" ] || fail "origin is not a repository on this machine's disk: only CI pushes $branch there, since its pull request belongs to CI. PROMOTE_DRY_RUN=1 runs everything else and prints the push and the pull request"
+    push=
+    ;;
+  esac
+fi
 # is_ancestor A B: true when commit A is B or one of B's ancestors.
 is_ancestor() { git_ merge-base --is-ancestor "$1" "$2"; }
 # put KIND SERVICE VALUE / get KIND SERVICE: one variable per kind and service (bash 3.2 has no associative arrays).
@@ -54,16 +70,9 @@ get() {
   local var="${1}_${2//-/_}"
   echo "${!var:-}"
 }
-# gh_ ARGS...: gh, or in a dry run the command it would run.
-gh_() {
-  if [ -n "$dry" ]; then
-    printf 'dry run: gh'
-    printf ' %q' "$@"
-    echo
-  else
-    gh "$@"
-  fi
-}
+# write: opens or updates the pull request, or in a dry run prints the command it would run.
+write=(ci_change_request_write)
+[ -z "$dry" ] || write+=(--dry-run)
 
 tmp=$(mktemp -d) || fail "create a temporary directory"
 trap 'rm -rf "$tmp"' EXIT
@@ -105,9 +114,10 @@ esac
 if [ -n "$dry" ]; then
   prs=${PROMOTE_DRY_RUN_PRS:-[]}
 else
-  prs=$(promote_pr_list "$repo") || fail "ask GitHub whether the pull request of $branch is open"
+  prs=$(ci_change_request_list "$branch" main) ||
+    fail "ask the repository's host whether the pull request of $branch is open"
 fi
-pr=$(open_promote_pr <<<"$prs") || fail "read the open pull requests of $branch"
+pr=$(ci_change_request_pick <<<"$prs") || fail "read the open pull requests of $branch"
 [[ $pr =~ ^[0-9]*$ ]] || fail "unexpected pull request number '$pr'"
 use_bot=
 if [ -n "$pr" ] && [ -n "$lease" ]; then
@@ -207,7 +217,7 @@ for svc in "${svp_services[@]}"; do
   put main "$svc" "$line"
   if ! choose "$svc"; then
     echo "FAIL  $svc: $problem; left as main has it" >&2
-    summary "- $svc: **not promoted**: $problem"
+    ci_summary "- $svc: **not promoted**: $problem"
     failed=1
     continue
   fi
@@ -229,7 +239,7 @@ unset GIT_INDEX_FILE
 
 if [ "$tree" = "$(git_ rev-parse "$main^{tree}")" ]; then
   echo "Nothing differs from main: no push, no pull request."
-  summary "Promote: every service on \`$branch\` would be what main already runs; nothing pushed."
+  ci_summary "Promote: every service on \`$branch\` would be what main already runs; nothing pushed."
   exit "$failed"
 fi
 
@@ -275,17 +285,21 @@ else
   head=$(GIT_AUTHOR_NAME=$bot_name GIT_AUTHOR_EMAIL=$bot_email GIT_COMMITTER_NAME=$bot_name \
     GIT_COMMITTER_EMAIL=$bot_email git_ commit-tree "$tree" -p "$main" -F "$tmp/message") || fail "commit"
   # An empty lease: the branch must not exist yet.
-  git_ push --quiet --force-with-lease="refs/heads/$branch:$lease" origin "$head:refs/heads/$branch" ||
-    fail "push $branch: it is no longer at ${lease:-<none>} as read at the start (another run, or a change by hand); nothing was overwritten. Run the job again to rebuild it from what is there now"
-  echo "ok    pushed $branch ${head:0:12} (on main ${main:0:12})"
+  lease_arg="refs/heads/$branch:$lease"
+  if [ -z "$push" ]; then
+    printf 'dry run: git push --quiet --force-with-lease=%q origin %q\n' "$lease_arg" "$head:refs/heads/$branch"
+  else
+    git_ push --quiet --force-with-lease="$lease_arg" origin "$head:refs/heads/$branch" ||
+      fail "push $branch: it is no longer at ${lease:-<none>} as read at the start (another run, or a change by hand); nothing was overwritten. Run the job again to rebuild it from what is there now"
+    echo "ok    pushed $branch ${head:0:12} (on main ${main:0:12})"
+  fi
 fi
 
 if [ -n "$pr" ]; then
-  gh_ pr edit "$pr" --repo "$repo" --title "$title" --body-file "$tmp/body" || fail "update pull request #$pr"
+  "${write[@]}" "$pr" "$branch" main "$title" "$tmp/body" || fail "update pull request #$pr"
 else
-  gh_ pr create --repo "$repo" --base main --head "$branch" --title "$title" --body-file "$tmp/body" ||
-    fail "open the pull request of $branch"
+  "${write[@]}" "" "$branch" main "$title" "$tmp/body" || fail "open the pull request of $branch"
 fi
 [ -z "$dry" ] || sed 's/^/dry run: body | /' "$tmp/body"
-summary "Promote: \`$branch\` at ${head:0:12}: $title"
+ci_summary "Promote: \`$branch\` at ${head:0:12}: $title"
 exit "$failed"

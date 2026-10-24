@@ -31,8 +31,11 @@ spec:
     spec:
       automountServiceAccountToken: false
       securityContext:
-        # The image's valkey user and group; its entrypoint changes user only when started as root.
-        {{- include "svp-data.podSecurityContext" (dict "uid" 999 "gid" 1000) | nindent 8 }}
+        # A user and group above 10000, not the image's valkey (999:1000): ids that low may belong to an account of the
+        # node. Valkey needs no account of its own (the image's entrypoint changes user only when started as root), and
+        # the one directory it writes, /data, is an emptyDir, writable by any user and empty at every start, so the ids
+        # can change in place with nothing to keep.
+        {{- include "svp-data.podSecurityContext" (dict "uid" 10999 "gid" 10999) | nindent 8 }}
       containers:
         - name: valkey
           image: {{ .Values.valkey.image }}

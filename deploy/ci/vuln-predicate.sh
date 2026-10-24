@@ -87,17 +87,13 @@ if [[ $(cat "$arm64/scan-finished") < $(cat "$amd64/scan-finished") ]]; then old
 started=$(cat "$amd64/scan-started")
 [[ $(cat "$arm64/scan-started") > $started ]] || started=$(cat "$arm64/scan-started")
 
-if [ -n "${GITHUB_RUN_ID:-}" ]; then
-  run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/${GITHUB_RUN_ATTEMPT:-1}"
-  builder="$GITHUB_SERVER_URL/$GITHUB_WORKFLOW_REF"
-else
-  run_url=local builder=local
-fi
+# Who made it: this attempt of the CI run, its run id and the workflow file at its ref; "local" for each on a machine.
+run_url=$(ci_run_attempt_url) && event=$(ci_run_id) && builder=$(ci_builder_id) || exit 1
 
 tmp=$(mktemp "$out.XXXXXX") || fail "create a temporary file beside $out"
 trap 'rm -f "$tmp"' EXIT
 jq -n \
-  --arg uri "$run_url" --arg event "${GITHUB_RUN_ID:-local}" --arg builder "$builder" \
+  --arg uri "$run_url" --arg event "$event" --arg builder "$builder" \
   --arg version "$version" --arg db_uri "$trivy_db_repository" --arg db_version "$(cat "$older/db-updated-at")" \
   --arg started "$started" --arg finished "$(cat "$older/scan-finished")" \
   --arg amd64_digest "$(cat "$amd64/digest")" --slurpfile amd64 "$amd64/trivy.json" \

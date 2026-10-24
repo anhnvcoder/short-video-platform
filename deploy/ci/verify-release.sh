@@ -15,6 +15,7 @@ repo=$1 digest=$2
 case $repo in "$ghcr_prefix"/*) ;; *) fail "$repo is not under $ghcr_prefix" ;; esac
 is_digest "$digest" || fail "$digest is not sha256:<64 hex>"
 max=$(attest_max_age)
+sign_identity
 
 verify_signature "$repo" "$digest" || fail "$repo@$digest has no signature of images.yml on main"
 envelopes=$(cosign_ verify-attestation --type vuln --certificate-oidc-issuer "$sign_issuer" \

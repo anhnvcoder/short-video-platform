@@ -393,10 +393,10 @@ jobs:
           SVP_TRIVY_CACHE: ${{ runner.temp }}/trivy-cache
         run: |
           refs=(HEAD)
-          # Only the bot's own pull request counts, never a fork's from a branch of the same name (common.sh).
+          # Only the bot's own pull request counts, never a fork's from a branch of the same name (platform.sh).
           . deploy/ci/common.sh
-          prs=$(promote_pr_list "$GITHUB_REPOSITORY")
-          open=$(open_promote_pr <<<"$prs")
+          prs=$(ci_change_request_list bot/promote main)
+          open=$(ci_change_request_pick <<<"$prs")
           if [ -n "$open" ]; then
             git fetch --no-tags --depth 1 origin "+refs/heads/bot/promote:refs/svp/promote"
             refs+=(refs/svp/promote)

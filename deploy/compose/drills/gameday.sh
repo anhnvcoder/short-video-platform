@@ -16,8 +16,8 @@
 #        not come, the miss is written to the timeline (a detection failure is a result too) and the session goes on;
 #     5. waits for the on-call, writing to the timeline what it sees by itself (engagement-service running again, the
 #        breaker closed in Prometheus, the alert resolved) until `end`;
-#     on exit (end, Ctrl-C or a failure): the load stops (the k6 container, svp-gameday-k6, is stopped and removed, and
-#     a `docker run` still pulling the image or creating it is ended, so no load starts after the session); once T0
+#     on exit (end, Ctrl-C or a failure): the load stops (the k6 container, svp-gameday-k6, is stopped and removed, or
+#     removed before it starts when it was created but not started yet, so no load starts after the session); once T0
 #     was reached, engagement-service and every other stack service run again, while a session that stops before T0
 #     (the k3d cluster running, a failed check, an early end) starts no container, since it changed none;
 #     .k6/gameday-<time>/ holds timeline.tsv (with the reason of a failure), report.txt (timeline, durations, the
@@ -46,7 +46,7 @@ results_root=$repo_root/.k6
 pointer=$results_root/gameday.current
 k6_port=6565
 k6_url=http://127.0.0.1:$k6_port
-# The k6 container's name: the cleanup stops it by name, so it needs no container id from `docker run`.
+# The k6 container's name: created and started apart, it is stopped and removed by name, so it needs no container id.
 k6_name=svp-gameday-k6
 marks="diagnosed mitigated recovered"
 # The k6 routes of deploy/k6/lib/config.js, in its order.
@@ -186,6 +186,7 @@ ramp_seconds=30
 steady_seconds=120
 alert_timeout=600
 resolve_timeout=2400
+k6_created=
 k6_pid=
 dir=
 t0=
@@ -262,34 +263,32 @@ telegram_sent() {
 k6_running() { [[ -n $k6_pid ]] && kill -0 "$k6_pid" 2>/dev/null; }
 k6_container_running() { [[ -n $(docker_ ps -q --filter "name=^$k6_name\$" --filter status=running) ]]; }
 
-# stop_k6: ends the load whatever state its `docker run` is in. A container id file alone would miss a client still
-# pulling the image or creating the container, which would then start the load after the session ended. So the
-# container runs under the fixed name k6_name: while it runs it is stopped (k6 writes summary.json on SIGTERM; the
-# client returns as it exits), otherwise the client gets TERM, which ends a pull or a create in progress. A container
-# that exists but has not started yet ("created") would ignore a stop, and the client forwards the TERM to it and then
-# starts it: so the wait for the client (KILL after 60 s) stops the container as soon as it runs. Last, the name is
-# removed in case a container was created meanwhile (--rm removes only one that ran). A container the daemon finishes
-# creating after that is caught by the next session's precondition.
+# stop_k6: ends the load whatever state its container is in. The container is created in the foreground, then
+# started by a client in the background, rather than by one `docker run`: a `docker run` client that gets TERM between
+# its create and its start forwards the signal to a container that does not run yet, which ignores it, then starts it,
+# and the load would begin after the session ended. Split, only that start client ever starts the container. So a
+# running container is stopped (k6 writes summary.json on SIGTERM; the client returns as it exits); one created and
+# not started is removed, so the client's start fails at once with no such container, or, when its start already
+# reached the daemon, the container it started is killed with the removal. Then the client is waited for (KILL after
+# 60 s) and the name removed in any state. A Ctrl-C during the create itself (pulling the image, then creating) ends
+# before the container exists or leaves it created, which nothing starts and the removal takes; one the daemon would
+# finish creating after that is caught by the next session's precondition.
 stop_k6() {
-  local i stopped=
-  [[ -n $k6_pid ]] || return 0
+  local i
+  [[ -n $k6_created ]] || return 0
   if k6_container_running; then
     docker_ stop -t 30 "$k6_name" >/dev/null 2>&1
-    stopped=1
   else
-    kill -TERM "$k6_pid" 2>/dev/null
+    docker_ rm -f "$k6_name" >/dev/null 2>&1
   fi
-  for ((i = 0; i < 60; i++)); do
-    kill -0 "$k6_pid" 2>/dev/null || break
-    if [[ -z $stopped ]] && k6_container_running; then
-      docker_ stop -t 30 "$k6_name" >/dev/null 2>&1
-      stopped=1
-      continue
-    fi
-    sleep 1
-  done
-  kill -KILL "$k6_pid" 2>/dev/null
-  wait "$k6_pid" 2>/dev/null
+  if [[ -n $k6_pid ]]; then
+    for ((i = 0; i < 60; i++)); do
+      kill -0 "$k6_pid" 2>/dev/null || break
+      sleep 1
+    done
+    kill -KILL "$k6_pid" 2>/dev/null
+    wait "$k6_pid" 2>/dev/null
+  fi
   docker_ rm -f "$k6_name" >/dev/null 2>&1
   echo "ok    k6 stopped"
 }
@@ -417,15 +416,20 @@ record "$dir" "$(now)" start "make gameday (telegram $telegram)"
 wait_no_page "$resolve_timeout"
 ok "no page alert active in Alertmanager"
 
-# 2. Background load and steady state. Not through docker_: a function in the background runs in a subshell, whose
-# pid k6_pid would then be, and a signal to it would orphan the client; env execs docker, so $! is the client's pid.
-env -u DOCKER_DEFAULT_PLATFORM docker run --rm --name "$k6_name" --network svp_web --user "$(id -u):$(id -g)" -p "127.0.0.1:$k6_port:6565" \
+# 2. Background load and steady state. The container is created here and started apart (stop_k6 says why);
+# k6_created is set first, since a Ctrl-C during the create may leave the container created. The start does not go
+# through docker_: a function in the background runs in a subshell, whose pid k6_pid would then be, and a signal to it
+# would orphan the client; env execs docker, so $! is the client's pid.
+k6_created=1
+docker_ create --rm --name "$k6_name" --network svp_web --user "$(id -u):$(id -g)" -p "127.0.0.1:$k6_port:6565" \
   -e K6_NO_USAGE_REPORT=true -e K6_AUTO_EXTENSION_RESOLUTION=false \
   -v "$repo_root/deploy/k6:/scripts:ro" -v "$dir:/results" \
   "$K6_IMAGE" run --quiet --address 0.0.0.0:6565 \
   -e SVP_K6_PROFILE=local -e SVP_API_URL=http://gateway:8080 -e SVP_WEB_URL=http://web:3001 \
   -e SVP_WEB_ORIGIN=http://localhost:3001 -e SVP_K6_RESULTS=/results -e "SVP_K6_HOLD=$hold" \
-  /scripts/main.js >"$dir/k6.log" 2>&1 &
+  /scripts/main.js >/dev/null 2>"$dir/k6.log" ||
+  fail "container $k6_name created (docker create: $(tail -n 3 "$dir/k6.log" | tr '\n' ' '))"
+env -u DOCKER_DEFAULT_PLATFORM docker start -a "$k6_name" >>"$dir/k6.log" 2>&1 &
 k6_pid=$!
 deadline=$((SECONDS + 240))
 until k6_snapshot "$dir" start && [[ $(jq '[.data[] | select(.id == "iterations") | .attributes.sample.count] | add // 0' "$dir/k6-start.json") -gt 0 ]]; do

@@ -12,6 +12,31 @@ const buildId = process.env.SVP_BUILD_ID || undefined;
 const nextConfig: NextConfig = {
   // A self-contained server for the container image: server.js plus the node_modules it really uses.
   output: "standalone",
+  // The OpenTelemetry SDK of server/telemetry/otel.ts is loaded by Node from node_modules, not bundled. Its ES module
+  // builds load some dependencies with a require made by createRequire(import.meta.url) in another module, which the
+  // bundler cannot follow: bundled, @grpc/grpc-js (the OTLP/gRPC exporters) was missing from the standalone output and
+  // every export failed with "Cannot find module", while the server itself ran. Left external, each package is traced
+  // with its own dependencies, @grpc/grpc-js included (the exporters also import it plainly). Every package the server
+  // imports, so one copy of the SDK runs.
+  serverExternalPackages: [
+    "@opentelemetry/api",
+    "@opentelemetry/core",
+    "@opentelemetry/exporter-metrics-otlp-grpc",
+    "@opentelemetry/exporter-trace-otlp-grpc",
+    "@opentelemetry/instrumentation-http",
+    "@opentelemetry/instrumentation-undici",
+    "@opentelemetry/resources",
+    "@opentelemetry/sdk-metrics",
+    "@opentelemetry/sdk-node",
+    "@opentelemetry/sdk-trace",
+  ],
+  // forwarded-parse is loaded by the http instrumentation only through such a require, with no plain import anywhere,
+  // so no trace finds it; the require resolves it from the package's own directory in node_modules/.pnpm, where pnpm
+  // links the package's dependencies. Without this copy the instrumentation hook fails to load and every route answers
+  // 500 (make web-check starts the standalone server to catch that).
+  outputFileTracingIncludes: {
+    "/*": ["./node_modules/.pnpm/@opentelemetry+instrumentation-http@*/node_modules/forwarded-parse/**"],
+  },
   // A known id instead of Next's random one: navigation requests and responses carry it, asset URLs get ?dpl=<id>, and
   // the client reloads once when a chunk or a Server Action of another build fails (features/monitoring/skew-reload.ts).
   deploymentId: buildId,

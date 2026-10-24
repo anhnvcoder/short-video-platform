@@ -1,4 +1,4 @@
-import { metrics } from "@opentelemetry/sdk-node";
+import * as metrics from "@opentelemetry/sdk-metrics";
 import { describe, expect, it } from "vitest";
 import { WindowBudget } from "../sentry/limiter";
 import { vitalViews } from "./otel";
