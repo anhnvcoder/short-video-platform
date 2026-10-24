@@ -74,7 +74,7 @@ jobs:
       # go.sum.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 1.27.2
+          go-version: 1.27.3
           cache-dependency-path: go.sum
       # The binaries of make tools and make ci-tools, rebuilt only when the Makefile (their pinned versions) changes.
       - id: tools
@@ -171,7 +171,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 1.27.2
+          go-version: 1.27.3
           cache-dependency-path: go.sum
       - id: tools
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -196,7 +196,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 1.27.2
+          go-version: 1.27.3
           cache-dependency-path: go.sum
       - id: tools
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -245,7 +245,7 @@ jobs:
       - run: deploy/ci/scan-gate.sh --check-ignorefile
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 1.27.2
+          go-version: 1.27.3
           cache-dependency-path: go.sum
       - id: tools
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -291,7 +291,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 1.27.2
+          go-version: 1.27.3
           cache-dependency-path: go.sum
       - id: tools
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -396,7 +396,7 @@ jobs:
       # make env runs go run ./tools/jwtkey for the JWT key pair; the Makefile also asks go for GOPATH.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 1.27.2
+          go-version: 1.27.3
           cache-dependency-path: go.sum
       # host-gateway is the gateway of the default bridge (unless the daemon sets host-gateway-ip), and the services
       # above are published on 172.17.0.1: if the two differ, every compose service fails to reach Postgres and Redis
