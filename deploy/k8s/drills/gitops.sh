@@ -6,10 +6,10 @@
 # (docs/adr/0015-cicd-devsecops-stage5.md, section 9).
 #
 #   push           the reflog entry "update by push" of refs/remotes/origin/main that moved it to REV (a push from
-#                  this machine); else the PushEvent of GitHub's events API whose head is REV (gh api), which is how a
-#                  pull request merged on GitHub arrives (this machine only fetches it later); else "not measurable",
-#                  and the times count from the start of Argo CD's sync instead. Never the commit's own date: a commit
-#                  can be made long before it is pushed.
+#                  this machine); else the PushEvent of GitHub's events API whose head is REV (ci_push_time of
+#                  deploy/ci/platform.sh), which is how a pull request merged on GitHub arrives (this machine only
+#                  fetches it later); else "not measurable", and the times count from the start of Argo CD's sync
+#                  instead. Never the commit's own date: a commit can be made long before it is pushed.
 #   sync           the entries for REV in status.history of the Applications that synced it: when the first started
 #                  and when the last finished;
 #   pods           the services whose image.digest REV changes (values files at REV against its first parent): when
@@ -27,17 +27,26 @@ set -euo pipefail
 
 # shellcheck source=deploy/k8s/lib.sh
 . "$(dirname "$0")/../lib.sh"
+# ci_repo, ci_push_time: the repository on its host, and when a commit was pushed there.
+# shellcheck source=deploy/ci/platform.sh
+. "$repo_root/deploy/ci/platform.sh"
 
-github_repo=anhnvcoder/short-video-platform
+host_repo=$(ci_repo) || exit 1
 values_dir=deploy/k8s/values/services
 
 waiting() {
   echo "WAIT  $1" >&2
   exit 2
 }
-# epoch RFC3339: seconds since the epoch of a UTC timestamp such as 2026-10-18T14:10:29Z.
-epoch() { date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s; }
-iso() { date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ; }
+# epoch RFC3339: seconds since the epoch of a UTC timestamp such as 2026-10-18T14:10:29Z; iso EPOCH: the reverse.
+# GNU date (Linux, the CI runner) parses with -d; BSD date (macOS) has no -d for this and needs -j -f / -r instead.
+if date -u -d @0 +%s >/dev/null 2>&1; then
+  epoch() { date -u -d "$1" +%s; }
+  iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
+else
+  epoch() { date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s; }
+  iso() { date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ; }
+fi
 
 [ $# = 1 ] && [ -n "$1" ] || fail "usage: make measure-gitops REV=<commit>"
 sha=$(git -C "$repo_root" rev-parse --verify --quiet "$1^{commit}") || fail "$1 is not a commit of this clone"
@@ -71,11 +80,10 @@ while read -r h sel subject; do
 done < <(git -C "$repo_root" reflog show --format='%H %gd %gs' --date=unix refs/remotes/origin/main 2>/dev/null)
 gh_note=
 if [ -z "$push_ts" ]; then
-  if created=$(gh api -X GET "repos/$github_repo/events" -f per_page=100 \
-    --jq "[.[] | select(.type == \"PushEvent\" and .payload.head == \"$sha\") | .created_at] | last // empty" 2>&1); then
+  if created=$(ci_push_time "$sha" 2>&1); then
     if [ -n "$created" ]; then
       push_ts=$(epoch "$created")
-      push_src="GitHub PushEvent with head $short (gh api repos/$github_repo/events)"
+      push_src="GitHub PushEvent with head $short (events of $host_repo)"
     fi
   else
     gh_note=" (GitHub's events could not be read: ${created%%$'\n'*})"

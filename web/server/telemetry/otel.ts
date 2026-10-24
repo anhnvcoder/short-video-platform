@@ -4,10 +4,12 @@ import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-grpc";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-grpc";
 import { HttpInstrumentation } from "@opentelemetry/instrumentation-http";
 import { UndiciInstrumentation } from "@opentelemetry/instrumentation-undici";
-import { NodeSDK, api, core, metrics, resources, tracing, type NodeSDKConfiguration } from "@opentelemetry/sdk-node";
-// The SDK's own reading of OTEL_TRACES_SAMPLER and OTEL_TRACES_SAMPLER_ARG, which sdk-node does not export; the
-// sampler below has to wrap it, so it cannot leave the choice to the SDK.
-import { createSamplerFromEnv } from "@opentelemetry/sdk-node/build/src/create-from-env";
+import * as api from "@opentelemetry/api";
+import * as core from "@opentelemetry/core";
+import * as resources from "@opentelemetry/resources";
+import * as metrics from "@opentelemetry/sdk-metrics";
+import { NodeSDK, type NodeSDKConfiguration } from "@opentelemetry/sdk-node";
+import * as tracing from "@opentelemetry/sdk-trace";
 import type { Event } from "@sentry/nextjs";
 import type { ServerEnv } from "../env";
 import { vitals } from "./vitals";
@@ -126,6 +128,53 @@ export class ScrubbingSpanProcessor implements tracing.SpanProcessor {
   }
 }
 
+// OTEL_TRACES_SAMPLER and OTEL_TRACES_SAMPLER_ARG as the Go services read them: parentbased_always_on when unset, and
+// for a name the specification does not know; a ratio outside [0, 1] or missing counts as 1. NodeSDK reads these only
+// when it is given no sampler, and the sampler of telemetryConfig wraps this one, so it reads them itself.
+export function samplerFromEnv(): tracing.Sampler {
+  const ratio = () => {
+    const arg = core.getNumberFromEnv("OTEL_TRACES_SAMPLER_ARG");
+    if (arg === undefined || arg < 0 || arg > 1) {
+      api.diag.error(`OTEL_TRACES_SAMPLER_ARG is ${arg ?? "blank"}, not a ratio in [0, 1]: using 1`);
+      return 1;
+    }
+    return arg;
+  };
+  const name = core.getStringFromEnv("OTEL_TRACES_SAMPLER");
+  switch (name) {
+    case "always_on":
+      return new tracing.AlwaysOnSampler();
+    case "always_off":
+      return new tracing.AlwaysOffSampler();
+    case "parentbased_always_off":
+      return new tracing.ParentBasedSampler({ root: new tracing.AlwaysOffSampler() });
+    case "traceidratio":
+      return new tracing.TraceIdRatioBasedSampler(ratio());
+    case "parentbased_traceidratio":
+      return new tracing.ParentBasedSampler({ root: new tracing.TraceIdRatioBasedSampler(ratio()) });
+    case undefined:
+    case "parentbased_always_on":
+      return new tracing.ParentBasedSampler({ root: new tracing.AlwaysOnSampler() });
+    default:
+      api.diag.error(`unknown OTEL_TRACES_SAMPLER value "${name}": using parentbased_always_on`);
+      return new tracing.ParentBasedSampler({ root: new tracing.AlwaysOnSampler() });
+  }
+}
+
+// The batch processor of the OTLP exporter, with the OTEL_BSP_* variables read as the BatchSpanProcessor of
+// sdk-trace-base read them: any number, 0 included (OTEL_BSP_SCHEDULE_DELAY=0 sends each batch at once); unset, blank
+// or not a number leaves the default. BatchSpanProcessor no longer reads them itself; NodeSDK reads them only for a
+// processor it makes from a traceExporter, which would sit outside ScrubbingSpanProcessor.
+export function batchSpanProcessorFromEnv(exporter: tracing.SpanExporter): tracing.SpanProcessor {
+  return new tracing.BatchSpanProcessor({
+    exporter,
+    maxQueueSize: core.getNumberFromEnv("OTEL_BSP_MAX_QUEUE_SIZE"),
+    scheduledDelayMillis: core.getNumberFromEnv("OTEL_BSP_SCHEDULE_DELAY"),
+    exportTimeoutMillis: core.getNumberFromEnv("OTEL_BSP_EXPORT_TIMEOUT"),
+    maxExportBatchSize: core.getNumberFromEnv("OTEL_BSP_MAX_EXPORT_BATCH_SIZE"),
+  });
+}
+
 // Explicit buckets of the web vital histograms (server/telemetry/vitals.ts).
 export const vitalViews: metrics.ViewOptions[] = Object.values(vitals).map(({ instrument, buckets }) => ({
   instrumentName: instrument,
@@ -163,9 +212,7 @@ export function telemetryConfig(env: ServerEnv, exports: TelemetryExport | null)
     }),
     textMapPropagator: injectOnlyPropagator,
     // OTEL_TRACES_SAMPLER as for the Go services, parentbased_always_on when unset.
-    sampler: skipUnrecordedPaths(
-      createSamplerFromEnv() ?? new tracing.ParentBasedSampler({ root: new tracing.AlwaysOnSampler() }),
-    ),
+    sampler: skipUnrecordedPaths(samplerFromEnv()),
     spanProcessors: exports ? [new ScrubbingSpanProcessor(exports.spans)] : [],
     metricReaders: exports ? [exports.metrics] : [],
     views: vitalViews,
@@ -203,7 +250,7 @@ export function startTelemetry(env: ServerEnv): NodeSDK | null {
       env,
       otlp
         ? {
-            spans: new tracing.BatchSpanProcessor(new OTLPTraceExporter()),
+            spans: batchSpanProcessorFromEnv(new OTLPTraceExporter()),
             // Every 15 s like the Go services (the JS SDK's default is 60 s).
             metrics: new metrics.PeriodicExportingMetricReader({
               exporter: new OTLPMetricExporter(),

@@ -12,11 +12,15 @@ imageVerification:
   # namespace stays out: their images are third-party ones pinned by digest and checked before merge
   # (deploy/k8s/check-image-digests.sh), and a Kyverno that is down must not stop them.
   namespace: svp
-  # Only images under this prefix run in the namespace, each by digest. CI pushes nothing else there.
+  # Only images under this prefix run in the namespace, each by digest. CI pushes nothing else there. Change it when the
+  # images move to another registry (with ghcr_prefix of deploy/k8s/lib.sh, which CI pushes to).
   imagePrefix: ghcr.io/anhnvcoder/short-video-platform/
   # The keyless identity of every signature and vuln attestation: the Fulcio certificate of a run of
   # .github/workflows/images.yml on main (its SAN is server_url + job_workflow_ref). A run on another branch, or of
   # another workflow, has another subject and is refused.
+  # Change both when CI moves to another platform: the issuer is that platform's OIDC token issuer, the subject the URL
+  # of the pipeline file that signs on main. This is the one place they are written: the scripts that verify a release
+  # (deploy/ci/common.sh, deploy/k8s/drills/supplychain.sh) read these two lines, each a plain https:// URL on one line.
   issuer: https://token.actions.githubusercontent.com
   subject: https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main
   # Oldest scan result admitted (metadata.scanFinishedOn of the vuln attestation): the daily rescan refreshes it, so 72

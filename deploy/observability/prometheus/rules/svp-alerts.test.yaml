@@ -731,69 +731,308 @@ tests:
         alertname: BackgroundLoopStalled
         exp_alerts: []
 
-  # Fallback counter 0 -> 1 then flat fires, then resolves once the minute has no increase.
+  # RateLimitFallbackActive pages on the share of fallback decisions per instance (docs/adr/0021, section 11),
+  # not on a single one. Samples are cumulative counters, 15 s apart; 300 decisions per sample is 20 a second.
+  # An instance at 20 decisions a second moves entirely to the fallback at 135 s (Redis lost): the share over the
+  # 2 m window reaches a half at 180 s, the page fires after `for: 1m`, well within 4 minutes of the switch.
   - interval: 15s
     input_series:
-      - series: 'svp_ratelimit_decisions_total{service_name="gateway",instance="a",class="login",result="allowed",store="fallback"}'
-        values: '0 0 0 1x20'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="redis"}'
+        values: '0+300x8 2400x40'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="fallback"}'
+        values: '0x8 300+300x40'
     alert_rule_test:
-      - eval_time: 30s
+      - eval_time: 165s
         alertname: RateLimitFallbackActive
         exp_alerts: []
-      - eval_time: 45s
+      - eval_time: 180s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 225s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 240s
         alertname: RateLimitFallbackActive
         exp_alerts:
           - exp_labels:
               severity: page
+              service_instance_id: a
             exp_annotations:
-              summary: "gateway: rate limiting runs on the in-memory fallback, Redis is unreachable"
+              summary: "gateway a: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
               runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
-      - eval_time: 75s
+      - eval_time: 300s
         alertname: RateLimitFallbackActive
         exp_alerts:
           - exp_labels:
               severity: page
+              service_instance_id: a
             exp_annotations:
-              summary: "gateway: rate limiting runs on the in-memory fallback, Redis is unreachable"
+              summary: "gateway a: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
               runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
-      - eval_time: 90s
+      - eval_time: 600s
+        alertname: RateLimitFallbackActive
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_instance_id: a
+            exp_annotations:
+              summary: "gateway a: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+
+  # The game day shape: 3 fallback decisions a minute among 1 200 (0.25%) for 30 minutes neither page nor open a ticket.
+  # The count alone (6 in 2 m) clears the floor of 3; only the share keeps it quiet.
+  - interval: 15s
+    input_series:
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="redis"}'
+        values: '0+299.25x120'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="fallback"}'
+        values: '0+0.75x120'
+    alert_rule_test:
+      - eval_time: 300s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 900s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 1800s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 1800s
+        alertname: RateLimitFallbackElevated
+        exp_alerts: []
+
+  # Low traffic, 2 decisions a minute: one fallback decision in 2 minutes is a share of 20% and below the floor of 3.
+  - interval: 15s
+    input_series:
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="redis"}'
+        values: '0+0.5x40'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="fallback"}'
+        values: '0x8 1x31'
+    alert_rule_test:
+      - eval_time: 135s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 180s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 300s
         alertname: RateLimitFallbackActive
         exp_alerts: []
 
-  # Fallback series born above 0 (a burst before the first export) fires until it has a minute of history.
+  # Even when it is the whole traffic (share 1), 2 fallback decisions stay under the floor of 3: no page.
   - interval: 15s
     input_series:
-      - series: 'svp_ratelimit_decisions_total{service_name="gateway",instance="a",class="login",result="limited",store="fallback"}'
-        values: '_x3 3x20'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="redis"}'
+        values: '0x40'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="fallback"}'
+        values: '0 0 0 1 2x36'
+    alert_rule_test:
+      - eval_time: 60s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 120s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 300s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+
+  # 2% of the decisions on the fallback for 30 minutes (6 of 300 per sample): a ticket once the 30 m window
+  # holds 30 of them, no page (the 2 m share is 2%).
+  - interval: 15s
+    input_series:
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="redis"}'
+        values: '0+294x120'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="fallback"}'
+        values: '0+6x120'
+    alert_rule_test:
+      - eval_time: 300s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 1800s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 1800s
+        alertname: RateLimitFallbackElevated
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              service_instance_id: a
+            exp_annotations:
+              summary: "gateway a: at least 1% of rate limit decisions in 30 minutes ran on the in-memory fallback"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+
+  # Two gateway instances, only b loses Redis (as the first test): the page names b, a healthy instance does not dilute it.
+  - interval: 15s
+    input_series:
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="redis"}'
+        values: '0+300x60'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="fallback"}'
+        values: '0x60'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="b",class="login",result="allowed",store="redis"}'
+        values: '0+300x8 2400x52'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="b",class="login",result="allowed",store="fallback"}'
+        values: '0x8 300+300x52'
+    alert_rule_test:
+      - eval_time: 165s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 240s
+        alertname: RateLimitFallbackActive
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_instance_id: b
+            exp_annotations:
+              summary: "gateway b: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+      - eval_time: 600s
+        alertname: RateLimitFallbackActive
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_instance_id: b
+            exp_annotations:
+              summary: "gateway b: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+
+  # The shape of RL-2 in drill-obs-threats: the series are born above 0 (6 fallback decisions before the first export,
+  # none on Redis) and then stay flat, so `increase` is 0. The new-series branch pages after `for` and resolves once
+  # the series has 2 minutes of history (165 s).
+  - interval: 15s
+    input_series:
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="redis"}'
+        values: '_x3 0x40'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="fallback"}'
+        values: '_x3 6x40'
     alert_rule_test:
       - eval_time: 45s
         alertname: RateLimitFallbackActive
-        exp_alerts:
-          - exp_labels:
-              severity: page
-            exp_annotations:
-              summary: "gateway: rate limiting runs on the in-memory fallback, Redis is unreachable"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+        exp_alerts: []
       - eval_time: 90s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 105s
         alertname: RateLimitFallbackActive
         exp_alerts:
           - exp_labels:
               severity: page
+              service_instance_id: a
             exp_annotations:
-              summary: "gateway: rate limiting runs on the in-memory fallback, Redis is unreachable"
+              summary: "gateway a: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
               runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+      - eval_time: 150s
+        alertname: RateLimitFallbackActive
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_instance_id: a
+            exp_annotations:
+              summary: "gateway a: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+      - eval_time: 165s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 300s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+
+  # The same shape with only 2 fallback decisions is under the floor of 3: no page.
+  - interval: 15s
+    input_series:
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="redis"}'
+        values: '_x3 0x40'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="fallback"}'
+        values: '_x3 2x40'
+    alert_rule_test:
+      - eval_time: 45s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
       - eval_time: 105s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 150s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+
+  # Gateway restarted while Redis is still down: the old instance stops, the new one is born at 6 fallback decisions.
+  # The page is for the new instance only.
+  - interval: 15s
+    input_series:
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="old",class="login",result="allowed",store="redis"}'
+        values: '0+300x7 _x40'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="old",class="login",result="allowed",store="fallback"}'
+        values: '0x7 _x40'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="new",class="login",result="allowed",store="redis"}'
+        values: '_x8 0x40'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="new",class="login",result="allowed",store="fallback"}'
+        values: '_x8 6x40'
+    alert_rule_test:
+      - eval_time: 105s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 120s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 180s
+        alertname: RateLimitFallbackActive
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_instance_id: new
+            exp_annotations:
+              summary: "gateway new: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+      - eval_time: 225s
+        alertname: RateLimitFallbackActive
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              service_instance_id: new
+            exp_annotations:
+              summary: "gateway new: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+      - eval_time: 240s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 300s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+
+  # Gateway restarted under load with Redis healthy: the new instance is born with 300 Redis and 5 fallback decisions
+  # (a few timeouts before the first export). The share is under a half: no page.
+  - interval: 15s
+    input_series:
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="old",class="login",result="allowed",store="redis"}'
+        values: '0+300x7 _x40'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="old",class="login",result="allowed",store="fallback"}'
+        values: '0x7 _x40'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="new",class="login",result="allowed",store="redis"}'
+        values: '_x8 300x40'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="new",class="login",result="allowed",store="fallback"}'
+        values: '_x8 5x40'
+    alert_rule_test:
+      - eval_time: 120s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 180s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 225s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 300s
         alertname: RateLimitFallbackActive
         exp_alerts: []
 
   # Fallback counters at 0 and a growing Redis counter do not fire.
   - interval: 15s
     input_series:
-      - series: 'svp_ratelimit_decisions_total{service_name="gateway",instance="a",class="login",result="allowed",store="fallback"}'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="fallback"}'
         values: '0x20'
-      - series: 'svp_ratelimit_decisions_total{service_name="gateway",instance="a",class="login",result="limited",store="fallback"}'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="limited",store="fallback"}'
         values: '0x20'
-      - series: 'svp_ratelimit_decisions_total{service_name="gateway",instance="a",class="login",result="allowed",store="redis"}'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="redis"}'
         values: '0+5x20'
     alert_rule_test:
       - eval_time: 30s
@@ -806,34 +1045,65 @@ tests:
         alertname: RateLimitFallbackActive
         exp_alerts: []
 
-  # Gateway restart: the old instance stops at 5, the new one is born at 2; the new series fires.
+  # No decisions at all (every counter flat at 0, and no series at all) never pages: the share is 0/0, which no comparison
+  # accepts. Accepted: an instance that serves no rate limited request has nothing to page about.
   - interval: 15s
     input_series:
-      - series: 'svp_ratelimit_decisions_total{service_name="gateway",instance="old",class="login",result="allowed",store="fallback"}'
-        values: '5x7 _x20'
-      - series: 'svp_ratelimit_decisions_total{service_name="gateway",instance="new",class="login",result="allowed",store="fallback"}'
-        values: '_x8 2x20'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="fallback"}'
+        values: '0x40'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="redis"}'
+        values: '0x40'
     alert_rule_test:
-      - eval_time: 105s
+      - eval_time: 120s
         alertname: RateLimitFallbackActive
         exp_alerts: []
+      - eval_time: 300s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 600s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+
+  # A counter reset (the same series restarts from 0) does not hide Redis being down: `increase` counts the reset
+  # as a restart from 0, the share stays 1 and the page fires.
+  - interval: 15s
+    input_series:
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="redis"}'
+        values: '0x40'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="fallback"}'
+        values: '0+300x8 0+300x32'
+    alert_rule_test:
       - eval_time: 120s
         alertname: RateLimitFallbackActive
         exp_alerts:
           - exp_labels:
               severity: page
+              service_instance_id: a
             exp_annotations:
-              summary: "gateway: rate limiting runs on the in-memory fallback, Redis is unreachable"
+              summary: "gateway a: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
               runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
-      - eval_time: 135s
+      - eval_time: 300s
         alertname: RateLimitFallbackActive
         exp_alerts:
           - exp_labels:
               severity: page
+              service_instance_id: a
             exp_annotations:
-              summary: "gateway: rate limiting runs on the in-memory fallback, Redis is unreachable"
+              summary: "gateway a: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
               runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
-      - eval_time: 195s
+
+  # A counter reset on a healthy instance (Redis counter restarts from 0) does not page.
+  - interval: 15s
+    input_series:
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="redis"}'
+        values: '0+300x8 0+300x32'
+      - series: 'svp_ratelimit_decisions_total{service_name="gateway",service_instance_id="a",class="login",result="allowed",store="fallback"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 120s
+        alertname: RateLimitFallbackActive
+        exp_alerts: []
+      - eval_time: 180s
         alertname: RateLimitFallbackActive
         exp_alerts: []
       - eval_time: 300s

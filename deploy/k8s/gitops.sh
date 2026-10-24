@@ -40,6 +40,9 @@ set -euo pipefail
 
 # shellcheck source=deploy/k8s/lib.sh
 . "$(dirname "$0")/lib.sh"
+# ci_dispatch_hint: the command that starts a CI run, for the message when the releases need a fresh attestation.
+# shellcheck source=deploy/ci/platform.sh
+. "$repo_root/deploy/ci/platform.sh"
 
 repo_url=git@github.com:anhnvcoder/short-video-platform.git
 # renovate: datasource=helm depName=argo-cd registryUrl=https://argoproj.github.io/argo-helm
@@ -50,8 +53,11 @@ key_file=${ARGOCD_DEPLOY_KEY:-}
 # --- the deploy key: a private key file only its owner can read, without a passphrase (Argo CD cannot enter one).
 [ -n "$key_file" ] || fail "ARGOCD_DEPLOY_KEY is not set: make k8s-gitops-up ARGOCD_DEPLOY_KEY=<private key file of a read-only deploy key>"
 [ -f "$key_file" ] && [ -s "$key_file" ] || fail "ARGOCD_DEPLOY_KEY: $key_file is not a non-empty file"
-mode=$(stat -f %Lp "$key_file") || fail "ARGOCD_DEPLOY_KEY: read the mode of $key_file"
-[ $((8#$mode & 8#077)) = 0 ] || fail "ARGOCD_DEPLOY_KEY: $key_file has mode $mode; a private key must be readable by its owner only (chmod 600 $key_file)"
+# GNU stat (Linux, the CI runner) takes -c %a; BSD stat (macOS) takes -f %Lp and rejects -c, so it falls through.
+mode=$(stat -c %a "$key_file" 2>/dev/null || stat -f %Lp "$key_file") ||
+  fail "ARGOCD_DEPLOY_KEY: read the mode of $key_file"
+[ $((8#$mode & 8#077)) = 0 ] ||
+  fail "ARGOCD_DEPLOY_KEY: $key_file has mode $mode; a private key must be readable by its owner only (chmod 600 $key_file)"
 ssh-keygen -y -P '' -f "$key_file" >/dev/null 2>&1 ||
   fail "ARGOCD_DEPLOY_KEY: $key_file is not an SSH private key without a passphrase"
 command -v jq >/dev/null || fail "jq is not installed (brew install jq): it reads components.json and Argo CD's status"
@@ -88,8 +94,10 @@ if git -C "$repo_root" cat-file -e "$sha:$values_dir" 2>/dev/null; then
   for image in "${release_images[@]}"; do
     "$repo_root/deploy/ci/verify-release.sh" "${image%@*}" "${image#*@}" || unready=1
   done
-  [ -z "$unready" ] ||
-    fail "a release at ${sha:0:12} is not signed, or its vuln attestation is not clean and fresh (above); nothing was created. Refresh the attestations of these values: gh workflow run images.yml --ref main -f rescan=true -f values_ref=$sha, then run this again once that run is green"
+  if [ -n "$unready" ]; then
+    refresh=$(ci_dispatch_hint images.yml main rescan=true "values_ref=$sha") || exit 1
+    fail "a release at ${sha:0:12} is not signed, or its vuln attestation is not clean and fresh (above); nothing was created. Refresh the attestations of these values: $refresh, then run this again once that run is green"
+  fi
   ok "release images at ${sha:0:12}: GHCR serves all seven anonymously, each signed with a fresh, clean vuln attestation"
 else
   echo "skip  release images: ${sha:0:12} has no $values_dir; Argo CD will report what the revision lacks"
@@ -164,7 +172,8 @@ hc upgrade --install argocd argo-cd --repo https://argoproj.github.io/argo-helm 
 ok "Argo CD installed"
 
 # The repository Secret (ADR-0014 section 8): the key goes from its file into a shell variable and on stdin to kubectl,
-# never onto a command line, so it cannot show in a process list or a log. GitHub's host keys are in ConfigMap argocd-ssh-known-hosts-cm, which the chart ships.
+# never onto a command line, so it cannot show in a process list or a log. GitHub's host keys are in ConfigMap
+# argocd-ssh-known-hosts-cm, which the chart ships.
 deploy_key=$(<"$key_file")
 label='argocd.argoproj.io/secret-type: repository' secret argocd repo-short-video-platform Opaque \
   type=git url="$repo_url" sshPrivateKey="$deploy_key"$'\n' |

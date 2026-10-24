@@ -1,0 +1,669 @@
+# 0021. Giai đoạn 6b: kiểm chứng dồn chạy trên runner GitHub Actions `ubuntu-24.04` bằng workflow `verify.yml` chỉ `workflow_dispatch`, mỗi lượt một kịch bản dựng compose hay k3d bằng target `make` có sẵn, artifact chỉ theo danh sách cho phép và qua bộ quét giá trị bí mật, VM thuê theo giờ chỉ khi runner trượt tiêu chí đo được; Argo CD đọc repo công khai qua HTTPS ẩn danh; Chaos Mesh, Velero (CSI hostpath) và k6 thu nhỏ trên k3d của runner; tệp bỏ qua misconfig có hạn, cổng quét lockfile npm, điều kiện page mới của `RateLimitFallbackActive`
+
+- Trạng thái: Chấp nhận; nơi chạy A/B do người học chốt ngày 2026-10-24, các quyết định còn lại theo đề xuất ở đây. Chưa hiện thực:
+  phần 1 (workflow, kịch bản `compose-obs` và `dev-k3d`, mục 9–11) làm trước, phần 2 (ADR thay object store) và phần 3 (GitOps,
+  canary web, k6, Chaos Mesh, Velero) sau (mục 5)
+- Ngày: 2026-10-24
+
+## Bối cảnh
+
+- Roadmap thêm **giai đoạn 6b "Kiểm chứng dồn"** ngày 2026-10-24
+  ([plan](../../plans/261004-devops-sa-roadmap/plan.md), mục 6b): gom mọi việc dời từ giai đoạn 4–6 vì máy 16 GB không chạy nổi
+  mà không cần dịch vụ AWS/GCP, để giai đoạn 7 chỉ còn việc của cloud. **Xong khi:** mọi dòng "kiểm sau"/"dời" của ADR-0017,
+  ADR-0019, ADR-0020 có kết quả đo hay lý do còn lại. Người học chốt nơi chạy: **(A)** mặc định là runner GitHub Actions của repo
+  public, workflow `workflow_dispatch` dựng k3d hay compose bằng đúng target `make` hiện có; **(B)** VM thuê theo giờ chỉ khi A thật
+  sự không đủ, người học chạy lệnh, xoá trong ngày. ADR này chốt phần còn lại: loại runner và tiêu chí "runner đủ", hình workflow,
+  quyền và secret, cách lọc log và artifact, kịch bản cho từng dòng dời, và các quyết định nhỏ của giai đoạn.
+- Các dòng dời:
+  - [ADR-0017](0017-gitops-capacity-media-worker-max2.md): hai media-worker cùng transcode trên node đủ CPU, hai lượt
+    `drill-k8s-keda` PASS gồm tiêu chí (c); RAM nghỉ (b) ở điểm đo của ADR-0014 §2 trên cluster GitOps (thiếu ở cả hai lượt giai
+    đoạn 5, "Còn mở: RAM (b)" của roadmap).
+  - [ADR-0019](0019-web-k3d-supply-chain-observability.md) §12: cluster GitOps chạy image `web` đã ký, Kyverno Enforce từ chối
+    image web chưa ký, source map của image CI, canary web dưới traffic (404 asset, số lần tải lại), `drill-obs-threats` (WEB-9),
+    RAM có web và `resources` của web, cổng CI quét `web/pnpm-lock.yaml`.
+  - [ADR-0020](0020-reliability-stage6.md) mục 1 (sửa 2026-10-24): k6 tải lớn nhất nơi chạy chịu được, ba thí nghiệm Chaos Mesh,
+    Velero đích MinIO trong cluster, hai media-worker và RAM nghỉ, ngưỡng p99 canary và HPA của web, thay MinIO cho đường local,
+    ngưỡng page của `RateLimitFallbackActive`; LCP xem lại khi Lighthouse chạy trên runner; các dòng "Kiểm chứng sau" của 6b.
+  - [Threat model](../threat-model.md) hàng 6b: OPS-4, BAK-2, WEB-9 và OPS-1 qua `drill-obs-threats`, SC-1 cho web.
+  - Việc tĩnh của roadmap 6b: 19 cảnh báo code scanning (18 của `trivy-config`), cổng lockfile npm, P2 của giai đoạn 6.
+- Hiện trạng code (đọc ngày 2026-10-24, chi tiết ở mục Kiểm chứng):
+  - Job `stack` của `ci.yml` đã dựng compose `core` trên `ubuntu-24.04`: Postgres và Redis là service container publish trên
+    `127.0.0.1` và IP bridge `172.17.0.1`, `make ci-bridge-check`, gói apt `postgresql-client redis-tools ffmpeg jq`, `make env`
+    trong job, `contents: read`, không secret, artifact chỉ hai loại đã lọc. Chưa job nào dựng k3d.
+  - Script k3d viết và chạy trên macOS: drill ghi "written for bash 3.2"; `deploy/k8s/gitops.sh` đọc mode của deploy key bằng
+    `stat -f %Lp` (chỉ BSD); `make ci-tools` chỉ chạy trên Linux x86_64 (Helm linux-amd64 ghim sha256); k3d cài bằng `make tools`.
+  - Drill và e2e gọi `api.svp.localhost`, `svp.localhost`, `s3.svp.localhost` tới `127.0.0.1:8443` bằng phân giải tên của hệ
+    thống, không `--resolve`.
+  - `deploy/k6/cloud/run.sh` và `deploy/k8s/cloud/velero/drill-restore.sh` từ chối mọi context `k3d-*`; values Chaos Mesh viết cho
+    EKS (socket `/run/containerd/containerd.sock`), Velero cho S3 + Pod Identity + snapshot CSI của EBS; `render.sh` dựng đúng 20
+    pod.
+  - Argo CD đọc repo qua SSH bằng deploy key chỉ đọc (`gitops.sh` `repo_url`, `repoURL` của `deploy/argocd/apps/values.yaml`,
+    `sourceRepos` của `deploy/argocd/project.yaml`).
+  - `RateLimitFallbackActive` (page) cháy khi gateway có một quyết định trên bộ đếm dự phòng trong 1 phút; game day 2026-10-24
+    thấy nó cháy dưới tải k6 `local` vì lệnh Redis quá hạn 50 ms vài lần mỗi phút qua `host.docker.internal`.
+  - `trivy-config` chỉ báo; `.trivyignore.yaml` chỉ nhận `vulnerabilities` (`scan-gate.sh`), nên misconfig chưa có đường ghi lý
+    do bỏ qua có hạn. Trivy trong image web chỉ thấy 14 gói npm (ADR-0019 §1), lockfile chưa có cổng nào quét.
+- Ràng buộc: repo công khai, nên log và artifact của mọi lượt Actions ai cũng đọc, kể cả khi job đỏ; `workflow_dispatch` chỉ chạy
+  được khi file có trên nhánh mặc định; không dịch vụ AWS/GCP; AI không chạy lệnh nào chạm tài khoản cloud; máy 16 GB không chạy
+  k3d hay tải, chỉ kiểm tĩnh.
+
+## Kiểm chứng (đã kiểm ngày 2026-10-24)
+
+Tài liệu GitHub và Docker đọc ngày 2026-10-24; code đọc ở `main` `8b473ad`; cảnh báo code scanning đọc bằng `gh api` (chỉ đọc).
+
+| Kiểm gì | Nguồn hay lệnh | Kết quả |
+| --- | --- | --- |
+| Runner chuẩn cho repo public | <https://docs.github.com/en/actions/reference/runners/github-hosted-runners> | Linux x64 (`ubuntu-24.04`, `ubuntu-latest`) và Linux arm64 (`ubuntu-24.04-arm`): **4 CPU, 16 GB RAM, 14 GB SSD** mỗi loại. "Use of the standard GitHub-hosted runners is free and unlimited on public repositories." Mỗi runner (trừ loại một CPU) là một VM mới; `sudo` không mật khẩu. Trang không nói swap, không nói dung lượng trống thật của ổ |
+| Giới hạn | <https://docs.github.com/en/actions/reference/limits> | Job trên runner GitHub tối đa **6 giờ** ("the job is terminated and fails"); lượt workflow tối đa 35 ngày; gói Free tối đa 20 job đồng thời |
+| `workflow_dispatch` | <https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow>; `workflow-syntax` | "your workflow must be in the default branch"; "Write access to the repository is required"; tối đa 25 `inputs` |
+| Image runner `ubuntu-24.04` | <https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md> (Image Version 20261012.334.1) | Kernel 6.17.0-1022-azure, systemd 255, Docker 28.0.4, Compose 2.38.2, buildx 0.38.0, kubectl **1.37.1**, Helm 3.22.0 (không dùng: `make ci-tools` cài bản ghim), jq 1.7, gh 2.102.0. Không nói swap hay phân vùng; `ubuntu-latest` sang 26.04 từ tháng 11/2026 |
+| Docker Hub ẩn danh | <https://docs.docker.com/docker-hub/usage/pulls/>, <https://docs.docker.com/docker-hub/usage/>; <https://docs.github.com/en/actions/reference/limits> (mục "Docker Hub's rate limit for GitHub Actions") | Docker: **100 pull mỗi 6 giờ** cho mỗi IPv4 (hay /64 IPv6) với người dùng ẩn danh; trang của Docker không nhắc GitHub, chỉ nói IP có thể "unlimited in partnership with a publisher, provider, or an open source organization". GitHub: "GitHub-hosted runners pulling public images: Docker Hub's rate limit is not applied" (image riêng tư vẫn bị tính). Pull từ containerd trong node k3d đi ra cùng IP của runner, nhưng không trang nào nói riêng ca đó |
+| Phân giải `*.localhost` | Image runner có systemd 255; hành vi của systemd-resolved theo `systemd-resolved.service(8)` (không đọc lại ngày này): tổng hợp mọi tên `*.localhost` về `127.0.0.1` và `::1` | k3d chỉ publish `127.0.0.1:8443`: client chọn `::1` trước thì bị từ chối kết nối rồi mới thử IPv4, hay hỏng nếu không thử lại. Chưa đo trên runner |
+| Mẫu job `stack` | `.github/workflows/ci.yml` dòng 355–479 | `timeout-minutes: 45`, `contents: read`, service container trên `127.0.0.1` và `172.17.0.1`, `make ci-bridge-check`, apt, `make env`, artifact chỉ khi bước chạy xong và đã grep |
+| Script chỉ chạy trên macOS | `deploy/k8s/gitops.sh` dòng 50; `Makefile` target `ci-tools`; đầu `deploy/k8s/drills/lib.sh` | `stat -f %Lp` (BSD); `ci-tools` từ chối khác `Linux x86_64`; drill viết cho bash 3.2 (chạy được trên bash 5) |
+| Script cloud | `deploy/k6/cloud/run.sh`, `render.sh`; `deploy/k8s/cloud/velero/drill-restore.sh`; `deploy/k8s/cloud/values/` | `run.sh`, `drill-restore.sh` từ chối `k3d-*` và context rỗng trước mọi lệnh `kubectl`; `render.sh` không có tham số số pod; Chaos Mesh `socketPath: /run/containerd/containerd.sock`; Velero `deployNodeAgent: false`, `EnableCSI`, BSL S3 có `kmsKeyId` |
+| Argo CD đọc repo | `deploy/k8s/gitops.sh` (`repo_url`, Secret `argocd/repo-short-video-platform`), `deploy/argocd/apps/values.yaml`, `deploy/argocd/project.yaml` | SSH `git@github.com:anhnvcoder/short-video-platform.git` bằng deploy key; cùng URL ở `sourceRepos` của AppProject `svp` |
+| Metric rate limit | `services/gateway/internal/ratelimit/ratelimit.go` dòng 127–196; `internal/telemetry/telemetry.go` dòng 64 | `svp.ratelimit.decisions` (Prometheus `svp_ratelimit_decisions_total`), nhãn `class`, `result`, `store` (`redis`, `fallback`); `New` cộng 0 vào mọi series khi khởi động; quyết định của request đã huỷ không đếm `fallback`; xuất mỗi 15 s |
+| Rule hiện tại | `deploy/observability/prometheus/rules/svp-alerts.yaml` dòng 48–58 | `sum(increase(...{store="fallback"}[1m])) > 0` (cộng nhánh `unless ... offset 1m`), không `for`, `severity: page` |
+| Cảnh báo code scanning mở | `gh api 'repos/anhnvcoder/short-video-platform/code-scanning/alerts?state=open&per_page=100'` | 19: 18 của `trivy-config` (3 high: KSV-0053, KSV-0056 ở `cnpg-rbac.yaml`, DS-0002 ở `deploy/ci/drill/vulnerable.Dockerfile`; 9 medium; 6 low) và 1 CVE của stdlib Go 1.27.2 |
+| Quy tắc tệp bỏ qua | `deploy/ci/scan-gate.sh` (`check_ignorefile`); ADR-0015 §6 | `.trivyignore.yaml` chỉ `vulnerabilities`, mỗi mục `id`, `statement`, `expired_at` ≤ 30 ngày, `purls`/`paths`; khoá gốc khác bị từ chối |
+| Chu kỳ phân tích Argo CD, quyền GitOps | ADR-0014 §12; ADR-0015 §9 | Poll 60 s, jitter 0; `gitops.sh` đọc values ở `refs/remotes/origin/<nhánh>` như lần fetch cuối, không fetch |
+
+## Tên chốt
+
+Code, cấu hình và tài liệu dùng đúng các tên này; đổi tên nào thì sửa ADR này trước.
+
+| Nhóm | Tên | Giá trị, ý nghĩa |
+| --- | --- | --- |
+| Workflow | `.github/workflows/verify.yml`, `name: verify` | Chỉ `workflow_dispatch` (mục 3) |
+| Workflow | Input `scenario` (`type: choice`) | Phần 1: `compose-obs`, `dev-k3d`. Phần 3 thêm: `gitops`, `web-canary`, `k6-cloud-mini`, `chaos`, `velero`. Không input nào khác |
+| Workflow | Job | `compose` (kịch bản `compose-obs`), `k3d` (mọi kịch bản k3d trừ `gitops`), `gitops` (phần 3); mỗi lượt chạy đúng một job, hai job kia `skipped` |
+| Workflow | Runner | `ubuntu-24.04` (amd64) cho cả ba job |
+| Workflow | `concurrency` | group `verify`, `cancel-in-progress: false` |
+| Script | `deploy/ci/verify-host.sh` | Kiểm và chuẩn bị máy: cổng đĩa, `/etc/hosts`, độ lệch version kubectl, `sch_netem` (mục 2, 3) |
+| Script | `deploy/ci/verify-run.sh <kịch bản>` | Trình tự target `make` của kịch bản, mỗi target có hạn riêng (mục 3, 5); chạy được cả trên VM của B |
+| Script | `deploy/ci/verify-sample.sh start\|stop` | Lấy mẫu nền: RAM, đĩa, CPU của máy, `docker stats` của node k3d, trạng thái node (mục 2) |
+| Script | `deploy/ci/verify-mask.sh env\|cluster` | `::add-mask::` cho giá trị bí mật của `.env` hay của Secret trong cluster (mục 4) |
+| Script | `deploy/ci/verify-collect.sh` | Gom file theo danh sách cho phép, quét giá trị và mẫu, bỏ file nghi (mục 4) |
+| Thư mục kết quả | `$RUNNER_TEMP/verify/` (biến `SVP_VERIFY_OUT`) | Mẫu, bảng, JSON trước khi lọc; không bao giờ upload nguyên thư mục |
+| Artifact | `verify-<kịch bản>` | Chỉ thư mục do `verify-collect.sh` dựng; `retention-days: 30` |
+| Máy | Dòng `/etc/hosts` | `127.0.0.1 svp.localhost api.svp.localhost s3.svp.localhost` |
+| Chặn tai nạn | Điều kiện mở `run.sh`, `drill-restore.sh` trên k3d | `GITHUB_ACTIONS=true`, `RUNNER_ENVIRONMENT=github-hosted`, `uname -s` là `Linux`, context đúng `k3d-svp` (mục 7) |
+| Phần 3 | Thư mục phủ chỉ cho runner | `deploy/k8s/cloud/runner/`: values Chaos Mesh, Velero, BackupStorageLocation, VolumeSnapshotClass của driver CSI hostpath (mục 7) |
+| Phần 3 | Velero trên runner | Bucket `velero`, user object store `svp-velero` (quyền chỉ bucket đó), Secret `velero/velero-s3` |
+| Phần 3 | Source map image CI | Artifact `web-sourcemaps-<arch>` của job build trong `images.yml` (mục 6) |
+| Phần 3 | k6 thu nhỏ | Mức 1, 2, 4, 8 pod của profile `cloud`, mỗi pod đúng phần tải của thiết kế 20 pod (mục 8) |
+| CI | `deploy/ci/trivy-config-ignore.yaml` | Bỏ qua có hạn cho misconfig của `trivy-config` (mục 9) |
+| CI | `make web-lockfile-scan` | trivy `fs` trên `web/pnpm-lock.yaml`, cổng CRITICAL; SARIF category `trivy-lockfile-web` (mục 10) |
+| Cảnh báo | `RateLimitFallbackActive` (page), `RateLimitFallbackElevated` (ticket) | Điều kiện ở mục 11 |
+
+## 1. Nơi chạy và loại runner
+
+### Các lựa chọn
+
+| Lựa chọn | Được | Mất |
+| --- | --- | --- |
+| **A. Runner chuẩn của repo public, workflow `workflow_dispatch`** | Miễn phí; mỗi job một VM mới, sạch; cùng image với job `stack` và mọi job CI; AI dispatch và đọc kết quả bằng `gh`, không chạm tài khoản cloud nào | 4 vCPU (nửa Docker VM 8 vCPU của máy), 14 GB SSD công bố, tối đa 6 giờ mỗi job; log và artifact công khai; chạy code của ref được dispatch |
+| B. VM thuê theo giờ | CPU, RAM, đĩa chọn được; không giới hạn 6 giờ | Tốn tiền; người học dựng, chạy, xoá; không có công cụ sẵn; kết quả chép tay về |
+| Runner lớn của GitHub | Nhiều CPU, vẫn trong Actions | Cần gói trả phí của tổ chức (chưa xác nhận cho repo của tài khoản cá nhân); ngoài lựa chọn người học đã chốt |
+| Runner self-hosted trên máy | Không tốn tiền | Máy 16 GB chính là thứ thiếu; runner self-hosted gắn repo public chạy code của ref được dispatch trên máy cá nhân |
+| **`ubuntu-24.04` (amd64)** | `make ci-tools` chạy được (Helm linux-amd64 ghim sha256); Playwright Chromium và WebKit đã chạy ở job `stack`; mọi image phát hành có `linux/amd64` | Khác kiến trúc máy (arm64): image dev build amd64, số RAM và thời gian không thay số của máy |
+| `ubuntu-24.04-arm` | Cùng kiến trúc máy và image dev | `make ci-tools` từ chối (cần ghim thêm sha256 Helm linux-arm64); Playwright WebKit trên Linux arm64 chưa từng chạy trong repo |
+
+### Quyết định
+
+- **A cho mọi kịch bản.** B chỉ cho một dòng cụ thể khi kịch bản của nó trượt tiêu chí "runner đủ" (mục 2) **hai lượt liền vì tài
+  nguyên** (lượt đầu trượt có thể do hàng xóm ồn, nên chạy lại một lần trước), ghi lý do vào mục Kết quả.
+- **Runner `ubuntu-24.04` amd64**, ghi rõ label, không `ubuntu-latest`. Lý do: công cụ CI ghim cho amd64 và job `stack` đã chứng minh
+  đường compose, Playwright trên amd64. Mọi image phát hành là index đa kiến trúc nên cluster GitOps trên runner kéo chân amd64
+  của đúng digest đã ký. Cái giá: số đo trên runner là số của amd64, không thay số của máy (mục 2, "Số nào so được").
+- **Ngoại lệ arm64:** nếu RAM nghỉ (b) của một cluster đo trên amd64 nằm trong khoảng ±0,3 GiB quanh 6,5 GiB (kết luận có thể đổi
+  theo kiến trúc), chạy thêm một lượt `dev-k3d` trên `ubuntu-24.04-arm` để so; khi đó ghim thêm sha256 Helm linux-arm64 cạnh
+  `HELM_LINUX_AMD64_SHA256` và cho `ci-tools` nhận `Linux aarch64`.
+- **B khi cần:** Ubuntu 24.04 amd64, ít nhất 8 vCPU, 32 GB RAM, 100 GB SSD, nhà cung cấp do người học chọn. Người học cài các công
+  cụ như các bước setup của `verify.yml`, chạy `deploy/ci/verify-run.sh <kịch bản>`, rồi `deploy/ci/verify-collect.sh` (cùng bộ
+  lọc của mục 4), chép thư mục đã lọc về; xoá VM trong ngày, ghi chi phí vào Kết quả. AI soạn lệnh, không chạy lệnh nào chạm nhà
+  cung cấp; nhà cung cấp là AWS hay GCP thì theo mục An toàn cloud của `CLAUDE.md` (kiểm account trước lệnh ghi, lệnh destroy và
+  quét tài nguyên sót).
+
+## 2. Tiêu chí "runner đủ": đĩa, RAM, CPU, thời gian
+
+### Các lựa chọn
+
+| Lựa chọn | Được | Mất |
+| --- | --- | --- |
+| "Đủ" là kịch bản xanh | Không cần đo thêm | Không tách được lỗi của code với lỗi vì runner thiếu tài nguyên; B không có điều kiện mở |
+| **Tiêu chí đo được viết trước cho mỗi kịch bản, lấy mẫu nền suốt lượt chạy** | Biết lượt đỏ vì runner hay vì code; điều kiện sang B rõ ràng | Thêm sampler và một bảng cần đọc ở mỗi lượt |
+| Dọn đĩa ở mọi lượt | Luôn đủ chỗ | Mất 1–3 phút mỗi lượt khi không cần; xoá cả thứ có thể dùng |
+| **Đo đĩa trước, dọn khi thiếu, thiếu sau khi dọn thì dừng** | Chỉ trả giá khi cần; thất bại ở bước đo đĩa, không ở giữa diễn tập | Cần ước lượng chỗ cần trước lượt đầu |
+
+### Quyết định
+
+- **Đĩa** (`verify-host.sh`, trước mọi target `make`): đo `df -B1` của hệ thống tệp chứa thư mục dữ liệu của Docker
+  (`docker info -f '{{.DockerRootDir}}'`) và in kèm `docker system df`. Cần trống ít nhất `need + 15% dung lượng + 2 GiB`:
+  `need` là ước lượng dùng thêm của kịch bản (**15 GiB** cho `compose-obs`; **30 GiB** cho kịch bản k3d: build cache bảy image, image
+  của khoảng 40 container bên thứ ba trong kho containerd của hai node, PV, trình duyệt Playwright), 15% là khoảng dưới ngưỡng dọn
+  image mặc định của kubelet (`imageGCHighThresholdPercent` 85, chưa đọc lại cấu hình k3s). Thiếu thì xoá các bộ công cụ cài sẵn mà
+  repo không dùng (`/usr/local/lib/android`, `/usr/share/dotnet`, `/opt/ghc`, `/usr/local/.ghcup`, `/opt/hostedtoolcache/CodeQL`;
+  không đụng Go, Node trong `hostedtoolcache` mà `setup-go`, `setup-node` dùng), đo lại; vẫn thiếu thì dừng với số đo, trước mọi
+  build. Lượt đầu của mỗi kịch bản ghi mức dùng thật; `need` đổi thành 1,25 × mức dùng cao nhất đo được.
+- **Đĩa trong lúc chạy:** sampler ghi chỗ trống mỗi 30 s; xuống dưới `15% + 1 GiB` thì ghi dấu, `verify-run.sh` dừng kịch bản ở
+  target kế với lý do "disk", không để kubelet evict pod giữa diễn tập rồi báo một lỗi xa nguyên nhân.
+- **RAM:** Linux chạy Docker native, không có Docker VM: node k3d là container trên chính máy runner 16 GB, nên RAM của cluster
+  đo được như trên máy (cùng cgroup v2) nhưng giới hạn khác (16 GB của runner trừ OS, runner agent và dockerd, thay 9,7 GiB của
+  VM). Đo:
+  - **Ngân sách của cluster** theo đúng cách ADR-0014 §2 (sửa 2026-10-20) và ADR-0017 điểm 5: tổng MEM USAGE của
+    `docker stats --no-stream` cho `k3d-svp-*` và `k3d-svp-registry`, 6 mẫu cách 10 s lấy trung vị; nghỉ là 60 s sau khi mọi pod
+    Ready, đỉnh là 6 mẫu liền trong khi đủ `maxReplicaCount` (2) worker cùng transcode; cạnh đó `anon`, `active_file`, `kernel` của
+    từng node từ `memory.stat`, tổng pod `kubectl --context k3d-svp top pods -A` theo namespace và `kubectl top node`. Thêm một lần
+    đo nghỉ cuối kịch bản (sau mọi diễn tập) để thấy hiệu ứng "(b) chỉ đạt sau 70–90 phút" của máy có lặp lại không.
+  - **Máy runner:** `MemAvailable` và swap đang dùng (`/proc/meminfo`) mỗi 5 s, `free -m` lúc đầu và lúc đo nghỉ, `swapon --show`
+    lúc đầu (tài liệu không nói runner có swap), container nào `OOMKilled` (`docker inspect`) và dòng OOM của kernel (`sudo dmesg`).
+- **Trả lời "RAM (b)" của giai đoạn 5** (quy tắc viết trước), áp riêng cho từng đường ở điểm đo 60 s; kết luận chỉ đúng cho đường
+  đã đo. "Còn mở: RAM (b)" của roadmap và ADR-0017 là của **đường GitOps** (Argo CD, image GHCR): chỉ kịch bản `gitops` (phần 3) đóng
+  được nó. `dev-k3d` (phần 1) đạt hay trượt chỉ kết luận cho đường dev, không đóng dòng đó.
+  - MEM USAGE trừ `active_file` của các node dưới 6,5 GiB và tổng pod không vượt 4,7 GiB: (b) đạt trên runner cho đường đó; chỗ
+    thiếu ở máy là của Docker VM (swap, áp lực bộ nhớ của macOS), không cắt gì ở đường đó; số đo trên máy vẫn để nguyên trong
+    ADR-0015/0017, số của runner ghi cạnh.
+  - Trên 6,5 GiB: cluster thật sự vượt ngân sách; theo ADR-0014 §2 và điểm 2 của ADR-0017 thiếu (b) thì cắt theo thứ tự cũ.
+    Người học quyết cắt (việc riêng, đo lại trên runner) hay ghi nhận như (c); ADR này không quyết trước.
+- **CPU:** runner có 4 vCPU, trong khi một media-worker giới hạn 2 CPU (FF-3): hai worker cùng transcode giữ trọn 4 vCPU, chưa kể
+  k3s, Envoy, Prometheus. Máy đã chết với 3 worker trên 8 vCPU (6/8); trên runner 2 worker là 4/4. Vì vậy runner **không** phải
+  "node đủ CPU" của ADR-0020 §9 theo nghĩa đen: PASS trên runner là bằng chứng mạnh (k3s đứng được khi CPU bão hoà), FAIL (c) trên
+  runner không nói thêm gì về thiết kế, và dòng đó sang B (VM 8 vCPU, như Docker VM của máy) theo quy tắc ở trên. Sampler ghi
+  `/proc/stat` bận theo phần trăm mỗi 5 s và CPU của container node theo `docker stats`; không dùng PSI làm bằng chứng nghẽn (giai
+  đoạn 5 thấy PSI không đáng tin trong VM).
+- **Thời gian:** job `compose` 120 phút, `k3d` và `gitops` 330 phút (dưới hạn 6 giờ của GitHub 30 phút). Trước bước kịch bản là
+  các bước setup (công cụ, apt, Playwright `--with-deps`, dọn đĩa khi cần: ước lượng 10–15 phút), nên ngân sách setup là **20 phút**
+  và bước kịch bản có `timeout-minutes` bằng hạn job trừ 20 phút setup trừ 25 phút cho các bước sau (`compose` 75 phút, `k3d`,
+  `gitops` 285 phút). Bước đầu của job ghi thời điểm bắt đầu job vào `$SVP_VERIFY_OUT`; `verify-run.sh` chạy mỗi target `make` dưới
+  `timeout` riêng (ví dụ `make k8s-up` 60 phút, mỗi diễn tập 30 phút, chờ bản phát hành 90 phút) nhưng không quá mốc "bắt đầu job +
+  hạn job − 25 phút", và không bắt đầu target mới khi đã qua mốc đó. Như vậy setup chậm hơn ước lượng chỉ làm kịch bản ngắn lại, một
+  target treo làm đỏ đúng target đó, và các bước gom, lọc, tải artifact (`if: always()`) luôn còn 25 phút; hạn 6 giờ của GitHub không
+  bao giờ là thứ cắt job. Lượt đầu mỗi kịch bản ghi thời gian setup thật; quá 20 phút thì sửa ngân sách ở đây.
+
+**Bảng "runner đủ"** (mọi điều phải đạt; không đạt vì tài nguyên hai lượt liền thì dòng đó sang B):
+
+| Kịch bản | Đủ khi |
+| --- | --- |
+| Mọi kịch bản | Cổng đĩa đạt; job xong trong hạn bước; `MemAvailable` thấp nhất ≥ 2 GiB; không container nào `OOMKilled`, kernel không ghi OOM; chỗ trống thấp nhất ≥ ngưỡng chạy ở trên |
+| `compose-obs` | Thêm: không container nào của project restart ngoài các lần diễn tập chủ động dựng lại |
+| Kịch bản k3d | Thêm: container `k3d-svp-server-0` giữ nguyên `RestartCount` và `State.StartedAt` suốt kịch bản (tiêu chí (c) của ADR-0017, mở rộng từ `drill-k8s-keda` ra cả kịch bản); không node nào `NotReady` ở mẫu nào (sampler đọc `kubectl get nodes` mỗi 10 s); không event `Evicted`, `EvictionThresholdMet`, `FreeDiskSpaceFailed` |
+| `gitops` (KEDA) | Thêm: mỗi lượt `drill-k8s-keda` có cửa sổ ít nhất 6 mẫu liền 2 worker cùng transcode |
+| `k6-cloud-mini`, `chaos` | Thêm: pod k6 không bị throttle CPU quá 5% chu kỳ ở mức được tính (mục 8): k6 thiếu CPU thì `dropped_iterations` là giới hạn của runner, không của hệ thống |
+
+**Số nào so được với máy:**
+
+| Loại số | So được không | Vì sao, cách ghi |
+| --- | --- | --- |
+| Kết quả đúng/sai của diễn tập (threats, supplychain, giả thuyết chaos, offset sau restore, canary promote/abort) | Có | Logic không phụ thuộc máy |
+| RAM của cluster theo cách ADR-0014 §2 | So với **ngân sách** (6,5 / 8,7 GiB, 4,7 GiB pod), không so như số thay cho máy | Cùng cách đo, khác kiến trúc (amd64) và khác hệ điều hành chủ (không VM, không áp lực bộ nhớ của macOS); ghi cạnh số của máy, không xoá số cũ |
+| Thời gian (`k8s-up`, RTO, mốc canary, scale KEDA, tới `READY`) | Không | 4 vCPU amd64, cache lạnh mỗi lượt; ghi là số của runner |
+| Độ trễ dưới tải (k6 p95/p99) | Không với máy; chỉ dùng trong quy tắc của mục 8 | Ghi kèm điều kiện runner |
+| LCP Lighthouse (Lantern mô phỏng) | So với ngưỡng 2 500 ms | Ghi kèm `benchmarkIndex` của báo cáo |
+
+## 3. Workflow `verify.yml`
+
+### Các lựa chọn
+
+| Lựa chọn | Được | Mất |
+| --- | --- | --- |
+| Thêm job vào `ci.yml` (theo lịch hay dispatch) | Không thêm file | Trộn kiểm của mỗi PR với buổi đo dài; trigger, concurrency, quyền khác hẳn |
+| **Workflow thứ ba, chỉ `workflow_dispatch`** | Chỉ người có quyền ghi chạy được; không bao giờ chạy code của PR fork; tách hẳn khỏi `ci-ok`, `images-ok` | Thêm một file ngoài hai workflow của ADR-0015 §1 (kèm quy ước của nó) |
+| **Mỗi lượt một kịch bản, mỗi nhóm kịch bản một job** (`compose`, `k3d`, `gitops`) | Runner mới cho mỗi kịch bản; service container chỉ ở job compose; quyền `actions: read` chỉ ở job `gitops` | Kịch bản dùng chung bước setup phải khai ở nhiều job |
+| Mọi kịch bản trong một job, bước theo điều kiện | Một định nghĩa | Service container (job-level) dựng cả khi không cần; quyền lớn nhất cho mọi kịch bản |
+| Matrix nhiều kịch bản một lượt | Chạy song song | Nhiều kết quả cùng lúc cho một người đọc; lỗi chung (script chưa chạy được trên Linux) lặp ở mọi chân |
+| **`concurrency` một lượt mỗi lúc** | Lỗi chung sửa xong trước lượt kế; không hai lượt cùng chờ một bản phát hành | Không song song; dispatch lượt thứ ba khi đã có một lượt chạy và một lượt chờ thì lượt chờ bị huỷ (cách GitHub giữ hàng chờ) |
+| Group theo kịch bản | Kịch bản khác nhau chạy song song | Như matrix |
+| Environment được bảo vệ cho mọi job | Có người duyệt trước khi chạy | Không có secret nào cần bảo vệ (mục 6); thêm bước duyệt mà không bớt rủi ro nào |
+
+### Quyết định
+
+- **Trigger** chỉ `workflow_dispatch`, input `scenario` (`type: choice`, danh sách ở Tên chốt), không input nào khác: tham số của
+  kịch bản nằm trong `verify-run.sh`, review được như code. Input chỉ vào script qua `env:` (`SCENARIO: ${{ inputs.scenario }}`),
+  `verify-run.sh` kiểm lại giá trị bằng `case`; `if:` của job so `inputs.scenario` (biểu thức, không vào shell).
+- **Ref:** bước đầu của mỗi job dừng (exit 1, nêu lý do) khi `GITHUB_REF` không phải `refs/heads/main` hay `refs/heads/feat/stage6b-*`.
+  Đây là chặn tai nạn (dispatch nhầm nhánh cũ), không phải ranh giới bảo mật: ai có quyền ghi đẩy được nhánh có `verify.yml` của
+  chính họ (cùng mức tin như SC-8). Ranh giới là không secret và token chỉ đọc.
+- **Thứ tự:** `workflow_dispatch` chỉ chạy khi file có trên nhánh mặc định, nên PR đưa `verify.yml` vào `main` (đủ `ci-ok`,
+  `images-ok`) merge **trước** lượt dispatch đầu; sau đó dispatch được với `--ref main` hay nhánh `feat/stage6b-*` (chạy bản file và
+  code của nhánh đó). AI dispatch (`gh workflow run verify.yml --ref <nhánh> -f scenario=<tên>`) và đọc kết quả (`gh run view`,
+  `gh run download`) từng lượt; lượt kế chỉ dispatch khi lượt trước đã xong.
+- **Quyền:** `permissions: {}` đầu file; `compose`, `k3d`: `contents: read`; `gitops`: `contents: read`, `actions: read` (tải artifact
+  source map của lượt `images.yml`, mục 6). Không secret, không environment. `GH_TOKEN: ${{ github.token }}` chỉ ở bước gọi `gh`
+  (job `gitops`). Mọi action ghim SHA như ADR-0015 §1 (`checkout`, `setup-go`, `setup-node`, `cache`, `upload-artifact`,
+  `download-artifact` đã ghim trong repo); `persist-credentials: false`; không `pull_request_target`, `workflow_run`.
+- **`concurrency: { group: verify, cancel-in-progress: false }`.**
+- **Job `compose`** theo mẫu job `stack`: cùng service container Postgres/Redis (image ghim, publish trên `127.0.0.1` và `172.17.0.1`),
+  `make ci-bridge-check`, `setup-go`, Node theo `web/.nvmrc` và pnpm theo `packageManager`, apt `postgresql-client redis-tools ffmpeg
+  jq`, `make web-install` và `pnpm exec playwright install --with-deps chromium` (trong `web/`, như job `stack`: `make web-lighthouse`
+  của `compose-obs` cần `lhci` trong `web/node_modules` và Chromium của Playwright, `web/lighthouse/run.sh` dừng ngay khi thiếu một
+  trong hai; không target nào của kịch bản tự cài chúng, và `compose-obs` không chạy e2e nên không cần WebKit), `make env`, rồi
+  `verify-host.sh`, `verify-mask.sh env`, `verify-sample.sh start`, `verify-run.sh "$SCENARIO"` (gọi lại
+  `verify-mask.sh env` sau mỗi target, mục 4), và các bước `if: always()`: `verify-sample.sh stop`, `verify-collect.sh`,
+  `upload-artifact`.
+- **Job `k3d`, `gitops`:** không service container (Postgres, Redis của cluster nằm trong cluster). Bước: `checkout` (`gitops`:
+  `fetch-depth: 0`, vì `gitops.sh` đọc `refs/remotes/origin/main` và `measure-gitops` đọc commit cha), `setup-go`, cache GOBIN như
+  job `config` rồi `make tools ci-tools` (k3d, Helm, buf ghim), Node/pnpm, `make web-install` và `pnpm exec playwright install
+  --with-deps chromium webkit` (e2e web), apt `ffmpeg jq`, kubectl của image runner (1.37.1; `verify-host.sh` dừng khi lệch quá một
+  minor so với k3s 1.36 của `K3S_IMAGE_TAG`, theo chính sách lệch version của kubectl), `make env`, `verify-host.sh` (cổng đĩa, ghi ba
+  tên vào `/etc/hosts` rồi kiểm `getent ahosts` của mỗi tên chỉ trả `127.0.0.1`, dừng nếu khác, trước `make k8s-up`: một lượt hỏng vì
+  DNS tốn khoảng một giờ), `verify-mask.sh env`, sampler, `verify-run.sh`; sau khi cluster lên, `verify-run.sh` gọi
+  `verify-mask.sh cluster`; các bước `if: always()` như job `compose`.
+- **Không dọn gì ngoài runner:** mọi thứ kịch bản tạo (cluster, stack, volume, Chaos Mesh, Velero) nằm trên VM của runner, bị huỷ
+  cùng job; không tài nguyên nào ở ngoài cần quét. Kịch bản vẫn chạy lệnh gỡ của buổi cloud (Chaos Mesh, Velero) để diễn tập chính
+  các lệnh đó (mục 7). Trước khi gom kết quả, `verify-sample.sh stop` và `verify-run.sh` dừng đúng pid tiến trình nền chúng đã ghi
+  (sampler, traffic diễn tập) để file kết quả đủ.
+- **Script macOS:** lệnh chỉ có ở macOS (BSD `stat -f`, `date -v`) gặp trên runner đổi sang dạng chạy được cả hai nơi; phần 1 sửa
+  chỗ mà `dev-k3d` gặp và hai script GitOps (`gitops.sh`, `drills/gitops.sh`), phần còn lại theo lỗi của lượt chạy.
+- **Docker Hub:** runner kéo ẩn danh. GitHub công bố giới hạn pull của Docker Hub không áp cho runner GitHub kéo image công khai
+  (mục Kiểm chứng), và mọi image `docker.io` của repo là công khai, nên workflow không đếm pull và không có token Docker Hub. Pull
+  từ containerd trong node k3d chưa được trang nào nói riêng: nếu một lượt gặp `429 Too Many Requests` (event `Failed` của kubelet,
+  lỗi của `docker pull`), ghi vào Kết quả và xét lại trước lượt kế.
+
+## 4. Log và artifact công khai
+
+### Các lựa chọn
+
+| Lựa chọn | Được | Mất |
+| --- | --- | --- |
+| Không artifact, chỉ log của job | Không thêm đường lộ | JSON của diễn tập, mẫu RAM phải in ra log (dài, khó đọc lại); log cũng công khai |
+| Tải mọi thứ lên, tin script không in bí mật | Đủ chứng cứ | Trace, video, HAR, báo cáo HTML của Playwright mang cookie; một file sót là lộ vĩnh viễn |
+| Mã hoá artifact bằng khoá của người học | Tải được cả thứ nhạy cảm | Cần secret trong workflow, đúng thứ phần này tránh; người học phải giải mã mỗi lần đọc |
+| **Danh sách cho phép, quét theo giá trị bí mật đã biết và theo mẫu, file nghi thì bỏ (fail-closed)** | Chỉ thứ cần đọc lên artifact; lỗi của script in sót cũng bị chặn ở lớp thứ hai | Giá trị bị biến đổi (base64 lồng, URL-encode) có thể lọt; file hợp lệ có thể bị bỏ oan |
+| **`::add-mask::` các giá trị bí mật ngay khi chúng có** | Lớp thứ hai cho log của job | Chỉ che dòng in sau lệnh, chỉ che đúng chuỗi; không phải biện pháp chính |
+
+### Quyết định
+
+- **Log của job công khai, kể cả khi đỏ:** biện pháp chính vẫn là script không in giá trị bí mật (quy ước đã có ở mọi target, drill
+  tự dò log của chính nó). Trong `verify-*.sh` và các bước của `verify.yml`: không `set -x`, không `env`/`printenv`, không in `.env`,
+  không `docker compose config` thiếu `--quiet`, không `kubectl get secret` ra stdout, không `make logs` hay `kubectl logs` của
+  service vào log job (lỗi thì chỉ `make ps`, `make k8s-status`, `kubectl get events`: trạng thái, không nội dung). Giá trị đọc vào
+  biến rồi chuyền qua stdin hay file mode 600 trong `$RUNNER_TEMP`, như `secrets.sh` đã làm.
+- **Mask:** `verify-mask.sh env` ngay sau `make env`: `::add-mask::` cho giá trị của mọi biến trong `.env` có tên kết thúc bằng
+  `PASSWORD`, `SECRET`, `SECRET_KEY`, `TOKEN`, `_KEY`, `_KEYS` hay là `SENTRY_DSN`, độ dài ≥ 8 (che giá trị ngắn hay không bí mật như
+  `svp`, `admin@svp.local` sẽ làm log không đọc được). `.env` còn được ghi thêm giữa kịch bản (`make up OBS=lgtm` gọi
+  `make glitchtip-init`, thêm `SENTRY_DSN`, `SENTRY_AUTH_TOKEN`, `SENTRY_SOURCEMAPS_TOKEN`), nên `verify-run.sh` gọi lại
+  `verify-mask.sh env` ngay sau **mỗi** target `make` (mask lại một giá trị đã che là vô hại); giá trị do target thêm được che từ
+  target kế, còn trong chính target đó chỉ quy ước không in che. `verify-mask.sh cluster` sau khi cluster lên và trước khi gom: mỗi giá trị
+  (và mỗi dòng của giá trị nhiều dòng) ≥ 8 ký tự của mọi Secret trong `svp`, `svp-data`, `svp-obs`, `argocd`, `velero`. Lệnh mask
+  không bao giờ được in lại (không `set -x`).
+- **Danh sách cho phép** (`verify-collect.sh`, chép vào `$RUNNER_TEMP/verify-artifact/`): JSON và bảng của `.k8s/drills/*.json`,
+  `.k8s/drills/traffic-*.log` (mỗi dòng chỉ có thời điểm, `u1`…`u4`/`web`, tên route, mã HTTP, mili giây), `.k6/*/summary.json`,
+  JSON kết quả của `web/test-results/` mà target đo ghi (`measure-*`, `glitchtip-*.json`), báo cáo Lighthouse đã lọc cookie
+  (`web/test-results/lighthouse/*.json`, `*.html`, như job `stack`), mẫu của sampler, bảng RAM, đầu ra `make k8s-status` và `kubectl
+  get events -A` lúc cuối, `df` trước/sau. Mỗi file tối đa 5 MiB.
+- **Cấm, dù script nào ghi ra:** `.env`, kubeconfig, `.k8s/ca.*`, `.k8s/helm/`, `.k8s/drills/threats-*.log` (nội dung thăm dò),
+  trace, video, ảnh, HAR, báo cáo HTML của Playwright, `machine.json` của k6, thư mục ẩn, mọi log của service.
+- **Quét trước khi chép mỗi file** (fail-closed): (1) theo **giá trị**: mọi giá trị bí mật của `.env` (cùng luật tên như mask), và
+  mọi giá trị trong Secret của các namespace ở trên đọc lúc cuối (cluster còn sống) hay lúc vừa lên (bản đã đọc, file mode 600 trong
+  `$RUNNER_TEMP`, không upload), mỗi giá trị ở dạng thô và dạng base64; (2) theo **mẫu**:
+  `eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.` (JWT, JWS: header và payload JSON cùng mở bằng `eyJ`, nối bằng dấu chấm),
+  `svp_sid`, `Bearer `, `Set-Cookie`, `-----BEGIN [A-Z ]*PRIVATE KEY-----`. Mẫu JWT neo vào hình `header.payload.` vì `eyJ` đứng một
+  mình khớp cả trong base64 của ảnh chụp: trên báo cáo Lighthouse local của 2026-10-24, `eyJ[A-Za-z0-9_-]{8,}` khớp 6 trong 18 lượt
+  `/v/{id}` (12 file, cả JSON lẫn HTML) mà không có JWT nào, tức bỏ oan một phần ba bằng chứng LCP của trang đó; mẫu neo khớp 0 file,
+  vì base64 của ảnh không có dấu chấm. Khớp thì bỏ file và ghi
+  `::warning::<đường dẫn>: <tên luật>` (không bao giờ in đoạn khớp). Không dựng được danh sách giá trị của cluster (cluster chết
+  trước khi đọc được lần nào) thì chỉ chép file do runner ghi (mẫu của sampler, `df`), bỏ mọi file đến từ cluster hay stack.
+- Artifact kèm `files.txt`: tên mọi file đã chép và mọi file bị bỏ cùng tên luật, để người đọc biết thứ thiếu là do lọc.
+- **Job đỏ, bị huỷ hay quá hạn bước:** các bước gom, lọc, tải có `if: always()` và cùng bộ lọc; hạn bước của mục 2 để lại thời gian
+  cho chúng. Runner mất kết nối (VM chết) thì không có artifact, chỉ log.
+
+## 5. Chia phần và bản đồ dòng dời
+
+**Phần 1** (không cần object store mới, không secret): việc tĩnh (mục 9, 10, 11, P2 của giai đoạn 6, sửa hai e2e đỏ của job `stack`),
+`verify.yml` với `compose-obs` và `dev-k3d` dùng target có sẵn. **Phần 2:** ADR riêng chọn object store thay MinIO cho compose và
+k3d (presigned POST UP-1…UP-7, CORS, quyền theo user, bucket backup), hiện thực, kiểm lại bằng `compose-obs` và `dev-k3d`. **Phần
+3:** `gitops`, `web-canary`, `k6-cloud-mini`, `chaos`, `velero` (thêm vào `scenario` khi hiện thực), sau phần 2 vì Velero và BAK-1 đích
+object store trong cluster. **Phần 4:** bài SA tách repo GitOps (roadmap, "Bài SA bổ sung"), cần người học tạo repo và quyền mới.
+
+**Kịch bản** (mỗi kịch bản một lượt dispatch, runner mới):
+
+| Kịch bản | Đường | Trình tự chính (`verify-run.sh`) | Phần |
+| --- | --- | --- | --- |
+| `compose-obs` | compose `OBS=lgtm` | `make up OBS=lgtm` → `make smoke` → `make drill-obs-threats` → `make load-local` (quan sát cảnh báo, p99 Redis) → `make web-lighthouse` ×3 | 1 |
+| `dev-k3d` | k3d đường dev | `make k8s-up` → `make k8s-smoke` → RAM nghỉ 60 s → `make drill-k8s-threats` → `make drill-k8s-pdb` → `make drill-k8s-canary` → `make k8s-web-sourcemaps` → `SVP_E2E_GLITCHTIP=1 make k8s-web-e2e` → `make drill-k8s-web-obs` → `make drill-k8s-keda N=9` (RAM đỉnh; kết luận chỉ cho đường dev) → `make drill-k8s-backup` rồi `MODE=pitr` → RAM nghỉ cuối | 1 |
+| `gitops` | k3d GitOps | `make k8s-gitops-up` → `make k8s-smoke` → RAM nghỉ 60 s → `make drill-k8s-supplychain` → `make drill-k8s-threats` → source map của image CI → e2e GlitchTip → `make drill-k8s-web-obs` → `make drill-k8s-keda N=9` ×2 → chờ bản phát hành → `make measure-gitops` → RAM nghỉ cuối | 3 |
+| `web-canary` | k3d đường dev | `make k8s-up` → traffic diễn tập + client trình duyệt → canary web bản tốt rồi bản lỗi (drill mới) | 3 |
+| `k6-cloud-mini` | k3d đường dev | `make k8s-up` → seed ≥ 30 video `READY` → Job k6 các mức của mục 8 | 3 |
+| `chaos` | k3d đường dev | `make k8s-up` → cài Chaos Mesh → k6 ở mức giữ → (b) trên pod thử → (a), (b), (c) → gỡ | 3 |
+| `velero` | k3d đường dev | `make k8s-up` với driver CSI hostpath → cài Velero → `drill-restore.sh` chế độ runner → gỡ, quét | 3 |
+
+**Bản đồ dòng dời → kịch bản** (tiêu chí đạt viết trước; "GĐ7" là giai đoạn 7, kèm lý do):
+
+| # | Dòng dời (nguồn) | Kịch bản, lệnh | Đạt khi | Phần |
+| --- | --- | --- | --- | --- |
+| D1 | Hai media-worker cùng transcode trên node đủ CPU, hai lượt `drill-k8s-keda N=9` PASS gồm (c) (ADR-0017 Trạng thái, Hệ quả "Phải trả", Kiểm chứng "Hai worker cùng transcode trên node thật kiểm ở giai đoạn 6b"; ADR-0020 §1, §9, Kiểm chứng sau "Hai media-worker…") | `gitops`: `make drill-k8s-keda N=9` hai lần trên cluster có Argo CD | Hai lượt PASS, mỗi lượt có ≥ 6 mẫu liền 2 worker cùng transcode, (c) giữ, không node `NotReady`; đỉnh (a) < 8,7 GiB. Trượt (c) hai lượt → B (VM 8 vCPU, mục 2 "CPU"); node pool riêng → GĐ7 (EKS) | 3 |
+| D2 | RAM nghỉ (b) ở điểm đo 60 s của ADR-0014 §2 (ADR-0017 Trạng thái, Kiểm chứng "RAM … kiểm lại ở giai đoạn 6b"; roadmap "Còn mở: RAM (b)") | `dev-k3d` (đường dev), `gitops` (đường GitOps): RAM nghỉ 60 s và cuối kịch bản | Số theo cách đo của mục 2 ghi ở Kết quả; trả lời theo quy tắc "RAM (b)" của mục 2 | 1, 3 |
+| D3 | Cluster GitOps chạy image `web` đã ký từ GHCR (ADR-0019 Trạng thái, Bối cảnh, §12, "Chưa kiểm ở phần C"; threat model hàng 5b, 6b) | `gitops`: `make k8s-gitops-up`, `make k8s-smoke`, `make k8s-web-e2e` | `k8s-gitops-up` qua kiểm 7/7 bản phát hành (chữ ký, `vuln` ≤ 48 giờ), mọi Application Synced/Healthy, Rollout `web` Healthy; smoke 58 bước; e2e web xanh hai trình duyệt | 3 |
+| D4 | Kyverno Enforce từ chối image web chưa ký (ADR-0019 §12; threat model SC-1 cho web, hàng 5b, 6b) | `gitops`: `make drill-k8s-supplychain SUPPLYCHAIN_UNSIGNED=<digest con amd64 của web> SUPPLYCHAIN_VULNERABLE=<drill-vulnerable>` (mục 6) | Ca (a)–(i) PASS đúng message; (b) với digest web chưa ký bị rule chữ ký từ chối | 3 |
+| D5 | Source map của image CI (ADR-0019 §9, §12, Hệ quả "Xem lại khi … map của image CI") | `gitops`: artifact `web-sourcemaps-amd64` của lượt build digest đang chạy → GlitchTip của cluster → `SVP_E2E_GLITCHTIP=1 make k8s-web-e2e` → `make drill-k8s-web-obs` | Mọi chunk `/login` đang phục vụ có debug ID trong bộ map; event có frame map về `turbopack:///[project]/…` ở hai trình duyệt; `drill-k8s-web-obs` errors PASS | 3 |
+| D6 | Canary web dưới traffic: promote, abort, 404 asset, số lần tải lại; tải lại vì action có đáng kể không (ADR-0019 §1 "Xem lại khi số đo ở giai đoạn 6b…", §3 cuối, §12, Hệ quả "Xem lại khi") | `web-canary` (drill mới, phần 3) | Bản tốt qua 25%, 50%, 100% và promote; bản lỗi (trả 5xx trên route traffic đo) bị phân tích abort, trọng số về 0, pod stable không đổi; ghi số 404 `web-asset`, số lần tải lại mỗi client theo loại (chunk, action), tỷ lệ action 409; mỗi client tải lại ≤ 2 lần mỗi canary. Tỷ lệ action 409 trong canary > 10% → mở việc xét khoá cố định không bí mật (ADR-0019 §1) bằng ADR riêng | 3 |
+| D7 | `drill-k8s-threats` đủ, gồm các ca WEB mới (ADR-0019 §12; threat model hàng 6b) | `dev-k3d` (hồi quy trên runner; đường dev đã 16/16 ở giai đoạn 6), `gitops` (đường GitOps có web) | Mọi mục PASS, mỗi ca có đối chứng | 1, 3 |
+| D8 | `drill-obs-threats` với WEB-9, refresh token, OPS-1 tám cổng (ADR-0019 §12; threat model OPS-1, WEB-9, hàng 5b, 6b) | `compose-obs`: `make up OBS=lgtm`, `make smoke`, `make drill-obs-threats` | Mọi ca PASS (Telegram SKIP vì không secret) | 1 |
+| D9 | RAM của cluster có web (nghỉ, đỉnh) và `resources` của web (ADR-0019 §2 "đo lại ở giai đoạn 6b", §12; ADR-0020 §9) | `dev-k3d` (e2e), `k6-cloud-mini` (tải), `gitops` | Quy tắc `resources` của mục 8 áp với số đo; RAM như D2 | 1, 3 |
+| D10 | Cổng CI quét `web/pnpm-lock.yaml` (ADR-0019 §1, §12) | Không runner: `make web-lockfile-scan` trong job `web` của `ci.yml` (mục 10) | Ca âm có CRITICAL làm target exit ≠ 0; lockfile hiện tại qua | 1 |
+| D11 | k6 tải lớn nhất nơi chạy chịu được, profile `cloud` thu nhỏ (ADR-0020 Trạng thái, §1, Kiểm chứng sau "20 pod k6 giữ được tốc độ…", Hệ quả "Xong khi … chờ giai đoạn 6b … tải lớn") | `k6-cloud-mini` (mục 8) | Mức cao nhất mà mọi threshold đạt, `dropped_iterations` 0 và runner đủ, ghi số k6 và phía server; 20 pod 1 250 req/s → GĐ7 (EKS) | 3 |
+| D12 | Ba thí nghiệm Chaos Mesh, (b) thử trên một pod trước (ADR-0020 §1, §7, Kiểm chứng sau "Chaos Mesh 2.8.5 và Velero 1.18.4…", Hệ quả; threat model OPS-4, hàng 6, 6b) | `chaos` (mục 7) | Giả thuyết của ADR-0020 §7 cho (a), (b), (c), mỗi cái ghi đạt hay phát hiện; gỡ sạch; version EKS và kernel AL2023 → GĐ7 | 3 |
+| D13 | Velero đích object store trong cluster, mở script có điều kiện; restore giữ offset đã commit (ADR-0020 §1, §6, Kiểm chứng sau "Restore namespace có Redpanda…"; threat model BAK-2, hàng 6, 6b) | `velero` (mục 7) | Bước 5 của `drill-restore.sh` PASS (offset bằng lúc backup, lag 0, DLQ không tăng), smoke qua, RTO ghi; danh sách resource trong bucket không có Secret. "Pod `svp` phục hồi qua Kyverno" → GĐ7: phạm vi trên runner chỉ Redpanda ở `svp-data` (mục 7), ngoài namespace của Kyverno | 3 |
+| D14 | Ngưỡng p99 canary của web và HPA web theo số đo (ADR-0020 §1, §3, Kết quả "Tải local") | `k6-cloud-mini` rồi `web-canary` | Quy tắc mục 8 cho `canaryLimits.p99Ms` và HPA; `web-canary` với ngưỡng mới promote bản tốt (không abort oan) | 3 |
+| D15 | Thay MinIO cho đường local (ADR-0020 §1, §16) | Phần 2 (ADR riêng); kiểm lại `compose-obs`, `dev-k3d`; `velero` dùng bản thay | Theo ADR của phần 2 | 2 |
+| D16 | Ngưỡng page `RateLimitFallbackActive` dưới tải lab (ADR-0020 §1, Kết quả "p99 Redis", Hệ quả "Xem lại khi") | Mục 11 (promtool, không runner); `compose-obs` quan sát dưới `make load-local` | Test promtool (a)–(h) của mục 11 xanh; trên runner cảnh báo không cháy dưới k6 `local`, ghi p99 lệnh Redis và số `context_timeout` (đường tới Redis trên runner là bridge Linux, không phải `host.docker.internal` của Docker Desktop, nên lần cháy giả có thể không tái hiện: test promtool là phép kiểm chính) | 1 |
+| D17 | LCP mobile `/` và `/v/{id}`, xem lại khi Lighthouse chạy trên runner (ADR-0020 §1, §16, Kết quả "LCP") | `compose-obs`: `make web-lighthouse` 3 lượt | Median ≤ 2 500 ms cả hai trang (ghi `benchmarkIndex`). Không đạt → đòn bẩy (a) của ADR-0020 ("render trang đầu không qua `Suspense`") là việc code riêng sau phần 1, không chờ GĐ7 | 1 |
+| D18 | Canary dưới probe mới chưa chạy (ADR-0020 Kiểm chứng sau "Probe mới…") | `dev-k3d`: `make drill-k8s-canary` (gateway); `web-canary` (web) | Bản tốt promote, bản lỗi abort, không pod nào restart vì probe | 1, 3 |
+| D19 | RAM plugin Barman Cloud và sidecar, ngân sách cluster dev (ADR-0020 Kiểm chứng sau "RAM plugin và sidecar…") | `dev-k3d` | Plugin, sidecar dưới limit 256 Mi; cluster theo D2 | 1 |
+| D20 | RTO/RPO cần nhiều lượt hơn (ADR-0020 Kết quả "Restore RTO/RPO") | `dev-k3d`: `make drill-k8s-backup` rồi `MODE=pitr` | Hai lượt PASS; RTO, RPO thêm hai mẫu, ghi là số của runner | 1 |
+| D21 | `k6 inspect` và kubeconform trên amd64, kiểm sau push (ADR-0020 Kiểm chứng sau, dòng đầu và dòng kubeconform) | Không kịch bản: job `config` của PR #16 (`make k6-check`, `make cloud-check` trong `ci-ok`, bắt buộc để merge) | Việc cập nhật tài liệu ghi link lượt chạy đó | 1 |
+| D22 | Job `stack` chạy đủ bước, chỉ `contents: read`, artifact hai loại (ADR-0020 Kiểm chứng sau "Service container…"; threat model SC-10, hàng 6) | Không phải `verify.yml`: job `stack` của PR phần 1, sau khi sửa hai e2e đỏ trên runner | Job xanh; quyền ở đầu log chỉ `Contents: read`; artifact chỉ `lighthouse`, `k6-summary` | 1 |
+| D23 | Mỗi pod k6 là một khoá rate limit (ADR-0020 Kiểm chứng sau) | `k6-cloud-mini`: sau `setup()`, số khoá `svp:gw:rl:register:*` ở Valkey db 10 bằng số pod | Bằng số pod ở mỗi mức; trường hợp 2 hop và ElastiCache → GĐ7 | 3 |
+| D24 | Plugin AWS của Velero nhận credential từ Pod Identity (ADR-0020 Kiểm chứng sau) | → GĐ7: runner không có Pod Identity; trên runner Velero dùng Secret của user object store (mục 7) | — | GĐ7 |
+| D25 | Chaos Mesh và Velero cần đặc quyền lớn trong buổi đo (ADR-0020 Hệ quả; threat model mục 6) | Mục 7, mục 12 | Threat model ghi kiểm soát cho runner | 1 (thiết kế), 3 |
+| D26 | `measure-gitops` không đo được bản phát hành của service có Postgres (roadmap "Còn mở" giai đoạn 5; ADR-0020 Bối cảnh, mục 11) | `gitops`: phát hành một service có Postgres trong lúc cluster chạy (mục 6) | `make measure-gitops REV=<commit>` exit 0 có số; pod mới và Job migrate `restartCount` 0, log có `database connected after retries` hay nối ngay | 3 |
+| D27 | e2e cho `upload_url` lạ origin, "còn từ phần B" (threat model hàng 5b) | Không cần runner: một spec ở `web/e2e/`, chạy ở job `stack` và `make web-e2e`; chưa nằm trong phần 1 | Spec xanh, ca âm: form với `upload_url` lạ origin không được gửi | sau phần 1 |
+
+## 6. Đường GitOps trên runner (hiện thực ở phần 3)
+
+### Các lựa chọn
+
+| Lựa chọn | Được | Mất |
+| --- | --- | --- |
+| Deploy key chỉ đọc làm secret của environment được bảo vệ, chỉ job `gitops` dùng | Giữ nguyên `gitops.sh` | Secret đầu tiên của repo cho Actions; khoá sống trên runner suốt job (Argo CD giữ trong Secret của cluster); thêm environment, người duyệt; repo public nên khoá không thêm quyền đọc nào |
+| **HTTPS ẩn danh** (`https://github.com/anhnvcoder/short-video-platform.git`) | Không secret nào ở runner lẫn máy; Argo CD không cần Secret repo; repo vốn public từ giai đoạn 5 | Repo thành private thì phải quay lại khoá; GitHub không công bố giới hạn tốc độ cho git ẩn danh qua HTTPS (Argo CD chỉ `ls-remote` khoảng 60 lần mỗi giờ nhờ cache, ADR-0014 §12) |
+| Token GitHub App chỉ đọc | Thu hồi được, có hạn | Thêm App, secret để xin token; nặng hơn nhu cầu chỉ đọc repo public |
+| `measure-gitops` với bản phát hành có sẵn trước khi cluster dựng | Không phải chờ | Không đo được: script cần push xảy ra sau khi Argo CD theo dõi |
+| **Một bản phát hành được merge trong lúc cluster chạy** | Đo đúng push → sync → pod Ready | Job chờ một thao tác của người (tối đa 90 phút); phải chuẩn bị sẵn một PR promote |
+
+### Quyết định
+
+- **Argo CD đọc repo qua HTTPS ẩn danh trên cả hai nơi** (runner và máy), một URL cho mọi chỗ: `repoURL` của
+  `deploy/argocd/apps/values.yaml`, `sourceRepos` của AppProject `svp`, `repo_url` của `gitops.sh`. `gitops.sh` không tạo Secret repo
+  nữa, `make k8s-gitops-up` bỏ `ARGOCD_DEPLOY_KEY`; người học xoá deploy key cũ trên GitHub sau khi đường mới chạy. Đây là chỉnh
+  ADR-0014 §12 ("Repo … qua SSH bằng deploy key"); phần ghi chỉnh ở ADR-0014 do việc cập nhật tài liệu sau làm. Đường GitOps vì vậy
+  **không cần secret nào**.
+- **Bản phát hành trong lúc cluster chạy:** trước khi dispatch `gitops`, một thay đổi không đổi hành vi của **một service có
+  Postgres** (ví dụ feed-service) đã merge vào `main`, `images.yml` đã mở PR promote với `ci-ok`, `images-ok` xanh, chưa merge.
+  Lượt `gitops` dựng cluster theo `main`, chạy các diễn tập, rồi tới bước tên **"Waiting for a release on main"**: bật traffic diễn
+  tập, đọc `git ls-remote origin refs/heads/main` mỗi 30 s trong tối đa 90 phút. Khi bước đó đang chạy (đọc qua `gh api
+  repos/<repo>/actions/jobs/<id>`, trạng thái từng bước), người học hay AI được người học uỷ quyền merge PR promote. `main` đổi thì job `git fetch`,
+  kiểm commit mới đổi `image.digest` trong `deploy/k8s/values/services/` (đúng một bản phát hành), chạy `make measure-gitops
+  REV=<sha>` lặp tới khi exit khác 2 (tối đa 20 phút). Push không có reflog trên runner nên script đọc PushEvent bằng `gh api`
+  (`GH_TOKEN` chỉ ở bước này). Hết 90 phút không có push thì bước FAIL "no release", các diễn tập khác vẫn có kết quả.
+  Tiêu chí D26: số đo có, pod mới không restart.
+- **Ca web chưa ký của Kyverno:** `SUPPLYCHAIN_UNSIGNED` là **digest manifest con `linux/amd64` của bản web đang phát hành** (đọc từ
+  index đã ký): cùng repository `…/web`, digest thật, kéo được, nhưng chữ ký và attestation gắn với digest index, không với manifest
+  con, nên rule chữ ký phải từ chối. Lý do: chứng minh đúng "image web chưa ký" mà không cần đẩy gì lên GHCR (job chỉ đọc). Chưa xác
+  nhận Kyverno không tự lần từ manifest con về index; nếu nó nhận pod đó thì ca dùng `drill-unsigned` như giai đoạn 5 và ghi lý do.
+  Ca (c) cần `drill-vulnerable` có attestation dưới 72 giờ: dispatch `images.yml -f drill=true` trong 72 giờ trước lượt `gitops`.
+- **Source map của image CI** (ADR-0019 §9, dời từ giai đoạn 7 về đây): job build web của `images.yml` xuất stage `sourcemaps` ngay
+  sau image, cùng cache, thành artifact `web-sourcemaps-<arch>` (source map của code vốn public, không bí mật; retention mặc định).
+  Job `gitops` tìm lượt `images.yml` đã build digest web đang chạy (tag 12 hex là commit), tải `web-sourcemaps-amd64` bằng
+  `actions: read`, rồi tải lên GlitchTip của cluster theo cách của `make k8s-web-sourcemaps` (dạng nhận thư mục có sẵn thay vì tự
+  build); kiểm như D5. Đổi `images.yml` làm build lại cả bảy image một lần (ADR-0015 §3).
+- **RAM và KEDA:** đo RAM nghỉ ở điểm 60 s ngay sau `k8s-gitops-up` (D2), hai lượt `drill-k8s-keda N=9` (D1), RAM nghỉ cuối kịch bản.
+- **Thời lượng:** dựng khoảng 20–30 phút, diễn tập khoảng 90 phút, chờ phát hành tối đa 90 phút, đo tối đa 20 phút: dưới hạn 285
+  phút của bước kịch bản (mục 2).
+
+## 7. Chaos Mesh và Velero trên k3d của runner (hiện thực ở phần 3)
+
+### Các lựa chọn
+
+| Lựa chọn | Được | Mất |
+| --- | --- | --- |
+| Velero node-agent file-system backup (Kopia) | Không cần driver CSI; local-path của k3d dùng được | Đường mà giai đoạn 7 cố ý bỏ (ADR-0020 §6): diễn tập không thử đường sẽ chạy thật; node-agent root, hostPath, PSA `privileged`; mật khẩu repo Kopia thêm một secret |
+| **Velero với driver CSI hostpath có snapshot** (external-snapshotter, chỉ trên runner) | Cùng đường của giai đoạn 7: `EnableCSI`, VolumeSnapshotClass có nhãn của Velero, `deletionPolicy: Retain`, restore PVC từ snapshot, không node-agent | Thêm driver CSI hostpath (pod privileged, hostPath, driver để thử, không cho production), CRD và controller snapshot; PVC của Redpanda dùng StorageClass của driver chỉ trên runner |
+| Velero chỉ resource, không PV | Đơn giản nhất | Restore ra PVC rỗng: giả thuyết chính (offset giữ nguyên) không kiểm được |
+| **Phạm vi diễn tập: chỉ Redpanda trong `svp-data` (theo nhãn), xoá StatefulSet và PVC của nó** | `svp-data` của k3d còn chứa object store giữ chính backup, Postgres (đã có diễn tập DR riêng) và Valkey: xoá cả namespace là xoá đích backup | Không thử phần "xoá cả namespace" (ServiceAccount, Role, NetworkPolicy của namespace); giai đoạn 7 thử |
+| Đích object store riêng ở namespace khác chỉ cho Velero | Xoá được cả `svp-data` | Thêm một object store thứ hai chỉ cho runner; Postgres của k3d cũng mất cùng namespace, phục hồi CloudNativePG từ snapshot Velero chưa có trong thiết kế nào |
+
+### Quyết định
+
+- **Điều kiện mở script cloud trên k3d:** `deploy/k6/cloud/run.sh` và `deploy/k8s/cloud/velero/drill-restore.sh` nhận context
+  `k3d-svp` chỉ khi đủ `GITHUB_ACTIONS=true`, `RUNNER_ENVIRONMENT=github-hosted`, `uname -s` là `Linux` (kiểm trước mọi lệnh
+  `kubectl`); context `k3d-*` khác và context rỗng vẫn bị từ chối. Đây là chặn tai nạn cho máy 16 GB (ai cũng đặt được biến môi
+  trường), không phải ranh giới bảo mật. VM của B đặt các biến này bằng tay khi chạy đúng kịch bản.
+- **Chaos Mesh** (kịch bản `chaos`): chart, image ghim như ADR-0020 §7; phủ chỉ cho runner ở `deploy/k8s/cloud/runner/`:
+  `chaosDaemon.runtime: containerd`, `chaosDaemon.socketPath: /run/k3s/containerd/containerd.sock` (containerd của k3s trong
+  container node). Namespace `chaos-mesh` có nhãn `pod-security.kubernetes.io/enforce=privileged` (nhãn namespace thắng mặc định
+  `restricted` của k3d), chỉ trong job. `clusterScoped: false`, đích `svp` cho (a), (b), `svp-data` cho (c) bằng `helm upgrade` như
+  ADR-0020. Trước (b): `sudo modprobe sch_netem` trên runner (kernel chung với node k3d) và một NetworkChaos thử trên pod thử ở
+  `svp` (đo RTT trước, trong, sau); không có module thì (b) ghi SKIP kèm lý do và sang B. Ba thí nghiệm chạy dưới k6 ở mức giữ bằng
+  một nửa mức cao nhất của `k6-cloud-mini` (mặc định 2 pod khi chưa có số), mỗi cái sau 5 phút ổn định, giả thuyết và điều kiện dừng
+  sớm như ADR-0020 §7. Cuối kịch bản chạy đúng các lệnh gỡ của buổi cloud (`helm uninstall`, xoá namespace, xoá CRD
+  `chaos-mesh.org`) và kiểm không còn gì: diễn tập luôn lệnh gỡ. Kyverno đường dev là Audit nên `pod-failure` ở `svp` không bị chặn;
+  thí nghiệm (c) vẫn ở `svp-data` như thiết kế. Chaos Mesh 2.8.5 chỉ được CI thử tới Kubernetes 1.35, k3s là 1.36: ghi ở Kết quả nếu
+  có lỗi version.
+- **Velero** (kịch bản `velero`): `make k8s-up` với Redpanda trên StorageClass của driver CSI hostpath (đè value chỉ trong job, không
+  đổi values của đường dev và GitOps); driver, snapshot CRD và controller ghim digest, ở namespace riêng PSA `privileged` chỉ trong
+  job; VolumeSnapshotClass của driver có nhãn `velero.io/csi-volumesnapshot-class: "true"`, `deletionPolicy: Retain`. Velero
+  1.18.4 cùng chart, plugin AWS, values cloud cộng phủ của runner: BackupStorageLocation tới object store trong cluster
+  (`s3Url` nội bộ, `s3ForcePathStyle`), `credentials.useSecret: true` với Secret `velero/velero-s3`.
+- **BAK-2 cho đích object store trong cluster:** bucket `velero` và user `svp-velero` riêng, policy chỉ bucket đó (đọc, ghi, xoá, liệt
+  kê), không user service nào tới được bucket đó (kiểm như BAK-1); khoá của user sinh ngẫu nhiên trong job, mask ngay, không vào
+  `.env`, chỉ ở Secret `velero/velero-s3`; backup có `excludedResources: [secrets]` và `drill-restore.sh` dừng trước khi xoá gì nếu
+  danh sách resource đọc từ bucket có Secret; namespace `velero` không nằm trong backup. Hết kịch bản chạy `drill-restore.sh sweep`
+  rồi gỡ Velero như buổi cloud. `cluster-admin` của Velero và quyền của driver CSI chỉ sống trong cluster tạm của job.
+- **Phạm vi diễn tập trên runner:** thêm cho `drill-restore.sh` một chế độ chỉ dùng trên k3d của runner: backup `svp-data` lọc theo
+  nhãn của Redpanda, bước xoá chỉ xoá StatefulSet và PVC của Redpanda (không xoá namespace), các bước Argo CD bỏ qua khi cluster
+  không có Argo CD (đường dev). Giả thuyết, bước 5 và RTO giữ nguyên ADR-0020 §6.
+
+## 8. k6 thu nhỏ, ngưỡng p99 canary, HPA và `resources` của web
+
+### Các lựa chọn
+
+| Lựa chọn | Được | Mất |
+| --- | --- | --- |
+| k6 container trên máy runner gọi `127.0.0.1:8443` | Không thêm gì vào cluster | Mọi request chung một IP sau load balancer của k3d (RL-1): chạm rate limit theo IP trước khi chạm hệ thống; không thử Job của giai đoạn 7 |
+| **Job Indexed trong cluster (đúng `render.sh`, `run.sh`), số pod là mức tải** | Mỗi pod một IP như thiết kế cloud; thử luôn manifest và script của giai đoạn 7; mỗi pod giữ đúng phần tải của thiết kế 20 pod nên bảng rate limit của ADR-0020 §2 vẫn đúng | Pod k6 tranh CPU với hệ thống trên cùng 4 vCPU (tiêu chí throttle ở mục 2) |
+| Một tốc độ cố định | Một lượt | Không biết đâu là mức cao nhất chịu được |
+
+### Quyết định
+
+- **Mức tải:** Job k6 profile `cloud` với 1, 2, 4, 8 pod (5%, 10%, 20%, 40% của thiết kế 1 250 req/s; feed 50, 100, 200, 400 req/s),
+  mỗi pod 12 user và đúng tốc độ mỗi pod của ADR-0020 §2; `render.sh` nhận số pod, mỗi pod chạy segment i/N của tổng đã nhân. Mỗi
+  mức: 2 phút lên, giữ 10 phút, 1 phút xuống, threshold như profile `cloud`; giữa hai mức xoá khoá `svp:gw:rl:register:*` ở Valkey
+  db 10 của cluster (**LOCAL LAB ONLY**, như mọi diễn tập k3d). Dừng ở mức đầu tiên trượt. **Tải lớn nhất nơi chạy chịu được** là mức
+  cao nhất mà mọi threshold đạt, `dropped_iterations` 0 và runner đủ (mục 2); đó là giới hạn của runner 4 vCPU chung cả hệ thống,
+  không phải năng lực hệ thống. Trước khi chạy cần ≥ 30 video `READY` (RL-3, ADR-0020 §2).
+- **`canaryLimits.p99Ms` của web:** `p99_E` là p99 thời gian upstream của Envoy cho cluster stable của route `web`
+  (`httproute/svp/web/rule/0/backend/0`, cùng metric phân tích canary đọc) trong cửa sổ giữ của mức cao nhất đạt. Ngưỡng mới là biên
+  bucket nhỏ nhất trong {250, 500, 1000, 2500} ms không nhỏ hơn 2 × `p99_E`. Hệ số 2 chừa cho pod canary lạnh (giả định; xem lại khi
+  có lần abort oan). Kết quả là 500 thì giữ nguyên. `web-canary` sau đó phải promote bản tốt với ngưỡng mới.
+- **HPA web:** thêm HPA khi, ở mức cao nhất đạt, CPU trung bình của pod web ≥ 50% limit (1 CPU), hoặc p99 k6 của các route web lớn hơn
+  2 lần p99 ở mức 1 pod (độ trễ tăng theo tải). Khi thêm: `minReplicas: 2` (PDB), `maxReplicas: 4`, mục tiêu CPU 70% của request,
+  request CPU bằng CPU trung bình mỗi pod ở mức 1 pod. Không đủ điều kiện thì giữ 2 replica cố định, ghi số.
+- **`resources` của web:** limit bộ nhớ = max(384 Mi, làm tròn lên bội 64 Mi của 1,5 × working set cao nhất của một pod web qua các
+  kịch bản có web); request bộ nhớ = làm tròn lên bội 32 Mi của trung vị working set lúc nghỉ, tối thiểu 128 Mi; limit CPU giữ 1, lên
+  2 khi `container_cpu_cfs_throttled_periods_total` trên `container_cpu_cfs_periods_total` của web > 5% ở mức cao nhất đạt. Phần 1
+  áp với số của `dev-k3d` (e2e), phần 3 áp lại với số k6 (chỉ tăng).
+
+## 9. Bỏ qua có hạn cho cảnh báo `trivy-config` (chỉnh ADR-0015 §2, §6)
+
+### Các lựa chọn
+
+| Lựa chọn | Được | Mất |
+| --- | --- | --- |
+| Thêm phần `misconfigurations` vào `.trivyignore.yaml` | Một tệp | `.trivyignore.yaml` dùng cho cổng image; quy tắc "chỉ `vulnerabilities`" của ADR-0015 §6 là để không đường nào bỏ qua được bí mật hay thứ khác trong cổng chặn |
+| **Tệp riêng `deploy/ci/trivy-config-ignore.yaml`, chỉ `misconfigurations`, mỗi mục có `paths`, `statement`, `expired_at`** | Review qua PR, có hạn, có lý do, phạm vi theo đường dẫn; cùng trình kiểm quy tắc ở mọi PR; không đụng cổng image | Một tệp thêm, một nhánh kiểm thêm trong `scan-gate.sh` |
+| Comment bỏ qua tại chỗ (`#trivy:ignore:<id>`) | Lý do nằm cạnh cấu hình | Không có trường hạn bắt buộc, không trình kiểm tập trung; không phải loại tệp nào cũng nhận |
+| Chỉ dismiss trên code scanning | Không đổi repo | Lý do nằm ngoài git, không hạn, không review; lượt PR vẫn liệt kê ở summary |
+
+### Quyết định
+
+- **`deploy/ci/trivy-config-ignore.yaml`** theo định dạng YAML của trivy, chỉ khoá gốc `misconfigurations`; mỗi mục: `id` (KSV-…, DS-…),
+  `paths` bắt buộc (không bỏ một id cho cả repo), `statement` (lý do), `expired_at` (`yyyy-mm-dd`) **tối đa 90 ngày** sau ngày chạy.
+  `make trivy-config` truyền `--ignorefile deploy/ci/trivy-config-ignore.yaml`. 90 ngày thay vì 30 của lỗ hổng: misconfig là lựa chọn
+  cấu hình chỉ đổi khi chính repo đổi, không có bản vá upstream tự xuất hiện; 90 ngày là khoảng một giai đoạn, đủ để xét lại khi
+  cấu hình liên quan đổi mà không gia hạn mỗi tháng.
+- **Ai kiểm:** `scan-gate.sh --check-ignorefile` kiểm cả hai tệp ở job `config` của mọi PR: `.trivyignore.yaml` như cũ; tệp mới chỉ
+  `misconfigurations`, đủ bốn trường, `expired_at` ≤ 90 ngày. Hết hạn thì trivy bỏ mục đó, cảnh báo hiện lại ở lượt `main` kế.
+  `trivy-config` vẫn chỉ báo (không `--exit-code`), quy tắc bí mật và lỗ hổng của cổng image không đổi.
+- Mỗi cảnh báo được sửa nếu sửa được không đổi hành vi; chỉ cái nào là lựa chọn có chủ đích (ví dụ quyền Secret của operator
+  CloudNativePG, image diễn tập cố ý có lỗ hổng) mới vào tệp, `statement` dẫn tới lý do trong ADR tương ứng.
+- Đây là chỉnh ADR-0015 §2 (job `trivy-config`) và §6 (quy tắc tệp bỏ qua); phần ghi chỉnh ở ADR-0015 do việc cập nhật tài liệu sau
+  làm.
+
+## 10. Cổng quét lỗ hổng `web/pnpm-lock.yaml`
+
+### Các lựa chọn
+
+| Lựa chọn | Được | Mất |
+| --- | --- | --- |
+| Chỉ Renovate và Dependabot alerts | Không thêm job | Không chặn PR nào; CVE của gói Turbopack gộp vào chunk không hiện ở quét image (ADR-0019 §1) |
+| `pnpm audit` | Có sẵn | Gọi API của registry npm, kết quả đổi theo dịch vụ đó; ngưỡng và bỏ qua khác cách của trivy |
+| **trivy `fs` trên lockfile bằng `TRIVY_IMAGE` ghim** | Cùng công cụ, cùng DB, cùng `scan-gate.sh` và `.trivyignore.yaml` với cổng image | Thêm một lần kéo DB trivy ở job web (cache như `images.yml`) |
+
+### Quyết định
+
+- **`make web-lockfile-scan`:** `trivy fs --scanners vuln --include-dev-deps --format json` trên `web/pnpm-lock.yaml` bằng
+  `TRIVY_IMAGE`, `--ignorefile .trivyignore.yaml`, rồi `scan-gate.sh` quyết: **CRITICAL chặn** (cả chưa có bản vá), HIGH trở xuống chỉ
+  báo, như cổng image. Gồm dev dependency: chúng chạy trong CI (`next build`, test) và tạo ra bundle phát hành.
+- Chạy ở **job `web` của `ci.yml`** (trong `ci-ok`), cạnh `make web-check`; SARIF `trivy-lockfile-web` (HIGH, CRITICAL) do job `sarif`
+  tải lên trên `main`, như các category khác.
+- Bỏ qua chỉ qua `.trivyignore.yaml` theo đúng quy tắc lỗ hổng hiện có (`purls` dạng `pkg:npm/...`, ≤ 30 ngày).
+- Phiên bản lockfile của pnpm 12 có nằm trong các bản trivy đọc được không: kiểm khi hiện thực, bằng một ca âm (lockfile chứa bản
+  có CRITICAL đã biết) phải làm target exit ≠ 0.
+
+## 11. `RateLimitFallbackActive`: page khi Redis mất hẳn, không page khi quá hạn lẻ tẻ
+
+### Các lựa chọn
+
+| Lựa chọn | Được | Mất |
+| --- | --- | --- |
+| Giữ rule (một quyết định dự phòng trong 1 phút là page) | Nhạy nhất | Page giả dưới tải khi lệnh Redis vượt hạn 50 ms vài lần mỗi phút (game day 2026-10-24); người trực học cách bỏ qua page |
+| Thêm `for` vào rule cũ | Một dòng | Tải đều thì một lần dự phòng mỗi phút vẫn giữ điều kiện đúng qua `for`; không phân biệt "Redis chết" với "vài lệnh chậm" |
+| Nâng hạn 50 ms hay đổi đường Redis | Bớt nguyên nhân | Hạn 50 ms quyết lại ở giai đoạn 7 trên ElastiCache (ADR-0020 §4); đường `host.docker.internal` là của Docker Desktop, không của hệ thống |
+| **Tỷ lệ quyết định dự phòng trên tổng, theo từng instance, có sàn số lượng, `for: 1m`, giữ nhánh series mới sinh của rule cũ; ticket riêng cho tỷ lệ thấp kéo dài** | Redis mất hẳn đẩy tỷ lệ về gần 100%, vượt hạn lẻ tẻ chỉ vài phần nghìn; burst trước lần xuất metric đầu (hình của RL-2) vẫn cháy; metric có sẵn, không đổi code | Lưu lượng rất thấp thì cần đủ quyết định mới cháy; biểu thức hai nhánh dài hơn; hai rule thay một |
+| Chỉ tỷ lệ trên `increase`, bỏ nhánh series mới sinh | Biểu thức ngắn | Series sinh đã dương rồi đứng yên có `increase` bằng 0: RL-2 không cháy (dưới đây) |
+
+### Quyết định
+
+- **`RateLimitFallbackActive` (page)**, cho từng instance của gateway (nhãn instance mà series có; việc hiện thực chọn đúng nhãn), trên
+  `svp_ratelimit_decisions_total{service_name="gateway"}`, cháy khi một trong hai nhánh đúng, **`for: 1m`** cho cả rule (hai nhánh cùng
+  nhãn sau khi cộng theo instance, nên chuyển nhánh không ngắt cảnh báo):
+  - **Nhánh tăng:** tỷ lệ `increase(...{store="fallback"}[2m])` trên `increase(...[2m])` **≥ 0,5**, **và**
+    `increase(...{store="fallback"}[2m])` **≥ 3**.
+  - **Nhánh series mới sinh** (giữ ý của nhánh `unless ... offset` ở ADR-0011 §8): chỉ các series không có mẫu 2 phút trước
+    (`X unless X offset 2m`, khớp đủ nhãn trước khi cộng theo instance), cùng hai ngưỡng áp lên giá trị của chúng: tổng `fallback`
+    trên tổng mọi store của các series đó **≥ 0,5** và tổng `fallback` **≥ 3**. `New` tạo mọi series ở 0 lúc khởi động nên giá trị
+    mẫu đầu là số quyết định từ lúc khởi động; nhưng mẫu 0 chỉ tới Prometheus nếu kịp một lần xuất, nên burst trước lần xuất 15 s
+    đầu có mẫu đầu đã dương rồi đứng yên, và `increase` của nó bằng 0. Cửa sổ 2 phút thay 1 phút của rule cũ vì nhánh phải đúng lâu
+    hơn `for` cộng hai chu kỳ đánh giá: với `offset 1m` nó tắt đúng lúc `for` vừa đủ và không bao giờ cháy.
+  - Tỷ lệ ở nhánh series mới sinh cũng bỏ hai lần cháy giả mà rule cũ có: gateway khởi động lại dưới tải khi Redis khoẻ, với vài lần
+    quá hạn trước lần xuất đầu (vài quyết định dự phòng trên hàng trăm); và sau một khoảng mất dữ liệu dài, khi counter tích luỹ của
+    một instance sống lâu trông như series mới (ADR-0011 §8 chấp nhận cảnh báo thận trọng đó; với tỷ lệ, nó chỉ cháy khi phần lớn
+    quyết định từ lúc khởi động là dự phòng).
+
+  Redis không tới được thì mọi quyết định của instance đó là dự phòng (tỷ lệ 1); một trong hai pod gateway mất Redis cũng cháy (cảnh
+  báo theo instance, không pha loãng bởi pod kia).
+- **`RateLimitFallbackElevated` (ticket)**, cùng nhãn: tỷ lệ trong 30 phút ≥ 0,01 và ≥ 30 quyết định dự phòng trong 30 phút. Vượt hạn lẻ
+  tẻ như game day (khoảng 3 trên khoảng 1 200 quyết định mỗi phút, 0,25%) không page, không ticket, chỉ thấy trên dashboard và dòng
+  WARN có sẵn.
+- **Giữ RL-2:** `drill-obs-threats` dựng lại gateway với Redis không tới được, gửi ba login sai (mỗi login hai quyết định dự phòng,
+  `login-ip` và `login-email`: tổng 6) rồi chỉ chờ, không traffic nào khác, và đòi page có trong Alertmanager **trong 240 s** từ login
+  đầu (đọc mỗi 5 s). Hai hình, cả hai dưới hạn:
+  - Login tới trước lần xuất đầu (gateway sẵn sàng sau vài giây, xuất mỗi 15 s): mẫu đầu đã là 6, tỷ lệ 1. Nhánh series mới sinh đúng
+    từ lần đánh giá đầu sau mẫu đó (≤ 30 s sau login đầu), firing sau `for` (khoảng 75–90 s sau login đầu, cộng vài giây để tới
+    Alertmanager), đúng thêm 45–60 s rồi resolve khi series có 2 phút lịch sử.
+  - Login tới sau lần xuất đầu (mẫu đầu 0): nhánh tăng đúng từ mẫu kế (tăng 6, tỷ lệ 1), firing sau `for` cùng khoảng đó, resolve khi
+    cửa sổ 2 phút trôi qua burst.
+- **Test promtool** (sửa nhóm `RateLimitFallbackActive` của `svp-alerts.test.yaml`, thêm ca cho ticket):
+  - (a) một instance ~20 quyết định/s chuyển hẳn sang dự phòng, series bắt đầu từ 0: page trong 4 phút;
+  - (b) 20 quyết định/s với 3 dự phòng mỗi phút suốt 30 phút: không page, không ticket;
+  - (c) lưu lượng thấp, 2 quyết định mỗi phút, một dự phòng trong 2 phút: không page;
+  - (d) 2% dự phòng suốt 30 phút: ticket, không page;
+  - (e) hai instance, chỉ một sang dự phòng: page cho instance đó;
+  - (f) series sinh đã dương rồi đứng yên, không traffic nào khác (hình RL-2: `fallback` 6, `redis` 0): page sau `for`, resolve khi
+    series có 2 phút lịch sử; cùng hình với `fallback` 2: không page (dưới sàn);
+  - (g) gateway khởi động lại khi Redis vẫn mất: instance cũ (có lịch sử từ 0) dừng, instance mới sinh với `fallback` 6: page cho
+    instance mới, không cho instance cũ;
+  - (h) gateway khởi động lại khi Redis khoẻ: instance mới sinh với `redis` 300, `fallback` 5: không page (tỷ lệ dưới 0,5).
+
+  Bốn test của rule cũ: "Fallback counters at 0 and a growing Redis counter do not fire" giữ nguyên; "Fallback series born above 0"
+  thành (f) và "Gateway restart" thành (g), với giá trị sinh nâng từ 3 và 2 lên 6 (đúng số của RL-2) và mốc thời gian theo `for`;
+  "Fallback counter 0 -> 1 then flat fires" đổi kỳ vọng thành không page, vì một quyết định dự phòng đứng một mình là hình của một
+  lần quá hạn, đúng thứ rule mới bỏ. Hai chỗ không còn page (một quyết định dự phòng đứng một mình, series sinh với 2) là thay đổi
+  có chủ đích của mục này, không phải nới test; comment của test ghi lý do.
+  Runbook `docs/runbooks/rate-limit-fallback-active.md` cập nhật theo điều kiện mới. Đây là chỉnh rule của ADR-0011 §8 (bảng cảnh báo
+  và công thức); phần ghi chỉnh ở ADR-0011 do việc cập nhật tài liệu sau làm.
+
+## 12. Threat model
+
+Thêm vào [`docs/threat-model.md`](../threat-model.md): **SC-11** (workflow `verify.yml`: dispatch, runner, log và artifact công khai,
+công cụ đặc quyền trên runner) và **SC-12** (Argo CD đọc repo qua HTTPS ẩn danh, từ phần 3) ở 4.8; cập nhật **OPS-4** (Chaos Mesh
+trên k3d của runner) và **BAK-2** (kiểm soát cho đích object store trong cluster); hàng giai đoạn 6b của mục 5; dòng ở mục 6 cho
+giới hạn của bộ lọc artifact; đề xuất xem lại ở mục 7. Dòng chỉ kiểm được khi chạy ghi "kiểm khi chạy" kèm kịch bản.
+
+## Kiểm chứng sau
+
+Giả định chưa kiểm được lúc viết; mỗi dòng nêu kịch bản hay phép kiểm chứng minh nó; kết quả và ngày ghi vào cột cuối.
+
+| Giả định | Phép kiểm | Kết quả |
+| --- | --- | --- |
+| Ba tên `*.svp.localhost` qua `/etc/hosts` chỉ trả `127.0.0.1` trên runner; drill và Playwright tới được Envoy | `verify-host.sh` (`getent ahosts`) và `make k8s-smoke` ở `dev-k3d` | Chưa kiểm |
+| Cổng đĩa đúng: kịch bản k3d dùng ≤ 30 GiB, không pod nào bị evict vì đĩa | `df` trước/sau và sampler ở `dev-k3d`, `compose-obs` | Chưa kiểm |
+| `docker stats` và `memory.stat` của node k3d trên runner (cgroup v2, Docker 28) đo được như trên máy | RAM nghỉ, đỉnh ở `dev-k3d` | Chưa kiểm |
+| Runner có hay không có swap; `MemAvailable` thấp nhất ≥ 2 GiB ở mọi kịch bản | Sampler ở mọi kịch bản | Chưa kiểm |
+| Bộ lọc bỏ file có giá trị bí mật hay mẫu cấm, giữ file sạch | Test của `verify-collect.sh` với giá trị giả (ca có và ca không); lượt `compose-obs`, `dev-k3d`: `files.txt` | Chưa kiểm |
+| Mask che giá trị trong log job, lệnh mask không hiện | Lượt `compose-obs`: `verify-mask.sh` mask một giá trị ngẫu nhiên làm mốc rồi in dòng `mask-check: <giá trị>`; log thô (`gh run view --log`) phải có `mask-check: ***` và không có dòng `::add-mask::` nào (không cần biết giá trị để kiểm) | Chưa kiểm |
+| Bước `if: always()` vẫn gom và tải sau khi bước kịch bản quá hạn | Lượt đầu có bước đỏ hay quá hạn | Chưa kiểm |
+| Setup trước bước kịch bản ≤ 20 phút ở cả ba job | Thời gian các bước setup ở lượt đầu mỗi job (`gh run view --json jobs`) | Chưa kiểm |
+| Miễn trừ giới hạn pull của Docker Hub cho runner GitHub cũng áp cho pull từ containerd trong node k3d | `dev-k3d`, `gitops`: không event `Failed` nào có `429 Too Many Requests` trong `kubectl get events -A` của artifact, không lỗi 429 ở `docker pull` | Chưa kiểm |
+| Script k3d chạy trên bash 5 và coreutils GNU sau các sửa của phần 1 | `dev-k3d` xanh | Chưa kiểm |
+| Hai worker cùng transcode trên runner 4 vCPU giữ (c) | `dev-k3d` (đường dev), `gitops` (D1) | Chưa kiểm |
+| Argo CD sync qua HTTPS ẩn danh, không Secret repo | `gitops`: mọi Application Synced; `kubectl get secret -n argocd -l argocd.argoproj.io/secret-type=repository` rỗng | Chưa kiểm |
+| Kyverno từ chối digest manifest con của web bằng rule chữ ký | `gitops`: ca (b) của `drill-k8s-supplychain` | Chưa kiểm |
+| chaos-daemon dùng được socket containerd của k3s; `sch_netem` có trên kernel runner | `chaos`: NetworkChaos trên pod thử | Chưa kiểm |
+| Driver CSI hostpath, snapshot controller và Velero 1.18.4 chạy trên k3s 1.36 | `velero`: backup có VolumeSnapshot, restore PVC từ snapshot | Chưa kiểm |
+| trivy đọc được lockfile của pnpm 12 | `make web-lockfile-scan` với ca âm | Chưa kiểm |
+| trivy nhận `misconfigurations` với `paths`, `expired_at` trong tệp bỏ qua của `trivy config` | `make trivy-config` trước và sau khi thêm một mục: số kết quả giảm đúng mục đó | Chưa kiểm |
+| Rule mới của `RateLimitFallbackActive` đúng tám ca (a)–(h) của mục 11 và giữ RL-2 | `make slo-check` (test promtool); `compose-obs` (`drill-obs-threats` RL-2: page trong 240 s) | Chưa kiểm |
+
+## Kết quả
+
+Chưa chạy. Mỗi lượt dispatch ghi một dòng (ngày, kịch bản, ref và commit, link lượt chạy, runner đủ hay không), số đo vào bảng của dòng
+dời tương ứng (D1–D27, mục 5), và dòng nào sang B hay giai đoạn 7 kèm lý do.
+
+| Kịch bản | Lượt (ngày, commit, link) | Runner đủ | Kết quả chính |
+| --- | --- | --- | --- |
+| `compose-obs` | — | — | — |
+| `dev-k3d` | — | — | — |
+| `gitops` | — | — | — |
+| `web-canary` | — | — | — |
+| `k6-cloud-mini` | — | — | — |
+| `chaos` | — | — | — |
+| `velero` | — | — | — |
+
+## Hệ quả
+
+- **Được:**
+  - Mọi việc dời vì máy 16 GB chạy được mà không cần dịch vụ cloud, không tốn tiền, trên môi trường sạch, lặp lại được bằng một
+    lệnh dispatch; giai đoạn 7 chỉ còn việc của cloud.
+  - Mỗi lượt có tiêu chí "runner đủ" đo được, nên lượt đỏ tách được lỗi code với giới hạn của runner, và B chỉ mở khi có số.
+  - Không secret nào trong workflow, kể cả đường GitOps; deploy key của Argo CD bỏ luôn ở máy.
+  - Script và manifest của giai đoạn 7 (Job k6, Chaos Mesh, Velero, lệnh gỡ) được chạy thật một lần trước buổi cloud tính tiền.
+  - Cảnh báo misconfig có đường bỏ qua có lý do, có hạn, review được; lockfile npm có cổng CRITICAL; page `RateLimitFallbackActive`
+    chỉ khi Redis mất thật.
+- **Phải trả:**
+  - Một workflow thứ ba và năm script `deploy/ci/verify-*.sh` phải giữ đúng quy ước của ADR-0015.
+  - Log và artifact công khai: bộ lọc theo giá trị và mẫu không bắt được giá trị đã biến đổi; biện pháp chính vẫn là không script nào
+    in bí mật.
+  - Số đo của runner là amd64, 4 vCPU, không VM: không thay số của máy, chỉ so với ngân sách và ngưỡng.
+  - Runner 4 vCPU không phải "node đủ CPU" cho hai worker 2 CPU: dòng D1 có thể phải sang VM thuê.
+  - Velero trên runner thử phạm vi hẹp hơn giai đoạn 7 (chỉ Redpanda, không xoá cả namespace) và cần driver CSI để thử; Chaos Mesh,
+    Velero, driver CSI chạy đặc quyền trong cluster tạm của job.
+  - Đường GitOps phụ thuộc repo còn public và GitHub không chặn git ẩn danh; bản phát hành trong lúc đo cần một người merge đúng lúc.
+  - Một lượt mỗi lúc: đọc và sửa tuần tự, chậm hơn chạy song song.
+- **Xem lại khi:**
+  - Một dòng trượt tiêu chí runner hai lượt liền: chạy dòng đó trên B, ghi chi phí.
+  - Repo thành private, hay GitHub giới hạn git ẩn danh: Argo CD quay lại deploy key (secret của environment được bảo vệ).
+  - Pull từ node k3d trên runner gặp 429 (miễn trừ của GitHub không áp cho ca đó): xét đăng nhập Docker Hub bằng token chỉ đọc, khi
+    đó mới có secret, ghi vào ADR này trước.
+  - `ubuntu-24.04` bị GitHub bỏ hay đổi cấu hình runner chuẩn: đo lại cổng đĩa và tiêu chí RAM.
+  - Bộ lọc artifact bỏ oan nhiều file hợp lệ: thu hẹp mẫu theo loại file, không bỏ quét theo giá trị.
+- **ADR cũ được chỉnh** (ghi "chỉnh bởi 0021" ở trạng thái của chúng và ở `docs/adr/README.md` là việc cập nhật tài liệu sau):
+  - ADR-0011 §8: điều kiện của `RateLimitFallbackActive` (mục 11), thêm `RateLimitFallbackElevated`.
+  - ADR-0014 §12: Argo CD đọc repo qua HTTPS ẩn danh thay deploy key SSH (mục 6).
+  - ADR-0015 §1 (workflow thứ ba `verify.yml` ngoài hai workflow), §2 (job `trivy-config` đọc tệp bỏ qua misconfig, job `web` thêm
+    `make web-lockfile-scan`), §6 (quy tắc của tệp bỏ qua thứ hai) (mục 3, 9, 10).
+  - ADR-0019 §9: source map của image CI kéo từ giai đoạn 7 về giai đoạn 6b, `images.yml` xuất artifact `web-sourcemaps-<arch>` (mục 6).
+  - ADR-0020 §6, §7 (Velero, Chaos Mesh chạy trên k3d của runner với phủ riêng), §2 (`render.sh` nhận số pod) (mục 7, 8).

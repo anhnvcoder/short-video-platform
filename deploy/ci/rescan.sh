@@ -101,7 +101,9 @@ rescan_one() {
 }
 
 run() {
-  [ "${GITHUB_ACTIONS:-}" = true ] || fail "rescan.sh run attests with the workflow's identity: CI only"
+  local platform
+  platform=$(ci_platform) || exit 1
+  [ "$platform" != local ] || fail "rescan.sh run attests with the workflow's identity: CI only"
   [ $# -ge 2 ] || fail "usage: rescan.sh run OUT MAIN_REF [REF...]"
   local out=$1 main_ref=$2 ref svc line repo digest key sarif n=0 failed=0 seen=" "
   shift
@@ -114,7 +116,7 @@ run() {
         continue
       fi
       if [ -z "$line" ]; then
-        summary "- $svc at \`$ref\`: no digest, not released yet: skipped"
+        ci_summary "- $svc at \`$ref\`: no digest, not released yet: skipped"
         continue
       fi
       read -r repo digest <<<"$line"
@@ -132,7 +134,7 @@ run() {
       (rescan_one "$svc" "$repo" "$digest" "$out/$n-$svc" "$sarif") || failed=1
     done
   done
-  [ "$n" -gt 0 ] || summary "No released digest to rescan."
+  [ "$n" -gt 0 ] || ci_summary "No released digest to rescan."
   return "$failed"
 }
 

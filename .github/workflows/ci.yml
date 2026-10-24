@@ -121,7 +121,8 @@ jobs:
           if-no-files-found: ignore
 
   # The web client in web/ (docs/adr/0016-web-client.md, section 10): install exactly as web/pnpm-lock.yaml pins it,
-  # make web-check (lint, format, typecheck, unit tests, production build) and web/gen/api.d.ts as committed.
+  # make web-check (lint, format, typecheck, unit tests, production build), web/gen/api.d.ts as committed, and the
+  # vulnerability gate of every npm package the lockfile pins (make web-lockfile-scan).
   web:
     runs-on: ubuntu-24.04
     permissions:
@@ -156,9 +157,40 @@ jobs:
         with:
           path: ${{ steps.pnpm.outputs.store }}
           key: pnpm-store-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('web/pnpm-lock.yaml') }}
+      # The trivy DB of the lockfile scan below, one cache entry per day under the same key and path as images.yml,
+      # restored before any step that can fail; trivy still downloads a newer DB when the cached one is stale. A pull
+      # request's cache stays in its own ref and never replaces main's.
+      - id: day
+        run: echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/trivy-cache/db
+          key: trivy-db-${{ steps.day.outputs.day }}
+          restore-keys: trivy-db-
       - run: make web-install
       - run: make web-check
       - run: make web-generate-check
+      # Any CRITICAL in web/pnpm-lock.yaml (development dependencies included) fails the job; HIGH and below are only
+      # counted in the job summary and the SARIF. It runs even when a step above failed, so a pull request always shows
+      # the gate's result. The SARIF is written before the gate decides; job sarif uploads it on main.
+      - name: make web-lockfile-scan
+        if: ${{ !cancelled() }}
+        env:
+          SVP_TRIVY_CACHE: ${{ runner.temp }}/trivy-cache
+        run: make web-lockfile-scan WEB_LOCKFILE_SARIF="$RUNNER_TEMP/trivy-lockfile-web.sarif"
+      - name: Summary of the lockfile scan
+        if: always()
+        env:
+          SARIF: ${{ runner.temp }}/trivy-lockfile-web.sarif
+          TOOL: trivy lockfile web
+        run: *sarif-summary
+      - name: Keep the lockfile scan report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sarif-trivy-lockfile-web
+          path: ${{ runner.temp }}/trivy-lockfile-web.sarif
+          if-no-files-found: ignore
 
   # make generate in a scratch copy, compared with the files as committed (the working tree is never written).
   generate:
@@ -228,9 +260,9 @@ jobs:
           echo "buf breaking against $base"
           "$(go env GOPATH)/bin/buf" breaking --against ".git#ref=$base"
 
-  # The configuration that no Go test covers: the rules of .trivyignore.yaml, Prometheus rules and their tests, the
-  # three Collector configs, the compose file of every profile, every chart of the repository, the digests of
-  # third-party images, the k6 scripts with each profile and the cloud cluster's manifests.
+  # The configuration that no Go test covers: the rules of .trivyignore.yaml and deploy/ci/trivy-config-ignore.yaml,
+  # Prometheus rules and their tests, the three Collector configs, the compose file of every profile, every chart of the
+  # repository, the digests of third-party images, the k6 scripts with each profile and the cloud cluster's manifests.
   config:
     runs-on: ubuntu-24.04
     permissions:
@@ -241,8 +273,15 @@ jobs:
           persist-credentials: false
       # Here and not only in the image gate: a pull request that changes nothing but .trivyignore.yaml builds no image,
       # and a broken entry merged into main would stop the daily rescan from attesting every service (ADR-0015, section 6).
-      # Needs no image, no tool and no token.
+      # The same step holds the misconfigurations job trivy-config leaves out to their rules: paths, reason, at most 90
+      # days (docs/adr/0021-deferred-verification-stage6b.md, section 9). Needs no image, no tool and no token.
       - run: deploy/ci/scan-gate.sh --check-ignorefile
+      # Only deploy/ci/platform.sh may read GitHub's variables or call gh: a script that does it itself works here and
+      # silently loses its output on another CI. The guard greps deploy/ and the Makefile for that; the test runs the
+      # adapter and the scripts that call it against a made-up job, fake gh and cosign, in a throwaway repository. Both
+      # need only bash, git and jq: no network, no token.
+      - run: deploy/ci/platform-guard.sh
+      - run: deploy/ci/platform-test.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: 1.27.3
@@ -319,8 +358,9 @@ jobs:
           path: ${{ runner.temp }}/gitleaks.sarif
           if-no-files-found: ignore
 
-  # trivy config on the Dockerfiles, charts and manifests with the pinned trivy image. Report only: it never fails the
-  # job on a finding.
+  # trivy config on the Dockerfiles, charts and manifests with the pinned trivy image, less the findings
+  # deploy/ci/trivy-config-ignore.yaml leaves out until their expired_at. Report only: it never fails the job on a
+  # finding.
   trivy-config:
     runs-on: ubuntu-24.04
     permissions:
@@ -485,7 +525,7 @@ jobs:
   # history and dismissal): it runs nothing of the repository. It is a report, not a check: ci-ok does not need it,
   # and a failed upload still turns the run red.
   sarif:
-    needs: [check, gitleaks, trivy-config]
+    needs: [check, web, gitleaks, trivy-config]
     if: always() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
@@ -516,6 +556,11 @@ jobs:
         with:
           sarif_file: sarif/sarif-trivy-config/trivy-config.sarif
           category: trivy-config
+      - if: hashFiles('sarif/sarif-trivy-lockfile-web/trivy-lockfile-web.sarif') != ''
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          sarif_file: sarif/sarif-trivy-lockfile-web/trivy-lockfile-web.sarif
+          category: trivy-lockfile-web
 
   # The required check. It runs whatever happened before it (always()) and fails unless every check job succeeded:
   # GitHub counts a skipped required check as passed, and a job that failed or was cancelled does not fail the jobs

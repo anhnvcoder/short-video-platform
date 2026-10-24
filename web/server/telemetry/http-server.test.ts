@@ -1,6 +1,9 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { api, metrics, tracing, type NodeSDK } from "@opentelemetry/sdk-node";
+import * as api from "@opentelemetry/api";
+import * as metrics from "@opentelemetry/sdk-metrics";
+import type { NodeSDK } from "@opentelemetry/sdk-node";
+import * as tracing from "@opentelemetry/sdk-trace";
 import { http, passthrough } from "msw";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { server as msw } from "@/lib/test/msw-server";
@@ -34,7 +37,7 @@ let origin: string;
 beforeAll(async () => {
   await new Promise<void>((resolve) => web.listen(0, "127.0.0.1", resolve));
   origin = `http://127.0.0.1:${(web.address() as AddressInfo).port}`;
-  config = telemetryConfig(testEnv, { spans: new tracing.SimpleSpanProcessor(exporter), metrics: reader });
+  config = telemetryConfig(testEnv, { spans: new tracing.SimpleSpanProcessor({ exporter }), metrics: reader });
   sdk = startSdk(config);
 });
 

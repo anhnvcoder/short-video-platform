@@ -6,13 +6,18 @@
 # A service is built when a changed path is one of its image paths (`image_paths` of deploy/k8s/lib.sh: go.mod,
 # go.sum, gen/, internal/, services/<svc>/, its Dockerfile, .dockerignore for a Go service; web/ and its Dockerfile for
 # web, whose build context is web/ alone), or when the pipeline that builds, scans and signs changed: then all seven.
-# The pipeline is .github/workflows/images.yml, anything under deploy/ci/, the helpers deploy/ci/ sources from
-# deploy/k8s/lib.sh (docker_, values_field, values_set_image, ghcr_prefix), and the lines of the Makefile pinning the
-# images the gate runs (TRIVY_IMAGE, SYFT_IMAGE, COSIGN_IMAGE); other Makefile changes do not count. So the weekly
-# Renovate pull request that bumps those tools builds and scans every image with the new trivy before it merges,
-# instead of the next daily rescan on main meeting it first. The cost is on main too: such a change releases all seven
-# images again (and opens their promote pull request) although no service code changed. Comparing is only done when
-# BASE is HEAD or an ancestor of it:
+# The pipeline is .github/workflows/images.yml, anything under deploy/ci/ but the files no image job reads:
+# trivy-config-ignore.yaml (read only by make trivy-config, so renewing one of its entries, due every 90 days at most,
+# releases nothing), the scripts of the verification runs of .github/workflows/verify.yml (verify-host.sh,
+# verify-run.sh, verify-sample.sh, verify-mask.sh, verify-collect.sh and its test; verify-release.sh is not one of them:
+# values-check.sh runs it), platform-test.sh, the test of platform.sh, and platform-guard.sh, the check that no other
+# script reads the CI platform itself (both run by job config of ci.yml and on a machine; platform.sh itself counts:
+# common.sh sources it), the helpers deploy/ci/ sources from deploy/k8s/lib.sh (docker_, values_field,
+# values_set_image, ghcr_prefix), and the lines of the Makefile pinning the images the gate runs (TRIVY_IMAGE,
+# SYFT_IMAGE, COSIGN_IMAGE); other Makefile changes do not count. So the weekly Renovate pull request that bumps those
+# tools builds and scans every image with the new trivy before it merges, instead of the next daily rescan on main
+# meeting it first. The cost is on main too: such a change releases all seven images again (and opens their promote
+# pull request) although no service code changed. Comparing is only done when BASE is HEAD or an ancestor of it:
 #   - BASE empty, all zeros, unknown to this clone, or not comparable with HEAD (force push, rewritten history): all
 #     seven. Building too much costs runner minutes; missing a change would ship an image without it.
 #   - HEAD a proper ancestor of BASE (an older run started again after a newer one succeeded): nothing, the newer run
@@ -61,6 +66,11 @@ under() { [ "$1" = "$2" ] || [ "${1#"$2"/}" != "$1" ]; }
 picked=()
 while IFS= read -r path; do
   [ -n "$path" ] || continue
+  case $path in
+  deploy/ci/trivy-config-ignore.yaml | deploy/ci/verify-host.sh | deploy/ci/verify-run.sh | \
+    deploy/ci/verify-sample.sh | deploy/ci/verify-mask.sh | deploy/ci/verify-collect.sh | \
+    deploy/ci/verify-collect-test.sh | deploy/ci/platform-test.sh | deploy/ci/platform-guard.sh) continue ;;
+  esac
   if under "$path" .github/workflows/images.yml || under "$path" deploy/ci || under "$path" deploy/k8s/lib.sh; then
     all "the image pipeline changed ($path)"
   fi

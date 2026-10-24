@@ -24,7 +24,7 @@ authedTest("first frame after a swipe: p50 and p95 over 20 moves", async ({ page
     // The item is a video, not the item after the last one while the next page loads.
     await expect(feedItem(page, index).locator('[data-part="video-host"]')).toHaveCount(1);
     const ms = await feedItem(page, index).evaluate(
-      (item, timeoutMs) =>
+      (item, [move, timeoutMs]) =>
         new Promise<number>((resolve, reject) => {
           const start = performance.now();
           const playing = () => item.querySelector('video[data-state="playing"]') !== null;
@@ -37,13 +37,21 @@ authedTest("first frame after a swipe: p50 and p95 over 20 moves", async ({ page
           });
           const timer = setTimeout(() => {
             observer.disconnect();
-            reject(new Error("the video did not play"));
+            // What the item's <video> was doing, so a failure tells a source that failed (data-state="error") from one
+            // still loading or never asked to play.
+            const video = item.querySelector("video");
+            const state = video
+              ? `data-state=${video.dataset.state ?? "none"} paused=${video.paused} readyState=${video.readyState} ` +
+                `networkState=${video.networkState} error=${video.error?.code ?? "none"} ` +
+                `currentTime=${video.currentTime.toFixed(2)} buffered=${video.buffered.length}`
+              : "no <video> in the item";
+            reject(new Error(`move ${move}: the video did not play (${state})`));
           }, timeoutMs);
           // Watched before the scroll, so no change the scroll causes is missed.
           observer.observe(item, { subtree: true, childList: true, attributes: true, attributeFilter: ["data-state"] });
           item.scrollIntoView({ block: "start", behavior: "instant" });
         }),
-      15_000,
+      [index, 15_000] as const,
     );
     samples.push(ms);
   }

@@ -86,7 +86,7 @@ SVP_TEST_REDIS_URL ?= redis://127.0.0.1:6379/15
 .DEFAULT_GOAL := help
 
 .PHONY: help tools ci-tools generate generate-go generate-check slo otelcol-validate fmt-check vet lint actionlint buf-lint test \
-	cover check check-go helm-check trivy-config renovate-check hooks web-install web-dev web-generate web-generate-check \
+	cover check check-go helm-check trivy-config web-lockfile-scan renovate-check hooks web-install web-dev web-generate web-generate-check \
 	web-check web-e2e measure-web measure-upload web-lighthouse web-sourcemaps
 
 help: ## List the targets
@@ -219,8 +219,10 @@ helm-check: ## helm lint and helm template every chart of the repository with th
 	done < "$$tmp/charts"
 
 # Misconfiguration scan of the Dockerfiles, charts and manifests with the pinned trivy (ADR-0015, section 2). It only
-# reports: exit 0 whatever it finds. TRIVY_CONFIG_SARIF set to an absolute path writes a SARIF report there (CI uploads
-# it); unset, a table goes to the terminal. The repository is mounted read-only and the container runs as the caller,
+# reports: exit 0 whatever it finds. The findings that are deliberate choices are left out by
+# deploy/ci/trivy-config-ignore.yaml, each for its paths and until its expired_at, with the reason in the file
+# (docs/adr/0021-deferred-verification-stage6b.md, section 9). TRIVY_CONFIG_SARIF set to an absolute path writes a SARIF
+# report there (CI uploads it); unset, a table goes to the terminal. The repository is mounted read-only and the container runs as the caller,
 # so the report belongs to them; the policy bundle trivy downloads goes to a cache inside the container.
 TRIVY_CONFIG_SARIF ?=
 trivy-config: ## trivy config on the repository, report only (TRIVY_CONFIG_SARIF=<absolute path> writes SARIF)
@@ -229,7 +231,44 @@ trivy-config: ## trivy config on the repository, report only (TRIVY_CONFIG_SARIF
 		--output "/out/$$(basename "$(TRIVY_CONFIG_SARIF)")"; \
 	else set -- $(TRIVY_IMAGE) config --format table; fi; \
 	env -u DOCKER_DEFAULT_PLATFORM docker run --rm --user "$$(id -u):$$(id -g)" -v "$(CURDIR):/src:ro" --workdir /src \
-		"$$@" --quiet --cache-dir /tmp/trivy --exit-code 0 .
+		"$$@" --quiet --cache-dir /tmp/trivy --ignorefile deploy/ci/trivy-config-ignore.yaml --exit-code 0 .
+
+# Vulnerability gate of the web client's npm dependencies, read from the lockfile: the web image shows trivy only the
+# few packages left in its node_modules, since the bundler folds the server's dependencies into its chunks
+# (docs/adr/0021-deferred-verification-stage6b.md, section 10). Development dependencies count too: they run in CI and
+# build the bundle that ships. deploy/ci/scan-gate.sh decides as for an image: any CRITICAL left after
+# .trivyignore.yaml fails, fixed upstream or not; HIGH and below are only counted. Only the lockfile is mounted
+# (read-only), at web/pnpm-lock.yaml under the scan root so the findings point at the file of the repository. A report
+# with no npm package fails too: a lockfile format trivy no longer reads would otherwise pass with nothing scanned.
+# trivy needs the network for its DB, and a DB it cannot download fails the target: no scan against a DB of unknown
+# age. WEB_LOCKFILE (absolute path of a file named pnpm-lock.yaml) scans another lockfile, for a negative check.
+# WEB_LOCKFILE_SARIF set to an absolute path writes a SARIF report of the HIGH and CRITICAL findings there, before the
+# gate decides, so a blocked lockfile still shows on main (CI uploads it). SVP_TRIVY_CACHE, when set, keeps the DB in
+# that directory (CI restores it with actions/cache, as images.yml does); unset, the DB goes to a cache inside the
+# container.
+WEB_LOCKFILE ?= $(CURDIR)/web/pnpm-lock.yaml
+WEB_LOCKFILE_SARIF ?=
+web-lockfile-scan: ## trivy fs on web/pnpm-lock.yaml, dev dependencies included; fails on any CRITICAL (WEB_LOCKFILE_SARIF=<absolute path> writes SARIF)
+	@lockfile='$(WEB_LOCKFILE)'; \
+	[ "$$(basename "$$lockfile")" = pnpm-lock.yaml ] && [ -f "$$lockfile" ] || { echo "WEB_LOCKFILE=$$lockfile is not \
+	a file named pnpm-lock.yaml" >&2; exit 1; }; \
+	lockfile="$$(cd "$$(dirname "$$lockfile")" && pwd)/pnpm-lock.yaml" || exit 1; label=$${lockfile#$(CURDIR)/}; \
+	tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
+	set -- -v "$$lockfile:/scan/web/pnpm-lock.yaml:ro" -v "$$tmp:/out"; \
+	if [ -n "$(SVP_TRIVY_CACHE)" ]; then mkdir -p "$(SVP_TRIVY_CACHE)" || exit 1; \
+	  set -- "$$@" -v "$(SVP_TRIVY_CACHE):/cache"; cache=/cache; else cache=/tmp/trivy; fi; \
+	if [ -f .trivyignore.yaml ]; then set -- "$$@" -v "$(CURDIR)/.trivyignore.yaml:/ignore.yaml:ro"; fi; \
+	trivy() { env -u DOCKER_DEFAULT_PLATFORM docker run --rm --user "$$(id -u):$$(id -g)" -e HOME=/tmp "$$@"; }; \
+	trivy "$$@" $(TRIVY_IMAGE) fs --scanners vuln --include-dev-deps --list-all-pkgs --format json \
+		--output /out/trivy.json --quiet --cache-dir "$$cache" \
+		$$([ -f .trivyignore.yaml ] && echo --ignorefile /ignore.yaml) /scan || exit 1; \
+	packages=$$(jq '[.Results[]? | select(.Type == "pnpm") | .Packages[]?] | length' "$$tmp/trivy.json") || exit 1; \
+	echo "$$label: $$packages npm packages scanned"; \
+	[ "$$packages" -gt 0 ] || { echo "FAIL  $$label: trivy read no npm package from it" >&2; exit 1; }; \
+	if [ -n "$(WEB_LOCKFILE_SARIF)" ]; then \
+	  trivy "$$@" -v "$$(dirname "$(WEB_LOCKFILE_SARIF)"):/sarif" $(TRIVY_IMAGE) convert --format sarif \
+		--severity HIGH,CRITICAL --output "/sarif/$$(basename "$(WEB_LOCKFILE_SARIF)")" /out/trivy.json || exit 1; fi; \
+	deploy/ci/scan-gate.sh --fs "$$label" "$$tmp/trivy.json"
 
 # Checks renovate.json as the GitHub App reads it, a repository config (--no-global), and fails on any error or on an
 # option that needs migrating (--strict): with the pinned Renovate image, no network, the repository mounted read-only
@@ -323,10 +362,71 @@ for (const [name, chunks] of Object.entries(sets)) {
 endef
 export WEB_SIZE_CHUNKS
 
-web-check: ## Lint, format check, typecheck, unit tests (Redis db 15 as for test), production build and bundle budgets of the web client
+# The standalone server of next build, the one the image runs, started once and asked for /healthz: a module its
+# instrumentation hook loads but the build left out (a require the bundler and the trace cannot follow) passes the
+# unit tests and next build, yet makes every route of the image answer 500. On 127.0.0.1 only, at a free port the
+# check picks itself; the server gets a fixed environment, not this shell's, whose hosts end in .invalid: /healthz
+# reads neither Redis nor the gateway, so nothing is reached. Stopped by its own handle once it answers.
+define WEB_STANDALONE_BOOT
+const { spawn } = require("node:child_process");
+const { once } = require("node:events");
+const net = require("node:net");
+(async () => {
+  const probe = net.createServer().listen(0, "127.0.0.1");
+  await once(probe, "listening");
+  const port = String(probe.address().port);
+  probe.close();
+  const server = spawn(process.execPath, ["server.js"], {
+    cwd: ".next/standalone",
+    env: {
+      NODE_ENV: "production",
+      NEXT_TELEMETRY_DISABLED: "1",
+      HOSTNAME: "127.0.0.1",
+      PORT: port,
+      GATEWAY_URL: "http://gateway.invalid",
+      REDIS_URL: "redis://redis.invalid:6379/9",
+      APP_ORIGIN: "http://localhost:" + port,
+      MEDIA_ORIGIN: "https://media.invalid",
+      UPLOAD_ORIGIN: "https://upload.invalid",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const output = [];
+  server.stdout.on("data", (chunk) => output.push(chunk));
+  server.stderr.on("data", (chunk) => output.push(chunk));
+  let exit = null;
+  const exited = once(server, "exit").then(([code, signal]) => (exit = signal ?? code));
+  let status = "no answer within 30 s";
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    if (exit !== null) {
+      status = "none, the server exited (" + exit + ")";
+      break;
+    }
+    try {
+      status = (await fetch("http://127.0.0.1:" + port + "/healthz", { signal: AbortSignal.timeout(5000) })).status;
+      break;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+  server.kill();
+  await exited;
+  if (status === 200) {
+    console.log("standalone server: GET /healthz 200");
+    return;
+  }
+  process.stderr.write(Buffer.concat(output));
+  console.error("standalone server: GET /healthz " + status);
+  process.exitCode = 1;
+})();
+endef
+export WEB_STANDALONE_BOOT
+
+web-check: ## Lint, format check, typecheck, unit tests (Redis db 15 as for test), production build, a start of its standalone server and bundle budgets of the web client
 	@$(WEB) pnpm lint && pnpm format:check && pnpm typecheck && \
 		SVP_TEST_REDIS_URL='$(SVP_TEST_REDIS_URL)' pnpm test && pnpm build && \
-		node -e "$$WEB_SIZE_CHUNKS" && pnpm size
+		node -e "$$WEB_STANDALONE_BOOT" && node -e "$$WEB_SIZE_CHUNKS" && pnpm size
 
 # Both need the compose stack (make up) and the Playwright browsers (pnpm exec playwright install chromium webkit in
 # web/). LOCAL LAB ONLY: the seed (web/e2e/seed.sh) and every Playwright worker (web/e2e/fixtures.ts) delete the

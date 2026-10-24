@@ -48,9 +48,11 @@ ARG SVP_BUILD_ID=
 #     line, so every other line and column, and the debug id comment, stay what the map describes;
 #   - the server's maps are deleted, as before.
 # The checks after fail the build when a map, or the word sourceMappingURL in any form, is left for the runtime stage.
-RUN pnpm build && \
-    mkdir -p /sourcemaps/_next && \
-    cd .next && \
+# The build and the moves are two steps of this stage only: the runtime stage below copies the result, never the
+# layers, so no map reaches the image.
+RUN pnpm build
+WORKDIR /src/.next
+RUN mkdir -p /sourcemaps/_next && \
     find static -name '*.map' -exec sh -c 'mkdir -p "/sourcemaps/_next/${1%/*}" && mv "$1" "/sourcemaps/_next/$1"' _ {} \; && \
     grep -rlE --include='*.js' '^//# sourceMappingURL=' static | \
       xargs -r -I{} sh -c 'mkdir -p "/sourcemaps/_next/${1%/*}" && cp "$1" "/sourcemaps/_next/$1"' _ {} && \

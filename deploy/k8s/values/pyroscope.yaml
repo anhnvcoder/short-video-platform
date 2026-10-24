@@ -33,8 +33,8 @@ pyroscope:
     enabled: true
     storageClassName: local-path
     size: 5Gi
-  # Pod Security "restricted" (ADR-0014 section 3; the namespace rejects pods that do not meet it): the chart sets neither seccomp nor a container securityContext. The
-  # image's user is 10001.
+  # Pod Security "restricted" (ADR-0014 section 3; the namespace rejects pods that do not meet it): the chart sets
+  # neither seccomp nor a container securityContext. The image's user is 10001.
   podSecurityContext:
     runAsUser: 10001
     runAsGroup: 10001

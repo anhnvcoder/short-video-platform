@@ -8,5 +8,7 @@
 # (apk-tools CVE-2021-36159, OpenSSL CVE-2021-3711, zlib CVE-2022-37434). No secret is added: the secret gate still
 # applies to this image.
 FROM alpine:3.12.0@sha256:185518070891758909c9f839cf4ca393ee977ac378609f700f60a771a2dfe321
+# Not root, as a release: the user changes no package, so the CRITICAL findings stay what they are.
+USER 65534:65534
 # Exits at once if anything ever starts it.
 ENTRYPOINT ["/bin/false"]

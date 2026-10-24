@@ -50,23 +50,46 @@ async function watchWhenReady(page: Page, title: string): Promise<void> {
   await expect(playingVideo(page.locator("article"))).toHaveCount(1);
 }
 
-test("upload a 60 s 1080p clip: progress, processing, READY, and it plays", { tag: "@publishes" }, async ({ page }) => {
-  test.setTimeout(readyTimeout + 60_000);
-  const clip = testClip(60, "1920x1080");
-  await openUpload(page);
-  const screen = await recordUploadScreen(page);
-  const title = await postClip(page, clip);
-  await watchWhenReady(page, title);
+// Chromium reports the progress of an upload every 100 ms, then once more at the end: a 41 MB clip that reaches the
+// storage within 100 ms (a Linux CI runner over loopback) shows only 0 and 100. DevTools upload throttling of the page
+// makes it take about two seconds, so the bar has values in between to show. WebKit reports progress for every chunk it
+// sends, however fast, and has no such hook.
+async function slowUploads(page: Page, context: BrowserContext, browserName: string): Promise<void> {
+  if (browserName !== "chromium") {
+    return;
+  }
+  const cdp = await context.newCDPSession(page);
+  await cdp.send("Network.enable");
+  await cdp.send("Network.emulateNetworkConditions", {
+    offline: false,
+    latency: 0,
+    downloadThroughput: -1,
+    uploadThroughput: 20 * 1024 * 1024,
+  });
+}
 
-  // The bar moved through the upload, not straight from nothing to done: over loopback the whole file takes well under
-  // a second, too short to watch from here, so the page recorded every value.
-  const values = (await screen()).flatMap((event) => (event.startsWith("progress ") ? [Number(event.slice(9))] : []));
-  expect(
-    values.some((value) => value > 0 && value < 100),
-    `progress values ${values.join(", ")}`,
-  ).toBe(true);
-  expect(values.at(-1)).toBe(100);
-});
+test(
+  "upload a 60 s 1080p clip: progress, processing, READY, and it plays",
+  { tag: "@publishes" },
+  async ({ page, context, browserName }) => {
+    test.setTimeout(readyTimeout + 60_000);
+    const clip = testClip(60, "1920x1080");
+    await openUpload(page);
+    await slowUploads(page, context, browserName);
+    const screen = await recordUploadScreen(page);
+    const title = await postClip(page, clip);
+    await watchWhenReady(page, title);
+
+    // The bar moved through the upload, not straight from nothing to done: over loopback the whole file takes a second
+    // or two at most, too short to watch from here, so the page recorded every value.
+    const values = (await screen()).flatMap((event) => (event.startsWith("progress ") ? [Number(event.slice(9))] : []));
+    expect(
+      values.some((value) => value > 0 && value < 100),
+      `progress values ${values.join(", ")}`,
+    ).toBe(true);
+    expect(values.at(-1)).toBe(100);
+  },
+);
 
 // Breaks the first POST of the file to the storage and takes the browser offline in the same step, as a lost
 // connection does; later POSTs go through. Playwright cannot break a request already on its way in either browser,

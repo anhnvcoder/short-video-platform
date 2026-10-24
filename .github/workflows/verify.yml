@@ -1,0 +1,241 @@
+# Deferred verification of stage 6b (docs/adr/0021-deferred-verification-stage6b.md): one scenario per run, dispatched
+# by hand, on a fresh GitHub-hosted runner of the public repository. It builds the compose stack or the k3d cluster
+# with the same make targets as a dev machine and runs the drills and measurements that machine cannot hold (16 GB).
+# Not a check of pull requests: no ruleset requires it and nothing else triggers it.
+#
+#   gh workflow run verify.yml --ref <main or feat/stage6b-...> -f scenario=<compose-obs|dev-k3d>
+#
+# The repository is public, so the log and the artifact of every run are too, red or not:
+# - only workflow_dispatch (write access to the repository needed), never pull_request_target or workflow_run; no
+#   secret, no environment; every job has contents: read and nothing else;
+# - every action is GitHub's own and pinned to a full commit SHA; checkout never leaves the token in .git/config;
+# - the input reaches the scripts only through env (SCENARIO) and deploy/ci/verify-run.sh checks it again with a case;
+#   if: compares it as an expression, never in a shell;
+# - make env writes a .env of fresh random secrets that lives on this runner until the job ends; the cluster makes more
+#   (GlitchTip's tokens, its CA). deploy/ci/verify-mask.sh masks them in the log as soon as they exist, every target's
+#   output goes to a file on the runner instead of the log, and deploy/ci/verify-collect.sh copies into the artifact
+#   only the files of an allow list that pass a scan for every known secret value and for token patterns (it drops
+#   the doubtful ones, with a warning). Nothing is ever printed with set -x, env or kubectl get secret.
+# The scenario stops at the earlier of its step limit and its job limit minus 25 minutes (verify-run.sh), so the steps
+# that collect, filter and upload always have time to run: they run once the ref check passed, also after a failure, a
+# timeout or a cancel (always()).
+name: verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: Scenario (docs/adr/0021-deferred-verification-stage6b.md, section 5)
+        type: choice
+        required: true
+        options:
+          - compose-obs
+          - dev-k3d
+
+permissions: {}
+
+# One run at a time: a problem common to the scenarios (a script that does not run on Linux yet) is fixed before the
+# next run. A third dispatch while one runs and one waits replaces the waiting one.
+concurrency:
+  group: verify
+  cancel-in-progress: false
+
+jobs:
+  # The compose stack with the LGTM observability profile, as job stack of ci.yml builds it: make up OBS=lgtm (GlitchTip
+  # included), make smoke, make drill-obs-threats, make load-local under a watch of Alertmanager, make web-lighthouse
+  # three times, make drill-alert-to-sentry (Telegram is not configured, so that step SKIPs). The LOCAL LAB ONLY resets
+  # of smoke, the drills, k6 and Lighthouse (they delete the gateway's register rate limit keys in Redis db 10) touch
+  # only the Redis service container below, which belongs to this run.
+  compose:
+    if: inputs.scenario == 'compose-obs'
+    runs-on: ubuntu-24.04
+    # Setup about 20 minutes, the scenario step 75, then 25 for the steps after it (ADR-0021, section 2).
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      SCENARIO: ${{ inputs.scenario }}
+      SVP_VERIFY_JOB_MINUTES: 120
+      SVP_VERIFY_STEP_MINUTES: 75
+    services:
+      # As in job stack of ci.yml: published on loopback (the scripts on the runner) and on the gateway of Docker's
+      # default bridge, 172.17.0.1, where the compose services reach them as host.docker.internal; never on every
+      # interface.
+      postgres:
+        image: docker.io/library/postgres:15.19-trixie@sha256:c961aa287d8698297cb26cdfadfbe9fd2cbaf77e53cfffe9636e8d8a1e4d842c
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 127.0.0.1:5432:5432
+          - 172.17.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: docker.io/library/redis:8.8.3-trixie@sha256:eb1aa641bc5380ed14442398e45a5a51aeaaac919fab811e4f134eb77c71dd2d
+        ports:
+          - 127.0.0.1:6379:6379
+          - 172.17.0.1:6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      # Before anything else: a dispatch of another branch (an old one without the fixes of this stage) stops here. An
+      # accident guard, not a security boundary: whoever can dispatch can also push a branch of that name.
+      - name: Check the ref and note the job's start
+        id: ref
+        run: |
+          case $GITHUB_REF in
+            refs/heads/main | refs/heads/feat/stage6b-*) ;;
+            *) echo "::error::verify runs on main or a feat/stage6b-* branch only, not $GITHUB_REF"; exit 1 ;;
+          esac
+          echo "SVP_VERIFY_OUT=$RUNNER_TEMP/verify" >>"$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/verify"
+          date +%s >"$RUNNER_TEMP/verify/job-start"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # make env runs go run ./tools/jwtkey for the JWT key pair; the Makefile also asks go for GOPATH.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.3
+          cache-dependency-path: go.sum
+      - run: make ci-bridge-check
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
+      - name: Install pnpm
+        working-directory: web
+        run: |
+          version=$(node -p 'require("./package.json").packageManager.split("@")[1]')
+          npm install -g "pnpm@$version"
+      # psql of the Postgres bootstrap, redis-cli of the rate limit resets, ffmpeg for the test videos, jq everywhere.
+      - name: Install the tools of the scripts
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends postgresql-client redis-tools ffmpeg jq
+      # make web-lighthouse needs lhci from web/node_modules and Playwright's Chromium; this scenario runs no e2e test,
+      # so no WebKit.
+      - run: make web-install
+      - name: Install the Playwright browser
+        working-directory: web
+        run: pnpm exec playwright install --with-deps chromium
+      - run: make env
+      - run: deploy/ci/verify-mask.sh env
+      - run: deploy/ci/verify-host.sh "$SCENARIO"
+      - run: deploy/ci/verify-sample.sh start
+      - name: Scenario
+        timeout-minutes: 75
+        run: deploy/ci/verify-run.sh "$SCENARIO"
+      - name: Stop the sampler
+        if: always() && steps.ref.outcome == 'success'
+        run: deploy/ci/verify-sample.sh stop
+      - name: Collect and filter the results
+        if: always() && steps.ref.outcome == 'success'
+        run: deploy/ci/verify-collect.sh
+      - name: Keep the filtered results
+        if: always() && steps.ref.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verify-${{ env.SCENARIO }}
+          path: ${{ runner.temp }}/verify-artifact/
+          retention-days: 30
+          if-no-files-found: warn
+      # make down reads .env; without one (a run cancelled before make env) no stack was ever started.
+      - name: make down
+        if: always() && steps.ref.outcome == 'success'
+        run: |
+          if [ -f .env ]; then make down; else echo "no .env: make env never ran, so no stack was started"; fi
+
+  # The k3d cluster of the dev path: make k8s-up, then smoke, RAM at rest, the threat model drill, PodDisruptionBudget,
+  # the gateway's canary under the new probes, the web's source maps, its e2e tests with GlitchTip, its observability
+  # drill, KEDA with two workers transcoding (RAM peak), the Postgres restore twice (latest, then point in time), RAM at
+  # rest again. The LOCAL LAB ONLY resets of the drills delete the register rate limit keys in the cluster's Valkey, on
+  # this runner.
+  k3d:
+    if: inputs.scenario == 'dev-k3d'
+    runs-on: ubuntu-24.04
+    # Setup about 20 minutes, the scenario step 285, then 25 for the steps after it; 30 minutes under GitHub's 6 hours.
+    timeout-minutes: 330
+    permissions:
+      contents: read
+    env:
+      SCENARIO: ${{ inputs.scenario }}
+      SVP_VERIFY_JOB_MINUTES: 330
+      SVP_VERIFY_STEP_MINUTES: 285
+    steps:
+      - name: Check the ref and note the job's start
+        id: ref
+        run: |
+          case $GITHUB_REF in
+            refs/heads/main | refs/heads/feat/stage6b-*) ;;
+            *) echo "::error::verify runs on main or a feat/stage6b-* branch only, not $GITHUB_REF"; exit 1 ;;
+          esac
+          echo "SVP_VERIFY_OUT=$RUNNER_TEMP/verify" >>"$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/verify"
+          date +%s >"$RUNNER_TEMP/verify/job-start"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.3
+          cache-dependency-path: go.sum
+      # k3d, Helm and the other pinned tools, as in job config of ci.yml.
+      - id: tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/bin
+          key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}
+      - name: Install the pinned tools
+        if: steps.tools.outputs.cache-hit != 'true'
+        run: make tools ci-tools
+      # k3d and Helm for deploy/k8s/install.sh and the drills, which call them by name; kubectl is the runner image's
+      # (deploy/ci/verify-host.sh checks its version against k3s).
+      - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
+      - name: Install pnpm
+        working-directory: web
+        run: |
+          version=$(node -p 'require("./package.json").packageManager.split("@")[1]')
+          npm install -g "pnpm@$version"
+      # ffmpeg for the test videos of smoke and KEDA, jq everywhere, nc for the drills' port checks.
+      - name: Install the tools of the scripts
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends ffmpeg jq netcat-openbsd
+      # make k8s-web-e2e runs on Chromium and WebKit.
+      - run: make web-install
+      - name: Install the Playwright browsers
+        working-directory: web
+        run: pnpm exec playwright install --with-deps chromium webkit
+      - run: make env
+      - run: deploy/ci/verify-mask.sh env
+      - run: deploy/ci/verify-host.sh "$SCENARIO"
+      - run: deploy/ci/verify-sample.sh start
+      - name: Scenario
+        timeout-minutes: 285
+        run: deploy/ci/verify-run.sh "$SCENARIO"
+      - name: Stop the sampler
+        if: always() && steps.ref.outcome == 'success'
+        run: deploy/ci/verify-sample.sh stop
+      - name: Collect and filter the results
+        if: always() && steps.ref.outcome == 'success'
+        run: deploy/ci/verify-collect.sh
+      - name: Keep the filtered results
+        if: always() && steps.ref.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verify-${{ env.SCENARIO }}
+          path: ${{ runner.temp }}/verify-artifact/
+          retention-days: 30
+          if-no-files-found: warn
+      - name: make k8s-down
+        if: always() && steps.ref.outcome == 'success'
+        run: make k8s-down
