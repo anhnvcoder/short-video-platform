@@ -133,7 +133,13 @@ trace_log_line() {
 
 # since SECONDS_A SECONDS_B: B - A with one decimal.
 since() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.1f", b - a }'; }
-clock() { date -u -r "${1%.*}" +%H:%M:%SZ; }
+# clock SECONDS: the UTC time of day of SECONDS since the epoch. GNU date (Linux, the CI runner) reads an epoch with
+# -d @SECONDS; BSD date (macOS) has no -d for it and needs -r instead.
+if date -u -d @0 +%s >/dev/null 2>&1; then
+  clock() { date -u -d "@${1%.*}" +%H:%M:%SZ; }
+else
+  clock() { date -u -r "${1%.*}" +%H:%M:%SZ; }
+fi
 
 obs_preflight
 if telegram_loaded; then

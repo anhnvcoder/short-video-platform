@@ -80,7 +80,7 @@ Code, cấu hình và tài liệu dùng đúng các tên này; đổi tên nào 
 | Workflow | Job | `compose` (kịch bản `compose-obs`), `k3d` (mọi kịch bản k3d trừ `gitops`), `gitops` (phần 3); mỗi lượt chạy đúng một job, hai job kia `skipped` |
 | Workflow | Runner | `ubuntu-24.04` (amd64) cho cả ba job |
 | Workflow | `concurrency` | group `verify`, `cancel-in-progress: false` |
-| Script | `deploy/ci/verify-host.sh` | Kiểm và chuẩn bị máy: cổng đĩa, `/etc/hosts`, độ lệch version kubectl, `sch_netem` (mục 2, 3) |
+| Script | `deploy/ci/verify-host.sh` | Kiểm và chuẩn bị máy: cổng đĩa, `/etc/hosts`, độ lệch version kubectl, `sch_netem`, hạn chế AppArmor của user namespace cho sandbox của Chrome ở `compose-obs` (mục 2, 3) |
 | Script | `deploy/ci/verify-run.sh <kịch bản>` | Trình tự target `make` của kịch bản, mỗi target có hạn riêng (mục 3, 5); chạy được cả trên VM của B |
 | Script | `deploy/ci/verify-sample.sh start\|stop` | Lấy mẫu nền: RAM, đĩa, CPU của máy, `docker stats` của node k3d, trạng thái node (mục 2) |
 | Script | `deploy/ci/verify-mask.sh env\|cluster` | `::add-mask::` cho giá trị bí mật của `.env` hay của Secret trong cluster (mục 4) |
@@ -141,9 +141,9 @@ Code, cấu hình và tài liệu dùng đúng các tên này; đổi tên nào 
 
 - **Đĩa** (`verify-host.sh`, trước mọi target `make`): đo `df -B1` của hệ thống tệp chứa thư mục dữ liệu của Docker
   (`docker info -f '{{.DockerRootDir}}'`) và in kèm `docker system df`. Cần trống ít nhất `need + 15% dung lượng + 2 GiB`:
-  `need` là ước lượng dùng thêm của kịch bản (**15 GiB** cho `compose-obs`; **30 GiB** cho kịch bản k3d: build cache bảy image, image
-  của khoảng 40 container bên thứ ba trong kho containerd của hai node, PV, trình duyệt Playwright), 15% là khoảng dưới ngưỡng dọn
-  image mặc định của kubelet (`imageGCHighThresholdPercent` 85, chưa đọc lại cấu hình k3s). Thiếu thì xoá các bộ công cụ cài sẵn mà
+  `need` là ước lượng dùng thêm của kịch bản (**16 GiB** cho `compose-obs`: 1,25 × 12,7 GiB đo ở lượt đầu, ước lượng trước đó
+  15 GiB; **30 GiB** cho kịch bản k3d: build cache bảy image, image của khoảng 40 container bên thứ ba trong kho containerd của hai
+  node, PV, trình duyệt Playwright), 15% là khoảng dưới ngưỡng dọn image mặc định của kubelet (`imageGCHighThresholdPercent` 85, chưa đọc lại cấu hình k3s). Thiếu thì xoá các bộ công cụ cài sẵn mà
   repo không dùng (`/usr/local/lib/android`, `/usr/share/dotnet`, `/opt/ghc`, `/usr/local/.ghcup`, `/opt/hostedtoolcache/CodeQL`;
   không đụng Go, Node trong `hostedtoolcache` mà `setup-go`, `setup-node` dùng), đo lại; vẫn thiếu thì dừng với số đo, trước mọi
   build. Lượt đầu của mỗi kịch bản ghi mức dùng thật; `need` đổi thành 1,25 × mức dùng cao nhất đo được.
@@ -239,7 +239,10 @@ Code, cấu hình và tài liệu dùng đúng các tên này; đổi tên nào 
   jq`, `make web-install` và `pnpm exec playwright install --with-deps chromium` (trong `web/`, như job `stack`: `make web-lighthouse`
   của `compose-obs` cần `lhci` trong `web/node_modules` và Chromium của Playwright, `web/lighthouse/run.sh` dừng ngay khi thiếu một
   trong hai; không target nào của kịch bản tự cài chúng, và `compose-obs` không chạy e2e nên không cần WebKit), `make env`, rồi
-  `verify-host.sh`, `verify-mask.sh env`, `verify-sample.sh start`, `verify-run.sh "$SCENARIO"` (gọi lại
+  `verify-host.sh` (ở `compose-obs` còn đặt `kernel.apparmor_restrict_unprivileged_userns=0`: Ubuntu 24.04 chặn user namespace
+  không đặc quyền với binary không có profile AppArmor, Chromium tải về của Playwright không có, nên Lighthouse mở Chrome với sandbox
+  thì Chrome dừng "No usable sandbox"; bỏ hạn chế trên VM dùng một lần, vốn đã có root qua `sudo`, giữ được sandbox của Chrome, thay
+  vì tắt sandbox bằng `--no-sandbox`; e2e của Playwright tự tắt sandbox nên không cần), `verify-mask.sh env`, `verify-sample.sh start`, `verify-run.sh "$SCENARIO"` (gọi lại
   `verify-mask.sh env` sau mỗi target, mục 4), và các bước `if: always()`: `verify-sample.sh stop`, `verify-collect.sh`,
   `upload-artifact`.
 - **Job `k3d`, `gitops`:** không service container (Postgres, Redis của cluster nằm trong cluster). Bước: `checkout` (`gitops`:
@@ -600,13 +603,13 @@ Giả định chưa kiểm được lúc viết; mỗi dòng nêu kịch bản h
 | Giả định | Phép kiểm | Kết quả |
 | --- | --- | --- |
 | Ba tên `*.svp.localhost` qua `/etc/hosts` chỉ trả `127.0.0.1` trên runner; drill và Playwright tới được Envoy | `verify-host.sh` (`getent ahosts`) và `make k8s-smoke` ở `dev-k3d` | Chưa kiểm |
-| Cổng đĩa đúng: kịch bản k3d dùng ≤ 30 GiB, không pod nào bị evict vì đĩa | `df` trước/sau và sampler ở `dev-k3d`, `compose-obs` | Chưa kiểm |
+| Cổng đĩa đúng: kịch bản k3d dùng ≤ 30 GiB, không pod nào bị evict vì đĩa | `df` trước/sau và sampler ở `dev-k3d`, `compose-obs` | `compose-obs` (2026-10-24, [40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687)): dùng 12,7 GiB (trống 80,6 GiB lúc vào kịch bản, thấp nhất 67,9 GiB, ổ `/dev/root` 144,3 GiB: ổ thật lớn hơn 14 GB của tài liệu), không lần nào dưới ngưỡng chạy; `need` đổi 15 → 16 GiB. k3d: chờ `dev-k3d` |
 | `docker stats` và `memory.stat` của node k3d trên runner (cgroup v2, Docker 28) đo được như trên máy | RAM nghỉ, đỉnh ở `dev-k3d` | Chưa kiểm |
-| Runner có hay không có swap; `MemAvailable` thấp nhất ≥ 2 GiB ở mọi kịch bản | Sampler ở mọi kịch bản | Chưa kiểm |
-| Bộ lọc bỏ file có giá trị bí mật hay mẫu cấm, giữ file sạch | Test của `verify-collect.sh` với giá trị giả (ca có và ca không); lượt `compose-obs`, `dev-k3d`: `files.txt` | Chưa kiểm |
-| Mask che giá trị trong log job, lệnh mask không hiện | Lượt `compose-obs`: `verify-mask.sh` mask một giá trị ngẫu nhiên làm mốc rồi in dòng `mask-check: <giá trị>`; log thô (`gh run view --log`) phải có `mask-check: ***` và không có dòng `::add-mask::` nào (không cần biết giá trị để kiểm) | Chưa kiểm |
-| Bước `if: always()` vẫn gom và tải sau khi bước kịch bản quá hạn | Lượt đầu có bước đỏ hay quá hạn | Chưa kiểm |
-| Setup trước bước kịch bản ≤ 20 phút ở cả ba job | Thời gian các bước setup ở lượt đầu mỗi job (`gh run view --json jobs`) | Chưa kiểm |
+| Runner có hay không có swap; `MemAvailable` thấp nhất ≥ 2 GiB ở mọi kịch bản | Sampler ở mọi kịch bản | Có swap: `/swapfile` 3 GiB (`swapon --show`). `compose-obs` ([40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687)): `MemAvailable` thấp nhất 8 156 MiB, swap dùng tối đa 17 MiB. k3d: chờ `dev-k3d` |
+| Bộ lọc bỏ file có giá trị bí mật hay mẫu cấm, giữ file sạch | Test của `verify-collect.sh` với giá trị giả (ca có và ca không); lượt `compose-obs`, `dev-k3d`: `files.txt` | `verify-collect-test.sh` xanh (ca có và ca không, 2026-10-25). `compose-obs` ([40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687)): `files.txt` giữ 26 file, bỏ 4 đều `not-allowed` (`job-start`, `sampler.pid`, `sampler.err`, `machine.json` của k6), không `::warning::` nào của bộ lọc. Bộ lọc dòng phán quyết của `drill-obs-threats` giữ đúng ý nhưng giấu luôn dòng lỗi của bash khi một mục dừng vì `set -e` mà không in `FAIL` (lỗi WEB-9 của lượt này): mục nào dừng giờ in thêm `FAIL  <mục>: the item ended with exit status <n>`. `dev-k3d`: chờ |
+| Mask che giá trị trong log job, lệnh mask không hiện | Lượt `compose-obs`: `verify-mask.sh` mask một giá trị ngẫu nhiên làm mốc rồi in dòng `mask-check: <giá trị>`; log thô (`gh run view --log`) phải có `mask-check: ***` và không có dòng `::add-mask::` nào (không cần biết giá trị để kiểm) | Đạt ([40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687)): log thô có `mask-check: ***` ở bước `verify-mask.sh env`, không dòng `::add-mask::` nào; không mẫu JWT, `Bearer`, `Set-Cookie`, `svp_sid`, khoá riêng nào trong log |
+| Bước `if: always()` vẫn gom và tải sau khi bước kịch bản quá hạn | Lượt đầu có bước đỏ hay quá hạn | Sau bước đỏ: đạt ([40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687): bước kịch bản đỏ, `verify-sample.sh stop`, `verify-collect.sh`, tải artifact, `make down` đều chạy). Sau bước quá hạn: chưa gặp |
+| Setup trước bước kịch bản ≤ 20 phút ở cả ba job | Thời gian các bước setup ở lượt đầu mỗi job (`gh run view --json jobs`) | `compose`: 1 phút 35 s (job 20:18:41 → bước kịch bản 20:20:16 UTC, [40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687)); `k3d`: 2 phút 28 s (20:46:01 → 20:48:29 UTC, [40131253651](https://github.com/anhnvcoder/short-video-platform/actions/runs/40131253651)). `gitops`: phần 3 |
 | Miễn trừ giới hạn pull của Docker Hub cho runner GitHub cũng áp cho pull từ containerd trong node k3d | `dev-k3d`, `gitops`: không event `Failed` nào có `429 Too Many Requests` trong `kubectl get events -A` của artifact, không lỗi 429 ở `docker pull` | Chưa kiểm |
 | Script k3d chạy trên bash 5 và coreutils GNU sau các sửa của phần 1 | `dev-k3d` xanh | Chưa kiểm |
 | Hai worker cùng transcode trên runner 4 vCPU giữ (c) | `dev-k3d` (đường dev), `gitops` (D1) | Chưa kiểm |
@@ -616,22 +619,55 @@ Giả định chưa kiểm được lúc viết; mỗi dòng nêu kịch bản h
 | Driver CSI hostpath, snapshot controller và Velero 1.18.4 chạy trên k3s 1.36 | `velero`: backup có VolumeSnapshot, restore PVC từ snapshot | Chưa kiểm |
 | trivy đọc được lockfile của pnpm 12 | `make web-lockfile-scan` với ca âm | Chưa kiểm |
 | trivy nhận `misconfigurations` với `paths`, `expired_at` trong tệp bỏ qua của `trivy config` | `make trivy-config` trước và sau khi thêm một mục: số kết quả giảm đúng mục đó | Chưa kiểm |
-| Rule mới của `RateLimitFallbackActive` đúng tám ca (a)–(h) của mục 11 và giữ RL-2 | `make slo-check` (test promtool); `compose-obs` (`drill-obs-threats` RL-2: page trong 240 s) | Chưa kiểm |
+| Rule mới của `RateLimitFallbackActive` đúng tám ca (a)–(h) của mục 11 và giữ RL-2 | `make slo-check` (test promtool); `compose-obs` (`drill-obs-threats` RL-2: page trong 240 s) | Test promtool: `make slo-check` xanh trong job `config` của lượt CI [40129094568](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129094568) (`main` `a9b035a`). RL-2 trên runner ([40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687)): page `startsAt` 76 s, thấy trong Alertmanager 81 s sau login đầu (hạn 240 s): đạt |
 
 ## Kết quả
 
-Chưa chạy. Mỗi lượt dispatch ghi một dòng (ngày, kịch bản, ref và commit, link lượt chạy, runner đủ hay không), số đo vào bảng của dòng
+Mỗi lượt dispatch ghi một dòng (ngày, kịch bản, ref và commit, link lượt chạy, runner đủ hay không), số đo vào bảng của dòng
 dời tương ứng (D1–D27, mục 5), và dòng nào sang B hay giai đoạn 7 kèm lý do.
 
 | Kịch bản | Lượt (ngày, commit, link) | Runner đủ | Kết quả chính |
 | --- | --- | --- | --- |
-| `compose-obs` | — | — | — |
-| `dev-k3d` | — | — | — |
-| `gitops` | — | — | — |
-| `web-canary` | — | — | — |
-| `k6-cloud-mini` | — | — | — |
-| `chaos` | — | — | — |
-| `velero` | — | — | — |
+| `compose-obs` | 1: 2026-10-24, `main` `a9b035a`, [40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687) | Đủ: xong trong hạn, `MemAvailable` thấp nhất 8 156 MiB, không OOM, đĩa trống thấp nhất 67,9 GiB, không container nào restart ngoài các lần diễn tập dựng lại | Đỏ vì hai lỗi của script, không vì runner: WEB-9 của `drill-obs-threats` dừng giữa chừng, `make web-lighthouse` ×3 không mở được Chrome nên không có LCP; mọi bước còn lại đạt (dưới đây). Đã sửa, chờ lượt 2 |
+| `dev-k3d` | 1: 2026-10-24, `main` `a9b035a`, [40131253651](https://github.com/anhnvcoder/short-video-platform/actions/runs/40131253651) (đang chạy lúc ghi) | — | — |
+| `gitops` | — (phần 3) | — | — |
+| `web-canary` | — (phần 3) | — | — |
+| `k6-cloud-mini` | — (phần 3) | — | — |
+| `chaos` | — (phần 3) | — | — |
+| `velero` | — (phần 3) | — | — |
+
+### `compose-obs`, lượt 1 ([40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687))
+
+- **Runner:** kernel 6.17.0-1022-azure, 4 CPU, RAM 15 989 MiB, swap `/swapfile` 3 GiB; ổ `/dev/root` 144,3 GiB, trống 80,6 GiB lúc
+  vào kịch bản. CPU bận cao nhất 100 %, MEM USAGE của stack compose cao nhất 2 638 MiB. `make up OBS=lgtm` 346 s, `make smoke` 12 s
+  (58 bước đạt).
+- **D8 `drill-obs-threats`:** JWT-8, UP-8, OPS-1 (đúng 8 cổng, mọi cổng trên `127.0.0.1`), RL-2 đạt. WEB-9 đạt tới đăng ký, đăng
+  nhập lại, feed và upload qua form của web, 3 beacon `/rum` (204), báo lỗi `/monitoring` (202), rồi dừng ở kiểm đối chứng đầu: hàm
+  `control` chỉ có trong drill của k3d, nên bash dừng mục với `command not found` (exit 127) mà không in dòng `FAIL` nào, và bộ lọc
+  dòng phán quyết của artifact giấu luôn dòng lỗi đó. Phần tìm giá trị trong GlitchTip, Tempo, Loki, Prometheus chưa chạy: **chưa
+  kết luận**. Đã sửa: drill định nghĩa `control`, và mục nào dừng in thêm `FAIL  <mục>: the item ended with exit status <n>`.
+- **D16 `RateLimitFallbackActive` dưới `make load-local`:** không page trên runner: không cảnh báo nào bắt đầu trong 483 s quan sát
+  (50 lần hỏi Alertmanager, không lần nào lỗi); p99 lệnh Redis của gateway 4,95 ms, không lệnh `context_timeout`, 0 quyết định dự
+  phòng trên 8 201 quyết định (`rate-limit-load.json`). Bằng chứng yếu như đã nói ở D16: Redis tới qua bridge Linux, không qua
+  `host.docker.internal` của Docker Desktop; test promtool là phép kiểm chính (Kiểm chứng sau).
+- **`make load-local`:** mọi threshold đạt; 7 624 request (23,0 req/s), 0 lỗi, `dropped_iterations` 0. p95/p99 (ms): `/feed/explore`
+  7,0/10,0, `/feed/following` 4,8/7,1, like 8,7/10,5, views 6,8/9,5, `POST /videos` 12,9/14,4, web `/` 42,7/53,5, `/v/[id]` 47,0/64,2,
+  `/login` 34,2/41,2. Số của runner, không so với máy.
+- **`drill-alert-to-sentry`:** đạt, T1 − T0 = 53,4 s, T4 − T1 = 4,4 s (< 300 s), 4 event GlitchTip từ T0; Telegram SKIP (không
+  secret). Lượt này in giờ trống ở các mốc vì `date -r` của BSD (trên GNU là đọc mtime của tệp); đã đổi sang cách chạy được cả hai nơi.
+- **D17 LCP:** không đo được: Lighthouse mở Chromium của Playwright với sandbox, Ubuntu 24.04 chặn user namespace không đặc quyền
+  bằng AppArmor nên Chrome dừng "No usable sandbox" ở cả 3 lượt. Đã sửa ở `verify-host.sh` (mục 3, job `compose`); chờ lượt 2.
+- **Đĩa:** dùng 12,7 GiB, `need` của `compose-obs` đổi 15 → 16 GiB (mục 2).
+
+### Job `stack` của `ci.yml` (D22) và e2e trên runner
+
+| Lượt | Commit | Kết quả |
+| --- | --- | --- |
+| [40129094568](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129094568) (push `main`) | `a9b035a` | `web-e2e` đỏ: webkit 23/28, chromium 28/28, chromium-publishing 3/3, webkit-publishing 3/3; `load-ci`, `web-lighthouse` không chạy |
+| [40130863434](https://github.com/anhnvcoder/short-video-platform/actions/runs/40130863434) (PR #20) | `c960ed1` (bản sửa WebKit Linux) | `web-e2e` đỏ: webkit 26/28, chromium 28/28, chromium-publishing 3/3, webkit-publishing 3/3. Đỏ: `first-frame.e2e.ts:17` (lần vuốt 19: `data-state=buffering`, `readyState=4`, `currentTime=0.17`, khác hẳn lỗi lần vuốt 1–2 trước bản sửa), `feed.e2e.ts:17` (mục 0 không `playing` trong 15 s). Đạt: upload chromium-publishing, upload có rớt kết nối webkit-publishing, `flow.e2e.ts:17` và WEB-1 trên WebKit. `load-ci`, `web-lighthouse` không chạy |
+
+D22 chưa đạt: job còn đỏ ở e2e WebKit. Khi e2e qua, `make web-lighthouse` của job này sẽ gặp cùng lỗi sandbox của Chrome như
+`compose-obs` (bước đó `continue-on-error`, nên không làm job đỏ nhưng không có báo cáo).
 
 ## Hệ quả
 

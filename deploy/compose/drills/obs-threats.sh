@@ -73,6 +73,10 @@ minio 127.0.0.1:9001->9001
 redpanda 127.0.0.1:19092->19092
 web 127.0.0.1:3001->3001"
 
+# control MESSAGE: an ok line for a control check (the data the search runs on is there, so finding none of the
+# values is not finding no data).
+control() { ok "control: $1"; }
+
 # wrong_cred FILE: writes a new, never registered email and a random password to FILE.
 wrong_cred() {
   DRILL_PASSWORD=$(openssl rand -hex 16) jq -n --arg e "drill-obs-$(date +%s)-$(openssl rand -hex 4)@example.test" \
@@ -621,6 +625,10 @@ run_item() {
   rc=$?
   set -e
   if ((rc != 0)); then
+    # Said even after the item's own FAIL line: a command that stops the item under set -e (one not found, exit 127)
+    # prints none, and where only the verdict lines of this output are kept (the CI runner's artifact), this line is
+    # all that tells how the item ended.
+    echo "FAIL  $1: the item ended with exit status $rc" >&2
     failed+=" $1"
     restore_stack || true
   fi
