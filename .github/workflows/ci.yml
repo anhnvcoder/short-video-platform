@@ -472,6 +472,17 @@ jobs:
       - run: make web-e2e
       - id: k6
         run: make load-ci
+      # make web-lighthouse launches Playwright's Chromium with Chrome's sandbox, which needs unprivileged user
+      # namespaces. Ubuntu 24.04 restricts those through AppArmor for every binary without a profile of its own, and
+      # Playwright's download has none, so Chrome stops with "No usable sandbox". The restriction is lifted on this
+      # throwaway runner (as deploy/ci/verify-host.sh does), so the sandbox stays on; the e2e tests turn it off themselves.
+      - name: Let Chrome's sandbox use user namespaces
+        run: |
+          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)" = 1 ]; then
+            sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          echo "apparmor: kernel.apparmor_restrict_unprivileged_userns" \
+            "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
       # Report only: one Lighthouse run per page on a shared runner is noise, so its thresholds never turn the job red.
       - id: lighthouse
         run: make web-lighthouse

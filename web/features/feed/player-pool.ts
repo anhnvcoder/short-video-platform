@@ -180,7 +180,15 @@ export class PlayerPool {
         this.callbacks.onState(slot.index, state);
       }
     };
-    video.addEventListener("canplay", () => this.markStarted(slot));
+    video.addEventListener("canplay", () => {
+      if (!slot.started) {
+        // For the current item this runs update, which plays it.
+        this.markStarted(slot);
+      } else if (slot.index !== null) {
+        // An hls.js source waits for this before it plays (applyPlayback), also after it started once.
+        this.applyPlayback(slot);
+      }
+    });
     video.addEventListener("playing", () => {
       video.dataset.state = "playing";
       report("playing")();
@@ -303,6 +311,14 @@ export class PlayerPool {
       return;
     }
     if (slot.video.dataset.state === "error" || !video.paused) {
+      return;
+    }
+    // With hls.js, play only once the element can play (canplay calls this again). Playing before any data makes the
+    // element wait at 0 s while the first segment starts a little later (0.07 s for the media worker's MPEG-TS), so
+    // hls.js seeks over that gap during playback; WebKit on Linux (GStreamer) under load then never ends the seek and the
+    // video stays buffering with its data in hand. hls.js loads segments without play(); the browser's own HLS player
+    // (no MediaSource) does not, so it is told to play at once.
+    if (slot.hls !== null && video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
       return;
     }
     const playing = video.play();
