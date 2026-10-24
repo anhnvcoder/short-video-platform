@@ -895,6 +895,21 @@ describe("FeedScreen", () => {
     expect(preload(43)).toBeNull();
   });
 
+  it("renders the neighbours' posters only once the page has loaded", () => {
+    const readyState = vi.spyOn(document, "readyState", "get").mockReturnValue("interactive");
+    onTestFinished(() => readyState.mockRestore());
+    renderFeed({ initialPage: page([item(45), item(46)]) });
+    const poster = (index: number) => articles()[index]?.querySelector("img") ?? null;
+    expect(poster(0)?.getAttribute("src")).toBe(`${mediaOrigin}/media/thumbs/45.jpg`);
+    expect(poster(1)).toBeNull();
+
+    readyState.mockReturnValue("complete");
+    act(() => {
+      window.dispatchEvent(new Event("load"));
+    });
+    expect(poster(1)?.getAttribute("src")).toBe(`${mediaOrigin}/media/thumbs/46.jpg`);
+  });
+
   it("puts no preload in the head for a first poster outside the media origin", () => {
     renderFeed({ initialPage: page([item(1, { thumbnail_url: "https://tracker.example/1.jpg" }), item(2)]) });
     expect(document.head.querySelector('link[href^="https://tracker.example"]')).toBeNull();

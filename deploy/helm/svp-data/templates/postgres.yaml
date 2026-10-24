@@ -27,8 +27,41 @@ spec:
   inheritedMetadata:
     labels:
       # The instance manager (and the initdb Job) read the Cluster, its Secrets and report status through the API
-      # server: allow-kube-api of chart svp-cluster opens that egress only for pods with this label.
+      # server: allow-kube-api of chart svp-cluster opens that egress only for pods with this label. The plugin's
+      # sidecar reads ObjectStore svp-pg-backup and Secret pg-backup-s3 the same way.
       svp-kube-api: allow
+  # The Barman Cloud plugin archives every WAL segment and takes the base backups (templates/backup.yaml), into the
+  # archive generation postgres.backup.serverName. archive_timeout keeps CloudNativePG's default of 5 minutes: at most
+  # that much committed work, plus the segment being written, is lost when the node or its disk is lost outright.
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: svp-pg-backup
+        serverName: {{ .Values.postgres.backup.serverName | quote }}
+  {{- with .Values.postgres.recovery }}
+  {{- if .source }}
+  {{- if eq .source $.Values.postgres.backup.serverName }}
+  {{- fail "postgres.recovery.source must differ from postgres.backup.serverName: a restored Cluster archives into a new generation" }}
+  {{- end }}
+  # Only on the upgrade of make drill-k8s-backup that creates svp-pg again: the first instance is restored from the
+  # newest base backup of generation {{ .source }} and its WAL, up to its end or to recoveryTarget.
+  bootstrap:
+    recovery:
+      source: origin
+      {{- if .targetTime }}
+      recoveryTarget:
+        targetTime: {{ .targetTime | quote }}
+      {{- end }}
+  externalClusters:
+    - name: origin
+      plugin:
+        name: barman-cloud.cloudnative-pg.io
+        parameters:
+          barmanObjectName: svp-pg-backup
+          serverName: {{ .source | quote }}
+  {{- end }}
+  {{- end }}
 ---
 apiVersion: v1
 kind: ConfigMap

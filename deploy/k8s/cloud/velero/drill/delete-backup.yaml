@@ -1,0 +1,12 @@
+# Template of the request that deletes one backup (the drill's or the Schedule's) with its EBS snapshots and its files
+# in the bucket (deploy/k8s/cloud/velero/drill-restore.sh sweep): what `velero backup delete` creates, made with kubectl.
+# Deleting the Backup object itself would leave both behind. The script replaces the name and the backup's name.
+apiVersion: velero.io/v1
+kind: DeleteBackupRequest
+metadata:
+  name: drill-svp-data
+  namespace: velero
+  labels:
+    svp-drill: velero-restore
+spec:
+  backupName: drill-svp-data

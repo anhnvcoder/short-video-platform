@@ -1,0 +1,40 @@
+# Experiment (a), first run: kill one gateway pod under load (docs/adr/0020-reliability-stage6.md, section 7). Cloud
+# cluster only, Chaos Mesh installed with targetNamespace svp (deploy/k8s/cloud/values/chaos-mesh.yaml). Apply this one
+# file, never the folder: each file is its own experiment.
+#
+# When: under k6 profile cloud at its hold rate, after 5 minutes of steady state (no alert firing, feed within SLO).
+#
+# Steady-state hypothesis: the feed keeps its SLO in the 10 minutes around the kill (5xx < 0.1%, p99 <= 150 ms outside
+# the first 30 s) and the replacement pod is Ready in under 60 s. pod-kill deletes the pod directly, without an eviction,
+# so the PodDisruptionBudget does not take part: what holds is the Rollout's 2 replicas Ready at the kill and mode one.
+#
+# Watch (Prometheus, and the k6 summary per route):
+#   feed 5xx ratio:
+#     sum(rate(http_server_request_duration_seconds_count{service_name="gateway",http_request_method="GET",http_route=~"/feed/following|/feed/explore",http_response_status_code=~"5.."}[1m]))
+#     / sum(rate(http_server_request_duration_seconds_count{service_name="gateway",http_request_method="GET",http_route=~"/feed/following|/feed/explore"}[1m]))
+#   feed p99:
+#     histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{service_name="gateway",http_request_method="GET",http_route=~"/feed/following|/feed/explore"}[1m])))
+#   pods: kubectl --context <ctx> -n svp get pods -l app.kubernetes.io/name=gateway -w
+#   experiment: kubectl --context <ctx> -n svp describe podchaos pod-kill-gateway
+#
+# Pass: both numbers above hold over the window, the new pod is Ready within 60 s of the kill, no page alert fires.
+#
+# Run:  kubectl --context <ctx> apply -f deploy/k8s/cloud/chaos/a-pod-kill-gateway.yaml
+# End:  kubectl --context <ctx> -n svp delete podchaos pod-kill-gateway (the kill is done at once; duration only bounds
+#       the object's life). Stop the whole session early when the feed's 5xx stays above 5% for more than a minute or a
+#       node goes NotReady.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: pod-kill-gateway
+  namespace: svp
+spec:
+  action: pod-kill
+  mode: one
+  gracePeriod: 0
+  duration: 1m
+  selector:
+    namespaces:
+      - svp
+    labelSelectors:
+      app.kubernetes.io/name: gateway

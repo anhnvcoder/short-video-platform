@@ -36,7 +36,7 @@ function isUnrecorded(path: string): boolean {
 }
 
 // Decides on root spans by path, before the given sampler: the http instrumentation's server span carries url.path,
-// Next's request span (the root when http was loaded before the instrumentation) carries http.target with the query.
+// Next's request span (the root when the http module is not patched, see startSdk) carries http.target with the query.
 // Every child follows its root (parent-based), so a skipped request records no span at all. Ignoring the requests in
 // the http instrumentation alone would not do: Next's span would then become the root of a trace per probe.
 export function skipUnrecordedPaths(sampler: tracing.Sampler): tracing.Sampler {
@@ -175,6 +175,21 @@ export function telemetryConfig(env: ServerEnv, exports: TelemetryExport | null)
   };
 }
 
+// Starts the SDK with this configuration, and patches the http module that is already loaded. The http
+// instrumentation patches http when it is required after the SDK started, but that never happens in the server: Next's
+// start-server.js requires http before register() runs, and the bundle requires each built-in module once and keeps
+// it, so no require after the SDK started reaches the instrumentation's hook. Without the patch the web has no server
+// span of its own and no http.server.request.duration, the histogram of its availability SLO. Loading http once more
+// through the hook the instrumentation installed patches the module in place, including http.Server.prototype.emit,
+// which the server Next has already created looks up on every request. process.getBuiltinModule, not require: the
+// bundler would turn a require into its cached copy of the module, which never reaches the hook.
+export function startSdk(config: TelemetryConfig): NodeSDK {
+  const sdk = new NodeSDK(config);
+  sdk.start();
+  process.getBuiltinModule("node:http");
+  return sdk;
+}
+
 // Starts the SDK unless OTEL_SDK_DISABLED is true. Exporters exist only with an explicit OTEL_EXPORTER_OTLP_ENDPOINT
 // (the SDK would otherwise send to localhost:4317); without one nothing is recorded or sent. A Collector that cannot
 // be reached costs nothing but dropped telemetry: exports run in the background and their errors are discarded.
@@ -183,7 +198,7 @@ export function startTelemetry(env: ServerEnv): NodeSDK | null {
     return null;
   }
   const otlp = core.getStringFromEnv("OTEL_EXPORTER_OTLP_ENDPOINT") !== undefined;
-  const sdk = new NodeSDK(
+  return startSdk(
     telemetryConfig(
       env,
       otlp
@@ -198,8 +213,6 @@ export function startTelemetry(env: ServerEnv): NodeSDK | null {
         : null,
     ),
   );
-  sdk.start();
-  return sdk;
 }
 
 // Event processor of the error tracker: a server error carries the trace and span ids of the span it happened in, to

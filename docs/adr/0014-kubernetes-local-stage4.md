@@ -4,7 +4,10 @@
   §2 (tiêu chí ổn định (c), cửa sổ đỉnh 2 worker, bước cắt 3 đã áp) và §10 (`maxReplicaCount` 2, topic giữ 3 partition)
   chỉnh bởi [0017](0017-gitops-capacity-media-worker-max2.md); §3 (luồng của web), §9 (listener `https-apex` và Certificate
   `svp-apex` cho `svp.localhost`, tên HTTPRoute theo release, Envoy bỏ trace context của client), §10 (release `web`, PDB khi
-  số replica cố định) và §13 (canary của web, ngưỡng theo release) chỉnh bởi [0019](0019-web-k3d-supply-chain-observability.md)
+  số replica cố định) và §13 (canary của web, ngưỡng theo release) chỉnh bởi [0019](0019-web-k3d-supply-chain-observability.md);
+  §10 (`timeoutSeconds` của probe) và §12 (`WATCH_NAMESPACE` của CloudNativePG thêm `cnpg-system`; Role của operator ở
+  `cnpg-system` thu hẹp còn đọc, ghi Secret, event, Lease; ValidatingAdmissionPolicy `svp-cnpg-operator-secrets` chỉ cho operator
+  tạo, sửa Secret PKI của nó ở đó) chỉnh bởi [0020](0020-reliability-stage6.md)
 - Ngày: 2026-10-18
 
 ## Bối cảnh
@@ -880,6 +883,9 @@ checksum), nên:
 
 ## 10. Workload
 
+> Chỉnh bởi [ADR-0020](0020-reliability-stage6.md) mục 10: probe có `timeoutSeconds` (liveness 5 s, readiness 2 s, startup 2 s)
+> thay mặc định 1 s, vì node bão hoà CPU làm probe quá hạn và kubelet restart pod còn sống.
+
 ### Các lựa chọn
 
 | Lựa chọn | Được | Mất |
@@ -1218,7 +1224,8 @@ giá: không phát hiện được Valkey treo mà cổng vẫn mở, lab chấp
     platform (được `kube-system`) và cho phần ứng dụng (không được); chưa cần ở lab, xem lại khi thêm người hay repo.
   - Whitelist cluster-scope, lấy từ cùng lượt `helm template`: `Namespace`, `CustomResourceDefinition`, `ClusterRole`,
     `ClusterRoleBinding`, `ValidatingWebhookConfiguration`, `MutatingWebhookConfiguration`, `ValidatingAdmissionPolicy`,
-    `ValidatingAdmissionPolicyBinding` (Envoy Gateway: `safe-upgrades.gateway.networking.k8s.io`), `APIService` (KEDA),
+    `ValidatingAdmissionPolicyBinding` (Envoy Gateway: `safe-upgrades.gateway.networking.k8s.io`; từ giai đoạn 6 cả chart
+    `svp-cluster`: `svp-cnpg-operator-secrets`, [ADR-0020](0020-reliability-stage6.md) §5), `APIService` (KEDA),
     `ClusterIssuer`, `GatewayClass` (hai kind cuối từ chart `svp-cluster`), `ClusterTriggerAuthentication` (chart
     `svp-data`, mục 10). Chart của project kiểm ở bước GitOps (thiếu kind nào thì Application báo lỗi, thêm đúng kind đó).
     **Sửa 2026-10-18:** thêm `ClusterTriggerAuthentication`, có từ khi đăng nhập Kafka của KEDA chuyển sang chart
@@ -1269,7 +1276,19 @@ giá: không phát hiện được Valkey treo mà cổng vẫn mở, lab chấp
     hai webhook config sau `cloudnative-pg`; đường GitOps: health Certificate chặn wave, `retry` lo lần gọi webhook sớm. Còn
     lại khi bị chiếm: Secret, pod, exec ở `cnpg-system` và `svp-data`; ghi được `cnpg-webhook-cert` thì cainjector chèn CA khác
     vào **chỉ hai webhook của CNPG**, rule và đích không đổi (chỉ CR `postgresql.cnpg.io`), nên không Secret nào ngoài hai
-    namespace đó tới được nó.
+    namespace đó tới được nó. **Sửa 2026-10-24:** env thành `WATCH_NAMESPACE=svp-data,cnpg-system` vì operator chỉ tìm plugin
+    CNPG-i (plugin Barman Cloud của giai đoạn 6) qua informer Service ở namespace của nó, mà chỉ có informer ở namespace được
+    watch ([ADR-0020](0020-reliability-stage6.md) §5). Cùng ngày, Role ở `cnpg-system` thu hẹp: plugin chạy ở đó với
+    ServiceAccount đọc mọi Secret của cluster, nên `commonRules` ở đó (tạo pod, `pods/exec`, sửa Deployment) cho token
+    operator bị lấy chạy code bằng ServiceAccount của plugin và đọc khoá JWT của `svp`. Role ở `cnpg-system` giờ chỉ đọc
+    mọi kind mà informer cần, ghi Secret (PKI của operator 1.30.1: tạo `cnpg-ca-secret` lúc khởi động khi thiếu, cập nhật
+    khi sắp hết hạn), event và Lease; `svp-data` giữ đủ `commonRules`. RBAC không giới hạn `create` theo tên, nên
+    ValidatingAdmissionPolicy `svp-cnpg-operator-secrets` (cùng template, chạy trong API server, không webhook) chỉ cho
+    operator tạo hay sửa `cnpg-ca-secret` kiểu `Opaque` và sửa `cnpg-webhook-cert` kiểu `kubernetes.io/tls` ở
+    `cnpg-system`, nên không tạo được Secret token cho ServiceAccount của plugin. Không bỏ PKI của operator bằng
+    `WEBHOOK_CERT_DIR` được: khi có biến đó operator đọc file `apiserver.crt`/`apiserver.key`, còn chart 0.29.1 mount
+    Secret của cert-manager với `tls.crt`/`tls.key`. Còn lại ở `cnpg-system`: đọc Secret (TLS của plugin) và ghi hai Secret
+    trên. `make drill-k8s-threats` kiểm bằng `kubectl auth can-i` và tạo thử (dry run phía server) dưới tên operator.
   - **Envoy Gateway: ngoại lệ đã thu hẹp.** Mặc định controller watch mọi namespace với ClusterRole đọc mọi Secret và `patch`
     mọi pod (topology injector). `deploy/k8s/values/envoy-gateway.yaml`: `watch.namespaces: [envoy-gateway-system, svp,
     svp-data, svp-edge]` (chart chuyển rule có namespace thành Role ở từng namespace đó; toàn cluster chỉ còn đọc nodes,

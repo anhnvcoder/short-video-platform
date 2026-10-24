@@ -82,8 +82,10 @@ rolloutsController:
   namespace: argo-rollouts
   labels: {app.kubernetes.io/name: argo-rollouts, app.kubernetes.io/component: rollouts-controller}
 
-# Postgres svp-pg in svp-data, the only peer outside svp-obs that GlitchTip and its init Job call.
+# Postgres svp-pg in svp-data, the only peer outside svp-obs that GlitchTip and its init Job call; Prometheus scrapes its
+# instance's exporter on metricsPort (PodMonitor svp-pg), the port CloudNativePG names metrics.
 postgres:
   namespace: svp-data
   labels: {cnpg.io/cluster: svp-pg}
   port: 5432
+  metricsPort: 9187

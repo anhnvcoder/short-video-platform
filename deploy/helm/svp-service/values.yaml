@@ -23,7 +23,7 @@ port: 0
 
 # Replica count of a workload without an autoscaler. With hpa or keda set the chart renders no spec.replicas at all:
 # a count in the manifest would be put back by every helm upgrade and by Argo CD's selfHeal each time the autoscaler
-# changes it, the two fighting over the field (ADR section 10). Such a workload starts with Kubernetes' default of 1
+# changes it, the two fighting over the field (ADR-0014 section 10). Such a workload starts with Kubernetes' default of 1
 # and its autoscaler raises it to its minimum.
 replicas: 1
 
@@ -42,7 +42,7 @@ spreadAcrossNodes: false
 # The broker is env.KAFKA_BROKERS, the one the service consumes from.
 keda: {}
 
-# Run the service as an Argo Rollouts Rollout with an analysed canary instead of a Deployment (ADR section 13): Service
+# Run the service as an Argo Rollouts Rollout with an analysed canary instead of a Deployment (ADR-0014 section 13): Service
 # <release>-canary beside the stable one, the release's HTTPRoute split between the two, AnalysisTemplate
 # <release>-canary on Envoy's metrics of the canary backend. Only a release with an HTTPRoute can set it (the gateway,
 # the web client): Envoy measures the canary on that route.
@@ -91,7 +91,7 @@ preStopSleepSeconds: null
 
 # Pods each release may be reached from (ingressFrom) and may reach (egressTo), by name of the peers below; DNS is
 # open to every pod of svp already (chart svp-cluster). The namespace denies everything else in both directions, so
-# the lists are the whole of a service's traffic (ADR section 3, "flows opened"; IN-2, FF-5). Ingress is opened on
+# the lists are the whole of a service's traffic (ADR-0014 section 3, "flows opened"; IN-2, FF-5). Ingress is opened on
 # the service's own port only.
 ingressFrom: []
 egressTo: []

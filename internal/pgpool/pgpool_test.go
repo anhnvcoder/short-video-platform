@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
+	"net/url"
+	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -19,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace/noop"
 
+	"github.com/anhnvcoder/short-video-platform/internal/pgretry/pgretrytest"
 	"github.com/anhnvcoder/short-video-platform/internal/pgtest"
 )
 
@@ -72,63 +75,39 @@ func TestNewInvalidURLHidesIt(t *testing.T) {
 	}
 }
 
-// blackhole returns the address of a listener that accepts connections and never answers, like
-// a host whose Postgres hangs.
-func blackhole(t *testing.T) string {
-	t.Helper()
-	var lc net.ListenConfig
-	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan struct{})
-	var conns []net.Conn
-	go func() {
-		defer close(done)
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			conns = append(conns, c)
-		}
-	}()
-	t.Cleanup(func() {
-		_ = ln.Close()
-		<-done
-		for _, c := range conns {
-			_ = c.Close()
-		}
-	})
-	return ln.Addr().String()
-}
+// testWindow stands for startupWindow in tests that wait it out.
+const testWindow = 1500 * time.Millisecond
 
+// TestNewUnreachableFailsWithinBudget: a server that never answers times attempts out, which are
+// retried until the window ends, and New returns then, whatever connect_timeout the URL sets.
 func TestNewUnreachableFailsWithinBudget(t *testing.T) {
 	const secret = "s3cret-pw"
 	tests := []struct {
 		name  string
 		query string
-		max   time.Duration
 	}{
-		{name: "default connect timeout", max: ConnectTimeout + time.Second},
-		{name: "connect_timeout of the URL", query: "&connect_timeout=1", max: 2 * time.Second},
+		{name: "default connect timeout, longer than the window"},
+		{name: "connect_timeout of the URL, shorter than the window", query: "&connect_timeout=1"},
 		// The warm-up connection dials on its own; Close must not wait out its 60 s.
-		{name: "pool warm-up with a long connect_timeout", query: "&pool_min_conns=1&connect_timeout=60", max: startupTimeout + time.Second},
-		{name: "connect_timeout=0, no limit", query: "&connect_timeout=0", max: startupTimeout + time.Second},
+		{name: "pool warm-up with a long connect_timeout", query: "&pool_min_conns=1&connect_timeout=60"},
+		{name: "connect_timeout=0, no limit", query: "&connect_timeout=0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			u := "postgres://svp:" + secret + "@" + blackhole(t) + "/svp_user?sslmode=disable" + tt.query
+			u := "postgres://svp:" + secret + "@" + pgretrytest.Blackhole(t) + "/svp_user?sslmode=disable" + tt.query
 			start := time.Now()
-			pool, err := New(context.Background(), u)
+			pool, err := open(context.Background(), u, testWindow)
 			elapsed := time.Since(start)
 			if err == nil {
 				pool.Close()
-				t.Fatal("New() error = nil, want a connection error")
+				t.Fatal("open() error = nil, want a connection error")
 			}
-			if elapsed > tt.max {
-				t.Errorf("New() took %v, want at most %v", elapsed, tt.max)
+			if elapsed < testWindow || elapsed > testWindow+time.Second {
+				t.Errorf("open() took %v, want the %v window (+1s at most)", elapsed, testWindow)
+			}
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("open() error = %v, want context.DeadlineExceeded", err)
 			}
 			if strings.Contains(err.Error(), secret) {
 				t.Errorf("error %q leaks the password", err)
@@ -176,23 +155,156 @@ func TestRedact(t *testing.T) {
 	}
 }
 
-func TestNewRefusedFailsFast(t *testing.T) {
-	var lc net.ListenConfig
-	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+// TestNewRefusedRetriesUntilWindow: a refused connection is retried, each failure logged at WARN
+// without the password, until the window ends.
+func TestNewRefusedRetriesUntilWindow(t *testing.T) {
+	const secret = "s3cret-pw"
+	logs := pgretrytest.CaptureDefaultLog(t)
+
+	start := time.Now()
+	pool, err := open(t.Context(), "postgres://svp:"+secret+"@"+pgretrytest.ClosedPort(t)+"/svp_user?sslmode=disable", testWindow)
+	elapsed := time.Since(start)
+	if err == nil {
+		pool.Close()
+		t.Fatal("open() error = nil, want a connection error")
+	}
+	if elapsed < testWindow || elapsed > testWindow+time.Second {
+		t.Errorf("open() took %v, want the %v window (+1s at most)", elapsed, testWindow)
+	}
+	if !errors.Is(err, syscall.ECONNREFUSED) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("open() error = %v, want the refused connection and context.DeadlineExceeded", err)
+	}
+	// 250 ms + 500 ms + 1 s of waits fit in 1.5 s with the first three attempts.
+	if n := strings.Count(logs.String(), `"msg":"database not reachable, retrying"`); n < 3 {
+		t.Errorf("logged %d retries, want at least 3:\n%s", n, logs)
+	}
+	if !strings.Contains(logs.String(), `"level":"WARN"`) || !strings.Contains(logs.String(), `"attempt":3`) {
+		t.Errorf("retries not logged at WARN with their attempt number:\n%s", logs)
+	}
+	if strings.Contains(logs.String(), secret) || strings.Contains(err.Error(), secret) {
+		t.Errorf("log or error leaks the password: %v\n%s", err, logs)
+	}
+}
+
+// TestNewStopsRetryingOnCancel: canceling the context (SIGTERM) during the wait between two
+// attempts ends New at once.
+func TestNewStopsRetryingOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	time.AfterFunc(400*time.Millisecond, cancel)
+
+	start := time.Now()
+	pool, err := New(ctx, "postgres://svp:pw@"+pgretrytest.ClosedPort(t)+"/svp_user?sslmode=disable")
+	elapsed := time.Since(start)
+	if err == nil {
+		pool.Close()
+		t.Fatal("New() error = nil, want context.Canceled")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("New() error = %v, want context.Canceled", err)
+	}
+	if elapsed > time.Second {
+		t.Errorf("New() took %v after a cancel at 400ms, want under 1s", elapsed)
+	}
+}
+
+// testDatabaseURL returns the URL of a fresh test database, skipping without SVP_TEST_POSTGRES_URL.
+func testDatabaseURL(t *testing.T, name string) *url.URL {
+	t.Helper()
+	pool := pgtest.New(t, name, fstest.MapFS{"00001_create_accounts.sql": {Data: []byte(createAccounts)}})
+	u, err := url.Parse(pool.Config().ConnString())
 	if err != nil {
 		t.Fatal(err)
 	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
+	return u
+}
 
-	start := time.Now()
-	pool, err := New(t.Context(), "postgres://svp:pw@"+addr+"/svp_user?sslmode=disable")
-	if err == nil {
-		pool.Close()
-		t.Fatal("New() error = nil, want a connection error")
+// TestNewFailsFastOnConfigurationErrors: errors from the server are not retried.
+func TestNewFailsFastOnConfigurationErrors(t *testing.T) {
+	base := testDatabaseURL(t, "svp_pgpool_config_test")
+	missingDB := *base
+	missingDB.Path = "/svp_pgpool_missing_test"
+	missingRole := *base
+	missingRole.User = url.UserPassword("svp_pgpool_no_such_role", "pw")
+	wrongPassword := *base
+	wrongPassword.User = url.UserPassword(base.User.Username(), "wrong-password")
+
+	tests := []struct {
+		name      string
+		url       url.URL
+		sqlStates []string
+	}{
+		{name: "missing database", url: missingDB, sqlStates: []string{"3D000"}},
+		// A server that trusts the connection reports a missing role as 28000; one that checks passwords
+		// (SCRAM, as in CI) answers 28P01 on purpose so a client cannot tell which roles exist. Both are
+		// configuration errors that must not be retried.
+		{name: "missing role", url: missingRole, sqlStates: []string{"28000", "28P01"}},
+		{name: "wrong password", url: wrongPassword, sqlStates: []string{"28P01"}},
 	}
-	if d := time.Since(start); d > time.Second {
-		t.Errorf("New() took %v, want under 1s", d)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := pgretrytest.CaptureDefaultLog(t)
+			start := time.Now()
+			pool, err := New(t.Context(), tt.url.String())
+			elapsed := time.Since(start)
+			if err == nil {
+				pool.Close()
+				if tt.name == "wrong password" {
+					t.Skip("the local server trusts this connection and does not check passwords")
+				}
+				t.Fatal("New() error = nil, want a Postgres error")
+			}
+			if pgErr, ok := errors.AsType[*pgconn.PgError](err); !ok || !slices.Contains(tt.sqlStates, pgErr.Code) {
+				t.Errorf("New() error = %v, want SQLSTATE %s", err, strings.Join(tt.sqlStates, " or "))
+			}
+			if elapsed > time.Second {
+				t.Errorf("New() took %v, want under 1s", elapsed)
+			}
+			if strings.Contains(logs.String(), "retrying") {
+				t.Errorf("a configuration error was retried:\n%s", logs)
+			}
+		})
+	}
+}
+
+// TestNewRetriesUntilDatabaseReachable: a database refused at first and reachable a second later,
+// like a new pod on k3d, gets a pool, and the log says after how many attempts.
+func TestNewRetriesUntilDatabaseReachable(t *testing.T) {
+	u := testDatabaseURL(t, "svp_pgpool_retry_test")
+	target := u.Host
+	u.Host = pgretrytest.DelayedProxy(t, target, time.Second)
+	logs := pgretrytest.CaptureDefaultLog(t)
+
+	pool, err := New(t.Context(), u.String())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(pool.Close)
+	if err := pool.Ping(t.Context()); err != nil {
+		t.Fatalf("Ping() through the proxy = %v", err)
+	}
+
+	var connected struct {
+		Level     string `json:"level"`
+		Attempts  int    `json:"attempts"`
+		ElapsedMS int64  `json:"elapsed_ms"`
+	}
+	for line := range strings.Lines(logs.String()) {
+		if strings.Contains(line, `"msg":"database connected after retries"`) {
+			if err := json.Unmarshal([]byte(line), &connected); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if connected.Level != "INFO" || connected.Attempts < 2 || connected.ElapsedMS < 900 {
+		t.Errorf("connected line = %+v, want INFO with at least 2 attempts and about 1000 ms:\n%s", connected, logs)
+	}
+	if n := strings.Count(logs.String(), `"msg":"database not reachable, retrying"`); n != connected.Attempts-1 {
+		t.Errorf("logged %d retries, want %d (attempts - 1)", n, connected.Attempts-1)
+	}
+	// The test server's password may equal the user name, which the log names: look for the URL's
+	// user info instead.
+	if strings.Contains(logs.String(), u.User.String()+"@") {
+		t.Errorf("log leaks the URL's user info:\n%s", logs)
 	}
 }
 

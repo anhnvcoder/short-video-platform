@@ -2,7 +2,8 @@
 # client, generated code, buf breaking, compose, Collector, Prometheus rules, charts) plus the secret scan of the whole
 # git history and the misconfiguration scan (docs/adr/0015-cicd-devsecops-stage5.md, sections 1, 2 and 11). Job ci-ok is
 # the only check the ruleset of main requires from this workflow, so the other jobs can be renamed or added without
-# touching it.
+# touching it. Job stack runs the whole compose stack end to end as a report outside ci-ok
+# (docs/adr/0020-reliability-stage6.md, section 15).
 #
 # The repository is public and a pull request from a fork runs this workflow with the fork's code, so:
 # - no pull_request_target and no workflow_run: a pull request never runs with a write token or with secrets;
@@ -229,7 +230,7 @@ jobs:
 
   # The configuration that no Go test covers: the rules of .trivyignore.yaml, Prometheus rules and their tests, the
   # three Collector configs, the compose file of every profile, every chart of the repository, the digests of
-  # third-party images.
+  # third-party images, the k6 scripts with each profile and the cloud cluster's manifests.
   config:
     runs-on: ubuntu-24.04
     permissions:
@@ -239,7 +240,7 @@ jobs:
         with:
           persist-credentials: false
       # Here and not only in the image gate: a pull request that changes nothing but .trivyignore.yaml builds no image,
-      # and a broken entry merged into main would stop the daily rescan from attesting every service (ADR section 6).
+      # and a broken entry merged into main would stop the daily rescan from attesting every service (ADR-0015, section 6).
       # Needs no image, no tool and no token.
       - run: deploy/ci/scan-gate.sh --check-ignorefile
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -266,6 +267,14 @@ jobs:
           make compose-config
       - run: make helm-check
       - run: deploy/k8s/check-image-digests.sh
+      # k6 inspect of every profile in the pinned k6 image, with no network: a script that no longer loads or a profile
+      # whose scenarios are malformed is caught here, without the compose stack the load runs need
+      # (docs/adr/0020-reliability-stage6.md, section 2).
+      - run: make k6-check
+      # kubeconform -strict of the cloud cluster's manifests and rendered charts: a wrong field or kind in a Chaos Mesh,
+      # Velero or snapshot manifest is caught here, without a cluster that has those CRDs (ADR-0020, section 8); helm
+      # from the PATH set above. Needs network: chart repositories and GitHub.
+      - run: make cloud-check
 
   # gitleaks over the whole history of every ref (no --log-opts: setting it drops gitleaks's default --full-history
   # --all), at the version make tools pins. Any finding fails the job. --redact keeps the secret out of the log and the
@@ -334,6 +343,140 @@ jobs:
           name: sarif-trivy-config
           path: ${{ runner.temp }}/trivy-config.sarif
           if-no-files-found: ignore
+
+  # The whole compose stack of make up on the runner, driven as on a dev machine: make smoke, the web client's
+  # end-to-end tests, the k6 profile ci (error thresholds only: a shared runner says nothing about latency) and
+  # Lighthouse (docs/adr/0020-reliability-stage6.md, section 15). A report, not a check: ci-ok does not need it, so a red
+  # stack (a flaky end-to-end test on a shared runner) never blocks a merge; whoever reads the pull request sees its
+  # result under this name. It builds and runs the pull request's code like the other jobs, with contents: read and no
+  # secret: make env writes a .env of fresh random secrets that lives on this runner until the job ends, never printed
+  # or uploaded. The LOCAL LAB ONLY resets of smoke, e2e, k6 and Lighthouse (they delete the gateway's register rate
+  # limit keys in Redis db 10) touch only the Redis service container below, which belongs to this run.
+  stack:
+    name: stack (end-to-end, report only)
+    runs-on: ubuntu-24.04
+    # Seven image builds, the e2e seed (21 READY videos), two browsers: about 15 to 25 minutes. The limit leaves room for
+    # a slow runner and stops a hung step long before GitHub's default of 6 hours.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    services:
+      # The images of job check. There the tests reach them on loopback only; here the compose containers reach them as
+      # host.docker.internal, which compose's host-gateway maps to the gateway of Docker's default bridge (docker0,
+      # 172.17.0.1). So each is published on that address and on loopback (psql of deploy/postgres/bootstrap.sh and
+      # redis-cli of the scripts run on the runner), never on every interface. The compose services log in to Postgres
+      # with the role passwords make up bootstraps (the image asks for a password on every TCP connection).
+      postgres:
+        image: docker.io/library/postgres:15.19-trixie@sha256:c961aa287d8698297cb26cdfadfbe9fd2cbaf77e53cfffe9636e8d8a1e4d842c
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 127.0.0.1:5432:5432
+          - 172.17.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      # The gateway (db 10), feed-service (db 14) and the web's sessions (db 9) of this run only.
+      redis:
+        image: docker.io/library/redis:8.8.3-trixie@sha256:eb1aa641bc5380ed14442398e45a5a51aeaaac919fab811e4f134eb77c71dd2d
+        ports:
+          - 127.0.0.1:6379:6379
+          - 172.17.0.1:6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # make env runs go run ./tools/jwtkey for the JWT key pair; the Makefile also asks go for GOPATH.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.2
+          cache-dependency-path: go.sum
+      # host-gateway is the gateway of the default bridge (unless the daemon sets host-gateway-ip), and the services
+      # above are published on 172.17.0.1: if the two differ, every compose service fails to reach Postgres and Redis
+      # with a timeout far from its cause. Said here, before anything is built.
+      - run: make ci-bridge-check
+      # Node and pnpm as in job web: the web's e2e tests, Lighthouse and the Playwright browsers run from web/.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
+      - name: Install pnpm
+        working-directory: web
+        run: |
+          version=$(node -p 'require("./package.json").packageManager.split("@")[1]')
+          npm install -g "pnpm@$version"
+      # What the scripts run on the runner, from Ubuntu's archive (no third-party action): psql of the Postgres
+      # bootstrap (16 here; bootstrap.sql needs 15 or later for \getenv), redis-cli of the rate limit reset, ffmpeg for
+      # the test videos of smoke, the e2e seed and Lighthouse, jq everywhere. curl and openssl come with the image.
+      - name: Install the tools of the scripts
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends postgresql-client redis-tools ffmpeg jq
+      - run: make env
+      - run: make up
+      - run: make smoke
+      - run: make web-install
+      # The browsers of web/playwright.config.ts at the version web/pnpm-lock.yaml pins, with their system libraries
+      # (apt, through sudo).
+      - name: Install the Playwright browsers
+        working-directory: web
+        run: pnpm exec playwright install --with-deps chromium webkit
+      # Traces of failed tests stay in web/test-results/ on the runner: they hold session cookies and are never
+      # uploaded.
+      - run: make web-e2e
+      - id: k6
+        run: make load-ci
+      # Report only: one Lighthouse run per page on a shared runner is noise, so its thresholds never turn the job red.
+      - id: lighthouse
+        run: make web-lighthouse
+        continue-on-error: true
+      - name: Container state
+        if: failure()
+        run: make ps
+      # deploy/k6/load.sh fails the run when its results hold a token, cookie or password but leaves them in place: the
+      # same check again here, so summary.json reaches the public artifact only when it is clean. machine.json and the
+      # rest stay on the runner. Skipped when the step was cancelled (a timeout) or never ran.
+      - name: Pick the k6 summary
+        if: always() && (steps.k6.outcome == 'success' || steps.k6.outcome == 'failure')
+        run: |
+          mkdir -p "$RUNNER_TEMP/k6-summary"
+          for summary in .k6/ci-*/summary.json; do
+            [ -f "$summary" ] || continue
+            if grep -IqE -i 'eyJ[A-Za-z0-9_-]{8,}|svp_sid|bearer|password|cookie|token|set-cookie' "$summary"; then
+              echo "::warning::$summary looks like it holds a secret: not uploaded"
+              continue
+            fi
+            cp "$summary" "$RUNNER_TEMP/k6-summary/"
+          done
+      - name: Keep the k6 summary
+        if: always() && (steps.k6.outcome == 'success' || steps.k6.outcome == 'failure')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: k6-summary
+          path: ${{ runner.temp }}/k6-summary/
+          if-no-files-found: ignore
+      # The reports web/lighthouse/run.sh wrote at the top of its folder after replacing the session cookie in them
+      # (it deletes them when a cookie value is still found). Its .lighthouseci/ subfolder, with the results before
+      # that replacement, is matched by neither pattern and is a hidden folder, which upload-artifact leaves out.
+      # Skipped when the step was cancelled mid-run or never ran.
+      - name: Keep the Lighthouse reports
+        if: always() && (steps.lighthouse.outcome == 'success' || steps.lighthouse.outcome == 'failure')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lighthouse
+          path: |
+            web/test-results/lighthouse/*.html
+            web/test-results/lighthouse/*.json
+          if-no-files-found: ignore
+      - name: make down
+        if: always()
+        run: make down
 
   # The code scanning upload, the one job with a write permission. Only on main outside pull requests: a pull request
   # (from a branch of the repository or from a fork) runs its own code before anyone has read it, so it never gets

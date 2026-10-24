@@ -113,7 +113,9 @@ features:
   # admitted by the same policy; a rescan that finds a CRITICAL stops new pods, not running ones).
   backgroundScan:
     enabled: false
-  # The PolicyException kinds stay off, as the chart has them (ADR-0015 section 8, CVE-2026-100704).
+  # The PolicyException kinds stay off, as the chart has them: an exception is a way to exempt an image from the
+  # signature check, and CVE-2026-100704 (fixed in Kyverno 1.19.1) was one that skipped the check for the whole
+  # resource (ADR-0015 section 8).
   policyExceptions:
     enabled: false
   registryClient:

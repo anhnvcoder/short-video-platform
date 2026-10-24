@@ -12,12 +12,12 @@ ci_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=deploy/k8s/lib.sh
 . "$ci_dir/../k8s/lib.sh"
 
-# Every image of the project lives under ghcr_prefix (deploy/k8s/lib.sh, ADR section 5).
-# The images built only to drill admission (ADR section 7): never run by any chart.
+# Every image of the project lives under ghcr_prefix (deploy/k8s/lib.sh, ADR-0015 section 5).
+# The images built only to drill admission (ADR-0015 section 7): never run by any chart.
 # shellcheck disable=SC2034 # read by the scripts that source this file
 drill_images=(drill-vulnerable drill-unsigned)
 # The keyless identity every signature and attestation must carry: the workflow images.yml on main, through GitHub's
-# OIDC issuer (ADR section 7). Kyverno checks the same two values.
+# OIDC issuer (ADR-0015 section 7). Kyverno checks the same two values.
 sign_issuer=https://token.actions.githubusercontent.com
 sign_subject=https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main
 # Where trivy looks for its vulnerability DB, in this order (its default for v0.76.0, written out so the attestation
@@ -67,8 +67,8 @@ trivy_() {
     ${trivy_mounts[@]+"${trivy_mounts[@]}"} "$image" "$@" --cache-dir /cache
 }
 
-# trivy_scan_args: the scan flags of ADR section 6, the same for the build gate and the rescan: vulnerabilities and
-# secrets, every severity, JSON. The ignore file is passed only when it exists (trivy fails on a missing one); it is
+# trivy_scan_args: the scan flags of ADR-0015 section 6, the same for the build gate and the rescan: vulnerabilities
+# and secrets, every severity, JSON. The ignore file is passed only when it exists (trivy fails on a missing one); it is
 # mounted at /ignore.yaml by the caller.
 trivy_scan_args() {
   printf '%s\n' --scanners vuln,secret --db-repository "$trivy_db_repository" --format json
@@ -83,8 +83,8 @@ trivy_db_updated_at() {
     fail "read the trivy DB version"
 }
 
-# oci_labels: prints the OCI labels of the commit at HEAD as key=value lines (ADR section 5): the source repository,
-# the commit, and the commit time in UTC, so the same commit always gets the same labels whatever the build time.
+# oci_labels: prints the OCI labels of the commit at HEAD as key=value lines (ADR-0015 section 5): the source
+# repository, the commit, and the commit time in UTC, so the same commit always gets the same labels whatever the build time.
 oci_labels() {
   local rev created
   rev=$(git -C "$repo_root" rev-parse HEAD) || fail "read the commit at HEAD"
@@ -113,8 +113,8 @@ summary() {
 
 # promote_pr_list REPOSITORY: prints, as JSON, the open pull requests into main whose branch is named bot/promote.
 # open_promote_pr: reads such a list on stdin and prints the number of the release pull request of the job promote
-# (ADR section 9), or nothing. gh's --head matches the bare branch name, so a fork's pull request from a branch of that
-# name is listed too; only one from this repository, opened by github-actions[bot], is the bot's. Counting a fork's
+# (ADR-0015 section 9), or nothing. gh's --head matches the bare branch name, so a fork's pull request from a branch of
+# that name is listed too; only one from this repository, opened by github-actions[bot], is the bot's. Counting a fork's
 # would bring the stale values of bot/promote back, and put the bot's release title on a diff that is the fork's.
 # gh lists 30 by default, newest first: 30 fork pull requests from a branch bot/promote opened after the bot's would hide
 # it. So the list goes up to 500 (gh pages through), and a list that comes back full fails rather than guess.
@@ -170,8 +170,8 @@ check_index() {
 }
 
 # attest_max_age: the oldest vuln attestation a release may carry when it enters main, in seconds: 48 hours, which
-# leaves at least 24 hours before Kyverno's 72-hour limit for the merge and the sync (ADR section 7). Only drills lower
-# it, through SVP_ATTEST_MAX_AGE (<number>s, m or h; never set in .env).
+# leaves at least 24 hours before Kyverno's 72-hour limit for the merge and the sync (ADR-0015 section 7). Only drills
+# lower it, through SVP_ATTEST_MAX_AGE (<number>s, m or h; never set in .env).
 attest_max_age() {
   local age=${SVP_ATTEST_MAX_AGE:-48h}
   [[ $age =~ ^[0-9]+[smh]$ ]] || fail "SVP_ATTEST_MAX_AGE must look like 48h, 15m or 90s, not '$age'"

@@ -21,7 +21,7 @@ envelopes=$(cosign_ verify-attestation --type vuln --certificate-oidc-issuer "$s
   --certificate-identity "$sign_subject" "$repo@$digest" 2>/dev/null) ||
   fail "$repo@$digest has no vuln attestation of images.yml on main"
 count=$(printf '%s\n' "$envelopes" | grep -c . || true)
-# More than one and Kyverno would read any one of them (ADR section 7): the release is not trusted.
+# More than one and Kyverno would read any one of them (ADR-0015 section 7): the release is not trusted.
 [ "$count" -eq 1 ] || fail "$repo@$digest carries $count vuln attestations, not exactly one"
 problem=$(printf '%s\n' "$envelopes" | jq -r '.payload | @base64d' | check_vuln_statement "$digest" "$max") ||
   fail "$repo@$digest: vuln attestation $problem"

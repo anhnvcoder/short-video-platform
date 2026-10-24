@@ -56,7 +56,7 @@ allow() {
   echo "redpanda-init: acl $who $op $* ok"
 }
 
-# The table of the ADR; topic and group names are those in the services' code. Producers are idempotent, which
+# The ACL table of ADR-0014 section 5 (each service may touch only the topics and groups its code uses); topic and group names are those in the services' code. Producers are idempotent, which
 # Redpanda allows with WRITE on any topic (no IDEMPOTENT_WRITE on the cluster); READ and WRITE imply DESCRIBE, which
 # metadata and offset lookups need.
 user svp-user-service

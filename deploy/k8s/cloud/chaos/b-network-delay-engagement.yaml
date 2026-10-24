@@ -1,0 +1,47 @@
+# Experiment (b): 200 ms more on every packet engagement-service sends, so the gateway's gRPC calls to it slow down
+# (docs/adr/0020-reliability-stage6.md, section 7). Cloud cluster only, Chaos Mesh installed with targetNamespace svp
+# (deploy/k8s/cloud/values/chaos-mesh.yaml). Apply this one file, never the folder.
+#
+# No `target`: a target needs iptables and ipset, and chaos-daemon forces iptables-legacy while the Amazon Linux 2023
+# nodes use iptables-nft; a delay without a target is plain `tc netem` on the pods' interface. Check first that the node
+# kernel has sch_netem by running this experiment against one test pod.
+#
+# When: under k6 profile cloud at its hold rate, after 5 minutes of steady state.
+#
+# Steady-state hypothesis (the deadlines of docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 4): the
+# feed still answers 200, with `stats` left out once the 100 ms deadline passes; feed 5xx < 0.1% and p99 <= 150 ms; like
+# and view have no 5xx (200 ms is well under their 3 s deadline); CircuitBreakerOpen does not fire (slow is not down).
+# A feed p99 above 150 ms is a finding about the latency budget of ADR-0010, recorded, not a failed experiment.
+#
+# Watch (Prometheus, and the k6 summary per route):
+#   feed 5xx ratio and p99: the queries at the top of a-pod-kill-gateway.yaml
+#   like and view 5xx:
+#     sum by (http_route) (rate(http_server_request_duration_seconds_count{service_name="gateway",http_route=~"/videos/[{]video_id[}]/(like|views)",http_response_status_code=~"5.."}[1m]))
+#   breaker: svp_breaker_state{service_name="gateway"} stays 0; alert CircuitBreakerOpen inactive
+#   experiment: kubectl --context <ctx> -n svp describe networkchaos network-delay-engagement
+#
+# Pass: every line of the hypothesis holds for the 5 minutes, and the latency is gone within a minute of the end.
+#
+# Run:  kubectl --context <ctx> apply -f deploy/k8s/cloud/chaos/b-network-delay-engagement.yaml
+# End:  on its own after duration; early with kubectl --context <ctx> -n svp delete networkchaos network-delay-engagement,
+#       which removes the delay at once. Stop early when the feed's 5xx stays above 5% for more than a minute or a node
+#       goes NotReady.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: network-delay-engagement
+  namespace: svp
+spec:
+  action: delay
+  mode: all
+  direction: to
+  duration: 5m
+  delay:
+    latency: 200ms
+    jitter: 20ms
+    correlation: "0"
+  selector:
+    namespaces:
+      - svp
+    labelSelectors:
+      app.kubernetes.io/name: engagement-service

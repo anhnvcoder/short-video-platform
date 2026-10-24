@@ -110,7 +110,7 @@ cordoned=
 ok "nodes schedulable again, opened in this order:$opened"
 
 deadline=$((SECONDS + 120))
-# The gateway is an Argo Rollouts Rollout (ADR section 13), not a Deployment: its status counts ready pods the same way.
+# The gateway is an Argo Rollouts Rollout (ADR-0014 section 13), not a Deployment: its status counts ready pods the same way.
 until [[ $(kc -n svp get rollout gateway -o jsonpath='{.status.readyReplicas}') == 2 ]]; do
   ((SECONDS < deadline)) || fail "rollout gateway back at 2 ready replicas within 120s"
   sleep 2

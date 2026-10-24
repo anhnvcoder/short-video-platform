@@ -72,7 +72,7 @@ now_utc >"$out/scan-finished"
 trivy_db_updated_at >"$out/db-updated-at"
 jq -r .Metadata.ImageID "$out/trivy.json" >"$out/config-digest"
 
-# SBOM of the same tar (ADR section 7): one SPDX document per platform, attested later on the manifest of that
+# SBOM of the same tar (ADR-0015 section 7): one SPDX document per platform, attested later on the manifest of that
 # platform. syft runs with no network; its image has no writable /tmp for a non-root user, hence the tmpfs.
 syft_image=$(tool_image SYFT_IMAGE)
 rm -f "$out/sbom.spdx.json"

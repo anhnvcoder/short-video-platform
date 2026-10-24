@@ -2,7 +2,8 @@
 
 - Trạng thái: Chấp nhận; §1 chỉnh bởi [0012](0012-elastic-vs-grafana-stage3.md), §11 chỉnh bởi [0013](0013-kafka-metadata-min-age.md);
   §3 (gateway nhận `traceparent`/`tracestate` của request đến khi bật `TRUST_TRACE_CONTEXT`) chỉnh bởi
-  [0019](0019-web-k3d-supply-chain-observability.md)
+  [0019](0019-web-k3d-supply-chain-observability.md); §11 (ngân sách kết nối Postgres lúc khởi động 5 s thành cửa sổ thử lại 30 s)
+  chỉnh bởi [0020](0020-reliability-stage6.md)
 - Ngày: 2026-10-16
 
 ## Bối cảnh
@@ -789,7 +790,7 @@ rollback không dùng context đã hết hạn.
 
 | Lời gọi / thao tác | Hạn mới hoặc hạn giữ | Nơi áp dụng |
 | --- | --- | --- |
-| Mở pool và kiểm kết nối | `ConnectTimeout` 5 s nếu URL chưa đặt; `Ping` với ngân sách startup 5 s | `internal/pgpool.New(ctx, url)` thay `pgxpool.New`/`Ping` lặp lại trong bốn service dùng Postgres |
+| Mở pool và kiểm kết nối | `ConnectTimeout` 5 s nếu URL chưa đặt; `Ping` với ngân sách startup 5 s (**chỉnh bởi [ADR-0020](0020-reliability-stage6.md) §11:** ngân sách 5 s thành cửa sổ thử lại 30 s chỉ cho lỗi mạng, mỗi lần thử vẫn bị `ConnectTimeout` 5 s chặn) | `internal/pgpool.New(ctx, url)` thay `pgxpool.New`/`Ping` lặp lại trong bốn service dùng Postgres |
 | Relay: Begin, advisory lock, đọc dòng | 5 s chung bước đọc/khoá | `internal/outbox/relay.go`, `sendBatch`/`readUnsent` |
 | Relay: produce cả lô | Giữ 10 s, context riêng sau bước đọc | `internal/outbox/relay.go`; không để deadline đọc hết hạn huỷ produce |
 | Relay: đánh dấu `published_at` và commit | 5 s chung bước ghi/commit | `internal/outbox/relay.go`, `sendBatch` |

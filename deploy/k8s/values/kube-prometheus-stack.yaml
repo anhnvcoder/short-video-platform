@@ -323,7 +323,7 @@ grafana:
                 - path: namespace
                   fieldRef: {fieldPath: metadata.namespace}
   # Grafana 13 alone used 286 MiB at rest with the dashboards loaded (kubectl top, working set), above the 250 MiB the
-  # ADR planned for Grafana and both sidecars; the limit leaves room for queries over a wide time range.
+  # ADR-0014 section 2 planned for Grafana and both sidecars; the limit leaves room for queries over a wide time range.
   resources:
     requests: {cpu: 50m, memory: 256Mi}
     limits: {memory: 448Mi}

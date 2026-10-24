@@ -33,6 +33,21 @@ describe("scrubString", () => {
       "at https://svp.localhost:8443/_next/static/chunks/a.js?dpl=dev-1:1:2",
       "at https://svp.localhost:8443/_next/static/chunks/a.js:1:2",
     ],
+    ["an email that is the whole string", "minh@example.com", "[redacted]"],
+    ["two emails side by side", "a@b.io c@d.io,e@f.io", "[redacted] [redacted],[redacted]"],
+    ["an email right after another one's domain", "minh@example.co.1x@evil.com", "[redacted][redacted]"],
+    ["an email with dots, a plus and sub-domains", "first.last+tag@mail.sub.example.co.uk", "[redacted]"],
+    [
+      "an email in a URL's path",
+      "GET https://svp.localhost:8443/u/minh@example.com/videos failed",
+      "GET https://svp.localhost:8443/u/[redacted]/videos failed",
+    ],
+    ["an email in a URL's query", "redirect to /login?email=minh@example.com", "redirect to /login"],
+    ["an email after mailto", "mailto:minh@example.com", "mailto:[redacted]"],
+    ["an email among Unicode text", "Lỗi của minh@example.com: sai", "Lỗi của [redacted]: sai"],
+    ["a JWT that starts inside a run", `Bearer${jwt}`, "Bearer[redacted]"],
+    ["a JWT in the parts after a run without one", `a.b.${jwt}`, "a.b.[redacted]"],
+    ["a JWT right after another one", `${jwt}.${jwt}`, "[redacted].[redacted]"],
   ])("redacts %s", (_case, input, output) => {
     expect(scrubString(input)).toBe(output);
   });
@@ -43,6 +58,7 @@ describe("scrubString", () => {
     ["a UUID", "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d"],
     ["a question", "Is the gateway up? No"],
     ["a chunk path", "/_next/static/chunks/0khh50nt3ldfz.js"],
+    ["a mention and a host without a top-level domain", "@minh wrote to minh@localhost"],
   ])("keeps %s", (_case, input) => {
     expect(scrubString(input)).toBe(input);
   });
@@ -67,6 +83,94 @@ describe("scrubString", () => {
     expect(clean).toBe("user [redacted] [redacted] end");
     // The cut alone reads the whole text.
     expect(longReaders.size).toBe(1);
+  });
+});
+
+// The email pattern used before, whose cost grew with the square of a run's length: the reference the current one must
+// match exactly, so that no address it redacted gets through.
+const quadraticEmailPattern = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+
+describe("scrubString's email pattern", () => {
+  it("redacts exactly what the quadratic pattern redacted", () => {
+    // A fixed seed keeps the cases the same on every run. No "?", "eyJ" or run of 43 token characters, so that only
+    // the email pattern changes these strings.
+    let seed = 1;
+    const random = (n: number) => {
+      seed = (seed * 1103515245 + 12345) % 2 ** 31;
+      return seed % n;
+    };
+    const alphabet = ["a", "b", "c", "o", "m", "1", ".", "-", "_", "+", "%", "@", "@", " ", "/", ",", "é"];
+    for (let i = 0; i < 20000; i++) {
+      const input = Array.from({ length: 1 + random(30) }, () => alphabet[random(alphabet.length)]).join("");
+      expect(scrubString(input), input).toBe(input.replace(quadraticEmailPattern, "[redacted]"));
+    }
+  });
+
+  // The browser's reports are unauthenticated and every run up to 1 KiB reaches this pattern. The same amount of text
+  // in runs of 1 KiB and in runs of 32 characters: a linear pattern takes about as long on both, the quadratic one
+  // about 32 times longer on the long runs. Comparing the two on one machine keeps the check independent of its speed.
+  it.each([
+    ["local-part characters without an @", (n: number) => "a".repeat(n)],
+    ["dots between local-part characters", (n: number) => "a.".repeat(n / 2)],
+    ["an @ before a domain without a top-level domain", (n: number) => `${"a".repeat(n / 2 - 1)}@${"a".repeat(n / 2)}`],
+  ])("takes linear time on %s", (_case, run) => {
+    const text = (runLength: number) => Array.from({ length: 65536 / runLength }, () => run(runLength)).join(" ");
+    const fastest = (input: string) => {
+      let best = Infinity;
+      for (let i = 0; i < 5; i++) {
+        const start = performance.now();
+        scrubString(input);
+        best = Math.min(best, performance.now() - start);
+      }
+      return best;
+    };
+    const short = fastest(text(32));
+    const long = fastest(text(1024));
+    expect(long / short).toBeLessThan(4);
+  });
+});
+
+// The JWT pattern used before, whose cost grew with the square of a run's length: the reference the current one must
+// match exactly, so that no token it redacted gets through.
+const quadraticJwtPattern = /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
+
+describe("scrubString's JWT pattern", () => {
+  it("redacts exactly what the quadratic pattern redacted", () => {
+    // A fixed seed keeps the cases the same on every run. No "?", "@" or run of 43 token characters, so that only the
+    // JWT pattern changes these strings.
+    let seed = 1;
+    const random = (n: number) => {
+      seed = (seed * 1103515245 + 12345) % 2 ** 31;
+      return seed % n;
+    };
+    const alphabet = ["eyJ", "eyJ", "e", "y", "J", "a", "1", "-", "_", ".", ".", " ", "/", "é"];
+    for (let i = 0; i < 20000; i++) {
+      const input = Array.from({ length: 1 + random(12) }, () => alphabet[random(alphabet.length)]).join("");
+      expect(scrubString(input), input).toBe(input.replace(quadraticJwtPattern, "[redacted]"));
+    }
+  });
+
+  // The same amount of text in runs of 1 KiB and in runs of 32 characters, as for the email pattern above.
+  it.each([
+    ["eyJ repeated without a dot", (n: number) => "eyJ".repeat(Math.floor(n / 3))],
+    [
+      "eyJ repeated around a single dot",
+      (n: number) => `${"eyJ".repeat(Math.floor(n / 6))}.${"eyJ".repeat(Math.floor(n / 6))}`,
+    ],
+  ])("takes linear time on %s", (_case, run) => {
+    const text = (runLength: number) => Array.from({ length: 65536 / runLength }, () => run(runLength)).join(" ");
+    const fastest = (input: string) => {
+      let best = Infinity;
+      for (let i = 0; i < 5; i++) {
+        const start = performance.now();
+        scrubString(input);
+        best = Math.min(best, performance.now() - start);
+      }
+      return best;
+    };
+    const short = fastest(text(32));
+    const long = fastest(text(1024));
+    expect(long / short).toBeLessThan(4);
   });
 });
 

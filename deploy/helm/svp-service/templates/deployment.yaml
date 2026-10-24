@@ -93,27 +93,40 @@ spec:
           # is built to degrade route by route behind its circuit breakers. It answers as soon as the process
           # listens, so a gateway started before the gRPC services is ready and stays up. The web client's /healthz
           # likewise answers from the process alone, without the session store or the gateway.
+          # Timeouts: Kubernetes' default of 1 s is too short when the node's CPU is saturated, and a liveness probe
+          # that times out makes the kubelet restart a pod that is still alive, which costs more CPU. Liveness exists
+          # only to catch a hung process, so it waits 5 s (a hang is still killed after ~35 s); readiness stays short
+          # (2 s) so a slow pod leaves the Service quickly.
           readinessProbe:
             httpGet: {path: /healthz, port: http}
             periodSeconds: 5
+            timeoutSeconds: 2
           livenessProbe:
             httpGet: {path: /healthz, port: http}
             periodSeconds: 10
+            timeoutSeconds: 5
             failureThreshold: 3
           {{- else if eq .Values.protocol "grpc" }}
           # The standard gRPC health service, SERVING from the moment the server listens until shutdown starts; it
           # does not depend on the database. The startup probe gives a slow start (a database or broker still coming
           # up) 60 s before liveness may restart the container.
+          # Timeouts: the default of 1 s is too short when the node's CPU is saturated, and a liveness probe that times
+          # out makes the kubelet restart a pod that is still alive, which costs more CPU. Liveness and startup only
+          # catch a hung process (startup's 2 s equals its period); readiness stays short so a slow pod leaves the
+          # Service quickly.
           startupProbe:
             grpc: {port: {{ .Values.port }}}
             periodSeconds: 2
+            timeoutSeconds: 2
             failureThreshold: 30
           readinessProbe:
             grpc: {port: {{ .Values.port }}}
             periodSeconds: 5
+            timeoutSeconds: 2
           livenessProbe:
             grpc: {port: {{ .Values.port }}}
             periodSeconds: 10
+            timeoutSeconds: 5
             failureThreshold: 3
           {{- end }}
           resources:

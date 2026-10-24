@@ -6,8 +6,21 @@ import type { Breadcrumb, Event } from "@sentry/nextjs";
 // defence; the patterns below are a second layer for what an error message may still carry.
 
 // The two patterns the Go services redact (internal/sentryx): an email address and a JWT (every JWT starts with eyJ).
-const emailPattern = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
-const jwtPattern = /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
+// The email pattern reads each run of local-part characters once: the domain is optional, so a run without one is still
+// a match (kept as it is by redactEmail) and the search goes on after the run. Required, a failed domain made the
+// search retry from every later character of the run, a cost that grew with the square of its length. Optional, it
+// matches the same addresses: the domain must follow the whole run, as only a run's last character can precede the @.
+const emailPattern = /[A-Za-z0-9._%+-]+(@[A-Za-z0-9.-]+\.[A-Za-z]{2,})?/g;
+const redactEmail = (run: string, domain: string | undefined) => (domain === undefined ? run : redacted);
+// The JWT pattern reads each run of base64url characters as a whole too: the two dot-separated parts that follow are
+// taken only when the run holds an eyJ with a character after it, and the token starts at the run's first eyJ.
+// Otherwise the match is the run alone, kept as it is by redactJwt, and the search goes on after it, so a token that
+// starts in a later run is still found. Matching from the eyJ itself, every eyJ of a run that is not a token made the
+// search read the rest of the run again, a cost that grew with the square of its length. A later eyJ of the same run
+// meets the same dots as the first one, so both forms redact the same tokens.
+const jwtPattern = /[A-Za-z0-9_-]+((?<=eyJ[A-Za-z0-9_-]+)\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)?/g;
+const redactJwt = (match: string, parts: string | undefined) =>
+  parts === undefined ? match : match.slice(0, match.indexOf("eyJ")) + redacted;
 // 32 random bytes in base64url, exactly 43 characters: the session id and the refresh token.
 const tokenPattern = /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g;
 // The query of a URL: a presigned POST's X-Amz-* signature, `?next=`, ids. From the `?` to the end of the URL, or to
@@ -26,8 +39,8 @@ export function scrubString(value: string): string {
   return value
     .replace(longRunPattern, redacted)
     .replace(queryPattern, "")
-    .replace(jwtPattern, redacted)
-    .replace(emailPattern, redacted)
+    .replace(jwtPattern, redactJwt)
+    .replace(emailPattern, redactEmail)
     .replace(tokenPattern, redacted);
 }
 

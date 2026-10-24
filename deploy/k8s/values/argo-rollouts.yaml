@@ -35,7 +35,7 @@ clusterInstall: false
 
 controller:
   # One controller: the lab runs one canary at a time, and a second replica only waits for the lease (about 150 MiB,
-  # ADR section 2).
+  # ADR-0014 section 2).
   replicas: 1
   # By digest (multi-arch index: linux/amd64 and linux/arm64), the chart's appVersion beside it for the reader: a tag
   # can be pushed again to other content, a digest cannot (docs/adr/0015-cicd-devsecops-stage5.md, section 8). The chart
@@ -66,7 +66,7 @@ controller:
   # .../v0.17.0/gatewayapi-plugin-linux-amd64, sha256 1904ca787d33107c140521899d61fff030ee75d99908bd175fca5a4647759061).
   # The controller downloads it from GitHub when it starts (namespace argo-rollouts denies no egress) and refuses a file
   # whose sha256 differs; the release publishes no checksum file, so the value was computed on the downloaded asset and
-  # matches the asset digest GitHub shows (ADR section 13). It runs as a child process of the controller, with the
+  # matches the asset digest GitHub shows (ADR-0014 section 13). It runs as a child process of the controller, with the
   # controller's ServiceAccount: it gets and updates HTTPRoutes api and web (Role below), nothing else.
   trafficRouterPlugins:
     - name: argoproj-labs/gatewayAPI

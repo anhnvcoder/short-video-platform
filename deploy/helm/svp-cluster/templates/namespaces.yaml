@@ -24,7 +24,8 @@ metadata:
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/audit-version: {{ $.Values.podSecurityVersion }}
     {{- if .routes }}
-    # Gateway svp accepts HTTPRoutes only from namespaces with this label (ADR section 9).
+    # Gateway svp accepts HTTPRoutes only from namespaces with this label, so a namespace cannot publish a route on the
+    # shared entry point unless this chart marks it (ADR-0014 section 9).
     svp-gateway-routes: "true"
     {{- end }}
 {{- end }}

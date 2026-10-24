@@ -589,7 +589,8 @@ services:
     mem_limit: 1536m
     volumes:
       - lgtm-data:/data
-      # Overrides at the paths the image's run scripts read (ADR-0011, section 9).
+      # Config files mounted over the ones the image's run scripts read, so the bundled Loki, Prometheus and Grafana pick
+      # them up without a rebuilt image (ADR-0011, section 9).
       - ../observability/lgtm/loki-config.yaml:/otel-lgtm/loki-config.yaml:ro
       # Prometheus: rule evaluation every 15 s, the SLO and alert rules, alerts to `alertmanager`.
       - ../observability/prometheus/prometheus.yaml:/otel-lgtm/prometheus.yaml:ro

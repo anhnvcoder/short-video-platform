@@ -115,7 +115,8 @@ data:
   {{- (.Files.Glob "files/minio/*").AsConfig | nindent 2 }}
 ---
 # Buckets, the anonymous read policy of media and the users svp-video-service and svp-media-worker, as compose's
-# minio-init container does.
+# minio-init container does; in the cluster only, also bucket pg-backups and its user svp-pg-backup
+# (templates/backup.yaml).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -159,7 +160,8 @@ spec:
               valueFrom:
                 secretKeyRef: {name: minio-root, key: MINIO_ROOT_PASSWORD}
           envFrom:
-            # SVP_VIDEO_S3_SECRET_KEY and SVP_MEDIA_WORKER_S3_SECRET_KEY, the names init.sh reads.
+            # SVP_VIDEO_S3_SECRET_KEY, SVP_MEDIA_WORKER_S3_SECRET_KEY and SVP_PG_BACKUP_S3_SECRET_KEY (the last one
+            # only here, not in compose: bucket pg-backups and its user), the names init.sh reads.
             - secretRef:
                 name: minio-users
           resources:

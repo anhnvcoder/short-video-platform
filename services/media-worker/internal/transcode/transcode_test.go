@@ -156,6 +156,10 @@ func TestRunLandscape1080pGivesThreeRenditions(t *testing.T) {
 	if got := probeStreams(t, filepath.Join(out, Thumbnail)); got != "video" {
 		t.Errorf("thumbnail streams = %q, want one image", got)
 	}
+	// The poster stops at 720 px on its short side, below the 1080p rendition.
+	if got := thumbnailSize(t, out); got != "1280,720" {
+		t.Errorf("thumbnail size = %q, want 1280,720", got)
+	}
 }
 
 func TestRunLadderFollowsShortSide(t *testing.T) {
@@ -195,14 +199,20 @@ func TestRunRotatedPhoneVideo(t *testing.T) {
 	if !strings.Contains(string(master), "RESOLUTION=360x640") {
 		t.Errorf("master does not declare RESOLUTION=360x640:\n%s", master)
 	}
+	if got := thumbnailSize(t, out); got != "360,640" {
+		t.Errorf("thumbnail size = %q, want 360,640", got)
+	}
+}
+
+// thumbnailSize returns "width,height" of the thumbnail in out.
+func thumbnailSize(t *testing.T, out string) string {
+	t.Helper()
 	thumb, err := exec.CommandContext(t.Context(), "ffprobe", "-v", "error", "-show_entries", "stream=width,height", //nolint:gosec // path of a test output
 		"-of", "csv=p=0", filepath.Join(out, Thumbnail)).Output()
 	if err != nil {
 		t.Fatalf("ffprobe thumbnail: %v", err)
 	}
-	if got := strings.TrimSpace(string(thumb)); got != "360,640" {
-		t.Errorf("thumbnail size = %q, want 360,640", got)
-	}
+	return strings.TrimSpace(string(thumb))
 }
 
 func TestRunWebMVP9Opus(t *testing.T) {

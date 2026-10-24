@@ -259,16 +259,28 @@ func hlsArgs(src, outDir string, rungs []rung, audio bool) []string {
 	)
 }
 
+// thumbnailMaxShort caps the thumbnail's short side. The thumbnail is the poster a page shows
+// before the first frame, and on the feed it is the page's largest paint: at 720 px it weighs
+// about half of a 1080 px frame. The poster covers a portrait column, so its height sets how
+// sharp it looks: a portrait poster (720x1280) about fills a phone column at 1.75x, a landscape
+// one (1280x720) is scaled up about 1.8x there and 2.2x on a 2x desktop screen. That lasts until
+// the first frame, which the web player takes from the lowest rendition (360 px): softer still.
+const thumbnailMaxShort = 720
+
 // thumbnailArgs grabs one frame at 1 s, or mid-video for a video under 2 s, at the size of the
-// top rendition.
+// top rendition, its short side capped at thumbnailMaxShort. JPEG quality 5 (of 2–31, lower is
+// better) shows no visible loss on a poster and is about a fifth smaller than 3.
 func thumbnailArgs(src, outDir string, top rung, duration time.Duration) []string {
 	at := min(time.Second, duration/2)
+	if top.short > thumbnailMaxShort {
+		top.short = thumbnailMaxShort
+	}
 	args := inputArgs(src, "-ss", strconv.FormatFloat(at.Seconds(), 'f', 3, 64))
 	return append(args,
 		"-map", "0:v:0", "-frames:v", "1",
 		"-vf", scaleFilter(top),
 		"-map_metadata", "-1", "-map_chapters", "-1",
-		"-q:v", "3", "-update", "1",
+		"-q:v", "5", "-update", "1",
 		filepath.Join(outDir, Thumbnail),
 	)
 }

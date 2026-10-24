@@ -8,7 +8,7 @@ deployment:
     resources:
       limits:
         # About 200 MiB expected at rest; the chart's 1 GiB would hide a leak on a machine with ~9.7 GiB for Docker
-        # (ADR section 2).
+        # (ADR-0014 section 2).
         memory: 256Mi
 
 # By default the controller watches every namespace, with a ClusterRole that reads every Secret of the cluster

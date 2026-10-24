@@ -29,6 +29,7 @@ tests:
               target: engagement-service
             exp_annotations:
               summary: "gateway: circuit breaker to engagement-service has not been closed for 1 minute"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/circuit-breaker-open.md"
       - eval_time: 120s
         alertname: CircuitBreakerOpen
         exp_alerts:
@@ -39,6 +40,7 @@ tests:
               target: engagement-service
             exp_annotations:
               summary: "gateway: circuit breaker to engagement-service has not been closed for 1 minute"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/circuit-breaker-open.md"
       - eval_time: 135s
         alertname: CircuitBreakerOpen
         exp_alerts: []
@@ -158,6 +160,7 @@ tests:
               target: engagement-service
             exp_annotations:
               summary: "gateway: circuit breaker to engagement-service has not been closed for 1 minute"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/circuit-breaker-open.md"
       - eval_time: 120s
         alertname: CircuitBreakerOpen
         exp_alerts:
@@ -168,6 +171,7 @@ tests:
               target: engagement-service
             exp_annotations:
               summary: "gateway: circuit breaker to engagement-service has not been closed for 1 minute"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/circuit-breaker-open.md"
       - eval_time: 150s
         alertname: CircuitBreakerOpen
         exp_alerts: []
@@ -212,6 +216,7 @@ tests:
               loop: outbox-relay
             exp_annotations:
               summary: "video-service: background loop outbox-relay has not succeeded for 2 minutes"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
       - eval_time: 255s
         alertname: BackgroundLoopStalled
         exp_alerts:
@@ -222,6 +227,7 @@ tests:
               loop: outbox-relay
             exp_annotations:
               summary: "video-service: background loop outbox-relay has not succeeded for 2 minutes"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
       - eval_time: 270s
         alertname: BackgroundLoopStalled
         exp_alerts: []
@@ -248,6 +254,7 @@ tests:
               loop: outbox-relay
             exp_annotations:
               summary: "video-service: background loop outbox-relay has not succeeded for 2 minutes"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
 
   # outbox-relay: first success before the limit does not fire.
   - interval: 15s
@@ -347,6 +354,7 @@ tests:
               loop: outbox-cleanup
             exp_annotations:
               summary: "user-service: background loop outbox-cleanup has not succeeded for 32 minutes"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
       - eval_time: 2055s
         alertname: BackgroundLoopStalled
         exp_alerts:
@@ -357,6 +365,7 @@ tests:
               loop: outbox-cleanup
             exp_annotations:
               summary: "user-service: background loop outbox-cleanup has not succeeded for 32 minutes"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
       - eval_time: 2070s
         alertname: BackgroundLoopStalled
         exp_alerts: []
@@ -383,6 +392,7 @@ tests:
               loop: outbox-cleanup
             exp_annotations:
               summary: "user-service: background loop outbox-cleanup has not succeeded for 32 minutes"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
 
   # outbox-cleanup: first success before the limit does not fire.
   - interval: 15s
@@ -482,6 +492,7 @@ tests:
               loop: upload-sweep
             exp_annotations:
               summary: "video-service: background loop upload-sweep has not succeeded for 18 minutes"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
       - eval_time: 1215s
         alertname: BackgroundLoopStalled
         exp_alerts:
@@ -492,6 +503,7 @@ tests:
               loop: upload-sweep
             exp_annotations:
               summary: "video-service: background loop upload-sweep has not succeeded for 18 minutes"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
       - eval_time: 1230s
         alertname: BackgroundLoopStalled
         exp_alerts: []
@@ -518,6 +530,7 @@ tests:
               loop: upload-sweep
             exp_annotations:
               summary: "video-service: background loop upload-sweep has not succeeded for 18 minutes"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
 
   # upload-sweep: first success before the limit does not fire.
   - interval: 15s
@@ -617,6 +630,7 @@ tests:
               loop: timeline-prune
             exp_annotations:
               summary: "feed-service: background loop timeline-prune has not succeeded for 3 hours 10 minutes"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
       - eval_time: 11535s
         alertname: BackgroundLoopStalled
         exp_alerts:
@@ -627,6 +641,7 @@ tests:
               loop: timeline-prune
             exp_annotations:
               summary: "feed-service: background loop timeline-prune has not succeeded for 3 hours 10 minutes"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
       - eval_time: 11550s
         alertname: BackgroundLoopStalled
         exp_alerts: []
@@ -653,6 +668,7 @@ tests:
               loop: timeline-prune
             exp_annotations:
               summary: "feed-service: background loop timeline-prune has not succeeded for 3 hours 10 minutes"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
 
   # timeline-prune: first success before the limit does not fire.
   - interval: 15s
@@ -731,6 +747,7 @@ tests:
               severity: page
             exp_annotations:
               summary: "gateway: rate limiting runs on the in-memory fallback, Redis is unreachable"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
       - eval_time: 75s
         alertname: RateLimitFallbackActive
         exp_alerts:
@@ -738,6 +755,7 @@ tests:
               severity: page
             exp_annotations:
               summary: "gateway: rate limiting runs on the in-memory fallback, Redis is unreachable"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
       - eval_time: 90s
         alertname: RateLimitFallbackActive
         exp_alerts: []
@@ -755,6 +773,7 @@ tests:
               severity: page
             exp_annotations:
               summary: "gateway: rate limiting runs on the in-memory fallback, Redis is unreachable"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
       - eval_time: 90s
         alertname: RateLimitFallbackActive
         exp_alerts:
@@ -762,6 +781,7 @@ tests:
               severity: page
             exp_annotations:
               summary: "gateway: rate limiting runs on the in-memory fallback, Redis is unreachable"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
       - eval_time: 105s
         alertname: RateLimitFallbackActive
         exp_alerts: []
@@ -804,6 +824,7 @@ tests:
               severity: page
             exp_annotations:
               summary: "gateway: rate limiting runs on the in-memory fallback, Redis is unreachable"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
       - eval_time: 135s
         alertname: RateLimitFallbackActive
         exp_alerts:
@@ -811,6 +832,7 @@ tests:
               severity: page
             exp_annotations:
               summary: "gateway: rate limiting runs on the in-memory fallback, Redis is unreachable"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
       - eval_time: 195s
         alertname: RateLimitFallbackActive
         exp_alerts: []
@@ -834,6 +856,7 @@ tests:
               group: feed-service
             exp_annotations:
               summary: "feed-service: consumer group feed-service sent records from video.lifecycle.v1 to its dead-letter topic"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/kafka-dlq-records.md"
       - eval_time: 615s
         alertname: KafkaDLQRecords
         exp_alerts:
@@ -844,6 +867,7 @@ tests:
               group: feed-service
             exp_annotations:
               summary: "feed-service: consumer group feed-service sent records from video.lifecycle.v1 to its dead-letter topic"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/kafka-dlq-records.md"
       - eval_time: 630s
         alertname: KafkaDLQRecords
         exp_alerts: []
@@ -869,6 +893,7 @@ tests:
               group: feed-service
             exp_annotations:
               summary: "feed-service: consumer group feed-service sent records from video.lifecycle.v1 to its dead-letter topic"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/kafka-dlq-records.md"
       - eval_time: 645s
         alertname: KafkaDLQRecords
         exp_alerts:
@@ -879,6 +904,7 @@ tests:
               group: feed-service
             exp_annotations:
               summary: "feed-service: consumer group feed-service sent records from video.lifecycle.v1 to its dead-letter topic"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/kafka-dlq-records.md"
       - eval_time: 660s
         alertname: KafkaDLQRecords
         exp_alerts: []
@@ -902,6 +928,7 @@ tests:
               redpanda_group: feed-service
             exp_annotations:
               summary: "Kafka consumer group feed-service has had lag for 2 minutes"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/kafka-consumer-lag-high.md"
       - eval_time: 210s
         alertname: KafkaConsumerLagHigh
         exp_alerts: []
@@ -1002,3 +1029,242 @@ tests:
         exp_samples:
           - labels: '{sloth_id="svp-feed-latency",sloth_service="svp",sloth_slo="feed-latency",sloth_window="30d"}'
             value: -39
+
+  # SLO web-availability: half of the web responses are 503 for 2 hours; both the page pair (5 m and 1 h) and the ticket pair
+  # (2 h and 1 d) are over their limits, so the alert fires once per severity. The 4xx and the 200s are not errors.
+  - interval: 15s
+    input_series:
+      - series: 'http_server_request_duration_seconds_count{service_name="web",http_request_method="GET",http_response_status_code="200"}'
+        values: '0+10x480'
+      - series: 'http_server_request_duration_seconds_count{service_name="web",http_request_method="GET",http_response_status_code="404"}'
+        values: '0+5x480'
+      - series: 'http_server_request_duration_seconds_count{service_name="web",http_request_method="POST",http_response_status_code="503"}'
+        values: '0+15x480'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: WebAvailabilityBudgetBurn
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              sloth_severity: page
+              sloth_id: svp-web-availability
+              sloth_service: svp
+              sloth_slo: web-availability
+            exp_annotations:
+              summary: "web: server responses (pages, Server Actions, /rum) burn the 99.9% availability budget"
+              title: "(page) svp web-availability SLO error budget burn rate is too fast."
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/web-availability-budget-burn.md"
+          - exp_labels:
+              severity: ticket
+              sloth_severity: ticket
+              sloth_id: svp-web-availability
+              sloth_service: svp
+              sloth_slo: web-availability
+            exp_annotations:
+              summary: "web: server responses (pages, Server Actions, /rum) burn the 99.9% availability budget"
+              title: "(ticket) svp web-availability SLO error budget burn rate is too fast."
+
+  # SLO web-availability: no 5xx series at all (`or vector(0)` makes the error ratio 0) and a lone 5xx per 2000 responses
+  # (0.05%, half of the 0.1% budget) fire nothing; a quiet web server (no responses) has no ratio, so nothing fires either.
+  - interval: 15s
+    input_series:
+      - series: 'http_server_request_duration_seconds_count{service_name="web",http_request_method="GET",http_response_status_code="200"}'
+        values: '0+100x480'
+      - series: 'http_server_request_duration_seconds_count{service_name="web",http_request_method="GET",http_response_status_code="500"}'
+        values: '0+0.05x480'
+      - series: 'http_server_request_duration_seconds_count{service_name="gateway",http_request_method="GET",http_response_status_code="503"}'
+        values: '0+10x480'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: WebAvailabilityBudgetBurn
+        exp_alerts: []
+    promql_expr_test:
+      - expr: 'round(slo:sli_error:ratio_rate5m{sloth_slo="web-availability"}, 0.0001)'
+        eval_time: 2h
+        exp_samples:
+          - labels: '{sloth_id="svp-web-availability",sloth_service="svp",sloth_slo="web-availability",sloth_window="5m"}'
+            value: 0.0005
+
+  - interval: 15s
+    input_series:
+      - series: 'http_server_request_duration_seconds_count{service_name="gateway",http_request_method="GET",http_response_status_code="503"}'
+        values: '0+10x480'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: WebAvailabilityBudgetBurn
+        exp_alerts: []
+    promql_expr_test:
+      - expr: 'slo:sli_error:ratio_rate5m{sloth_slo="web-availability"}'
+        eval_time: 2h
+        exp_samples: []
+
+  # SLO web-inp: 90% of the loads over 200 ms for 2 hours fires the ticket alert (limit 3 x 25% on 2 h and 1 d). It is the only
+  # severity: the page alert is disabled because its limits (14.4 x and 6 x 25%) are above 100%.
+  - interval: 15s
+    input_series:
+      - series: 'svp_web_vital_inp_seconds_count{service_name="web",route="/"}'
+        values: '0+6x480'
+      - series: 'svp_web_vital_inp_seconds_bucket{service_name="web",route="/",le="0.2"}'
+        values: '0+0.6x480'
+      - series: 'svp_web_vital_inp_seconds_bucket{service_name="web",route="/",le="+Inf"}'
+        values: '0+6x480'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: WebINPBudgetBurn
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              sloth_severity: ticket
+              sloth_id: svp-web-inp
+              sloth_service: svp
+              sloth_slo: web-inp
+            exp_annotations:
+              summary: "web: more than 25% of page loads have an INP above 200 ms (budget burn)"
+              title: "(ticket) svp web-inp SLO error budget burn rate is too fast."
+    promql_expr_test:
+      - expr: 'round(slo:sli_error:ratio_rate5m{sloth_slo="web-inp"}, 0.0001)'
+        eval_time: 2h
+        exp_samples:
+          - labels: '{sloth_id="svp-web-inp",sloth_service="svp",sloth_slo="web-inp",sloth_window="5m"}'
+            value: 0.9
+
+  # SLO web-inp: 20% of the loads over 200 ms (under the 25% budget) fires nothing, nor does a window with no RUM beacon (no
+  # ratio rather than a good one), nor a beacon of another service.
+  - interval: 15s
+    input_series:
+      - series: 'svp_web_vital_inp_seconds_count{service_name="web",route="/"}'
+        values: '0+10x480'
+      - series: 'svp_web_vital_inp_seconds_bucket{service_name="web",route="/",le="0.2"}'
+        values: '0+8x480'
+      - series: 'svp_web_vital_inp_seconds_count{service_name="other",route="/"}'
+        values: '0+10x480'
+      - series: 'svp_web_vital_inp_seconds_bucket{service_name="other",route="/",le="0.2"}'
+        values: '0+0x480'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: WebINPBudgetBurn
+        exp_alerts: []
+    promql_expr_test:
+      - expr: 'round(slo:sli_error:ratio_rate5m{sloth_slo="web-inp"}, 0.0001)'
+        eval_time: 2h
+        exp_samples:
+          - labels: '{sloth_id="svp-web-inp",sloth_service="svp",sloth_slo="web-inp",sloth_window="5m"}'
+            value: 0.2
+
+  - interval: 15s
+    input_series:
+      - series: 'http_server_request_duration_seconds_count{service_name="web",http_request_method="GET",http_response_status_code="200"}'
+        values: '0+10x480'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: WebINPBudgetBurn
+        exp_alerts: []
+    promql_expr_test:
+      - expr: 'slo:sli_error:ratio_rate5m{sloth_slo="web-inp"}'
+        eval_time: 2h
+        exp_samples: []
+
+  # Postgres WAL archiving: the archiver's last failure later than its last success for 5 minutes pages, and a success
+  # after it resolves the alert. Scraped series (PodMonitor svp-pg), so the times are those of pg_stat_archiver.
+  - interval: 15s
+    input_series:
+      - series: 'cnpg_pg_stat_archiver_last_archived_time{namespace="svp-data",pod="svp-pg-1"}'
+        values: '100x39 700x20'
+      - series: 'cnpg_pg_stat_archiver_last_failed_time{namespace="svp-data",pod="svp-pg-1"}'
+        values: '-1x9 200x50'
+    alert_rule_test:
+      - eval_time: 135s
+        alertname: PostgresWALArchivingFailing
+        exp_alerts: []
+      - eval_time: 435s
+        alertname: PostgresWALArchivingFailing
+        exp_alerts: []
+      - eval_time: 465s
+        alertname: PostgresWALArchivingFailing
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              namespace: svp-data
+              pod: svp-pg-1
+            exp_annotations:
+              summary: "Postgres svp-pg-1: archiving WAL to the backup object store has been failing for 5 minutes"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/postgres-wal-archiving-failing.md"
+      - eval_time: 615s
+        alertname: PostgresWALArchivingFailing
+        exp_alerts: []
+
+  # Never failed (-1), with or without a success yet, and a failure older than the last success: nothing fires.
+  - interval: 15s
+    input_series:
+      - series: 'cnpg_pg_stat_archiver_last_archived_time{namespace="svp-data",pod="svp-pg-1"}'
+        values: '-1x9 150x50'
+      - series: 'cnpg_pg_stat_archiver_last_failed_time{namespace="svp-data",pod="svp-pg-1"}'
+        values: '-1x29 120x30'
+    alert_rule_test:
+      - eval_time: 120s
+        alertname: PostgresWALArchivingFailing
+        exp_alerts: []
+      - eval_time: 870s
+        alertname: PostgresWALArchivingFailing
+        exp_alerts: []
+
+  # The newest base backup (taken at 1000 s) older than 26 hours fires the ticket; a new backup at 28 h resolves it.
+  - interval: 10m
+    input_series:
+      - series: 'barman_cloud_cloudnative_pg_io_last_available_backup_timestamp{namespace="svp-data",pod="svp-pg-1"}'
+        values: '1000x167 100800x30'
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: PostgresBackupTooOld
+        exp_alerts: []
+      - eval_time: 27h
+        alertname: PostgresBackupTooOld
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              backup: stale
+              namespace: svp-data
+              pod: svp-pg-1
+            exp_annotations:
+              summary: "Postgres svp-pg-1: the newest base backup is more than 26 hours old"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/postgres-backup-too-old.md"
+      - eval_time: 29h
+        alertname: PostgresBackupTooOld
+        exp_alerts: []
+
+  # A new cluster whose first backup has not completed (the plugin reports 0) does not fire within the hour, nor once its
+  # first backup lands at 10 minutes; 0 for over an hour fires the ticket.
+  - interval: 1m
+    input_series:
+      - series: 'barman_cloud_cloudnative_pg_io_last_available_backup_timestamp{namespace="svp-data",pod="svp-pg-1"}'
+        values: '0x90'
+      - series: 'barman_cloud_cloudnative_pg_io_last_available_backup_timestamp{namespace="svp-data",pod="svp-pg-2"}'
+        values: '0x9 600x80'
+    alert_rule_test:
+      - eval_time: 59m
+        alertname: PostgresBackupTooOld
+        exp_alerts: []
+      - eval_time: 61m
+        alertname: PostgresBackupTooOld
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              backup: none
+              namespace: svp-data
+              pod: svp-pg-1
+            exp_annotations:
+              summary: "Postgres svp-pg-1: no base backup for an hour"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/postgres-backup-too-old.md"
+
+  # No series at all (compose, or the cluster before PodMonitor svp-pg is scraped): neither backup alert fires.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="svp-obs/svp-pg"}'
+        values: '1x180'
+    alert_rule_test:
+      - eval_time: 3h
+        alertname: PostgresBackupTooOld
+        exp_alerts: []
+      - eval_time: 3h
+        alertname: PostgresWALArchivingFailing
+        exp_alerts: []

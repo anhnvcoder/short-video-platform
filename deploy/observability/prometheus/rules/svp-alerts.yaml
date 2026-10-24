@@ -1,6 +1,8 @@
 # Hand-written alerts of docs/adr/0011-observability-stage3.md, section 8; the SLO burn-rate alerts
 # are in slo-generated.yaml. Evaluated every 15 s. Tested by svp-alerts.test.yaml
-# (`make slo-check`). Every alert pages; annotations name the service or target, never a user value.
+# (`make slo-check`). Every alert pages but PostgresBackupTooOld (ticket); annotations name the
+# service, target or pod, never a user value, and runbook_url points to the runbook of the alert
+# name in docs/runbooks/ on main.
 #
 # Gauges pushed over OTLP get no staleness marker when a process stops, so a stopped instance's last
 # sample stays visible for the 5 m lookback, and every restart brings a new service_instance_id.
@@ -27,6 +29,7 @@ groups:
           severity: page
         annotations:
           summary: "Kafka consumer group {{ $labels.redpanda_group }} has had lag for 2 minutes"
+          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/kafka-consumer-lag-high.md"
       - alert: KafkaConsumerLagHigh
         expr: >-
           max by (redpanda_group) (redpanda_kafka_consumer_group_lag_max{redpanda_group="media-worker"}) > 0
@@ -37,6 +40,7 @@ groups:
           redpanda_group: media-worker
         annotations:
           summary: "Kafka consumer group {{ $labels.redpanda_group }} has had lag for 20 minutes"
+          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/kafka-consumer-lag-high.md"
 
       # A gateway counter on the in-memory fallback store means Redis is unreachable (ADR-0010,
       # section 2). The `unless ... offset` branch catches a series whose first sample is already
@@ -51,6 +55,7 @@ groups:
           severity: page
         annotations:
           summary: "gateway: rate limiting runs on the in-memory fallback, Redis is unreachable"
+          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
 
       # Same shape: a record went to a dead-letter topic in the last 10 minutes.
       - alert: KafkaDLQRecords
@@ -63,6 +68,7 @@ groups:
           severity: page
         annotations:
           summary: "{{ $labels.service_name }}: consumer group {{ $labels.group }} sent records from {{ $labels.topic }} to its dead-letter topic"
+          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/kafka-dlq-records.md"
 
       # Breaker of one gateway instance not closed (1 half-open, 2 open) in every sample of the last
       # minute: 5 samples 15 s apart, all above 0. 2 <-> 1 does not reset it, one 0 does.
@@ -75,11 +81,13 @@ groups:
           severity: page
         annotations:
           summary: "gateway: circuit breaker to {{ $labels.target }} has not been closed for 1 minute"
+          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/circuit-breaker-open.md"
 
       # Background loops: svp_loop_last_success_seconds is the Unix time of the last successful step,
       # 0 before the first one. One rule per loop, two branches that exclude each other:
       # - the loop has succeeded: a fresh sample reports a last success older than threshold + for
-      #   of the ADR table, measured at that sample's own time;
+      #   listed below (ADR-0011 section 8 derives each from the loop's interval and slowest step), measured at that
+      #   sample's own time;
       # - it never has: every sample over that same span is 0, so the window (span + 20 s) holds at
       #   least span / 15 + 1 samples.
       #   outbox-relay    60 s + 1 m    = 120 s
@@ -102,6 +110,7 @@ groups:
           loop: outbox-relay
         annotations:
           summary: "{{ $labels.service_name }}: background loop {{ $labels.loop }} has not succeeded for 2 minutes"
+          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
 
       - alert: BackgroundLoopStalled
         expr: >-
@@ -118,6 +127,7 @@ groups:
           loop: outbox-cleanup
         annotations:
           summary: "{{ $labels.service_name }}: background loop {{ $labels.loop }} has not succeeded for 32 minutes"
+          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
 
       - alert: BackgroundLoopStalled
         expr: >-
@@ -134,6 +144,7 @@ groups:
           loop: upload-sweep
         annotations:
           summary: "{{ $labels.service_name }}: background loop {{ $labels.loop }} has not succeeded for 18 minutes"
+          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
 
       - alert: BackgroundLoopStalled
         expr: >-
@@ -150,3 +161,53 @@ groups:
           loop: timeline-prune
         annotations:
           summary: "{{ $labels.service_name }}: background loop {{ $labels.loop }} has not succeeded for 3 hours 10 minutes"
+          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
+
+  # Backups of Postgres svp-pg in the k3d cluster (docs/adr/0020-reliability-stage6.md, section 5):
+  # Prometheus scrapes the exporter of its instance (PodMonitor svp-pg), so unlike the OTLP gauges
+  # above these series get staleness markers and `for` works as usual. Compose has no such series
+  # (its Postgres is the host's, which is not backed up), so neither alert ever fires there.
+  - name: postgres-backup
+    rules:
+      # The latest attempt to archive a WAL segment failed: its time is later than that of the last
+      # success. Times, not "how long since the last archive": an idle lab writes no WAL for hours.
+      # Both are -1 before their first event. Pages: WAL that cannot be archived piles up in the
+      # volume until it is full and Postgres stops, and every write since the last success has no
+      # copy outside the cluster's disk.
+      - alert: PostgresWALArchivingFailing
+        expr: >-
+          cnpg_pg_stat_archiver_last_failed_time > cnpg_pg_stat_archiver_last_archived_time
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Postgres {{ $labels.pod }}: archiving WAL to the backup object store has been failing for 5 minutes"
+          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/postgres-wal-archiving-failing.md"
+
+      # The newest base backup the Barman Cloud plugin reports is more than 26 hours old: the daily
+      # one of ScheduledBackup svp-pg-daily (03:00 UTC) plus 2 hours. A ticket: WAL archiving still
+      # gives recovery points, only recovering takes longer the older the base backup is.
+      - alert: PostgresBackupTooOld
+        expr: >-
+          time() - barman_cloud_cloudnative_pg_io_last_available_backup_timestamp > 26 * 3600
+          and barman_cloud_cloudnative_pg_io_last_available_backup_timestamp > 0
+        labels:
+          severity: ticket
+          backup: stale
+        annotations:
+          summary: "Postgres {{ $labels.pod }}: the newest base backup is more than 26 hours old"
+          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/postgres-backup-too-old.md"
+      # No base backup at all for an hour. 0 is the plugin's value before the first one; the
+      # ScheduledBackup takes one as soon as it is made (immediate), which completes in minutes, so a
+      # new cluster waiting for its first backup does not fire, nor does a cluster with no series. The
+      # static label tells the two rules apart (promtool lint).
+      - alert: PostgresBackupTooOld
+        expr: >-
+          barman_cloud_cloudnative_pg_io_last_available_backup_timestamp == 0
+        for: 1h
+        labels:
+          severity: ticket
+          backup: none
+        annotations:
+          summary: "Postgres {{ $labels.pod }}: no base backup for an hour"
+          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/postgres-backup-too-old.md"

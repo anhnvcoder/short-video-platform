@@ -38,7 +38,7 @@ tempo:
   resources:
     requests: {cpu: 50m, memory: 128Mi}
     limits: {memory: 768Mi}
-  # Pod Security "restricted" (ADR section 3): the chart sets no container securityContext.
+  # Pod Security "restricted" (ADR-0014 section 3; the namespace rejects pods that do not meet it): the chart sets no container securityContext.
   securityContext:
     allowPrivilegeEscalation: false
     capabilities:

@@ -7,7 +7,10 @@
 > [ADR-0018](adr/0018-web-profiles-public-video-upload.md)) đã kiểm trên máy ngày 2026-10-22; phần C (web trên k3d ở
 > `https://svp.localhost:8443`, image `web` thứ bảy của pipeline, lỗi, trace và RUM của web,
 > [ADR-0019](adr/0019-web-k3d-supply-chain-observability.md), [§5.3](#53-quan-sát-web-giai-đoạn-5b-phần-c)) đã kiểm trên máy
-> ngày 2026-10-24, phần cần cluster GitOps và RAM lớn hơn dời giai đoạn 7. ADR 0001–0019, contract ở [`proto/`](../proto/)
+> ngày 2026-10-24, phần cần cluster GitOps và RAM lớn hơn dời giai đoạn 6b. Giai đoạn 6 (reliability,
+> [ADR-0020](adr/0020-reliability-stage6.md), [§5.4](#54-reliability-giai-đoạn-6)): phần local (k6 theo SLO, SLO web, backup và
+> diễn tập phục hồi Postgres trên k3d, runbook, game day, RFC) đã kiểm trên máy ngày 2026-10-24; phần đo thật dời giai đoạn 6b
+> và 7. ADR 0001–0020, contract ở [`proto/`](../proto/)
 > ([§8](#8-contract)), threat model ở [`threat-model.md`](threat-model.md). `make up` chạy luồng đồng bộ (đăng ký, đăng
 > nhập, tạo và đọc video, follow), luồng upload bất đồng bộ (presigned POST lên MinIO, outbox → Redpanda, media-worker
 > transcode ra HLS, video `READY` hoặc `FAILED`, job dọn upload bỏ dở), luồng feed (follow qua outbox, feed-service
@@ -51,14 +54,14 @@ thì viết ADR.
 
 | Mảng | Yêu cầu | Đo ở đâu |
 | --- | --- | --- |
-| Độ trễ | Feed p99 < 150 ms tại 1.000 req/s | SLO `feed-latency`: 99% request GET feed ở gateway nằm trong bucket 150 ms của `http_server_request_duration_seconds`, cảnh báo burn rate (giai đoạn 3); tải 1.000 req/s bằng k6 (giai đoạn 6) |
-| Sẵn sàng | Khởi tạo upload thành công 99,9%; đọc feed 99,9% | SLO `upload-init-availability`, `feed-availability`: tỉ lệ 5xx trên tổng request ở gateway, cảnh báo burn rate qua Alertmanager (giai đoạn 3) |
+| Độ trễ | Feed p99 < 150 ms tại 1.000 req/s | SLO `feed-latency`: 99% request GET feed ở gateway nằm trong bucket 150 ms của `http_server_request_duration_seconds`, cảnh báo burn rate (giai đoạn 3); kịch bản k6 theo SLO (giai đoạn 6; lượt local ~24 req/s chỉ kiểm kịch bản), 1.000 req/s bằng Job k6 trong cluster cloud (giai đoạn 7) |
+| Sẵn sàng | Khởi tạo upload thành công 99,9%; đọc feed 99,9%; trang web 99,9% | SLO `upload-init-availability`, `feed-availability`: tỉ lệ 5xx trên tổng request ở gateway, cảnh báo burn rate qua Alertmanager (giai đoạn 3); SLO `web-availability`: tỉ lệ 5xx trên mọi response của server web (giai đoạn 6) |
 | Xử lý video | Video 1 phút sẵn sàng phát p95 < 2 phút kể từ lúc upload xong | Từ `CompleteUpload` tới `READY`: `make measure-ready`; SLO `video-ready-latency`, 95% mẫu `svp_video_ready_duration_seconds` của video-service trong bucket 120 s, `FAILED` luôn tính xấu (giai đoạn 3) |
 | Độ tươi | Video `READY` xuất hiện trong feed follower p95 < 10 s | Từ `video.ready` tới dòng timeline cuối cùng: `make measure-freshness`; histogram `svp_feed_freshness_seconds` trên dashboard, chưa thành SLO vì local quá ít event |
-| Bền dữ liệu | Video đã `CompleteUpload` thành công thì không mất; event không mất | Diễn tập kill worker (giai đoạn 2) |
+| Bền dữ liệu | Video đã `CompleteUpload` thành công thì không mất; event không mất; database phục hồi được từ backup | Diễn tập kill worker (giai đoạn 2); backup Postgres và `make drill-k8s-backup` đo RTO, RPO trên k3d (giai đoạn 6, [§5.4](#54-reliability-giai-đoạn-6)) |
 | Đúng đắn | Event gửi trùng không làm sai bộ đếm, không transcode hai lần ra kết quả khác | Test gửi trùng (giai đoạn 2) |
 | Nhất quán | Số lượt xem trễ tối đa ~1 phút; like của chính mình thấy ngay | — |
-| Vận hành | Mọi request có `trace_id`; deploy không downtime; cảnh báo theo SLO | Giai đoạn 3: trace OpenTelemetry mở ở gateway, log có `trace_id`, cảnh báo burn rate của 4 SLO cùng cảnh báo lag, vòng nền, DLQ, breaker, rate limit dự phòng; `make drill-alert-to-sentry`. Deploy không downtime ở giai đoạn 4 |
+| Vận hành | Mọi request có `trace_id`; deploy không downtime; cảnh báo theo SLO | Giai đoạn 3: trace OpenTelemetry mở ở gateway, log có `trace_id`, cảnh báo burn rate của 4 SLO cùng cảnh báo lag, vòng nền, DLQ, breaker, rate limit dự phòng; `make drill-alert-to-sentry`. Deploy không downtime ở giai đoạn 4. Giai đoạn 6: 6 SLO (thêm `web-availability`, `web-inp`), runbook cho mọi cảnh báo page, game day |
 | Chi phí | Local trước; tài nguyên cloud dựng và xoá trong cùng buổi | Budget alert |
 
 Hai dòng "Độ tươi" và "Nhất quán" không có trong plan gốc; người học đã duyệt ngày 2026-10-11. Hệ thống dùng event nên
@@ -482,6 +485,48 @@ flowchart LR
   8 route template cố định và ghi histogram `svp.web.vital.*` (Prometheus `svp_web_vital_*`), nhãn duy nhất `route`;
   dashboard Grafana `svp-web` vẽ p75 theo route (WEB-21). Chưa có SLO trên RUM.
 - **Log:** web chỉ ghi stdout, không gửi log OTLP; Loki không có dòng của web.
+
+### 5.4 Reliability (giai đoạn 6)
+
+Thiết kế ở [ADR-0020](adr/0020-reliability-stage6.md); lệnh ở [`CLAUDE.md`](../CLAUDE.md) mục Kiểm tra; số đo ở mục Kết quả của
+ADR. Giai đoạn chia hai: phần chạy được trên máy 16 GB làm ở đây, phần đo thật viết sẵn lệnh, manifest và tiêu chí đạt, chạy ở
+giai đoạn 6b (runner CI 16 GB hay VM thuê theo giờ, không dịch vụ AWS/GCP) và giai đoạn 7 (dịch vụ cloud).
+
+- **SLO:** sáu SLO bằng Sloth (`deploy/observability/slo/svp-slos.yaml`): bốn của giai đoạn 3 (`feed-availability`,
+  `feed-latency`, `upload-init-availability`, `video-ready-latency`) và hai của web. `web-availability`: 99,9% response của
+  server web không 5xx, trên histogram `http_server_request_duration_seconds{service_name="web"}` (mọi response, kể cả probe
+  và asset, vì histogram không có nhãn route nên SLI lạc quan hơn tỷ lệ lỗi của trang), cảnh báo page và ticket. `web-inp`: 75%
+  lượt có INP ≤ 200 ms từ RUM, chỉ ticket (ngân sách lỗi 25% làm cửa sổ page không bao giờ chạm). Chưa có SLO độ trễ SSR tới khi
+  histogram có route.
+- **Tải:** kịch bản k6 ở `deploy/k6/` chạy bằng image ghim (`K6_IMAGE`), mỗi request mang tag `route` là template, trùng nhãn
+  route của gateway và RUM nên số phía k6 và phía server ghép được. Pool user và tốc độ tính từ bảng rate limit để kịch bản
+  không tự chặn mình (429 đếm riêng là lỗi cỡ kịch bản). Profile `local` (~24 req/s, compose) chỉ kiểm kịch bản đúng cỡ và cho
+  một mốc độ trễ ở tải rất nhẹ, **không kết luận năng lực**; `ci` chạy trong job `stack` của CI; `cloud` là Job Indexed 20 pod
+  trong cluster, 1 000 req/s feed (giai đoạn 7; bản thu nhỏ ở giai đoạn 6b).
+- **Backup và phục hồi Postgres** (k3d): Cluster CloudNativePG `svp-pg` lưu WAL liên tục và backup cơ sở hằng ngày qua plugin
+  Barman Cloud (sidecar trong pod Postgres, controller ở `cnpg-system`) vào bucket `pg-backups` của MinIO trong cluster, bằng
+  user MinIO riêng chỉ có quyền bucket đó. Mỗi lần phục hồi ghi vào một thế hệ lưu trữ mới (`serverName`), vì Job phục hồi
+  từ chối lưu WAL vào nơi đã có WAL. PodMonitor đưa `cnpg_*`, `barman_cloud_*` vào Prometheus; cảnh báo
+  `PostgresWALArchivingFailing` (page) và `PostgresBackupTooOld` (ticket). Diễn tập `make drill-k8s-backup` xoá Cluster và ổ
+  rồi dựng lại cùng tên từ backup: RTO đo được 151 s (`MODE=latest`) và 85 s (`MODE=pitr`), một lần mỗi chế độ; lượt
+  `latest` không dòng nào ghi trong phút cuối trở lại (RPO ≥ 60 s), vì Postgres chỉ lưu segment WAL đã đóng: RPO tới
+  `archive_timeout` (5 phút) cộng thời gian lưu, cả khi tắt êm. Backup cùng cluster, cùng ổ với dữ liệu, không mã hoá lúc nghỉ:
+  chỉ đúng cho lab. Compose dùng Postgres native chung nên không backup. Cloud dùng backup tự động và PITR của RDS, diễn tập ở
+  giai đoạn 7. Plugin đọc được mọi Secret của cluster dev (RBAC của chart) và quyền của operator ở `cnpg-system` bị thu hẹp để
+  không leo sang plugin ([`threat-model.md`](threat-model.md) BAK-1).
+- **Khởi động và probe:** service có Postgres thử lại kết nối lúc khởi động 30 s chỉ với lỗi mạng, nên pod mới trên k3d (bị từ
+  chối một lần ngay sau khi lên) không còn restart; probe của chart nới thời hạn (liveness 5 s, readiness 2 s) để node bận CPU
+  không làm kubelet giết pod còn sống.
+- **Vận hành:** `docs/runbooks/` có một runbook cho mỗi cảnh báo page (`runbook_url` trên rule, link đi kèm thông báo) và
+  runbook cho các sự cố đã gặp; `docs/postmortems/` theo mẫu không đổ lỗi. Game day trên compose (`make gameday`: tắt
+  engagement-service dưới tải k6, người trực chỉ theo runbook) lần đầu ngày 2026-10-24: cảnh báo sau 75 s, hồi phục sau 184 s,
+  postmortem ở `docs/postmortems/261024-gameday-engagement-down.md`. RFC một trang cho người không làm kỹ thuật ở `docs/rfc/`.
+- **CI:** job `stack` dựng compose trên runner và chạy smoke, e2e web, k6 `ci`, Lighthouse ở mọi PR, chỉ báo, ngoài `ci-ok`.
+- **Dời:** giai đoạn 6b: k6 tải lớn, ba thí nghiệm Chaos Mesh (kill pod, chậm mạng, tắt Redpanda), Velero với đích MinIO, hai
+  media-worker cùng transcode và RAM nghỉ, ngưỡng canary và HPA của web theo số đo, thay MinIO. Giai đoạn 7: k6 1 000 req/s, diễn
+  tập phục hồi RDS, Velero với S3 và snapshot EBS, hạn 50 ms của Redis trên ElastiCache. Manifest của phần đo thật kiểm schema
+  bằng `make cloud-check`; LCP mobile mô phỏng của `/` và `/v/{id}` chưa đạt 2,5 s (ADR-0020, Kết quả "LCP"), xem lại ở giai
+  đoạn 6b.
 
 ## 6. Sở hữu dữ liệu và event
 

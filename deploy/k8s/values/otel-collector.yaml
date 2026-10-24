@@ -47,7 +47,7 @@ ports:
   metrics:
     enabled: false
 
-# Pod Security "restricted" (ADR section 3): the image's user 10001, seccomp RuntimeDefault, no capability, a
+# Pod Security "restricted" (ADR-0014 section 3; the namespace rejects pods that do not meet it): the image's user 10001, seccomp RuntimeDefault, no capability, a
 # read-only root (the config is mounted, nothing is written).
 podSecurityContext:
   runAsNonRoot: true

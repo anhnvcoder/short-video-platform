@@ -1,0 +1,17 @@
+# The VolumeSnapshotClass Velero picks for EBS volumes (docs/adr/0020-reliability-stage6.md, section 6): Velero's CSI
+# support takes the class of the volume's driver that carries the label below. Retain keeps the EBS snapshot when the
+# VolumeSnapshotContent goes away, so a backup survives the deletion of its namespace, which is the point of the
+# restore drill. Velero deletes the snapshots of a backup it deletes (expired after the Schedule's ttl, or
+# `drill-restore.sh sweep`); the sweep also prints the AWS command that lists what is left.
+#
+# Needs the EBS CSI driver and the external snapshot controller with its CRDs (EKS add-ons of stage 7). `make
+# cloud-check` validates this file against the CRD of kubernetes-csi/external-snapshotter at the tag pinned in
+# deploy/k8s/cloud/check.sh.
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: ebs-velero
+  labels:
+    velero.io/csi-volumesnapshot-class: "true"
+driver: ebs.csi.aws.com
+deletionPolicy: Retain

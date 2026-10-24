@@ -163,8 +163,8 @@ hc upgrade --install argocd argo-cd --repo https://argoproj.github.io/argo-helm 
   >/dev/null || fail "install Argo CD"
 ok "Argo CD installed"
 
-# The repository Secret (ADR section 8): the key goes from its file into a shell variable and on stdin to kubectl,
-# never onto a command line. GitHub's host keys are in ConfigMap argocd-ssh-known-hosts-cm, which the chart ships.
+# The repository Secret (ADR-0014 section 8): the key goes from its file into a shell variable and on stdin to kubectl,
+# never onto a command line, so it cannot show in a process list or a log. GitHub's host keys are in ConfigMap argocd-ssh-known-hosts-cm, which the chart ships.
 deploy_key=$(<"$key_file")
 label='argocd.argoproj.io/secret-type: repository' secret argocd repo-short-video-platform Opaque \
   type=git url="$repo_url" sshPrivateKey="$deploy_key"$'\n' |

@@ -1,0 +1,75 @@
+# Chaos Mesh 2.8.5 (chart https://charts.chaos-mesh.org chaos-mesh 2.8.5, deploy/k8s/cloud/charts.json), release
+# chaos-mesh in namespace chaos-mesh, on the cloud cluster only (docs/adr/0020-reliability-stage6.md, section 7). Never on
+# k3d: the 16 GB machine has no room for it (docs/adr/0017-gitops-capacity-media-worker-max2.md). 2.8.6 was less than 3
+# days old when this was pinned and only fixes IOChaos, PhysicalMachineChaos and the dashboard.
+#
+# Installed by hand with helm for one cloud session, not through Argo CD: the chart generates new certificates and a
+# random pod annotation at every render, so Argo CD would always see it out of sync. The learner runs, with the cloud
+# cluster's context written in each command:
+#
+#   kubectl --context <ctx> create namespace chaos-mesh
+#   kubectl --context <ctx> label namespace chaos-mesh pod-security.kubernetes.io/enforce=privileged
+#   helm --kube-context <ctx> upgrade --install chaos-mesh chaos-mesh --repo https://charts.chaos-mesh.org \
+#     --version 2.8.5 -n chaos-mesh -f deploy/k8s/cloud/values/chaos-mesh.yaml
+#   # experiment (c) only, which targets svp-data:
+#   helm --kube-context <ctx> upgrade chaos-mesh chaos-mesh --repo https://charts.chaos-mesh.org --version 2.8.5 \
+#     -n chaos-mesh -f deploy/k8s/cloud/values/chaos-mesh.yaml --set controllerManager.targetNamespace=svp-data
+#
+# and at the end of the session:
+#
+#   helm --kube-context <ctx> uninstall chaos-mesh -n chaos-mesh
+#   kubectl --context <ctx> delete namespace chaos-mesh
+#   kubectl --context <ctx> get crd -o name | grep '\.chaos-mesh\.org$' | xargs kubectl --context <ctx> delete
+#
+# Privilege: chaos-daemon (a DaemonSet on every node) always runs with hostPID, privileged and hostPath mounts of the
+# container runtime's socket, /sys and /lib/modules, because it enters the target pods' network and process namespaces
+# from the node. Namespace chaos-mesh therefore needs Pod Security "privileged"; whoever controls chaos-daemon controls
+# every node. It exists only for the session (threat model OPS-4).
+#
+# `make cloud-check` renders this file with `helm template` and checks the result with kubeconform; every image must be
+# pinned by digest.
+
+# Namespace-scoped: the controller's rights over pods, configmaps and secrets are a RoleBinding in the one target
+# namespace below, not a ClusterRoleBinding over every namespace (the default). It still reads and writes the Secrets of
+# that namespace (svp holds the JWT signing key), which is why the install lasts one session. Moving between svp and
+# svp-data is a `helm upgrade` (see above). enableFilterNamespace, the other way to narrow it, needs the cluster-scoped
+# rights to read namespaces.
+clusterScoped: false
+
+# pprof of the controller manager stays off: a debug endpoint in a pod holding these rights is not wanted (OPS-1).
+enableProfiling: false
+
+controllerManager:
+  # One replica is enough for a session; three (the default) only costs RAM.
+  replicaCount: 1
+  # Experiments (a) and (b). Experiment (c) switches this to svp-data with --set (see above).
+  targetNamespace: svp
+  image:
+    registry: ghcr.io
+    repository: chaos-mesh/chaos-mesh
+    tag: v2.8.5@sha256:942bff26d591537f655df50532e3880d73fa8b6fca34a233fc69f8ccfd36188d
+  podChaos:
+    podFailure:
+      # pod-failure swaps every container's image for this one. The chart's default (gcr.io/google-containers/pause:latest)
+      # is amd64 only and unpinned; this one is multi-arch and pinned.
+      pauseImage: registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4
+
+chaosDaemon:
+  image:
+    registry: ghcr.io
+    repository: chaos-mesh/chaos-daemon
+    tag: v2.8.5@sha256:d794bf427ab1dfacfd51c2f417d26731ce46919637b1c83620f0afd40f580bd4
+  # EKS nodes on the Amazon Linux 2023 AMI run containerd; the chart's default is Docker's socket.
+  runtime: containerd
+  socketPath: /run/containerd/containerd.sock
+
+dashboard:
+  # No UI: the chart's dashboard is a NodePort Service by default (OPS-2). Experiments are manifests applied with
+  # kubectl.
+  create: false
+  # Also read by the controller: it keeps the webhook that checks the creator of an experiment may act on its targets.
+  securityMode: true
+
+# DNSChaos is not used; its CoreDNS server would be one more pod with cluster rights.
+dnsServer:
+  create: false

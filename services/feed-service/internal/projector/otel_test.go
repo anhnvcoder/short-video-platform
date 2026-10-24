@@ -70,7 +70,7 @@ func readyRecordWithMeta(t *testing.T, video, author string, meta *eventv1.Event
 }
 
 // A fan-out records one sample, the time from occurred_at to its commit, in the buckets of
-// ADR-0011; a redelivery and a forged second video.ready of the same video record none.
+// ADR-0011 (0.1 s to 60 s, so the p95 freshness target is readable); a redelivery and a forged second video.ready of the same video record none.
 func TestFreshnessRecordsFirstFanOutOnly(t *testing.T) {
 	needDB(t)
 	p, reader := meteredProjector(t)

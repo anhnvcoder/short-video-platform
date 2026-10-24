@@ -1,5 +1,7 @@
 // Package dbmigrate applies a service's SQL migrations with goose, used as a library so the
-// service binary carries its migrations (embed) and runs them as its `migrate` subcommand.
+// service binary carries its migrations (embed) and runs them as its `migrate` subcommand. It
+// retries the first connection while the database is not reachable over the network, for a
+// bounded time (docs/adr/0020-reliability-stage6.md, section 11).
 package dbmigrate
 
 import (
@@ -9,11 +11,14 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 	"github.com/pressly/goose/v3/lock"
+
+	"github.com/anhnvcoder/short-video-platform/internal/pgretry"
 )
 
 // versionSchema holds goose's version table. Up creates it as the migrating role, which then
@@ -32,17 +37,43 @@ const (
 	lockRetries      = 300
 )
 
+// connectTimeout bounds each connection attempt, so that an attempt that hangs leaves time for
+// the next ones; it matches pgpool.ConnectTimeout.
+const connectTimeout = 5 * time.Second
+
 // Up applies every pending goose SQL migration in fsys (files such as 00001_create_users.sql at
 // its root) to the Postgres database at databaseURL. Each migration runs in its own
 // transaction. A Postgres advisory lock serializes concurrent runs on the same database, so a
 // migration never runs twice. Applied migrations are logged through slog's default logger.
+//
+// While the first connection fails on the network (refused, timed out, closed during the
+// handshake), Up retries it for up to 30 seconds, logging each failure at WARN; any other failure
+// (authentication, missing database, TLS refused, unknown host) is returned at once, as retrying
+// would only hide a configuration error. Canceling ctx stops the retries at once.
 func Up(ctx context.Context, databaseURL string, fsys fs.FS) error {
+	return up(ctx, databaseURL, fsys, pgretry.Window)
+}
+
+// up is Up with the startup window as a parameter, so that tests need not wait 30 s.
+func up(ctx context.Context, databaseURL string, fsys fs.FS, window time.Duration) error {
 	cfg, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
 		return fmt.Errorf("parse database url: %w", err)
 	}
 	db := stdlib.OpenDB(*cfg)
 	defer func() { _ = db.Close() }()
+
+	// The connection made here stays idle in db's pool for the steps below.
+	startCtx, cancel := context.WithTimeout(ctx, window)
+	err = pgretry.Connect(startCtx, func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, connectTimeout)
+		defer cancel()
+		return db.PingContext(ctx)
+	})
+	cancel()
+	if err != nil {
+		return fmt.Errorf("connect to database: %w", err)
+	}
 
 	if err := createVersionSchema(ctx, db); err != nil {
 		return fmt.Errorf("create schema %s: %w", versionSchema, err)
