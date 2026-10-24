@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -228,13 +229,16 @@ func TestNewFailsFastOnConfigurationErrors(t *testing.T) {
 	wrongPassword.User = url.UserPassword(base.User.Username(), "wrong-password")
 
 	tests := []struct {
-		name     string
-		url      url.URL
-		sqlState string
+		name      string
+		url       url.URL
+		sqlStates []string
 	}{
-		{name: "missing database", url: missingDB, sqlState: "3D000"},
-		{name: "missing role", url: missingRole, sqlState: "28000"},
-		{name: "wrong password", url: wrongPassword, sqlState: "28P01"},
+		{name: "missing database", url: missingDB, sqlStates: []string{"3D000"}},
+		// A server that trusts the connection reports a missing role as 28000; one that checks passwords
+		// (SCRAM, as in CI) answers 28P01 on purpose so a client cannot tell which roles exist. Both are
+		// configuration errors that must not be retried.
+		{name: "missing role", url: missingRole, sqlStates: []string{"28000", "28P01"}},
+		{name: "wrong password", url: wrongPassword, sqlStates: []string{"28P01"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -244,13 +248,13 @@ func TestNewFailsFastOnConfigurationErrors(t *testing.T) {
 			elapsed := time.Since(start)
 			if err == nil {
 				pool.Close()
-				if tt.sqlState == "28P01" {
+				if tt.name == "wrong password" {
 					t.Skip("the local server trusts this connection and does not check passwords")
 				}
 				t.Fatal("New() error = nil, want a Postgres error")
 			}
-			if pgErr, ok := errors.AsType[*pgconn.PgError](err); !ok || pgErr.Code != tt.sqlState {
-				t.Errorf("New() error = %v, want SQLSTATE %s", err, tt.sqlState)
+			if pgErr, ok := errors.AsType[*pgconn.PgError](err); !ok || !slices.Contains(tt.sqlStates, pgErr.Code) {
+				t.Errorf("New() error = %v, want SQLSTATE %s", err, strings.Join(tt.sqlStates, " or "))
 			}
 			if elapsed > time.Second {
 				t.Errorf("New() took %v, want under 1s", elapsed)
