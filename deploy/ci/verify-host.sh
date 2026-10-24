@@ -24,6 +24,8 @@
 #    download has none, so Chrome stops with "No usable sandbox". The restriction is lifted on this machine (it is
 #    thrown away after the run, and the job already has root through sudo), so the sandbox stays on; Playwright's own
 #    launches (the e2e tests) turn the sandbox off themselves and need nothing.
+# 5. k3d only: prints vm.min_free_kbytes. Seastar takes it off the broker's cgroup limit before it checks --memory, and
+#    deploy/k8s/values/redpanda.yaml leaves room for it (66 MiB on an x86_64 runner, 44 MiB in Docker Desktop's VM).
 # It writes the scenario's name to $SVP_VERIFY_OUT/scenario for deploy/ci/verify-collect.sh. Linux only (GNU df).
 set -euo pipefail
 
@@ -106,3 +108,5 @@ client_minor=$(kubectl --context k3d-svp version --client -o json | jq -r '.clie
 skew=$((client_minor - k3s_minor))
 [ "${skew#-}" -le 1 ] || fail "kubectl 1.$client_minor is more than one minor version from k3s 1.$k3s_minor"
 echo "kubectl: 1.$client_minor for k3s 1.$k3s_minor (within one minor version)"
+
+echo "memory: vm.min_free_kbytes $(cat /proc/sys/vm/min_free_kbytes) kB (Seastar takes it off the Redpanda broker's limit)"

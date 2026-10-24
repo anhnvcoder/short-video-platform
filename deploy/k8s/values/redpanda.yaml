@@ -76,8 +76,14 @@ statefulset:
 post_install_job:
   enabled: false
 
-# Same footprint as compose (--smp 1 --memory 1G): the chart derives --smp=1 --memory=1024M --reserve-memory=202M from
-# these, and the pod's request and limit.
+# Same footprint as compose (--smp 1 --memory 1G): --smp=1, --memory=1024M, and a request and limit of 1280Mi for the
+# pod. --reserve-memory is set here instead of being derived by the chart (0.2% of the limit + 200 MiB, so 202M):
+# Seastar refuses to start unless the cgroup limit, less the host kernel's vm.min_free_kbytes (which the container sees
+# unchanged), less --reserve-memory, still holds --memory. 202M left 54 MiB for min_free_kbytes, which is 44 MiB in
+# Docker Desktop's arm64 VM but 66 MiB on an x86_64 Linux host with transparent huge pages (67584 kB on GitHub's
+# ubuntu-24.04 runner), where the broker stopped with "insufficient physical memory: needed 1073741824 available
+# 1061158912". 128M leaves 128 MiB for it. Nothing else reads --reserve-memory (Redpanda only logs it): the broker
+# still takes 1024M, and the limit still leaves it 256 MiB outside Seastar.
 resources:
   cpu:
     cores: 1
@@ -85,6 +91,9 @@ resources:
   memory:
     container:
       max: 1280Mi
+    redpanda:
+      memory: 1Gi
+      reserveMemory: 128Mi
 
 storage:
   persistentVolume:
