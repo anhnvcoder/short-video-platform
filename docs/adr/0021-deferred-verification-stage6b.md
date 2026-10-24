@@ -602,15 +602,15 @@ Giả định chưa kiểm được lúc viết; mỗi dòng nêu kịch bản h
 
 | Giả định | Phép kiểm | Kết quả |
 | --- | --- | --- |
-| Ba tên `*.svp.localhost` qua `/etc/hosts` chỉ trả `127.0.0.1` trên runner; drill và Playwright tới được Envoy | `verify-host.sh` (`getent ahosts`) và `make k8s-smoke` ở `dev-k3d` | Chưa kiểm |
-| Cổng đĩa đúng: kịch bản k3d dùng ≤ 30 GiB, không pod nào bị evict vì đĩa | `df` trước/sau và sampler ở `dev-k3d`, `compose-obs` | `compose-obs` (2026-10-24, [40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687)): dùng 12,7 GiB (trống 80,6 GiB lúc vào kịch bản, thấp nhất 67,9 GiB, ổ `/dev/root` 144,3 GiB: ổ thật lớn hơn 14 GB của tài liệu), không lần nào dưới ngưỡng chạy; `need` đổi 15 → 16 GiB. k3d: chờ `dev-k3d` |
+| Ba tên `*.svp.localhost` qua `/etc/hosts` chỉ trả `127.0.0.1` trên runner; drill và Playwright tới được Envoy | `verify-host.sh` (`getent ahosts`) và `make k8s-smoke` ở `dev-k3d` | `verify-host.sh` đạt (2026-10-24, [40131253651](https://github.com/anhnvcoder/short-video-platform/actions/runs/40131253651)): ba tên chỉ trả `127.0.0.1`. `make k8s-smoke` chưa chạy tới (`make k8s-up` đỏ) |
+| Cổng đĩa đúng: kịch bản k3d dùng ≤ 30 GiB, không pod nào bị evict vì đĩa | `df` trước/sau và sampler ở `dev-k3d`, `compose-obs` | `compose-obs` (2026-10-24, [40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687)): dùng 12,7 GiB (trống 80,6 GiB lúc vào kịch bản, thấp nhất 67,9 GiB, ổ `/dev/root` 144,3 GiB: ổ thật lớn hơn 14 GB của tài liệu), không lần nào dưới ngưỡng chạy; `need` đổi 15 → 16 GiB; lượt 2 ([40132157276](https://github.com/anhnvcoder/short-video-platform/actions/runs/40132157276)) dùng 12,5 GiB, `need` giữ. k3d: lượt 1 ([40131253651](https://github.com/anhnvcoder/short-video-platform/actions/runs/40131253651)) dừng ở wave 3, tới đó dùng 14,3 GiB (trống 80,4 GiB lúc vào kịch bản, thấp nhất 66,0 GiB), chưa kết luận |
 | `docker stats` và `memory.stat` của node k3d trên runner (cgroup v2, Docker 28) đo được như trên máy | RAM nghỉ, đỉnh ở `dev-k3d` | Chưa kiểm |
-| Runner có hay không có swap; `MemAvailable` thấp nhất ≥ 2 GiB ở mọi kịch bản | Sampler ở mọi kịch bản | Có swap: `/swapfile` 3 GiB (`swapon --show`). `compose-obs` ([40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687)): `MemAvailable` thấp nhất 8 156 MiB, swap dùng tối đa 17 MiB. k3d: chờ `dev-k3d` |
-| Bộ lọc bỏ file có giá trị bí mật hay mẫu cấm, giữ file sạch | Test của `verify-collect.sh` với giá trị giả (ca có và ca không); lượt `compose-obs`, `dev-k3d`: `files.txt` | `verify-collect-test.sh` xanh (ca có và ca không, 2026-10-25). `compose-obs` ([40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687)): `files.txt` giữ 26 file, bỏ 4 đều `not-allowed` (`job-start`, `sampler.pid`, `sampler.err`, `machine.json` của k6), không `::warning::` nào của bộ lọc. Bộ lọc dòng phán quyết của `drill-obs-threats` giữ đúng ý nhưng giấu luôn dòng lỗi của bash khi một mục dừng vì `set -e` mà không in `FAIL` (lỗi WEB-9 của lượt này): mục nào dừng giờ in thêm `FAIL  <mục>: the item ended with exit status <n>`. `dev-k3d`: chờ |
-| Mask che giá trị trong log job, lệnh mask không hiện | Lượt `compose-obs`: `verify-mask.sh` mask một giá trị ngẫu nhiên làm mốc rồi in dòng `mask-check: <giá trị>`; log thô (`gh run view --log`) phải có `mask-check: ***` và không có dòng `::add-mask::` nào (không cần biết giá trị để kiểm) | Đạt ([40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687)): log thô có `mask-check: ***` ở bước `verify-mask.sh env`, không dòng `::add-mask::` nào; không mẫu JWT, `Bearer`, `Set-Cookie`, `svp_sid`, khoá riêng nào trong log |
+| Runner có hay không có swap; `MemAvailable` thấp nhất ≥ 2 GiB ở mọi kịch bản | Sampler ở mọi kịch bản | Có swap: `/swapfile` 3 GiB (`swapon --show`). `compose-obs` ([40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687)): `MemAvailable` thấp nhất 8 156 MiB, swap dùng tối đa 17 MiB; lượt 2 ([40132157276](https://github.com/anhnvcoder/short-video-platform/actions/runs/40132157276)): 8 658 MiB, swap 16 MiB. `dev-k3d` lượt 1 ([40131253651](https://github.com/anhnvcoder/short-video-platform/actions/runs/40131253651), dừng ở wave 3): thấp nhất 10 807 MiB, swap 0; chưa kết luận |
+| Bộ lọc bỏ file có giá trị bí mật hay mẫu cấm, giữ file sạch | Test của `verify-collect.sh` với giá trị giả (ca có và ca không); lượt `compose-obs`, `dev-k3d`: `files.txt` | `verify-collect-test.sh` xanh (ca có và ca không, 2026-10-25). `compose-obs` ([40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687)): `files.txt` giữ 26 file, bỏ 4 đều `not-allowed` (`job-start`, `sampler.pid`, `sampler.err`, `machine.json` của k6), không `::warning::` nào của bộ lọc. Bộ lọc dòng phán quyết của `drill-obs-threats` giữ đúng ý nhưng giấu luôn dòng lỗi của bash khi một mục dừng vì `set -e` mà không in `FAIL` (lỗi WEB-9 của lượt này): mục nào dừng giờ in thêm `FAIL  <mục>: the item ended with exit status <n>`. `compose-obs` lượt 2 ([40132157276](https://github.com/anhnvcoder/short-video-platform/actions/runs/40132157276)): cùng 4 file bỏ `not-allowed`, không `::warning::`; báo cáo Lighthouse giữ `Cookie` của `extraHeaders` ở dạng `[redacted]`. `dev-k3d`: chờ |
+| Mask che giá trị trong log job, lệnh mask không hiện | Lượt `compose-obs`: `verify-mask.sh` mask một giá trị ngẫu nhiên làm mốc rồi in dòng `mask-check: <giá trị>`; log thô (`gh run view --log`) phải có `mask-check: ***` và không có dòng `::add-mask::` nào (không cần biết giá trị để kiểm) | Đạt ([40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687)): log thô có `mask-check: ***` ở bước `verify-mask.sh env`, không dòng `::add-mask::` nào; không mẫu JWT, `Bearer`, `Set-Cookie`, `svp_sid`, khoá riêng nào trong log. Lượt 2 ([40132157276](https://github.com/anhnvcoder/short-video-platform/actions/runs/40132157276)): như vậy, cả trong artifact |
 | Bước `if: always()` vẫn gom và tải sau khi bước kịch bản quá hạn | Lượt đầu có bước đỏ hay quá hạn | Sau bước đỏ: đạt ([40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687): bước kịch bản đỏ, `verify-sample.sh stop`, `verify-collect.sh`, tải artifact, `make down` đều chạy). Sau bước quá hạn: chưa gặp |
 | Setup trước bước kịch bản ≤ 20 phút ở cả ba job | Thời gian các bước setup ở lượt đầu mỗi job (`gh run view --json jobs`) | `compose`: 1 phút 35 s (job 20:18:41 → bước kịch bản 20:20:16 UTC, [40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687)); `k3d`: 2 phút 28 s (20:46:01 → 20:48:29 UTC, [40131253651](https://github.com/anhnvcoder/short-video-platform/actions/runs/40131253651)). `gitops`: phần 3 |
-| Miễn trừ giới hạn pull của Docker Hub cho runner GitHub cũng áp cho pull từ containerd trong node k3d | `dev-k3d`, `gitops`: không event `Failed` nào có `429 Too Many Requests` trong `kubectl get events -A` của artifact, không lỗi 429 ở `docker pull` | Chưa kiểm |
+| Miễn trừ giới hạn pull của Docker Hub cho runner GitHub cũng áp cho pull từ containerd trong node k3d | `dev-k3d`, `gitops`: không event `Failed` nào có `429 Too Many Requests` trong `kubectl get events -A` của artifact, không lỗi 429 ở `docker pull` | `dev-k3d` lượt 1 ([40131253651](https://github.com/anhnvcoder/short-video-platform/actions/runs/40131253651)): 41 lần đọc event (0 lỗi), 0 pull bị từ chối 429, 0 output có 429; mới kéo image tới wave 3, chưa kết luận |
 | Script k3d chạy trên bash 5 và coreutils GNU sau các sửa của phần 1 | `dev-k3d` xanh | Chưa kiểm |
 | Hai worker cùng transcode trên runner 4 vCPU giữ (c) | `dev-k3d` (đường dev), `gitops` (D1) | Chưa kiểm |
 | Argo CD sync qua HTTPS ẩn danh, không Secret repo | `gitops`: mọi Application Synced; `kubectl get secret -n argocd -l argocd.argoproj.io/secret-type=repository` rỗng | Chưa kiểm |
@@ -619,7 +619,7 @@ Giả định chưa kiểm được lúc viết; mỗi dòng nêu kịch bản h
 | Driver CSI hostpath, snapshot controller và Velero 1.18.4 chạy trên k3s 1.36 | `velero`: backup có VolumeSnapshot, restore PVC từ snapshot | Chưa kiểm |
 | trivy đọc được lockfile của pnpm 12 | `make web-lockfile-scan` với ca âm | Chưa kiểm |
 | trivy nhận `misconfigurations` với `paths`, `expired_at` trong tệp bỏ qua của `trivy config` | `make trivy-config` trước và sau khi thêm một mục: số kết quả giảm đúng mục đó | Chưa kiểm |
-| Rule mới của `RateLimitFallbackActive` đúng tám ca (a)–(h) của mục 11 và giữ RL-2 | `make slo-check` (test promtool); `compose-obs` (`drill-obs-threats` RL-2: page trong 240 s) | Test promtool: `make slo-check` xanh trong job `config` của lượt CI [40129094568](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129094568) (`main` `a9b035a`). RL-2 trên runner ([40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687)): page `startsAt` 76 s, thấy trong Alertmanager 81 s sau login đầu (hạn 240 s): đạt |
+| Rule mới của `RateLimitFallbackActive` đúng tám ca (a)–(h) của mục 11 và giữ RL-2 | `make slo-check` (test promtool); `compose-obs` (`drill-obs-threats` RL-2: page trong 240 s) | Test promtool: `make slo-check` xanh trong job `config` của lượt CI [40129094568](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129094568) (`main` `a9b035a`). RL-2 trên runner ([40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687)): page `startsAt` 76 s, thấy trong Alertmanager 81 s sau login đầu (hạn 240 s): đạt; lượt 2 ([40132157276](https://github.com/anhnvcoder/short-video-platform/actions/runs/40132157276)): 88 s, 91 s |
 
 ## Kết quả
 
@@ -628,8 +628,9 @@ dời tương ứng (D1–D27, mục 5), và dòng nào sang B hay giai đoạn 
 
 | Kịch bản | Lượt (ngày, commit, link) | Runner đủ | Kết quả chính |
 | --- | --- | --- | --- |
-| `compose-obs` | 1: 2026-10-24, `main` `a9b035a`, [40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687) | Đủ: xong trong hạn, `MemAvailable` thấp nhất 8 156 MiB, không OOM, đĩa trống thấp nhất 67,9 GiB, không container nào restart ngoài các lần diễn tập dựng lại | Đỏ vì hai lỗi của script, không vì runner: WEB-9 của `drill-obs-threats` dừng giữa chừng, `make web-lighthouse` ×3 không mở được Chrome nên không có LCP; mọi bước còn lại đạt (dưới đây). Đã sửa, chờ lượt 2 |
-| `dev-k3d` | 1: 2026-10-24, `main` `a9b035a`, [40131253651](https://github.com/anhnvcoder/short-video-platform/actions/runs/40131253651) (đang chạy lúc ghi) | — | — |
+| `compose-obs` | 1: 2026-10-24, `main` `a9b035a`, [40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687) | Đủ: xong trong hạn, `MemAvailable` thấp nhất 8 156 MiB, không OOM, đĩa trống thấp nhất 67,9 GiB, không container nào restart ngoài các lần diễn tập dựng lại | Đỏ vì hai lỗi của script, không vì runner: WEB-9 của `drill-obs-threats` dừng giữa chừng, `make web-lighthouse` ×3 không mở được Chrome nên không có LCP; mọi bước còn lại đạt (dưới đây). Đã sửa, xem lượt 2 |
+| `compose-obs` | 2 (lượt cuối): 2026-10-24, `feat/stage6b-verify-results` `0cb842e`, [40132157276](https://github.com/anhnvcoder/short-video-platform/actions/runs/40132157276) | Đủ: xong trong hạn, `MemAvailable` thấp nhất 8 658 MiB, không OOM, đĩa trống thấp nhất 67,9 GiB, không container nào restart ngoài các lần diễn tập dựng lại | Mọi bước đạt trừ D17: Lighthouse chạy đủ 3 lượt, LCP median của `/` 3 253 ms vượt 2 500 ms (bước `lcp` đỏ vì số đo, không vì script); `/v/{id}` 2 182 ms đạt (dưới đây) |
+| `dev-k3d` | 1: 2026-10-24, `main` `a9b035a`, [40131253651](https://github.com/anhnvcoder/short-video-platform/actions/runs/40131253651) | Chưa kết luận: k3s server không restart, node luôn Ready, `MemAvailable` thấp nhất 10 807 MiB, không OOM, không evict, đĩa trống thấp nhất 66,0 GiB; `within_deadline=false` chỉ vì hai bước RAM nghỉ chờ đủ 900 s một pod không bao giờ Ready, hệ quả của bước đỏ chứ không phải runner thiếu | Đỏ ở bước đầu `make k8s-up`: broker Redpanda thoát ngay mỗi lần khởi động, release `redpanda` (wave 3) không Ready; mọi bước sau đỏ theo. Nguyên nhân chưa biết vì lượt không giữ log container; `deploy/k8s/install.sh` giờ in log đó khi một release không Ready (dưới đây). Chờ lượt 2 |
 | `gitops` | — (phần 3) | — | — |
 | `web-canary` | — (phần 3) | — | — |
 | `k6-cloud-mini` | — (phần 3) | — | — |
@@ -659,6 +660,41 @@ dời tương ứng (D1–D27, mục 5), và dòng nào sang B hay giai đoạn 
   bằng AppArmor nên Chrome dừng "No usable sandbox" ở cả 3 lượt. Đã sửa ở `verify-host.sh` (mục 3, job `compose`); chờ lượt 2.
 - **Đĩa:** dùng 12,7 GiB, `need` của `compose-obs` đổi 15 → 16 GiB (mục 2).
 
+### `compose-obs`, lượt 2 ([40132157276](https://github.com/anhnvcoder/short-video-platform/actions/runs/40132157276))
+
+- **Runner:** như lượt 1 (kernel 6.17.0-1022-azure, 4 CPU, swap 3 GiB). CPU bận cao nhất 100 %, MEM USAGE của stack compose cao nhất
+  2 903 MiB. `make up OBS=lgtm` 342 s, `make smoke` 13 s. `verify-host.sh` in `kernel.apparmor_restrict_unprivileged_userns 0`.
+- **D8 `drill-obs-threats`:** đạt mọi mục: JWT-8, UP-8, OPS-1, RL-2 (page `startsAt` 88 s, thấy 91 s sau login đầu), WEB-9 (đối chứng
+  có dữ liệu của web ở GlitchTip 1 event, Tempo 18 trace, Prometheus 216 series; Loki 49 dòng của các service Go, web chỉ log ra stdout; không giá trị nào
+  của form, phiên hay chữ ký trong cả bốn).
+- **D16:** không page trên runner lần nữa: không cảnh báo nào bắt đầu trong 484 s (50 lần hỏi, 0 lỗi), p99 lệnh Redis 4,95 ms, không
+  `context_timeout`, 0 quyết định dự phòng trên 8 176.
+- **`make load-local`:** mọi threshold đạt, 7 625 check, 0 lỗi, `dropped_iterations` 0; p95 `/feed/explore` 7,0 ms, `/feed/following`
+  4,5 ms, web `/` 40,4 ms, `/v/[id]` 45,5 ms, `/login` 31,3 ms.
+- **`drill-alert-to-sentry`:** đạt, T0 21:51:01Z, T1 − T0 = 54,5 s, T4 − T1 = 3,4 s (< 300 s); giờ các mốc in đúng trên GNU.
+- **D17 LCP:** không đạt. `/`: 3 510, 3 253, 2 760 ms, median 3 253 ms (> 2 500); `/v/{id}`: 2 256, 1 952, 2 182 ms, median 2 182 ms
+  (đạt). `benchmarkIndex` 1 942–2 040. TBT 334–417 ms ở cả sáu lượt (ngưỡng 200 ms), CLS ≤ 0,069. Theo D17, đòn bẩy (a) của ADR-0020
+  ("render trang đầu không qua `Suspense`") thành việc code riêng sau phần 1.
+- **Đĩa:** dùng 12,5 GiB, `need` 16 GiB giữ.
+
+### `dev-k3d`, lượt 1 ([40131253651](https://github.com/anhnvcoder/short-video-platform/actions/runs/40131253651))
+
+- **Tới đâu:** cluster tạo trong 21 s, bảy image build và push, wave 0–3 cài tới `plugin-barman-cloud`; `helm upgrade --install
+  redpanda` báo `StatefulSet/svp-data/redpanda not ready … 1 pods have failed` khoảng 2,5 phút sau khi pod được tạo, `make k8s-up`
+  dừng sau 553 s. Mười ba bước sau đỏ theo (không có Valkey, Tempo; hai bước RAM nghỉ chờ hết 900 s).
+- **Pod `redpanda-0`:** hai init container xong, container `redpanda` vào `CrashLoopBackOff` với 11 lần restart trong 34 phút; 4 lần
+  khởi động trong chừng hai phút đầu, tức thoát ngay sau mỗi lần chạy (sampler chưa lần nào đọc được RAM của nó). Không `OOMKilled`, kernel
+  không có dòng OOM nào. Sidecar chạy, readiness trả 500 vì broker không trả lời.
+- **Nguyên nhân: chưa biết.** Lượt không giữ log container, log job chỉ có dòng của Helm. Cùng image broker chạy được ở `compose-obs`
+  trên cùng loại runner; broker của chart khác ở ba chỗ: `rpk redpanda start` có kiểm hệ thống (compose đặt `--check=false`),
+  `--memory=1024M --reserve-memory=202M` trong limit 1 280 MiB (compose `--memory=1G` trong 1 536 MiB), và `crash_loop_limit: 5`
+  (sau 5 lần thoát không êm trong một giờ broker không khởi động nữa, nên các lần restart sau chỉ lặp lại). Đã loại theo mã nguồn
+  Seastar và rpk 26.2: giới hạn AIO (một shard tối thiểu cần 1 027 khối điều khiển, mặc định của kernel là 65 536, thiếu thì
+  Seastar tự giảm phần mạng), thư mục dữ liệu (local-path tạo `0777`).
+- **Đã đổi:** khi một release không Ready, `deploy/k8s/install.sh` in trạng thái, lần thoát trước và 40 dòng log cuối (cả của lần
+  chạy trước khi đã restart) của mọi container chưa Ready trong namespace của release, vào log `k8s-up` của artifact (qua bộ lọc như
+  mọi log khác). Lượt 2 sẽ cho thấy lỗi của broker.
+
 ### Job `stack` của `ci.yml` (D22) và e2e trên runner
 
 | Lượt | Commit | Kết quả |
@@ -666,8 +702,15 @@ dời tương ứng (D1–D27, mục 5), và dòng nào sang B hay giai đoạn 
 | [40129094568](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129094568) (push `main`) | `a9b035a` | `web-e2e` đỏ: webkit 23/28, chromium 28/28, chromium-publishing 3/3, webkit-publishing 3/3; `load-ci`, `web-lighthouse` không chạy |
 | [40130863434](https://github.com/anhnvcoder/short-video-platform/actions/runs/40130863434) (PR #20) | `c960ed1` (bản sửa WebKit Linux) | `web-e2e` đỏ: webkit 26/28, chromium 28/28, chromium-publishing 3/3, webkit-publishing 3/3. Đỏ: `first-frame.e2e.ts:17` (lần vuốt 19: `data-state=buffering`, `readyState=4`, `currentTime=0.17`, khác hẳn lỗi lần vuốt 1–2 trước bản sửa), `feed.e2e.ts:17` (mục 0 không `playing` trong 15 s). Đạt: upload chromium-publishing, upload có rớt kết nối webkit-publishing, `flow.e2e.ts:17` và WEB-1 trên WebKit. `load-ci`, `web-lighthouse` không chạy |
 
-D22 chưa đạt: job còn đỏ ở e2e WebKit. Khi e2e qua, `make web-lighthouse` của job này sẽ gặp cùng lỗi sandbox của Chrome như
-`compose-obs` (bước đó `continue-on-error`, nên không làm job đỏ nhưng không có báo cáo).
+| [40132160690](https://github.com/anhnvcoder/short-video-platform/actions/runs/40132160690) (PR #20) | `0cb842e` (web như `c960ed1`) | `web-e2e` đỏ: webkit 23/28, webkit-publishing 2/3, chromium 28/28, chromium-publishing 3/3. Đỏ: `a11y.e2e.ts:49`, `feed.e2e.ts:17`, `first-frame.e2e.ts:17`, `security.e2e.ts:24` (WEB-1), `share.e2e.ts:44` trên WebKit, upload có rớt kết nối trên webkit-publishing: cùng bản sửa, lượt trước chỉ đỏ hai, nên còn chập chờn |
+| [40133806424](https://github.com/anhnvcoder/short-video-platform/actions/runs/40133806424) lần chạy 1 (PR #20) | `7df7973` (player chỉ phát nguồn hls.js khi đủ dữ liệu) | Xanh: `web-e2e` 62/62 (chromium 28/28, webkit 28/28, chromium-publishing 3/3, webkit-publishing 3/3); `load-ci` mọi threshold đạt (323 check); `web-lighthouse` chạy, `/` LCP 2 833 ms, `/v/{id}` 4 040 ms (đỏ ngưỡng, bước `continue-on-error`) |
+| [40133806424](https://github.com/anhnvcoder/short-video-platform/actions/runs/40133806424) lần chạy 2 | `7df7973` | Xanh: `web-e2e` 62/62 như lần 1; `load-ci` đạt (324 check); `web-lighthouse` `/` 3 553 ms, `/v/{id}` 2 394 ms |
+| [40133806424](https://github.com/anhnvcoder/short-video-platform/actions/runs/40133806424) lần chạy 3 | `7df7973` | Xanh: `web-e2e` 62/62 như lần 1; `load-ci` đạt (323 check); `web-lighthouse` `/` 3 793 ms, `/v/{id}` 2 754 ms |
+
+D22 đạt ở `7df7973` (ba lần chạy liền đều xanh): quyền ở đầu log `Contents: read` (cùng `Metadata: read` GitHub luôn cấp), artifact
+của job chỉ `lighthouse`, `k6-summary`. Job này cũng bỏ hạn chế AppArmor của user namespace trước `make web-lighthouse` như
+`compose-obs`, nên Lighthouse có báo cáo. Sáu ca WebKit và upload (first-frame, feed, flow, WEB-1 trên WebKit, upload trên
+chromium-publishing, upload có rớt kết nối trên webkit-publishing) đạt ở cả ba lần chạy.
 
 ## Hệ quả
 
