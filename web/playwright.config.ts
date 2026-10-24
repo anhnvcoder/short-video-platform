@@ -35,6 +35,13 @@ const webkit = {
   // screenshot, which the app's CSP refuses and the CSP watcher of e2e/fixtures.ts reports as a failure. The trace and
   // the video still record every WebKit test.
   ...(evidence ? { screenshot: "off" as const } : {}),
+  // On Linux (CI's runner) Playwright's WebKit is WebKitGTK, which plays media through GStreamer and
+  // suspends the pipeline of a muted <video> that is not in the viewport. A Media Source pipeline suspended that way
+  // fails its next push ("Failed to push buffer", MEDIA_ERR_SRC_NOT_SUPPORTED); hls.js resets it three times and gives
+  // up, so the feed's preloaded next item, and now and then a current one created before it was laid out, ends in
+  // data-state="error". Safari, which these runs stand in for, has no such suspend. This variable of WebKitGTK turns
+  // it off; Playwright passes `env` to the browser instead of process.env, hence the spread. macOS WebKit ignores it.
+  launchOptions: { env: { ...process.env, WEBKIT_GST_ALLOW_PLAYBACK_OF_INVISIBLE_VIDEOS: "1" } },
 };
 
 // Tests tagged @publishes make a video READY, and the newest READY video leads Explore. Other tests expect the WEB-1
