@@ -15,7 +15,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 export K3D_IMAGE_LOADBALANCER=ghcr.io/k3d-io/k3d-proxy:5.9.0@sha256:7be40abfeb6ac9a81d0d4157a7cbf3aacc68a64a1780ca2efb160f1aea915177
 # renovate: datasource=docker depName=ghcr.io/k3d-io/k3d-tools
 export K3D_IMAGE_TOOLS=ghcr.io/k3d-io/k3d-tools:5.9.0@sha256:c57abce697e66feeb826922718738fe186b47779312d49d4e51e6fb9b8a6f34d
-# The local registry (ADR section 6): k3d prefixes the name, so the container is k3d-svp-registry; inside it listens on
+# The local registry (ADR-0014 section 6): k3d prefixes the name, so the container is k3d-svp-registry; inside it listens on
 # 5000, published on 127.0.0.1:5111 only.
 # renovate: datasource=docker depName=docker.io/library/registry
 registry_image=docker.io/library/registry:3.1.2@sha256:ddf754342cfc8acc51a56d5d0ab6af06826461864460636d8bd5c546dab2a7b8
@@ -53,7 +53,7 @@ wait_until() {
   done
 }
 
-# port_free PORT: true when nothing accepts connections on 127.0.0.1:PORT. The lab's ports are fixed (ADR sections 2
+# port_free PORT: true when nothing accepts connections on 127.0.0.1:PORT. The lab's ports are fixed (ADR-0014 sections 2
 # and 6), so a taken port is an error to report, never a reason to pick another.
 port_free() { ! nc -z -w 1 127.0.0.1 "$1" >/dev/null 2>&1; }
 
@@ -102,7 +102,7 @@ ensure_cluster() {
   [ -n "$want" ] && [ "$psa_versions" = "$want $want $want " ] ||
     fail "enforce-, audit- and warn-version of deploy/k8s/pod-security-admission.yaml (${psa_versions% }) must all equal podSecurityVersion of deploy/helm/svp-cluster/values.yaml ('$want')$recreate"
   if [ -n "$exists" ]; then
-    # Pod Security "restricted" by default (ADR section 3) exists only in a cluster created with it: the argument and
+    # Pod Security "restricted" by default (ADR-0014 section 3) exists only in a cluster created with it: the argument and
     # mount k3d.yaml gives the server node at creation. A cluster made before them enforces nothing in namespaces
     # without PSA labels (default, kube-public, kube-node-lease) and is not changed in place.
     node=$(docker_ inspect --format '{{join .Config.Cmd " "}}' k3d-svp-server-0) &&
@@ -324,6 +324,36 @@ test_output() {
   shift
   got=$("$@") || return 1
   [ "$got" = "$want" ]
+}
+
+# pg_backup NAME: creates Backup svp-data/NAME of Postgres svp-pg, a base backup by the Barman Cloud plugin into the
+# archive generation the Cluster archives to (docs/adr/0020-reliability-stage6.md, section 5), owned by nothing, so
+# that deleting the Cluster leaves it, and waits up to 600 s until it is completed. CloudNativePG never retries a
+# Backup: one that fails is final, so this fails at once with the error it recorded. Prints nothing.
+pg_backup() {
+  local name=$1 state deadline=$((SECONDS + 600))
+  kc -n svp-data create -f - >/dev/null <<EOF || fail "create Backup svp-data/$name"
+apiVersion: postgresql.cnpg.io/v1
+kind: Backup
+metadata:
+  name: $name
+  namespace: svp-data
+spec:
+  cluster:
+    name: svp-pg
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
+EOF
+  while :; do
+    state=$(kc -n svp-data get backups.postgresql.cnpg.io "$name" -o jsonpath='{.status.phase}' 2>/dev/null) || state=
+    case $state in
+      completed) return 0 ;;
+      failed) fail "Backup svp-data/$name failed: $(kc -n svp-data get backups.postgresql.cnpg.io "$name" -o jsonpath='{.status.error}')" ;;
+    esac
+    [ "$SECONDS" -lt "$deadline" ] || fail "Backup svp-data/$name completed within 600s (phase '${state:-none}')"
+    sleep 3
+  done
 }
 
 # restart_on_secret_change NAMESPACE WORKLOAD SECRET [ANNOTATION [UNRECORDED]]: restarts Deployment or Rollout WORKLOAD

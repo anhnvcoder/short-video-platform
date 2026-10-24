@@ -76,6 +76,15 @@
       "path": "deploy/helm/svp-policy"
     },
     {
+      "name": "plugin-barman-cloud",
+      "namespace": "cnpg-system",
+      "wave": 3,
+      "repo": "https://cloudnative-pg.github.io/charts",
+      "chart": "plugin-barman-cloud",
+      "version": "0.8.1",
+      "values": "deploy/k8s/values/plugin-barman-cloud.yaml"
+    },
+    {
       "name": "redpanda",
       "namespace": "svp-data",
       "wave": 3,

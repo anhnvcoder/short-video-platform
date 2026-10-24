@@ -1,0 +1,49 @@
+# Experiment (c): Redpanda down for 5 minutes (docs/adr/0020-reliability-stage6.md, section 7). Cloud cluster only.
+# Chaos Mesh must target svp-data first:
+#
+#   helm --kube-context <ctx> upgrade chaos-mesh chaos-mesh --repo https://charts.chaos-mesh.org --version 2.8.5 \
+#     -n chaos-mesh -f deploy/k8s/cloud/values/chaos-mesh.yaml --set controllerManager.targetNamespace=svp-data
+#
+# pod-failure swaps the image of every container of the broker pods for the pause image until the end. Only outside svp:
+# Kyverno refuses that image UPDATE in svp (Enforce on the GitOps path). Apply this one file, never the folder.
+#
+# When: under k6 profile cloud at its hold rate, after 5 minutes of steady state. While Redpanda is down, upload 3 videos
+# to READY through the API (the upload flow of deploy/compose/smoke.sh).
+#
+# Steady-state hypothesis: POST /videos and complete still answer (the outbox keeps the events), the feed keeps its SLO;
+# views fail while Redpanda is down (RecordView produces directly, docs/adr/0009-engagement-feed-stage2b.md) and are
+# counted on their own. Once Redpanda is back the outbox drains, every video is READY exactly once, the DLQ does not grow
+# and every consumer group's lag returns to 0.
+#
+# Watch (Prometheus, and the k6 summary per route):
+#   upload init 5xx:
+#     sum(rate(http_server_request_duration_seconds_count{service_name="gateway",http_request_method="POST",http_route="/videos",http_response_status_code=~"5.."}[1m]))
+#   feed 5xx ratio and p99: the queries at the top of a-pod-kill-gateway.yaml
+#   lag: max by (redpanda_group) (redpanda_kafka_consumer_group_lag_max)
+#   DLQ: sum by (topic, group) (svp_kafka_dlq_records_total), alert KafkaDLQRecords inactive
+#   brokers: kubectl --context <ctx> -n svp-data get pods -l app.kubernetes.io/component=redpanda-statefulset -w
+#   experiment: kubectl --context <ctx> -n svp-data describe podchaos redpanda-failure
+#
+# Pass: the hypothesis holds; the 3 videos are READY exactly once within 15 minutes of Redpanda's return; lag back to 0
+# and the DLQ count unchanged 10 minutes after it.
+#
+# Run:  kubectl --context <ctx> apply -f deploy/k8s/cloud/chaos/c-redpanda-failure.yaml
+# End:  on its own after duration; early with kubectl --context <ctx> -n svp-data delete podchaos redpanda-failure,
+#       which puts the images back. Stop early when the feed's 5xx stays above 5% for more than a minute or a node goes
+#       NotReady. Afterwards, helm upgrade back to targetNamespace svp or uninstall.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: redpanda-failure
+  namespace: svp-data
+spec:
+  action: pod-failure
+  mode: all
+  duration: 5m
+  selector:
+    namespaces:
+      - svp-data
+    labelSelectors:
+      app.kubernetes.io/name: redpanda
+      app.kubernetes.io/instance: redpanda
+      app.kubernetes.io/component: redpanda-statefulset

@@ -1,20 +1,23 @@
 package dbmigrate_test
 
 import (
-	"bytes"
 	"context"
-	"log/slog"
+	"encoding/json"
+	"errors"
+	"net/url"
 	"strings"
-	"sync"
+	"syscall"
 	"testing"
 	"testing/fstest"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3/lock"
 
 	"github.com/anhnvcoder/short-video-platform/internal/dbmigrate"
+	"github.com/anhnvcoder/short-video-platform/internal/pgretry/pgretrytest"
 	"github.com/anhnvcoder/short-video-platform/internal/pgtest"
 )
 
@@ -47,34 +50,6 @@ ALTER TABLE items DROP COLUMN name;
 
 func file(sql string) *fstest.MapFile { return &fstest.MapFile{Data: []byte(sql)} }
 
-// lockedBuffer collects log output; pgx and goose may log from other goroutines.
-type lockedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-// captureDefaultLog points slog's default logger at a buffer for the rest of the test.
-func captureDefaultLog(t *testing.T) *lockedBuffer {
-	t.Helper()
-	buf := &lockedBuffer{}
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(buf, nil)))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-	return buf
-}
-
 func columns(t *testing.T, pool *pgxpool.Pool) []string {
 	t.Helper()
 	rows, err := pool.Query(t.Context(), "SELECT column_name FROM information_schema.columns WHERE table_name = 'items' ORDER BY ordinal_position")
@@ -98,7 +73,7 @@ func columns(t *testing.T, pool *pgxpool.Pool) []string {
 func TestUpAppliesPendingMigrationsOnly(t *testing.T) {
 	pool := pgtest.New(t, "svp_dbmigrate_self_test", fstest.MapFS{"00001_create_items.sql": file(createItems)})
 	url := pool.Config().ConnString()
-	logs := captureDefaultLog(t)
+	logs := pgretrytest.CaptureDefaultLog(t)
 
 	fsys := fstest.MapFS{
 		"00001_create_items.sql": file(createItems),
@@ -220,5 +195,169 @@ func TestCreateVersionSchemaSkipsLockWhenSchemaExists(t *testing.T) {
 	defer cancel()
 	if err := dbmigrate.CreateVersionSchema(ctx, db); err != nil {
 		t.Fatalf("CreateVersionSchema() with the schema present and the lock held = %v, want nil without waiting", err)
+	}
+}
+
+// testWindow stands for the 30 s startup window in tests that wait it out.
+const testWindow = 1500 * time.Millisecond
+
+// TestUpUnreachableRetriesUntilWindow: a refused connection and a server that never answers are
+// retried, each failure logged at WARN without the password, until the window ends.
+func TestUpUnreachableRetriesUntilWindow(t *testing.T) {
+	const secret = "s3cret-pw"
+	tests := []struct {
+		name    string
+		addr    string
+		refused bool
+	}{
+		{name: "refused", addr: pgretrytest.ClosedPort(t), refused: true},
+		// Each attempt is cut at 5 s or at the end of the window, whichever comes first.
+		{name: "never answers", addr: pgretrytest.Blackhole(t)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := pgretrytest.CaptureDefaultLog(t)
+			start := time.Now()
+			err := dbmigrate.UpWithin(t.Context(), "postgres://svp:"+secret+"@"+tt.addr+"/svp_video?sslmode=disable", fstest.MapFS{}, testWindow)
+			elapsed := time.Since(start)
+			if err == nil {
+				t.Fatal("Up() = nil, want a connection error")
+			}
+			if elapsed < testWindow || elapsed > testWindow+time.Second {
+				t.Errorf("Up() took %v, want the %v window (+1s at most)", elapsed, testWindow)
+			}
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("Up() error = %v, want context.DeadlineExceeded", err)
+			}
+			if tt.refused {
+				if !errors.Is(err, syscall.ECONNREFUSED) {
+					t.Errorf("Up() error = %v, want the refused connection", err)
+				}
+				// 250 ms + 500 ms + 1 s of waits fit in 1.5 s with the first three attempts.
+				if n := strings.Count(logs.String(), `"msg":"database not reachable, retrying"`); n < 3 {
+					t.Errorf("logged %d retries, want at least 3:\n%s", n, logs)
+				}
+				if !strings.Contains(logs.String(), `"level":"WARN"`) || !strings.Contains(logs.String(), `"attempt":3`) {
+					t.Errorf("retries not logged at WARN with their attempt number:\n%s", logs)
+				}
+			}
+			if strings.Contains(logs.String(), secret) || strings.Contains(err.Error(), secret) {
+				t.Errorf("log or error leaks the password: %v\n%s", err, logs)
+			}
+		})
+	}
+}
+
+func TestUpStopsRetryingOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	time.AfterFunc(400*time.Millisecond, cancel)
+
+	start := time.Now()
+	err := dbmigrate.Up(ctx, "postgres://svp:pw@"+pgretrytest.ClosedPort(t)+"/svp_video?sslmode=disable", fstest.MapFS{})
+	elapsed := time.Since(start)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Up() error = %v, want context.Canceled", err)
+	}
+	if elapsed > time.Second {
+		t.Errorf("Up() took %v after a cancel at 400ms, want under 1s", elapsed)
+	}
+}
+
+// testDatabaseURL returns the URL of a fresh, migrated test database.
+func testDatabaseURL(t *testing.T, name string) *url.URL {
+	t.Helper()
+	pool := pgtest.New(t, name, fstest.MapFS{"00001_create_items.sql": file(createItems)})
+	u, err := url.Parse(pool.Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
+// TestUpFailsFastOnConfigurationErrors: errors from the server are not retried.
+func TestUpFailsFastOnConfigurationErrors(t *testing.T) {
+	base := testDatabaseURL(t, "svp_dbmigrate_config_test")
+	missingDB := *base
+	missingDB.Path = "/svp_dbmigrate_missing_test"
+	missingRole := *base
+	missingRole.User = url.UserPassword("svp_dbmigrate_no_such_role", "pw")
+	wrongPassword := *base
+	wrongPassword.User = url.UserPassword(base.User.Username(), "wrong-password")
+
+	tests := []struct {
+		name     string
+		url      url.URL
+		sqlState string
+	}{
+		{name: "missing database", url: missingDB, sqlState: "3D000"},
+		{name: "missing role", url: missingRole, sqlState: "28000"},
+		{name: "wrong password", url: wrongPassword, sqlState: "28P01"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := pgretrytest.CaptureDefaultLog(t)
+			start := time.Now()
+			err := dbmigrate.Up(t.Context(), tt.url.String(), fstest.MapFS{"00001_create_items.sql": file(createItems)})
+			elapsed := time.Since(start)
+			if err == nil {
+				if tt.sqlState == "28P01" {
+					t.Skip("the local server trusts this connection and does not check passwords")
+				}
+				t.Fatal("Up() = nil, want a Postgres error")
+			}
+			if pgErr, ok := errors.AsType[*pgconn.PgError](err); !ok || pgErr.Code != tt.sqlState {
+				t.Errorf("Up() error = %v, want SQLSTATE %s", err, tt.sqlState)
+			}
+			if elapsed > time.Second {
+				t.Errorf("Up() took %v, want under 1s", elapsed)
+			}
+			if strings.Contains(logs.String(), "retrying") {
+				t.Errorf("a configuration error was retried:\n%s", logs)
+			}
+		})
+	}
+}
+
+// TestUpRetriesUntilDatabaseReachable: a database refused at first and reachable a second later,
+// like a new migrate Job on k3d, gets its migrations, and the log says after how many attempts.
+func TestUpRetriesUntilDatabaseReachable(t *testing.T) {
+	u := testDatabaseURL(t, "svp_dbmigrate_retry_test")
+	target := u.Host
+	u.Host = pgretrytest.DelayedProxy(t, target, time.Second)
+	logs := pgretrytest.CaptureDefaultLog(t)
+
+	fsys := fstest.MapFS{
+		"00001_create_items.sql": file(createItems),
+		"00002_add_name.sql":     file(addName),
+	}
+	if err := dbmigrate.Up(t.Context(), u.String(), fsys); err != nil {
+		t.Fatalf("Up() = %v", err)
+	}
+	if !strings.Contains(logs.String(), `"file":"00002_add_name.sql"`) {
+		t.Errorf("00002_add_name.sql not applied:\n%s", logs)
+	}
+
+	var connected struct {
+		Level     string `json:"level"`
+		Attempts  int    `json:"attempts"`
+		ElapsedMS int64  `json:"elapsed_ms"`
+	}
+	for line := range strings.Lines(logs.String()) {
+		if strings.Contains(line, `"msg":"database connected after retries"`) {
+			if err := json.Unmarshal([]byte(line), &connected); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if connected.Level != "INFO" || connected.Attempts < 2 || connected.ElapsedMS < 900 {
+		t.Errorf("connected line = %+v, want INFO with at least 2 attempts and about 1000 ms:\n%s", connected, logs)
+	}
+	if n := strings.Count(logs.String(), `"msg":"database not reachable, retrying"`); n != connected.Attempts-1 {
+		t.Errorf("logged %d retries, want %d (attempts - 1)", n, connected.Attempts-1)
+	}
+	// The test server's password may equal the user name, which the log names: look for the URL's
+	// user info instead.
+	if strings.Contains(logs.String(), u.User.String()+"@") {
+		t.Errorf("log leaks the URL's user info:\n%s", logs)
 	}
 }

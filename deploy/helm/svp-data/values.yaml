@@ -1,7 +1,8 @@
 # Data tier in namespace svp-data (docs/adr/0014-kubernetes-local-stage4.md, sections 3, 4, 5, 8, 9 and 10). Installed
 # by deploy/k8s/install.sh as wave 4 of deploy/argocd/apps/components.json: after the CloudNativePG operator and KEDA
-# (wave 2, whose CRDs its Cluster and ClusterTriggerAuthentication need) and Redpanda (wave 3), before observability and
-# the services. Every Secret it reads is written by deploy/k8s/secrets.sh from .env before this release; none is in git.
+# (wave 2, whose CRDs its Cluster and ClusterTriggerAuthentication need), Redpanda and the Barman Cloud plugin (wave 3,
+# whose CRD its ObjectStore needs), before observability and the services. Every Secret it reads is written by
+# deploy/k8s/secrets.sh from .env before this release; none is in git.
 
 postgres:
   # Major 15 like the host's Postgres the tests run on; minimal: no extension is needed.
@@ -10,6 +11,28 @@ postgres:
   resources:
     requests: {cpu: 100m, memory: 256Mi}
     limits: {cpu: "1", memory: 512Mi}
+  # WAL archiving and base backups to bucket pg-backups of MinIO through the Barman Cloud plugin (templates/backup.yaml;
+  # docs/adr/0020-reliability-stage6.md, section 5).
+  backup:
+    # The archive generation svp-pg writes its WAL and base backups to, a prefix of the bucket. A Cluster restored from
+    # backups must archive into a new, empty one (the recovery Job refuses an archive that already holds WAL, and two
+    # generations in one prefix would mix their backups), so each restore of make drill-k8s-backup starts the next
+    # generation, svp-pg-<yymmddhhmmss> (UTC), and deploy/k8s/install.sh passes the one the running Cluster uses with
+    # --set, so that make k8s-up keeps it. This default is the first generation's, that of a new cluster.
+    serverName: svp-pg
+    # The plugin's sidecar in the Postgres pod (and in the recovery Job's pod): Barman compresses and uploads WAL and
+    # base backups. The memory limit bounds the page cache a base backup fills (plugin issue #825).
+    sidecarResources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {memory: 256Mi}
+  # Set only by make drill-k8s-backup (deploy/k8s/drills/backup.sh), on the command line of the one upgrade that
+  # creates svp-pg again from its backups, never in a file: source is the archive generation to restore from (the one
+  # the deleted Cluster archived to), targetTime (RFC 3339) an optional point in time to stop the recovery at (PITR).
+  # CloudNativePG reads bootstrap only when it creates the first instance, so the next upgrade without these values
+  # removes them from the Cluster and changes nothing in the restored database.
+  recovery:
+    source: ""
+    targetTime: ""
 
 valkey:
   image: docker.io/valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
@@ -51,7 +74,7 @@ initJobs:
     requests: {cpu: 50m, memory: 64Mi}
     limits: {cpu: 500m, memory: 512Mi}
 
-# Who may reach the data pods (ADR section 3, "flows opened"). Pods are chosen by label, so the policies exist before
+# Who may reach the data pods (ADR-0014 section 3, "flows opened"). Pods are chosen by label, so the policies exist before
 # their clients do: the six services and their migrate Jobs are labelled app.kubernetes.io/name=<service>.
 clients:
   # Database of each service, by its pods and its migrate Job.

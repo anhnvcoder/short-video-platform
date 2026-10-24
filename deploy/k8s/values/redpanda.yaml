@@ -25,7 +25,7 @@ statefulset:
       # opens that egress only for pods with this label.
       svp-kube-api: allow
     spec:
-      # Pod Security "restricted" (ADR section 3): the chart's defaults only reach "baseline".
+      # Pod Security "restricted" (ADR-0014 section 3; the namespace rejects pods that do not meet it): the chart's defaults only reach "baseline".
       securityContext:
         runAsNonRoot: true
         runAsUser: 101

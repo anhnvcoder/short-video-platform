@@ -21,7 +21,7 @@ import {
 } from "./api";
 import { FeedFrame } from "./feed-frame";
 import { isMediaUrl } from "./media-url";
-import { ignoresShortcut, subscribeVisibility } from "./page-events";
+import { ignoresShortcut, subscribeLoad, subscribeVisibility } from "./page-events";
 import { PlayerPool, type PlaybackState } from "./player-pool";
 import { useFeed } from "./use-feed";
 import { useFollows } from "./use-follows";
@@ -126,6 +126,13 @@ export function FeedScreen({
     subscribeOnline,
     () => navigator.onLine,
     () => true,
+  );
+  // Neighbours render their posters only once the page has loaded: the next item sits inside the browser's lazy-load
+  // margin, so its poster would otherwise download beside the current one, the page's largest paint.
+  const loaded = useSyncExternalStore(
+    subscribeLoad,
+    () => document.readyState === "complete",
+    () => false,
   );
 
   const pool = useRef<PlayerPool | null>(null);
@@ -382,7 +389,7 @@ export function FeedScreen({
             item={item}
             index={index}
             current={index === active}
-            nearby={Math.abs(index - active) <= 1}
+            nearby={index === active || (loaded && Math.abs(index - active) === 1)}
             playback={playback[index]}
             pausedByUser={pausedIndex === index}
             muted={muted}
@@ -477,8 +484,8 @@ type FeedEntryProps = {
   item: FeedItemData;
   index: number;
   current: boolean;
-  // In the window of the player pool (the current item or a neighbour): only these render their poster, so a page of
-  // ten videos does not download ten images on load.
+  // The current item, or a neighbour in the window of the player pool once the page has loaded: only these render their
+  // poster, so a page of ten videos does not download ten images on load.
   nearby: boolean;
   playback: PlaybackState | undefined;
   pausedByUser: boolean;

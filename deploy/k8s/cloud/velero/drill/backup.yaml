@@ -1,0 +1,18 @@
+# Template of the drill's backup (deploy/k8s/cloud/velero/drill-restore.sh, step 2): the script replaces the name and
+# the namespace (svp-data here) and creates it with kubectl, so no velero CLI is needed. Kept as a file so that `make
+# cloud-check` validates it; `kubectl apply -f deploy/k8s/cloud/velero/` does not descend into this folder.
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  name: drill-svp-data
+  namespace: velero
+  labels:
+    svp-drill: velero-restore
+spec:
+  includedNamespaces:
+    - svp-data
+  excludedResources:
+    - secrets
+  snapshotVolumes: true
+  storageLocation: default
+  ttl: 72h0m0s

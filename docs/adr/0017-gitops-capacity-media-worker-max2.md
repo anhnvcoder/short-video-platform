@@ -1,6 +1,7 @@
 # 0017. media-worker tối đa 2 replica và tiêu chí ổn định (c): k3s server không restart trong diễn tập KEDA
 
-- Trạng thái: Chấp nhận
+- Trạng thái: Chấp nhận. Ghi chú 2026-10-24: phần kiểm lại dời "giai đoạn 7" (hai worker cùng transcode, RAM nghỉ) chuyển sang
+  giai đoạn 6b "Kiểm chứng dồn" (runner CI 16 GB hay VM thuê theo giờ, không dịch vụ AWS/GCP); quyết định không đổi
 - Ngày: 2026-10-21
 
 ## Bối cảnh
@@ -109,12 +110,12 @@ Chọn **C** (người học chọn ngày 2026-10-21).
   - RAM: cửa sổ 6 mẫu có 2 worker cùng transcode 8,46 GiB, mẫu cao nhất 8,54 GiB: đủ (a), không thấp hơn đỉnh 3 worker
     như dự báo. Nghỉ ở dòng RAM của mục "Kiểm chứng sau phát hành" trong ADR-0015: ở điểm đo của ADR-0014 §2 (60 s sau
     khi mọi pod Ready) cả hai cluster GitOps thiếu (b), MEM USAGE trừ `active_file` 7,17–7,18 GiB so với ngưỡng 6,5 GiB;
-    (b) chỉ đạt sau 70–90 phút (5,92–6,20 GiB). Chưa áp bước cắt nào; phần này kiểm lại ở giai đoạn cloud (7).
+    (b) chỉ đạt sau 70–90 phút (5,92–6,20 GiB). Chưa áp bước cắt nào; phần này kiểm lại ở giai đoạn 6b.
   - Máy host thiếu bộ nhớ suốt lúc đo (áp lực bộ nhớ của macOS ở mức cảnh báo, swap 15–17 GB); số đo không tách được
     phần do host và phần do VM.
   - Quyết định (người học, 2026-10-21): nhận (c) đạt 3/3, drill đạt 2/3, không đo lại ở local. Cluster local chứng minh
     logic scale 1 ↔ 2, scale down êm và transcode đúng một lần; lượt có 2 worker cùng transcode làm node server đứng ~40 s
-    là giới hạn của máy lab, ghi là rủi ro mở. Hai worker cùng transcode trên node thật kiểm ở giai đoạn 7.
+    là giới hạn của máy lab, ghi là rủi ro mở. Hai worker cùng transcode trên node thật kiểm ở giai đoạn 6b.
 - Xem lại khi:
   - (c) vẫn trượt với 2 worker: xét D (hạ limit CPU của worker) hay giảm CPU của thành phần khác, ghi bằng ADR mới.
   - Docker VM có thêm CPU, hay chuyển lên cluster cloud (giai đoạn 7) với node thật: tính lại `maxReplicaCount` theo CPU

@@ -188,6 +188,103 @@ wait_rollout() {
   ok "rollout $name Healthy"
 }
 
+# pg_backup_sets: sets the array pg_sets to the flag that keeps the archive generation of the running Cluster svp-pg,
+# for the upgrade of chart svp-data (docs/adr/0020-reliability-stage6.md, section 5). Each restore of make
+# drill-k8s-backup creates svp-pg again archiving into a new generation (value postgres.backup.serverName), and the
+# chart's default is the first generation's: an upgrade without the flag would point the restored Cluster's WAL
+# archiving back at the generation it was restored from, whose archive is not empty, and archiving would fail. As on
+# the rest of this path the value is passed with --set, never written to a file. A new cluster, or a Cluster made
+# before the backups (no serverName yet), gets the chart's default. A Cluster that is gone while Backups of it remain was
+# deleted after it had data (a restore drill stopped half way): the chart would create an empty database in its place,
+# so the script stops before chart svp-data is upgraded. So it does for a Cluster still being restored (bootstrap.recovery
+# set and not Ready yet): the upgrade would remove bootstrap.recovery and externalClusters, which the chart renders only
+# on the drill's own command line, while the restore still reads them.
+pg_backup_sets() {
+  local found server backups restoring origin
+  pg_sets=()
+  found=$(kc -n svp-data get clusters.postgresql.cnpg.io svp-pg --ignore-not-found -o name 2>/dev/null) || found=
+  if [ -n "$found" ]; then
+    restoring=$(kc -n svp-data get clusters.postgresql.cnpg.io svp-pg \
+      -o jsonpath='{.spec.bootstrap.recovery.source} {.status.conditions[?(@.type=="Ready")].status}') ||
+      fail "read Cluster svp-data/svp-pg"
+    case $restoring in
+      " "* | *" True") ;;
+      *)
+        # recovery.source names the entry of externalClusters; the generation is that entry's serverName.
+        origin=$(kc -n svp-data get clusters.postgresql.cnpg.io svp-pg \
+          -o jsonpath="{.spec.externalClusters[?(@.name==\"${restoring%% *}\")].plugin.parameters.serverName}") || origin=
+        fail "Cluster svp-data/svp-pg has bootstrap.recovery (restored from generation ${origin:-unknown}) and is not Ready: while the restore runs, installing svp-data would remove bootstrap.recovery, which it reads. Wait until it is Ready (kubectl --context k3d-svp -n svp-data wait --for=condition=Ready cluster/svp-pg --timeout=900s), then run make k8s-up again; a restore that fails: docs/runbooks/postgres-restore.md" ;;
+    esac
+    server=$(kc -n svp-data get clusters.postgresql.cnpg.io svp-pg \
+      -o jsonpath='{.spec.plugins[?(@.name=="barman-cloud.cloudnative-pg.io")].parameters.serverName}') ||
+      fail "read Cluster svp-data/svp-pg"
+    if [ -n "$server" ]; then
+      pg_sets=(--set-string "postgres.backup.serverName=$server")
+      ok "Postgres svp-pg keeps archive generation $server"
+    fi
+    return 0
+  fi
+  backups=$(kc -n svp-data get backups.postgresql.cnpg.io -o jsonpath='{range .items[?(@.spec.cluster.name=="svp-pg")]}{.metadata.name}{" "}{end}' 2>/dev/null) ||
+    backups=
+  [ -z "$backups" ] ||
+    fail "Cluster svp-data/svp-pg is missing while Backups of it remain (${backups% }): it was deleted after it had data, a restore drill stopped half way? Installing svp-data would create an empty database in its place. Finish the restore as docs/runbooks/postgres-restore.md says (make drill-k8s-backup printed its commands), or start over with no data: make k8s-down && make k8s-up"
+}
+
+# pg_base_backup: after chart svp-data, that Postgres svp-pg archives its WAL and that its archive generation has a base
+# backup to restore from (docs/adr/0020-reliability-stage6.md, section 5). On a new cluster ScheduledBackup svp-pg-daily
+# takes the first one at once (immediate; a hook of the chart, made once the minio-init Job has made bucket pg-backups
+# and its login). On the upgrade that adds the plugin to a Cluster made before it, though, CloudNativePG starts that
+# Backup on whichever primary pod is Ready, which may still be the old one, without the plugin's sidecar: the Backup
+# then fails, for good (CloudNativePG never retries one; the schedule's next run is at 03:00 UTC). So once the primary
+# runs the sidecar and no Backup of svp-pg is in progress, a generation with no successful base backup in the status of
+# ObjectStore svp-pg-backup gets one here. Then WAL archiving must work (condition ContinuousArchiving, which the WAL
+# switch of a base backup sets at the latest).
+pg_base_backup() {
+  local gen last name
+  wait_until 600 "the primary of Postgres svp-pg Ready with the Barman Cloud plugin's sidecar (kubectl --context k3d-svp -n svp-data get cluster svp-pg)" \
+    pg_primary_has_sidecar
+  wait_until 600 "every Backup of svp-pg in progress completed or failed (kubectl --context k3d-svp -n svp-data get backups)" \
+    pg_no_backup_running
+  gen=$(kc -n svp-data get clusters.postgresql.cnpg.io svp-pg \
+    -o jsonpath='{.spec.plugins[?(@.name=="barman-cloud.cloudnative-pg.io")].parameters.serverName}') && [ -n "$gen" ] ||
+    fail "read the archive generation of Cluster svp-data/svp-pg"
+  last=$(kc -n svp-data get objectstores.barmancloud.cnpg.io svp-pg-backup -o json |
+    jq -r --arg gen "$gen" '.status.serverRecoveryWindow[$gen].lastSuccessfulBackupTime // ""') ||
+    fail "read the status of ObjectStore svp-data/svp-pg-backup"
+  if [ -z "$last" ]; then
+    name=svp-pg-base-$(date -u +%Y%m%d%H%M%S)
+    pg_backup "$name"
+    last="Backup $name, taken now: generation $gen had none"
+  fi
+  wait_until 300 "Postgres svp-pg archives WAL (condition ContinuousArchiving True; docs/runbooks/postgres-wal-archiving-failing.md)" \
+    test_output True kc -n svp-data get clusters.postgresql.cnpg.io svp-pg \
+    -o jsonpath='{.status.conditions[?(@.type=="ContinuousArchiving")].status}'
+  ok "Postgres svp-pg archives WAL into generation $gen; last base backup: $last"
+}
+
+# pg_primary_has_sidecar: true when Cluster svp-pg is Ready and its current primary pod is Ready and has the plugin's
+# sidecar (init container plugin-barman-cloud, restartPolicy Always), which the operator adds only to the pods it makes
+# once the Cluster names the plugin. The Cluster's Ready alone may still be the one from before the upgrade.
+pg_primary_has_sidecar() {
+  local primary
+  [ "$(kc -n svp-data get clusters.postgresql.cnpg.io svp-pg -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')" = True ] ||
+    return 1
+  primary=$(kc -n svp-data get clusters.postgresql.cnpg.io svp-pg -o jsonpath='{.status.currentPrimary}') &&
+    [ -n "$primary" ] || return 1
+  [ "$(kc -n svp-data get pod "$primary" \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status} {.spec.initContainers[?(@.name=="plugin-barman-cloud")].name}')" = \
+    "True plugin-barman-cloud" ]
+}
+
+# pg_no_backup_running: true when no Backup of svp-pg is in a phase other than completed or failed (none yet, pending,
+# started, running and the like).
+pg_no_backup_running() {
+  local phases
+  phases=$(kc -n svp-data get backups.postgresql.cnpg.io \
+    -o jsonpath='{range .items[?(@.spec.cluster.name=="svp-pg")]}[{.status.phase}]{end}') || return 1
+  [ -z "$(printf '%s' "$phases" | sed -e 's/\[completed\]//g' -e 's/\[failed\]//g')" ]
+}
+
 # after_install NAME: what must hold after a component before the next wave may rely on it, beyond the pods --wait
 # already waited for.
 after_install() {
@@ -260,6 +357,7 @@ after_install() {
       ;;
     svp-data)
       restart_on_secret_change keda keda-operator keda-kafka
+      pg_base_backup
       ;;
     svp-observability)
       # GlitchTip reads Secret glitchtip-env only when it starts, like a service (its init Job, a hook of this release,
@@ -350,6 +448,10 @@ while IFS=$sep read -r name namespace wave path repo chart version values canary
     args+=("$chart" --repo "$repo" --version "$version")
   fi
   if [ -n "$values" ]; then args+=(--values "$repo_root/$values"); fi
+  if [ "$name" = svp-data ]; then
+    pg_backup_sets
+    args+=(${pg_sets[@]+"${pg_sets[@]}"})
+  fi
   watcher=
   # The Collector mounts ConfigMap otel-collector-config of chart svp-observability, which its own chart cannot
   # checksum, and reads it only when it starts: the checksum of the file that ConfigMap holds goes into the pod

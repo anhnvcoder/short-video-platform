@@ -43,8 +43,9 @@ spec:
   failurePolicy: Ignore
   {{- end }}
   # 30 s, the most the API server allows (Kyverno's default is 10). A verification Kyverno has not cached reaches
-  # Sigstore's TUF, GHCR and Rekor, and a single signature took 6-8 s on the lab's cluster; each image is verified twice
-  # (signature, then vuln attestation). Under Enforce a webhook call that times out refuses the pod.
+  # Sigstore's TUF and GHCR (Rekor is not called: the policy sets no ctlog, so Kyverno v1.19.1 checks the transparency
+  # log proof embedded in the signature bundle offline), and a single signature took 6-8 s on the lab's cluster; each
+  # image is verified twice (signature, then vuln attestation). Under Enforce a webhook call that times out refuses the pod.
   webhookConfiguration:
     timeoutSeconds: 30
   evaluation:

@@ -2,7 +2,8 @@
 
 - Trạng thái: Chấp nhận; hiện thực và đã kiểm trên máy ngày 2026-10-24 (compose và cluster k3d đường dev, mục "Kết quả
   phần C"); cluster GitOps với image web đã ký, canary web dưới traffic, diễn tập đầy đủ, đo RAM và cổng CI quét lockfile npm
-  dời giai đoạn 7 (mục 12)
+  dời giai đoạn 6b "Kiểm chứng dồn" (mục 12). Ghi chú 2026-10-24: trước ghi giai đoạn 7; giai đoạn 6b chạy trên runner CI 16 GB
+  hay VM thuê theo giờ, không cần dịch vụ AWS/GCP; quyết định không đổi
 - Ngày: 2026-10-22
 
 ## Bối cảnh
@@ -26,7 +27,7 @@
   - Valkey của cluster không mật khẩu, không persistence, `noeviction`, 64 MB; NetworkPolicy cho gateway và feed-service vào.
   - Container `web` của compose chạy root fs chỉ đọc qua e2e 68/68: server Next không ghi file nào.
 - Ràng buộc: máy 16 GB, tối đa **một buổi k3d đường dev** và một lượt compose `core` cho cả phần C; cluster GitOps, canary
-  dưới traffic, diễn tập đầy đủ và đo RAM dời giai đoạn 7 (mục 12). Repo và image công khai. Dependency npm chỉ trong danh
+  dưới traffic, diễn tập đầy đủ và đo RAM dời giai đoạn 6b (mục 12). Repo và image công khai. Dependency npm chỉ trong danh
   sách ADR-0016 §10.
 
 ## Kiểm chứng (đã kiểm ngày 2026-10-22)
@@ -178,7 +179,7 @@ Chọn image thứ bảy, build ID theo commit hay nội dung, khoá đặt lúc
   - Vì sao không đặt khoá cố định không bí mật lúc build để giữ id: nó chỉ bớt số lần lệch, không bỏ được đường tải lại (Next
     vẫn xoay id tối đa 14 ngày một lần kể cả khi code không đổi), mà thêm một khoá nằm trong repo, giống nhau ở mọi bản
     build và thành khoá mã hoá khi biến lúc chạy thiếu (compose với `.env` cũ chưa chạy lại `make env`). Đường tải lại cần
-    cho cả hai cách, nên chọn cách không thêm khoá. Xem lại khi số đo ở giai đoạn 7 cho thấy tải lại vì action là đáng kể.
+    cho cả hai cách, nên chọn cách không thêm khoá. Xem lại khi số đo ở giai đoạn 6b cho thấy tải lại vì action là đáng kể.
 
 ## 2. Release Helm `web`
 
@@ -211,7 +212,7 @@ Chọn image thứ bảy, build ID theo commit hay nội dung, khoá đặt lúc
   ServiceAccount, PSA `restricted`. **Không thư mục ghi được**: server không ghi file (mọi trang render theo request, ảnh không
   tối ưu, `.next/cache` rỗng), compose đã chạy `read_only` qua toàn bộ e2e.
 - **Resources:** request 100m / 128Mi, limit 1 CPU / 384Mi. Compose đo 53 MiB lúc nghỉ, 96 MiB sau e2e (chưa có OTel và SDK
-  Sentry server); limit để chỗ cho hai thứ đó, đo lại ở giai đoạn 7. Compose giữ `mem_limit: 256m`.
+  Sentry server); limit để chỗ cho hai thứ đó, đo lại ở giai đoạn 6b. Compose giữ `mem_limit: 256m`.
 - **Tắt êm:** `lifecycle.preStop.sleep` **5 s** (value `preStopSleepSeconds`, hành động `sleep` có sẵn của Kubernetes, không cần
   shell trong image distroless), `terminationGracePeriodSeconds` mặc định 30 s. Server standalone thoát ngay khi nhận SIGTERM;
   Envoy Gateway gửi thẳng tới IP pod theo EndpointSlice, nên trong lúc pod bị gỡ khỏi endpoint, request mới vẫn có thể tới. 5 s
@@ -280,7 +281,7 @@ Chọn image thứ bảy, build ID theo commit hay nội dung, khoá đặt lúc
   Next khuyên cho action). Test của phần web phủ hai lỗi và ba nơi gọi: mỗi lỗi một ca tải lại và một ca đã có khoá;
   loader bị từ chối vì lỗi tải chunk thì `player-pool.ts` gọi helper, đã có khoá thì báo lỗi, rồi video vẫn `error` như cũ.
 - 409 của action lệch bản là 4xx nên không vào mẫu số của phân tích canary, không làm abort.
-- Đo dưới traffic thật (số 404 asset, số lần tải lại vì chunk và vì action, abort hay promote) dời giai đoạn 7 (mục 12).
+- Đo dưới traffic thật (số 404 asset, số lần tải lại vì chunk và vì action, abort hay promote) dời giai đoạn 6b (mục 12).
 
 ## 4. NetworkPolicy của web (đóng WEB-13 ở k3d)
 
@@ -629,12 +630,14 @@ Chọn **Valkey chung db 9**, mở rộng phần chấp nhận của IN-7, ở l
   chứng) và phủ pod web ở FF-3, FF-4, IN-2; mục OPS-2 nhận thêm đúng HTTPRoute `svp/web` (`svp.localhost` tới `web`,
   `web-canary`) bên cạnh `svp/api` và `svp-data/s3`; `drill-obs-threats` thêm WEB-9.
 
-**Dời giai đoạn 7** (cloud hay buổi k3d đủ RAM, không chạy trên máy 16 GB ở phần C):
+**Dời giai đoạn 6b** (runner CI 16 GB hay VM thuê theo giờ, đủ RAM cho buổi k3d; không chạy trên máy 16 GB ở phần C):
 
 - Cluster GitOps chạy image `web` đã ký từ GHCR (cần push, CI phát hành, PR promote merge) và Kyverno Enforce từ chối image web
   chưa ký; source map của image CI (artifact theo kiến trúc, mục 9).
 - Canary của web dưới traffic diễn tập: promote bản tốt, abort bản lỗi, số 404 của `web-asset` và số lần client tải lại.
-- `make drill-k8s-threats` và `make drill-obs-threats` chạy đủ, gồm các ca WEB mới.
+- `make drill-k8s-threats` và `make drill-obs-threats` chạy đủ, gồm các ca WEB mới. Ghi chú 2026-10-24: `drill-k8s-threats` đã chạy
+  đủ trên cluster dev ở buổi k3d giai đoạn 6 (16/16 mục PASS ở hai lượt, gồm WEB-2, WEB-7, WEB-8, WEB-10, WEB-13; ADR-0020); còn
+  `drill-obs-threats` (WEB-9) và cluster GitOps.
 - Đo RAM của cluster có web (lúc nghỉ, đỉnh) và chỉnh `resources` của web.
 - Cổng CI quét lỗ hổng của `web/pnpm-lock.yaml` (cùng ngưỡng CRITICAL như cổng image): trivy trong image chỉ thấy 14 gói npm vì
   Turbopack gộp dependency của server vào chunk (mục 1), nên CVE của các gói đó hiện chỉ có Renovate đỡ.
@@ -676,7 +679,7 @@ Số RUM đến từ khoảng 74 lần tải trang của e2e (Playwright headles
 (report HTML, `results.json`, trace, video, ảnh màn, log mọi lệnh) và của buổi đầu (log nguyên nhân lỗi source map) nằm ở thư
 mục làm việc của máy, không commit (repo public, khoảng 300 MB mỗi buổi).
 
-**Chưa kiểm ở phần C:** các việc dời giai đoạn 7 ở mục 12 (cluster GitOps với image web đã ký, canary web dưới traffic, diễn tập
+**Chưa kiểm ở phần C:** các việc dời giai đoạn 6b ở mục 12 (cluster GitOps với image web đã ký, canary web dưới traffic, diễn tập
 đầy đủ, đo RAM, cổng CI quét lockfile npm); CI build, ký và promote image `web` kiểm sau push.
 
 ## Hệ quả
@@ -702,6 +705,6 @@ mục làm việc của máy, không commit (repo public, khoảng 300 MB mỗi 
     bật `TRUST_TRACE_CONTEXT`; asset ra bucket/CDN giữ nhiều bản (hết 404 khi lệch); map của image CI.
   - GlitchTip nhận được map theo cách khác debug ID, hay `glitchtip-cli` ổn định: xét bỏ polyfill debug ID (đỡ khoảng 1,5 kB).
   - Có tải thật (k6 giai đoạn 6): đặt SLO INP p75, HPA cho web, ngưỡng p99 canary theo số đo.
-  - Số lần tải lại vì action lệch bản (đo ở giai đoạn 7) là đáng kể, hay cluster có node khác kiến trúc (hai bản của một
+  - Số lần tải lại vì action lệch bản (đo ở giai đoạn 6b) là đáng kể, hay cluster có node khác kiến trúc (hai bản của một
     commit cùng `deploymentId` nhưng khác id action và chunk, nên Next không thấy lệch khi điều hướng và đường tải lại chỉ đỡ
     một lần): xét khoá cố định không bí mật lúc build để id action ít đổi (mục 1).

@@ -56,6 +56,63 @@ authedTest(
   },
 );
 
+// The next item's poster sits inside the browser's lazy-load margin, so it would download beside the current poster,
+// the page's largest paint. The next item gets it two ways, each held back: its <img> renders only after the window's
+// load event, which waits for the current poster; the player's <video> for it, which carries the same poster, waits for
+// the current video to play (features/feed/player-pool.ts). The routes hold every poster and playlist so the test fixes
+// the order of the two, and it reads the page rather than resource timing: an image the <video> fetched first is
+// reused by the <img> without an entry of its own.
+authedTest(
+  "the next item's poster waits for the current video to play, its image for the load event",
+  async ({ page }) => {
+    const posters: string[] = [];
+    let releasePlaylists = () => {};
+    const playlistsHeld = new Promise<void>((resolve) => (releasePlaylists = resolve));
+    let releasePosters = () => {};
+    const postersHeld = new Promise<void>((resolve) => (releasePosters = resolve));
+    await page.route(
+      (url) => url.pathname.endsWith(".m3u8"),
+      async (route) => {
+        await playlistsHeld;
+        await route.continue();
+      },
+    );
+    await page.route(
+      (url) => url.pathname.endsWith("/thumbnail.jpg"),
+      async (route) => {
+        posters.push(route.request().url());
+        await postersHeld;
+        await route.continue();
+      },
+    );
+
+    // The held poster keeps the load event from firing: the navigation waits for the document only.
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    const src = await feedItem(page, 0).locator("img").getAttribute("src");
+    expect(src).toBeTruthy();
+    const current = new URL(src ?? "").href;
+    // Hydrated: the player moved a <video> into the current item. Its playlist is held, so it cannot play, and nothing
+    // has asked for another poster.
+    await expect(feedItem(page, 0).locator("video")).toHaveCount(1);
+    await expect.poll(() => posters.includes(current), { message: "the current poster's request" }).toBe(true);
+    await expect(feedItem(page, 1).locator("video")).toHaveCount(0);
+    await expect(feedItem(page, 1).locator("img")).toHaveCount(0);
+    expect(new Set(posters)).toEqual(new Set([current]));
+
+    // The current video plays while its poster is still held: the player gives the next item its <video>, and the next
+    // item's <img> still waits for the load event.
+    releasePlaylists();
+    await expect(playingVideo(feedItem(page, 0))).toHaveCount(1);
+    await expect(feedItem(page, 1).locator("video")).toHaveCount(1);
+    expect(await page.evaluate(() => document.readyState)).not.toBe("complete");
+    await expect(feedItem(page, 1).locator("img")).toHaveCount(0);
+
+    // The current poster arrives, the page loads, and the next item's <img> follows.
+    releasePosters();
+    await expect(feedItem(page, 1).locator("img")).toHaveAttribute("src", /\/thumbnail\.jpg$/);
+  },
+);
+
 // Logs a fresh user in, likes the first video of Explore and opens Following; returns when Explore rendered (ms since
 // the epoch, taken as the page showed, so the server rendered it a little earlier).
 async function likeThenOpenFollowing(page: Page): Promise<number> {

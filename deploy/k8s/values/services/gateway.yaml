@@ -45,7 +45,7 @@ httpRoute:
   host: api.svp.localhost
   # The name the gateway's route always had: the canary drills, measure-canary and Argo CD read HTTPRoute api.
   name: api
-# A Rollout with an analysed canary instead of a Deployment (ADR section 13): a new revision gets 25%, then 50% of the
+# A Rollout with an analysed canary instead of a Deployment (ADR-0014 section 13): a new revision gets 25%, then 50% of the
 # requests through Envoy before it is promoted, and a canary whose 5xx or p99 Envoy measures above the limits is aborted
 # without a person. `make k8s-up` runs drill traffic while a canary is in progress (deploy/k8s/install.sh).
 canary: true

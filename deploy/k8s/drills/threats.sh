@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Drill: the stage 4 rows of the threat model (docs/threat-model.md, section 5) on cluster svp
-# (docs/adr/0014-kubernetes-local-stage4.md, sections 3 to 5 and 8 to 10), and the web client's rows of stage 5b part C
-# (section 4.9; docs/adr/0019-web-k3d-supply-chain-observability.md). Every item prints ok and FAIL lines, and
+# (docs/adr/0014-kubernetes-local-stage4.md, sections 3 to 5 and 8 to 10), the web client's rows of stage 5b part C
+# (section 4.9; docs/adr/0019-web-k3d-supply-chain-observability.md) and the stage 6 row of the backups of Postgres
+# (BAK-1, section 4.10; docs/adr/0020-reliability-stage6.md, section 5). Every item prints ok and FAIL lines, and
 # "ok    control:" lines: a target a check finds closed answers a client the policy lets in, so "closed" means the
 # policy, not a service that is down. An item that fails does not stop the next ones; a table of PASS/FAIL per item
 # ends the run, which exits non-zero when any failed:
@@ -38,7 +39,7 @@
 #              a container in each of those ways, while a container with an ordinary Secret as a volume and in envFrom
 #              passes; a server-side dry run of a root pod in svp is Forbidden while a restricted one is admitted;
 #   IN-9       the pg_hba rules of the primary have no trust, every TCP rule is scram-sha-256 or cert, the last rule is
-#              host all all all scram-sha-256 (CloudNativePG's default, ADR section 4); from GlitchTip's pod (allowed
+#              host all all all scram-sha-256 (CloudNativePG's default, ADR-0014 section 4); from GlitchTip's pod (allowed
 #              to 5432) a connection without a password, as postgres and as svp_user_app, with and without TLS, is
 #              refused with "no password supplied", a wrong password with "password authentication failed"; inside
 #              the primary, TCP to 127.0.0.1 without a password is refused too (the stage 1 hole of the host's
@@ -50,7 +51,7 @@
 #              second the decisions spread over (the bucket refills one per second; the spread is read from the
 #              login-email keys, which hold the time of each decision), and the rest get 429 RATE_LIMITED, at least
 #              one; the login-email key of every email that passed exists and of none that got 429 (so the 429 came
-#              from login-ip, which is checked first); the login-ip keys added are at most 2 (k3d: one per node, ADR
+#              from login-ip, which is checked first); the login-ip keys added are at most 2 (k3d: one per node, ADR-0014
 #              section 9), on the pod network 10.42.0.0/16, none for a forged address. These are judged on an
 #              attempt in which no login decision fell back to a gateway pod's in-memory limiter (a Valkey call over
 #              the gateway's 50 ms takes that path, with its own burst per pod): on every gateway pod, the fallback
@@ -73,11 +74,18 @@
 #              (can-i asked without a name says no to a Role that grants only named objects). Controls: the rule check
 #              flags exactly the named, the watch and the wildcard rules of a sample review, and finds the Argo
 #              Rollouts controller's right to list pods in svp, to which can-i says yes as well. Operators: the
-#              CloudNativePG operator may get and list Secrets, create pods and exec into them in cnpg-system and
-#              svp-data only, the Envoy Gateway controller get and list Secrets in the namespaces it watches only
+#              CloudNativePG operator may get and list Secrets in cnpg-system and svp-data only, create pods, exec
+#              into them, patch Deployments, create ServiceAccounts and delete Secrets in svp-data only, and create a
+#              ServiceAccount token nowhere; as it, in cnpg-system (server-side dry runs), a token Secret for
+#              ServiceAccount plugin-barman-cloud, the same named cnpg-ca-secret and an Opaque Secret of another name
+#              are refused by ValidatingAdmissionPolicy svp-cnpg-operator-secrets, and so is a label on another TLS
+#              Secret there (controls: as it, an Opaque cnpg-ca-secret passes the policy and is AlreadyExists, a
+#              label on cnpg-webhook-cert passes; as the drill's admin, the token Secret is admitted); the Envoy
+#              Gateway controller get and list Secrets in the namespaces it watches only
 #              (envoy-gateway-system, svp, svp-data, svp-edge) and patch pods nowhere, Kyverno's admission and reports
 #              controllers get and list Secrets in kyverno only, neither cluster-wide (can-i in every namespace and
-#              -A); the exceptions (cert-manager, Argo CD, Kyverno) are printed as info with their reason;
+#              -A); the exceptions (cert-manager, Argo CD, Kyverno, the Barman Cloud plugin) are printed as info with
+#              their reason;
 #   PSA-platform every namespace but kube-system, kube-public, kube-node-lease and default (the platform charts'
 #              included: cert-manager, envoy-gateway-system, cnpg-system, keda, argo-rollouts, kyverno, argocd on the
 #              GitOps path) enforces PSA restricted at the podSecurityVersion of chart svp-cluster, and every
@@ -125,7 +133,17 @@
 #              every 401 left its login-email key; the login-ip keys added are 1 or 2, on the pod network of a node and
 #              none the address of a web pod (which would put every web user in one bucket), no key is for a forged
 #              address, and the login-email key of every login that passed names one of those addresses: the gateway
-#              counts the address Envoy wrote, which the web client passes on unchanged.
+#              counts the address Envoy wrote, which the web client passes on unchanged;
+#   BAK-1      S3 requests to MinIO through Envoy (https://s3.svp.localhost:8443), signed (AWS Signature V4) with the
+#              MinIO logins of Secrets svp-data/pg-backup-s3 and svp-data/minio-users (in private curl config files,
+#              never on a command line): svp-pg-backup may neither list buckets uploads and media nor read an object
+#              there, 403 AccessDenied (media's objects are public to anonymous GETs by design, UP-6: this checks the
+#              user's own policy), and svp-video-service and svp-media-worker may neither list pg-backups nor read an
+#              object there. The objects read are a name of this run, which exists nowhere: MinIO answers 404 NoSuchKey
+#              where the user may read and 403 AccessDenied where not, so nothing of a backup is downloaded. Controls:
+#              svp-pg-backup lists pg-backups (200) and reads there (404 NoSuchKey), each service's user reads its
+#              own prefix uploads/uploads/ (404 NoSuchKey). Other pods cannot reach MinIO (IN-2, FF-5, WEB-13), and
+#              the Barman Cloud plugin's RBAC is printed with its reason (RBAC).
 #
 # Test records: the drill writes one empty record (key drill-threats-<run>, header svp-drill=threats) to the
 # dead-letter topic of each user that has one; nothing consumes a dead-letter topic, and the dead-letter metric is
@@ -172,10 +190,13 @@ if [[ -z ${SVP_THREATS_LOG:-} ]]; then
   {
     kc -n svp-data get secret kafka-users -o json | jq -r '.data[] | @base64d'
     kc -n svp-obs get secret grafana-admin -o json | jq -r '.data["admin-password"] | @base64d'
+    kc -n svp-data get secret pg-backup-s3 -o json | jq -r '.data.ACCESS_SECRET_KEY | @base64d'
+    kc -n svp-data get secret minio-users -o json |
+      jq -r '.data.SVP_VIDEO_S3_SECRET_KEY, .data.SVP_MEDIA_WORKER_S3_SECRET_KEY | @base64d'
   } | grep -v '^$' >"$values" || true
   n=$(wc -l <"$values" | tr -d ' ')
-  if ((n < 7)); then
-    echo "FAIL  SECRETS: read the 7 Secret values the drill used (6 Kafka users, Grafana admin) to search its output (got $n)" | tee -a "$log" >&2
+  if ((n < 10)); then
+    echo "FAIL  SECRETS: read the 10 Secret values the drill used (6 Kafka users, Grafana admin, 3 MinIO users) to search its output (got $n)" | tee -a "$log" >&2
     exit 1
   fi
   leaks=$(grep -c -F -f "$values" "$log" || true)
@@ -183,7 +204,7 @@ if [[ -z ${SVP_THREATS_LOG:-} ]]; then
     echo "FAIL  SECRETS: $leaks line(s) of the drill's output hold one of the $n Secret values it read (${log#"$repo_root"/})" | tee -a "$log" >&2
     exit 1
   fi
-  echo "ok    SECRETS: none of the $n Secret values the drill read (6 Kafka users, Grafana admin) is in its output (${log#"$repo_root"/})" | tee -a "$log"
+  echo "ok    SECRETS: none of the $n Secret values the drill read (6 Kafka users, Grafana admin, 3 MinIO users) is in its output (${log#"$repo_root"/})" | tee -a "$log"
   exit "$rc"
 fi
 
@@ -1107,8 +1128,15 @@ rbac() {
   local cnpg="cnpg-system svp-data" eg="envoy-gateway-system svp svp-data svp-edge"
   operator_scope cnpg-system/cloudnative-pg "$cnpg" "get secrets" get secrets
   operator_scope cnpg-system/cloudnative-pg "$cnpg" "list secrets" list secrets
-  operator_scope cnpg-system/cloudnative-pg "$cnpg" "create pods" create pods
-  operator_scope cnpg-system/cloudnative-pg "$cnpg" "exec into pods" create pods --subresource=exec
+  # In cnpg-system, beside the Barman Cloud plugin whose ServiceAccount reads every Secret of the cluster, the
+  # operator reads, and writes only its PKI Secrets, events and Lease: nothing that runs code as that ServiceAccount.
+  operator_scope cnpg-system/cloudnative-pg svp-data "create pods" create pods
+  operator_scope cnpg-system/cloudnative-pg svp-data "exec into pods" create pods --subresource=exec
+  operator_scope cnpg-system/cloudnative-pg svp-data "patch deployments" patch deployments
+  operator_scope cnpg-system/cloudnative-pg svp-data "create serviceaccounts" create serviceaccounts
+  operator_scope cnpg-system/cloudnative-pg svp-data "delete secrets" delete secrets
+  operator_scope cnpg-system/cloudnative-pg "" "create serviceaccount tokens" create serviceaccounts --subresource=token
+  cnpg_secrets
   operator_scope envoy-gateway-system/envoy-gateway "$eg" "get secrets" get secrets
   operator_scope envoy-gateway-system/envoy-gateway "$eg" "list secrets" list secrets
   operator_scope envoy-gateway-system/envoy-gateway "" "patch pods" patch pods
@@ -1132,7 +1160,55 @@ rbac() {
   info "RBAC exception: Envoy Gateway reads the Secrets of svp and svp-data, which it watches for routes api and s3 (its Secret cache covers every watched namespace; deploy/k8s/values/envoy-gateway.yaml)"
   info "RBAC exception: cert-manager's controller and cainjector read Secrets in every namespace, cainjector patches every webhook configuration, the controller creates pods in every namespace (Certificates in cert-manager, svp-edge, keda and cnpg-system, ClusterIssuers svp-selfsigned and svp-ca; deploy/k8s/values/cert-manager.yaml); its pods are held to PSA restricted everywhere but kube-system (PSA-platform)"
   info "RBAC exception: Argo CD's application controller and server (GitOps path) hold rights on every resource of the cluster, Secrets included: they apply every chart (ADR-0014 section 12)"
+  info "RBAC exception: the Barman Cloud plugin (cnpg-system/plugin-barman-cloud, backups of Postgres svp-pg) reads, creates and deletes the Secrets of every namespace, the JWT signing key of svp included, and creates Roles and RoleBindings everywhere: its manager caches the whole cluster with no flag to narrow it, so a Role per namespace as for CloudNativePG would leave it failing on permissions (threat model BAK-1, accepted for the lab; deploy/k8s/values/plugin-barman-cloud.yaml); the CloudNativePG operator beside it in cnpg-system may neither run code as its ServiceAccount nor get it a token (checked above)"
   info "RBAC exception: Kyverno's admission controller creates, patches and deletes every webhook configuration and validating admission policy of the cluster: it registers the webhooks of its policies itself (a taken-over controller could send itself any request, or drop the image policy's webhook); its reports controller reads the pods of every namespace (what the policy matches; the chart's view binding is off, deploy/k8s/values/kyverno.yaml)"
+}
+
+# cnpg_secrets: the CloudNativePG operator may create Secrets in cnpg-system (its CA, cnpg-ca-secret, made at start),
+# and RBAC cannot narrow create by name, so ValidatingAdmissionPolicy svp-cnpg-operator-secrets (chart svp-cluster,
+# templates/cnpg-rbac.yaml) keeps its writes there to cnpg-ca-secret and cnpg-webhook-cert. Server-side dry runs, as
+# the operator's ServiceAccount but for one control: nothing is written.
+cnpg_secrets() {
+  local as=--as=system:serviceaccount:cnpg-system:cloudnative-pg vap="ValidatingAdmissionPolicy 'svp-cnpg-operator-secrets'"
+  local name type what out tls
+  while read -r name type what; do
+    out=$(cnpg_secret "$name" "$type" | kc create --dry-run=server -f - "$as" 2>&1 || true)
+    [[ $out == *"$vap"*denied* ]] &&
+      ok "RBAC: cnpg-system/cloudnative-pg may not create $what in cnpg-system (refused by $vap)" ||
+      miss "RBAC: cnpg-system/cloudnative-pg may not create $what in cnpg-system, refused by $vap (got: $(head -n 1 <<<"$out"))"
+  done <<'CASES'
+drill-plugin-token kubernetes.io/service-account-token a token Secret for ServiceAccount plugin-barman-cloud
+cnpg-ca-secret kubernetes.io/service-account-token that token Secret named cnpg-ca-secret
+drill-opaque Opaque an Opaque Secret of a name other than cnpg-ca-secret
+CASES
+  out=$(cnpg_secret cnpg-ca-secret Opaque | kc create --dry-run=server -f - "$as" 2>&1 || true)
+  [[ ($out == *AlreadyExists* || $out == *'already exists'*) && $out != *"$vap"* ]] &&
+    control "as the operator, an Opaque cnpg-ca-secret passes $vap and is refused only as AlreadyExists" ||
+    miss "control: as the operator, an Opaque cnpg-ca-secret passes $vap and is AlreadyExists (got: $(head -n 1 <<<"$out"))"
+  out=$(cnpg_secret drill-plugin-token kubernetes.io/service-account-token | kc create --dry-run=server -f - 2>&1 || true)
+  [[ $out == *'created (server dry run)'* ]] &&
+    control "as the drill's admin, the same token Secret is admitted in cnpg-system: the policy holds the operator only" ||
+    miss "control: as the drill's admin, the token Secret is admitted in cnpg-system (got: $(head -n 1 <<<"$out"))"
+  tls=$(kc -n cnpg-system get secrets --field-selector type=kubernetes.io/tls -o name |
+    grep -vx 'secret/cnpg-webhook-cert' | head -n 1 || true)
+  if [[ -z $tls ]]; then
+    miss "RBAC: cnpg-system holds a TLS Secret other than cnpg-webhook-cert (the Barman Cloud plugin's) to update as the operator"
+  else
+    out=$(kc -n cnpg-system label "$tls" svp-drill=threats --dry-run=server "$as" 2>&1 || true)
+    [[ $out == *"$vap"*denied* ]] &&
+      ok "RBAC: cnpg-system/cloudnative-pg may not update $tls in cnpg-system (refused by $vap)" ||
+      miss "RBAC: cnpg-system/cloudnative-pg may not update $tls in cnpg-system, refused by $vap (got: $(head -n 1 <<<"$out"))"
+  fi
+  out=$(kc -n cnpg-system label secret/cnpg-webhook-cert svp-drill=threats --dry-run=server "$as" 2>&1 || true)
+  [[ $out == *'labeled (server dry run)'* ]] &&
+    control "as the operator, an update of cnpg-webhook-cert passes $vap" ||
+    miss "control: as the operator, an update of cnpg-webhook-cert passes $vap (got: $(head -n 1 <<<"$out"))"
+}
+
+# cnpg_secret NAME TYPE: Secret NAME of type TYPE in cnpg-system naming ServiceAccount plugin-barman-cloud, as JSON.
+cnpg_secret() {
+  jq -n --arg name "$1" --arg type "$2" '{apiVersion: "v1", kind: "Secret", type: $type, metadata: {name: $name,
+    namespace: "cnpg-system", annotations: {"kubernetes.io/service-account.name": "plugin-barman-cloud"}}}'
 }
 
 # operator_scope NAMESPACE/SA ALLOWED LABEL CAN-I-ARGS...: kubectl auth can-i CAN-I-ARGS as ServiceAccount
@@ -1158,6 +1234,60 @@ operator_scope() {
   else
     ok "RBAC: $sa may $label in no namespace and not cluster-wide"
   fi
+}
+
+# bak1_s3 CONFIG PATH: GET PATH of MinIO through Envoy, signed with AWS Signature V4 (MinIO's region us-east-1) as the
+# user whose login the private curl config CONFIG holds; prints "STATUS CODE", CODE the S3 error code of the answer
+# ("-" when it has none). The body stays in $work.
+bak1_s3() {
+  local status code
+  : >"$work/bak1.out"
+  status=$(curl -s --max-time 10 -o "$work/bak1.out" -w '%{http_code}' -K "$1" --aws-sigv4 aws:amz:us-east-1:s3 \
+    "$s3_origin$2" || true)
+  code=$(sed -n 's:.*<Code>\([A-Za-z]*\)</Code>.*:\1:p' "$work/bak1.out" | sed -n 1p)
+  echo "$status ${code:--}"
+}
+
+# bak1_expect CONFIG USER PATH WANT WHAT: one request of bak1_s3 whose answer must be WANT; a refusal (403 AccessDenied)
+# is a check of BAK-1, anything else a control.
+bak1_expect() {
+  local got
+  got=$(bak1_s3 "$1" "$3")
+  if [[ $4 == "403 AccessDenied" ]]; then
+    [[ $got == "$4" ]] && ok "BAK-1: $2 $5 GET $3: $got" || miss "BAK-1: $2 $5 GET $3 is $4 (got $got)"
+  else
+    [[ $got == "$4" ]] && control "$2 $5 GET $3: $got" || miss "control: $2 $5 GET $3 is $4 (got $got)"
+  fi
+}
+
+# bak1: the MinIO user of the backups of Postgres reads bucket pg-backups only, and no service's user reads that bucket
+# (threat model BAK-1).
+bak1() {
+  local obj=drill-threats-$run_id user
+  # The logins go to curl in private config files of $work, never on a command line, and are deleted at the end.
+  kc -n svp-data get secret pg-backup-s3 -o json |
+    jq -r '"user = \(((.data.ACCESS_KEY_ID | @base64d) + ":" + (.data.ACCESS_SECRET_KEY | @base64d)) | @json)"' \
+      >"$work/bak1-svp-pg-backup.curl" || fail "BAK-1: read the login of svp-pg-backup from Secret svp-data/pg-backup-s3"
+  kc -n svp-data get secret minio-users -o json | jq -r '
+    "user = \(("svp-video-service:" + (.data.SVP_VIDEO_S3_SECRET_KEY | @base64d)) | @json)"' \
+    >"$work/bak1-svp-video-service.curl" || fail "BAK-1: read the login of svp-video-service from Secret svp-data/minio-users"
+  kc -n svp-data get secret minio-users -o json | jq -r '
+    "user = \(("svp-media-worker:" + (.data.SVP_MEDIA_WORKER_S3_SECRET_KEY | @base64d)) | @json)"' \
+    >"$work/bak1-svp-media-worker.curl" || fail "BAK-1: read the login of svp-media-worker from Secret svp-data/minio-users"
+
+  user=svp-pg-backup
+  bak1_expect "$work/bak1-$user.curl" "$user" "/pg-backups?list-type=2&max-keys=1" "200 -" "lists its bucket"
+  bak1_expect "$work/bak1-$user.curl" "$user" "/pg-backups/$obj" "404 NoSuchKey" "reads its bucket"
+  bak1_expect "$work/bak1-$user.curl" "$user" "/uploads?list-type=2&max-keys=1" "403 AccessDenied" "lists no bucket of the services:"
+  bak1_expect "$work/bak1-$user.curl" "$user" "/uploads/uploads/$obj" "403 AccessDenied" "reads no bucket of the services:"
+  bak1_expect "$work/bak1-$user.curl" "$user" "/media?list-type=2&max-keys=1" "403 AccessDenied" "lists no bucket of the services:"
+  bak1_expect "$work/bak1-$user.curl" "$user" "/media/media/$obj" "403 AccessDenied" "reads no bucket of the services:"
+  for user in svp-video-service svp-media-worker; do
+    bak1_expect "$work/bak1-$user.curl" "$user" "/uploads/uploads/$obj" "404 NoSuchKey" "reads its own prefix"
+    bak1_expect "$work/bak1-$user.curl" "$user" "/pg-backups?list-type=2&max-keys=1" "403 AccessDenied" "lists no backup:"
+    bak1_expect "$work/bak1-$user.curl" "$user" "/pg-backups/$obj" "403 AccessDenied" "reads no backup:"
+  done
+  rm -f "$work"/bak1-*.curl
 }
 
 ops1() {
@@ -1985,6 +2115,7 @@ run_item WEB-13 web13
 run_item RL-1 rl1
 run_item WEB-8 web8
 run_item PSA-platform psa_platform
+run_item BAK-1 bak1
 
 echo
 echo "drill-k8s-threats ($run_id)"

@@ -23,8 +23,8 @@
   "ignorePaths": ["deploy/k8s/values/services/**", "deploy/ci/drill/**", "gen/**"],
   "postUpdateOptions": ["gomodTidy", "gomodUpdateImportPaths", "pnpmDedupe"],
   "helm-values": {
-    "description": "Also the values files of the platform charts, which are not named values.yaml. Their image pins are repository + tag: <version>@sha256:<digest>, or an image: string with both. The services' values (deploy/k8s/values/services/) belong to the promote pull requests and are ignored above.",
-    "managerFilePatterns": ["/^deploy/k8s/values/[^/]+\\.ya?ml$/"]
+    "description": "Also the values files of the platform charts and of the charts installed only on the cloud cluster (deploy/k8s/cloud/values/), which are not named values.yaml. Their image pins are repository + tag: <version>@sha256:<digest>, or an image: string with both. The services' values (deploy/k8s/values/services/) belong to the promote pull requests and are ignored above.",
+    "managerFilePatterns": ["/^deploy/k8s/values/[^/]+\\.ya?ml$/", "/^deploy/k8s/cloud/values/[^/]+\\.ya?ml$/"]
   },
   "customManagers": [
     {
@@ -56,9 +56,9 @@
       ]
     },
     {
-      "description": "Chart values whose image key does not end in 'image', so helm-values does not see them (KEDA, Tempo): the annotation, then 'tag: <version>@sha256:<digest>'.",
+      "description": "Chart values whose image key does not end in 'image', so helm-values does not see them (KEDA, Tempo, and charts of the cloud cluster that only take a tag): the annotation, then 'tag: <version>@sha256:<digest>'.",
       "customType": "regex",
-      "managerFilePatterns": ["/^deploy/k8s/values/[^/]+\\.ya?ml$/"],
+      "managerFilePatterns": ["/^deploy/k8s/values/[^/]+\\.ya?ml$/", "/^deploy/k8s/cloud/values/[^/]+\\.ya?ml$/"],
       "matchStrings": [
         "#[ \\t]*renovate:[ \\t]*datasource=(?<datasource>[a-z-]+)[ \\t]+depName=(?<depName>\\S+)[ \\t]*\\n[ \\t]*tag:[ \\t]*(?<currentValue>[^@\\s\"']+)@(?<currentDigest>sha256:[0-9a-f]{64})[ \\t]*\\n"
       ]
@@ -82,18 +82,18 @@
       "datasourceTemplate": "docker"
     },
     {
-      "description": "Charts of the platform components from a Helm repository: repo, chart and version of each entry of components.json.",
+      "description": "Charts of the platform components from a Helm repository: repo, chart and version of each entry of components.json, and of deploy/k8s/cloud/charts.json (charts installed only on the cloud cluster, same fields).",
       "customType": "regex",
-      "managerFilePatterns": ["/^deploy/argocd/apps/components\\.json$/"],
+      "managerFilePatterns": ["/^deploy/argocd/apps/components\\.json$/", "/^deploy/k8s/cloud/charts\\.json$/"],
       "matchStrings": [
         "\"repo\":\\s*\"(?<registryUrl>https://[^\"]+)\",\\s*\"chart\":\\s*\"(?<depName>[^\"]+)\",\\s*\"version\":\\s*\"(?<currentValue>[^\"]+)\""
       ],
       "datasourceTemplate": "helm"
     },
     {
-      "description": "Charts of the platform components from an OCI registry (repo oci://<registry>/<path>): an OCI artifact, looked up as <registry>/<path>/<chart> on the docker datasource.",
+      "description": "Charts of the platform components from an OCI registry (repo oci://<registry>/<path>): an OCI artifact, looked up as <registry>/<path>/<chart> on the docker datasource. Same for deploy/k8s/cloud/charts.json.",
       "customType": "regex",
-      "managerFilePatterns": ["/^deploy/argocd/apps/components\\.json$/"],
+      "managerFilePatterns": ["/^deploy/argocd/apps/components\\.json$/", "/^deploy/k8s/cloud/charts\\.json$/"],
       "matchStrings": [
         "\"repo\":\\s*\"oci://(?<ociRepo>[^\"]+)\",\\s*\"chart\":\\s*\"(?<chart>[^\"]+)\",\\s*\"version\":\\s*\"(?<currentValue>[^\"]+)\""
       ],
@@ -207,6 +207,8 @@
     { "matchFileNames": ["deploy/argocd/apps/components.json"], "matchDepNames": ["docker.io/envoyproxy/gateway-helm"], "groupName": "envoy-gateway chart" },
     { "matchFileNames": ["deploy/k8s/values/cloudnative-pg.yaml"], "groupName": "cloudnative-pg chart" },
     { "matchFileNames": ["deploy/argocd/apps/components.json"], "matchDepNames": ["cloudnative-pg"], "groupName": "cloudnative-pg chart" },
+    { "matchFileNames": ["deploy/k8s/values/plugin-barman-cloud.yaml"], "groupName": "plugin-barman-cloud chart" },
+    { "matchFileNames": ["deploy/argocd/apps/components.json"], "matchDepNames": ["plugin-barman-cloud"], "groupName": "plugin-barman-cloud chart" },
     { "matchFileNames": ["deploy/k8s/values/keda.yaml"], "groupName": "keda chart" },
     { "matchFileNames": ["deploy/argocd/apps/components.json"], "matchDepNames": ["keda"], "groupName": "keda chart" },
     { "matchFileNames": ["deploy/k8s/values/argo-rollouts.yaml"], "groupName": "argo-rollouts chart" },
@@ -251,6 +253,15 @@
       ],
       "groupName": "elastic stack"
     },
+    {
+      "description": "Charts of the cloud cluster only (Chaos Mesh, Velero; docs/adr/0020-reliability-stage6.md, sections 6 to 8): no local cluster runs them, so the check before merging is the schema check of the rendered manifests.",
+      "matchFileNames": ["deploy/k8s/cloud/charts.json", "deploy/k8s/cloud/values/*.yaml"],
+      "prBodyNotes": ["A chart of the cloud cluster changed: run make cloud-check before merging; it is installed only during a cloud session (stage 7)."]
+    },
+    { "matchFileNames": ["deploy/k8s/cloud/values/chaos-mesh.yaml"], "groupName": "chaos-mesh chart" },
+    { "matchFileNames": ["deploy/k8s/cloud/charts.json"], "matchDepNames": ["chaos-mesh"], "groupName": "chaos-mesh chart" },
+    { "matchFileNames": ["deploy/k8s/cloud/values/velero.yaml"], "groupName": "velero chart" },
+    { "matchFileNames": ["deploy/k8s/cloud/charts.json"], "matchDepNames": ["velero"], "groupName": "velero chart" },
     { "matchFileNames": ["deploy/k8s/values/argo-cd.yaml"], "groupName": "argo-cd chart" },
     { "matchFileNames": ["deploy/k8s/gitops.sh"], "matchDepNames": ["argo-cd"], "groupName": "argo-cd chart" },
     {

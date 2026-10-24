@@ -29,7 +29,8 @@ spec:
               cpu: 50m
               memory: 64Mi
             limits:
-              # About 150 MiB expected with the shutdown manager (ADR section 2).
+              # About 150 MiB expected with the shutdown manager (ADR-0014 section 2); the limit turns a leak into an
+              # OOM kill of this pod instead of memory taken from the node's other pods.
               memory: 256Mi
 ---
 apiVersion: gateway.networking.k8s.io/v1

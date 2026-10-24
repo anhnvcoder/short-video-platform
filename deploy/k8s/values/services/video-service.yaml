@@ -18,7 +18,7 @@ env:
   LISTEN_ADDR: ":9102"
   KAFKA_BROKERS: redpanda.svp-data.svc.cluster.local:9092
   # Calls to MinIO stay in the cluster; the presigned upload URLs handed to clients name MinIO through Gateway svp
-  # (ADR section 9).
+  # (ADR-0014 section 9): the browser uploads straight to MinIO, so the host in the form must be reachable from outside.
   S3_ENDPOINT: http://minio.svp-data:9000
   S3_PUBLIC_ENDPOINT: https://s3.svp.localhost:8443
   S3_ACCESS_KEY_ID: svp-video-service

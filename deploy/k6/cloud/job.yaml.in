@@ -1,0 +1,115 @@
+# Template of the k6 Job of the cloud cluster (docs/adr/0020-reliability-stage6.md, section 2), filled in by render.sh:
+# @K6_IMAGE@ (K6_IMAGE of the Makefile), @DOMAIN@, @ENVOY_IP@, @FORWARDED_FOR@ and @SCRIPT_ITEMS@. Not a manifest on its
+# own (hence .yaml.in, which make cloud-check does not read; it checks the output of render.sh).
+#
+# Namespace svp-load is outside svp, so Kyverno's image policy does not apply, and runs under PSA restricted. 20 pods of
+# one Indexed Job, each running its own execution segment of profile cloud: k6 splits the rates, and each pod registers
+# its own pool from its own pod IP (no rate limit key is ever deleted on the cloud). 20 is `pods` of profile cloud in
+# lib/config.js, which sizes VUs and pools per pod; setup() refuses a run with another number of segments. The pods call Envoy's Service inside
+# the cluster: hostAliases point the public names at its ClusterIP, so TLS checks the real certificate while the load
+# never crosses the public load balancer or the internet.
+#
+# The lines marked @CA@ stay only with render.sh --ca-file, for an Envoy whose certificate a private CA signs (a cluster
+# CA behind a load balancer that holds the public certificate): they mount ConfigMap svp-k6-ca and point SSL_CERT_FILE
+# at it. k6 has no flag for a CA; Go's crypto/x509, which k6 uses on Linux, reads that variable and then trusts the CAs
+# of that file instead of the image's roots. TLS is still checked, never skipped.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: svp-load
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: svp-k6
+  namespace: svp-load
+spec:
+  completionMode: Indexed
+  completions: 20
+  parallelism: 20
+  # A pod run again would register its pool again: a failed pod is a result to read, not to retry.
+  backoffLimit: 0
+  # 10 min ramp + hold (10 min by default) + 1 min down + setup, with room; a stuck run ends here.
+  activeDeadlineSeconds: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: svp-k6
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        # The k6 user of the image.
+        runAsUser: 12345
+        runAsGroup: 12345
+        seccompProfile:
+          type: RuntimeDefault
+      hostAliases:
+        - ip: "@ENVOY_IP@"
+          hostnames: ["api.@DOMAIN@", "@DOMAIN@"]
+      containers:
+        - name: k6
+          image: "@K6_IMAGE@"
+          command: ["sh", "-c"]
+          # Pod i of 20 runs segment i/20:(i+1)/20 of an even sequence. $$ keeps Kubernetes from reading $(( )) as a
+          # reference to a variable.
+          args:
+            - |
+              i=$JOB_COMPLETION_INDEX
+              seq=0; n=1
+              while [ "$n" -lt 20 ]; do seq="$seq,$n/20"; n=$$((n + 1)); done
+              exec k6 run --quiet --include-system-env-vars \
+                --execution-segment "$i/20:$$((i + 1))/20" --execution-segment-sequence "$seq,1" /scripts/main.js
+          env:
+            - name: SVP_K6_PROFILE
+              value: cloud
+            - name: SVP_API_URL
+              value: "https://api.@DOMAIN@"
+            - name: SVP_WEB_URL
+              value: "https://@DOMAIN@"
+            - name: SVP_WEB_ORIGIN
+              value: "https://@DOMAIN@"
+            - name: SVP_K6_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            # Empty, or this pod's IP when stage 7 trusts two hops (render.sh --forwarded-for; threat model RL-7).
+            - name: SVP_K6_FORWARDED_FOR
+              value: "@FORWARDED_FOR@"
+            - name: K6_NO_USAGE_REPORT
+              value: "true"
+            - name: K6_AUTO_EXTENSION_RESOLUTION
+              value: "false"
+            - name: SSL_CERT_FILE # @CA@
+              value: /etc/svp-k6-ca/ca.crt # @CA@
+          resources:
+            requests:
+              cpu: "1"
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: ca # @CA@
+              mountPath: /etc/svp-k6-ca # @CA@
+              readOnly: true # @CA@
+      volumes:
+        - name: scripts
+          configMap:
+            name: svp-k6-scripts
+            items: @SCRIPT_ITEMS@
+        - name: ca # @CA@
+          configMap: # @CA@
+            name: svp-k6-ca # @CA@

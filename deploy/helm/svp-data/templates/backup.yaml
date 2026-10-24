@@ -1,0 +1,71 @@
+{{- /*
+Backups of Postgres svp-pg (docs/adr/0020-reliability-stage6.md, section 5; threat model BAK-1): the Barman Cloud plugin
+(release plugin-barman-cloud in cnpg-system, wave 3) archives every WAL segment and takes base backups, from a sidecar
+in the Postgres pod, to bucket pg-backups of the cluster's MinIO, as MinIO user svp-pg-backup, whose policy allows that
+bucket only (deploy/minio/pg-backup-policy.json, made by the minio-init Job; no service has this user). Its secret key
+comes from .env (SVP_PG_BACKUP_S3_SECRET_KEY) into Secret pg-backup-s3 (deploy/k8s/secrets.sh). The bucket is in the
+same cluster, on the same disk, as the data, and MinIO here has no KMS: enough for the lab to rehearse recovery (WAL,
+point in time, archive generations) and measure its RTO and RPO, not a copy that survives the cluster.
+
+Within the bucket each archive generation has its own prefix, the plugin's serverName (postgres.backup.serverName,
+templates/postgres.yaml).
+*/}}
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: svp-pg-backup
+  namespace: {{ .Release.Namespace }}
+spec:
+  configuration:
+    destinationPath: s3://pg-backups/
+    endpointURL: http://minio.svp-data:9000
+    s3Credentials:
+      accessKeyId:
+        name: pg-backup-s3
+        key: ACCESS_KEY_ID
+      secretAccessKey:
+        name: pg-backup-s3
+        key: ACCESS_SECRET_KEY
+    wal:
+      compression: gzip
+    data:
+      compression: gzip
+  # Base backups that no recovery within the last 7 days needs are deleted, with their WAL, after the next backup.
+  retentionPolicy: "7d"
+  instanceSidecarConfiguration:
+    resources:
+      {{- toYaml .Values.postgres.backup.sidecarResources | nindent 6 }}
+---
+# A base backup every day at 03:00 UTC (CloudNativePG's cron has a seconds field first), and one as soon as this object
+# is created, so that a new cluster has a recovery point within minutes instead of at the next 03:00 (alert
+# PostgresBackupTooOld fires when there is none for an hour).
+#
+# A hook, after the init Jobs (weight 0): CloudNativePG starts the immediate Backup on the first Ready primary and
+# never retries one that failed, while bucket pg-backups and the login svp-pg-backup exist only once the minio-init
+# Job has run, after the release's ordinary resources are ready (Argo CD: PostSync, the hooks in weight order). As an
+# ordinary resource its Backup would race that Job on a new cluster and fail for good. Each upgrade or sync makes the
+# object again; CloudNativePG then takes no second immediate Backup while the first one's object is left (it adopts
+# it), and make k8s-up takes a base backup itself when the running generation has none (deploy/k8s/install.sh,
+# pg_base_backup).
+#
+# The Backups it makes belong to nothing, so that making this object again, or deleting the Cluster as make
+# drill-k8s-backup does, leaves them; the plugin deletes those of the running Cluster whose backup the retention
+# policy above has removed from the bucket. No object of the bucket is ever deleted but by that policy.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: svp-pg-daily
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "1"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  schedule: "0 0 3 * * *"
+  immediate: true
+  backupOwnerReference: none
+  cluster:
+    name: svp-pg
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io

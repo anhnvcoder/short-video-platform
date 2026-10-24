@@ -1,7 +1,8 @@
 # SLO spec of docs/adr/0011-observability-stage3.md, section 8. `make slo` turns it into
 # deploy/observability/prometheus/rules/slo-generated.yaml with Sloth; edit this file, not that one.
 # 30-day window, Sloth's default multi-window burn rates: page 14.4x (1h/5m) and 6x (6h/30m),
-# ticket 3x (1d/2h) and 1x (3d/6h). Alertmanager pages only severity="page".
+# ticket 3x (1d/2h) and 1x (3d/6h). Alertmanager pages only severity="page", so every page alert
+# carries a runbook_url to its runbook in docs/runbooks/ on main; ticket alerts wake nobody and have none.
 #
 # HTTP totals count the `_count` series of the gateway histogram; `http_route` holds the path
 # pattern without the method. An error query that may have no series yet ends in `or vector(0)`;
@@ -42,6 +43,8 @@ slos:
       page_alert:
         labels:
           severity: page
+        annotations:
+          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/feed-availability-budget-burn.md"
       ticket_alert:
         labels:
           severity: ticket
@@ -63,6 +66,8 @@ slos:
       page_alert:
         labels:
           severity: page
+        annotations:
+          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/upload-init-availability-budget-burn.md"
       ticket_alert:
         labels:
           severity: ticket
@@ -85,6 +90,8 @@ slos:
       page_alert:
         labels:
           severity: page
+        annotations:
+          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/feed-latency-budget-burn.md"
       ticket_alert:
         labels:
           severity: ticket
@@ -109,6 +116,62 @@ slos:
       page_alert:
         labels:
           severity: page
+        annotations:
+          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/video-ready-latency-budget-burn.md"
+      ticket_alert:
+        labels:
+          severity: ticket
+
+  - name: "web-availability"
+    objective: 99.9
+    description: "Responses of the web server (pages, Server Actions, /rum) are not 5xx."
+    sli:
+      events:
+        # The web histogram has no `http_route` (Next never sets rpcMetadata.route), so a page cannot be told from
+        # `/rum`, `/monitoring`, `/healthz` or a `/_next/static` asset, and no label of this histogram can filter
+        # them without one series per URL. The SLI therefore counts every response of the server: a 5xx of a page,
+        # a Server Action or `/rum` is an error the user meets, and the near-always-200 probe and asset traffic
+        # makes the ratio a little more optimistic than the pages alone. Latency has no SLO for the same reason:
+        # fast assets and `/rum` would pull the percentile below the real page latency.
+        error_query: >-
+          sum(rate(http_server_request_duration_seconds_count{service_name="web",http_response_status_code=~"5.."}[{{.window}}]))
+          or vector(0)
+        total_query: >-
+          sum(rate(http_server_request_duration_seconds_count{service_name="web"}[{{.window}}]))
+    alerting:
+      name: WebAvailabilityBudgetBurn
+      annotations:
+        summary: "web: server responses (pages, Server Actions, /rum) burn the 99.9% availability budget"
+      page_alert:
+        labels:
+          severity: page
+        annotations:
+          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/web-availability-budget-burn.md"
+      ticket_alert:
+        labels:
+          severity: ticket
+
+  - name: "web-inp"
+    objective: 75
+    description: "INP of a page load, measured in the browser, is at most 200 ms (p75 of the loads)."
+    sli:
+      events:
+        # RUM beacons come from real browsers, so on the lab there are often none: the total query has no
+        # `or vector(0)`, and no beacon gives no ratio. 0.2 is the web.dev "good" bound and a bucket of the histogram.
+        error_query: >-
+          sum(rate(svp_web_vital_inp_seconds_count{service_name="web"}[{{.window}}]))
+          -
+          sum(rate(svp_web_vital_inp_seconds_bucket{service_name="web",le="0.2"}[{{.window}}]))
+        total_query: >-
+          sum(rate(svp_web_vital_inp_seconds_count{service_name="web"}[{{.window}}]))
+    alerting:
+      name: WebINPBudgetBurn
+      annotations:
+        summary: "web: more than 25% of page loads have an INP above 200 ms (budget burn)"
+      # A 75% objective leaves a 25% error budget, so the page burn rates (14.4x and 6x of it) would need an error
+      # ratio above 100%: they can never fire. Only the ticket alerts (3x and 1x) can, and nobody is woken for INP.
+      page_alert:
+        disable: true
       ticket_alert:
         labels:
           severity: ticket

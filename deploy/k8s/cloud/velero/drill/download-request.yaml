@@ -1,0 +1,15 @@
+# Template of the request for the list of resources in the drill's backup (deploy/k8s/cloud/velero/drill-restore.sh,
+# step 2): Velero answers with a short-lived signed URL of the gzipped JSON list in the bucket, which the script reads to
+# prove there is no Secret in the backup (threat model BAK-2). What `velero backup describe --details` does, with
+# kubectl. The script replaces the request's name and the backup's name (target.name).
+apiVersion: velero.io/v1
+kind: DownloadRequest
+metadata:
+  name: drill-svp-data
+  namespace: velero
+  labels:
+    svp-drill: velero-restore
+spec:
+  target:
+    kind: BackupResourceList
+    name: drill-svp-data

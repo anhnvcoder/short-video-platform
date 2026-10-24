@@ -54,6 +54,17 @@ SYFT_IMAGE  := ghcr.io/anchore/syft:v1.54.1@sha256:3eb5379ba7b409c3f4069b6861105
 # creates anything): signing happens in CI alone, with the cosign that sigstore/cosign-installer installs there.
 # renovate: datasource=docker depName=ghcr.io/sigstore/cosign/cosign
 COSIGN_IMAGE := ghcr.io/sigstore/cosign/cosign:v3.1.3@sha256:9e5c2f2edc34351160407ca3416c61855bdf9403c3c5936e0f0be7fc261611b8
+# Load generator of the SLO scripts in deploy/k6/ (docs/adr/0020-reliability-stage6.md, section 2), from its official image
+# pinned by digest: the same k6 on a dev machine, in CI and as a Job in the cloud cluster, where the 1 000 req/s run has to
+# start inside the cluster to measure the system rather than the home network. The k6 of Homebrew is not pinned. v2: the v1
+# line only gets security fixes.
+# renovate: datasource=docker depName=grafana/k6
+K6_IMAGE := grafana/k6:2.3.0@sha256:9c2dee7f8ed74d317e4027c06a10f169b625638189de8d4555d0b3486a5aeb34
+# Schema check of the manifests written for the cloud cluster (make cloud-check, ADR-0020 section 8), with nothing
+# installed: the image is FROM scratch with kubeconform and openapi2jsonschema, which turns the CRDs of the pinned charts
+# into schemas, so no Python is needed. It runs as root unless docker run gets --user.
+# renovate: datasource=docker depName=ghcr.io/yannh/kubeconform
+KUBECONFORM_IMAGE := ghcr.io/yannh/kubeconform:v0.8.0@sha256:faffaf43f95aa6425306e1ab8d6fcad72acb9049158f38e574c085ea1ec0f64e
 
 # Tools installed by `go install` land here; the PATH of the caller is not assumed to contain it.
 GOBIN ?= $(shell go env GOPATH)/bin
@@ -347,3 +358,5 @@ web-sourcemaps: ## Upload the source maps of the web client's browser bundle, fr
 -include deploy/compose/compose.mk
 # Local Kubernetes targets (k3d cluster svp, stage 4).
 -include deploy/k8s/k8s.mk
+# Load test targets (k6, stage 6).
+-include deploy/k6/k6.mk

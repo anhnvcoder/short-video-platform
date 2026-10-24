@@ -30,7 +30,7 @@ vars=(SVP_PG_SUPERUSER_PASSWORD
   SVP_USER_MIGRATOR_DB_PASSWORD SVP_USER_APP_DB_PASSWORD SVP_VIDEO_MIGRATOR_DB_PASSWORD SVP_VIDEO_APP_DB_PASSWORD
   SVP_ENGAGEMENT_MIGRATOR_DB_PASSWORD SVP_ENGAGEMENT_APP_DB_PASSWORD SVP_FEED_MIGRATOR_DB_PASSWORD
   SVP_FEED_APP_DB_PASSWORD SVP_GLITCHTIP_MIGRATOR_DB_PASSWORD SVP_GLITCHTIP_APP_DB_PASSWORD
-  SVP_MINIO_ROOT_PASSWORD SVP_VIDEO_S3_SECRET_KEY SVP_MEDIA_WORKER_S3_SECRET_KEY
+  SVP_MINIO_ROOT_PASSWORD SVP_VIDEO_S3_SECRET_KEY SVP_MEDIA_WORKER_S3_SECRET_KEY SVP_PG_BACKUP_S3_SECRET_KEY
   SVP_KAFKA_ADMIN_PASSWORD SVP_KAFKA_KEDA_PASSWORD SVP_KAFKA_USER_SERVICE_PASSWORD SVP_KAFKA_VIDEO_SERVICE_PASSWORD
   SVP_KAFKA_ENGAGEMENT_SERVICE_PASSWORD SVP_KAFKA_FEED_SERVICE_PASSWORD SVP_KAFKA_MEDIA_WORKER_PASSWORD
   JWT_SIGNING_KID JWT_SIGNING_KEY JWT_VERIFY_KEYS SVP_GRAFANA_ADMIN_PASSWORD
@@ -79,10 +79,16 @@ manifests() {
   # MinIO's root login, as in compose (deploy/minio/init.sh logs in as svp-admin): MinIO and its init Job only.
   secret svp-data minio-root Opaque \
     MINIO_ROOT_USER=svp-admin MINIO_ROOT_PASSWORD="$SVP_MINIO_ROOT_PASSWORD"
-  # Secret keys of the MinIO users svp-video-service and svp-media-worker, for the minio-init Job.
+  # Secret keys of the MinIO users svp-video-service, svp-media-worker and svp-pg-backup, for the minio-init Job.
   secret svp-data minio-users Opaque \
     SVP_VIDEO_S3_SECRET_KEY="$SVP_VIDEO_S3_SECRET_KEY" \
-    SVP_MEDIA_WORKER_S3_SECRET_KEY="$SVP_MEDIA_WORKER_S3_SECRET_KEY"
+    SVP_MEDIA_WORKER_S3_SECRET_KEY="$SVP_MEDIA_WORKER_S3_SECRET_KEY" \
+    SVP_PG_BACKUP_S3_SECRET_KEY="$SVP_PG_BACKUP_S3_SECRET_KEY"
+  # The login of the backups of Postgres svp-pg to bucket pg-backups (ObjectStore svp-pg-backup of chart svp-data,
+  # docs/adr/0020-reliability-stage6.md section 5; threat model BAK-1), the key names the ObjectStore reads. Only the
+  # Barman Cloud plugin's sidecar in the Postgres pods reads it, through the API server; no service gets it.
+  secret svp-data pg-backup-s3 Opaque \
+    ACCESS_KEY_ID=svp-pg-backup ACCESS_SECRET_KEY="$SVP_PG_BACKUP_S3_SECRET_KEY"
   # Redpanda's only superuser, svp-admin: the chart's bootstrap user and sidecar, and the redpanda-init Job. The
   # chart makes every line of redpanda-superusers a superuser, so it holds svp-admin alone.
   secret svp-data redpanda-bootstrap Opaque \
@@ -104,7 +110,7 @@ manifests() {
 # checked (that is IN-3, stage 6). The passwords are hex, so nothing needs URL-encoding.
 pg_url() { printf 'postgres://svp_%s_%s:%s@svp-pg-rw.svp-data:5432/svp_%s?sslmode=require' "$1" "$2" "$3" "$1"; }
 
-# The services' Secrets in svp, one per pod, each with only what that pod uses (ADR section 8). <service>-env goes to
+# The services' Secrets in svp, one per pod, each with only what that pod uses (ADR-0014 section 8), so one compromised pod exposes no more than its own credentials. <service>-env goes to
 # the service's container as environment variables; <service>-migrate-env holds the migrator role, for the migrate
 # Job only. The JWT signing key is in user-service-env alone; the gateway gets the public keys (threat model JWT-10).
 # web-env holds the web client's Server Action key alone, set at run time so that the key in use is never in the
@@ -193,7 +199,7 @@ EOF
   fi
 }
 
-# The Secrets of svp-obs (ADR section 8):
+# The Secrets of svp-obs (ADR-0014 section 8):
 # - grafana-admin, Grafana's admin login (kube-prometheus-stack, grafana.admin.existingSecret): Grafana allows no
 #   anonymous user in the cluster (threat model OPS-2), so this is the only way in. Grafana sets the admin password
 #   from it when its database is created, which is at every start since it keeps no volume.
@@ -287,7 +293,7 @@ redpanda_admin
 # kubectl prints only the kind and name of each object it applied.
 manifests | kc apply --server-side --field-manager=svp-secrets --force-conflicts -f - >/dev/null ||
   fail "apply the Secrets of namespace svp-data"
-ok "Secrets of svp-data applied from .env: pg-superuser, pg-roles, minio-root, minio-users, redpanda-bootstrap, redpanda-superusers, kafka-users"
+ok "Secrets of svp-data applied from .env: pg-superuser, pg-roles, minio-root, minio-users, pg-backup-s3, redpanda-bootstrap, redpanda-superusers, kafka-users"
 
 svp_manifests | kc apply --server-side --field-manager=svp-secrets --force-conflicts -f - >/dev/null ||
   fail "apply the Secrets of namespace svp"

@@ -7,7 +7,7 @@ K8S_LIB := . deploy/k8s/lib.sh
 .PHONY: k8s-exclusive k8s-up k8s-down k8s-status k8s-ca k8s-secrets k8s-images k8s-smoke drill-k8s-keda drill-k8s-pdb \
 	k8s-glitchtip-init k8s-ui-grafana k8s-ui-prometheus k8s-ui-alertmanager k8s-ui-glitchtip k8s-gitops-up \
 	measure-gitops k8s-ui-argocd k8s-traffic-start k8s-traffic-stop drill-k8s-canary measure-canary drill-k8s-threats \
-	drill-k8s-supplychain k8s-web-sourcemaps k8s-web-e2e drill-k8s-web-obs
+	drill-k8s-supplychain k8s-web-sourcemaps k8s-web-e2e drill-k8s-web-obs cloud-check drill-k8s-backup
 
 # Compose and k3d never run together on the 16 GB machine (CLAUDE.md): the cluster is not created or started beside a
 # running compose stack. `make up` refuses the other way round (deploy/compose/compose.mk).
@@ -101,9 +101,16 @@ drill-k8s-pdb: ## Cordon the nodes and evict both gateway pods one after the oth
 
 # The stage 4 rows of the threat model (docs/threat-model.md, section 5): the checks of each item are listed at the top
 # of deploy/k8s/drills/threats.sh.
-drill-k8s-threats: ## Check the stage 4 threat model rows on cluster svp, each with a control case: a probe pod in namespace svp-probe (created, then deleted) and media-worker reach only what the NetworkPolicies allow, Kafka ACLs per user, pod security and PSA, no trust in pg_hba, login rate limit ignores forged X-Forwarded-For, no pprof/metrics, no exposed UI, Grafana 401, no ServiceAccount reads secrets or pods; web client: no token or JWT in pages, RSC or /api JSON and /api/ outside the BFF list 400/404 (WEB-7), cross-site or same-site POSTs 403 CSRF_REJECTED (WEB-2), MinIO CORS for https://svp.localhost:8443 only (WEB-10), web pods reach only gateway, Valkey, Collector, GlitchTip (WEB-13), login rate limit through the /login form counts the address Envoy wrote (WEB-8); PASS/FAIL table, log in .k8s/drills/threats-<time>.log, searched for the Secret values read (LOCAL LAB ONLY: resets register rate limit keys in the cluster's Valkey db 10)
+drill-k8s-threats: ## Check the stage 4 threat model rows on cluster svp, each with a control case: a probe pod in namespace svp-probe (created, then deleted) and media-worker reach only what the NetworkPolicies allow, Kafka ACLs per user, pod security and PSA, no trust in pg_hba, login rate limit ignores forged X-Forwarded-For, no pprof/metrics, no exposed UI, Grafana 401, no ServiceAccount reads secrets or pods; web client: no token or JWT in pages, RSC or /api JSON and /api/ outside the BFF list 400/404 (WEB-7), cross-site or same-site POSTs 403 CSRF_REJECTED (WEB-2), MinIO CORS for https://svp.localhost:8443 only (WEB-10), web pods reach only gateway, Valkey, Collector, GlitchTip (WEB-13), login rate limit through the /login form counts the address Envoy wrote (WEB-8); MinIO user svp-pg-backup reads only bucket pg-backups and no service's user reads it (BAK-1); PASS/FAIL table, log in .k8s/drills/threats-<time>.log, searched for the Secret values read (LOCAL LAB ONLY: resets register rate limit keys in the cluster's Valkey db 10)
 	@test -s .k8s/ca.crt || { echo "make drill-k8s-threats: .k8s/ca.crt missing; run make k8s-up (or make k8s-ca)" >&2; exit 1; }
 	$(K8S_DRILL_ENV) deploy/k8s/drills/threats.sh https://api.svp.localhost:8443
+
+# Disaster recovery of Postgres svp-pg in place (docs/adr/0020-reliability-stage6.md, section 5): the steps, the JSON
+# and what an interrupted run prints are at the top of deploy/k8s/drills/backup.sh. Dev path only. MODE=latest restores
+# to the end of the archive, MODE=pitr to a time between two of its markers; two runs in a row on one cluster both pass.
+drill-k8s-backup: ## Delete Postgres svp-pg and its volume and restore it under the same name from its Barman Cloud backups (new archive generation), after a base backup and 60 s of marker rows in database svp_drill; restart the four services with Postgres and GlitchTip once, run the k8s-smoke flow; RTO, RPO, row counts before and after in .k8s/drills/backup-<time>.json; MODE=latest (default) or MODE=pitr; never deletes a backup (LOCAL LAB ONLY: context k3d-svp on 127.0.0.1:6550; resets register rate limit keys in the cluster's Valkey db 10)
+	@test -s .k8s/ca.crt || { echo "make drill-k8s-backup: .k8s/ca.crt missing; run make k8s-up (or make k8s-ca)" >&2; exit 1; }
+	$(K8S_DRILL_ENV) MODE='$(MODE)' deploy/k8s/drills/backup.sh https://api.svp.localhost:8443
 
 # The image policy of namespace svp (docs/adr/0015-cicd-devsecops-stage5.md, section 8); the cases are listed at the
 # top of deploy/k8s/drills/supplychain.sh. It talks to the cluster's API, and for the CRITICAL case to GHCR and Sigstore
@@ -155,3 +162,15 @@ drill-k8s-web-obs: ## After make k8s-web-e2e on cluster svp: Tempo holds a trace
 k8s-ui-argocd: ## Open Argo CD of the GitOps cluster on https://127.0.0.1:8081 (port-forward, loopback only; its own self-signed certificate; log in as admin, password from the command printed first)
 	@echo "password of admin: kubectl --context k3d-svp -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d"
 	kubectl --context k3d-svp -n argocd port-forward --address 127.0.0.1 service/argocd-server 8081:443
+
+# The manifests written for the cloud cluster of stage 7 (deploy/k8s/cloud/, the k6 Jobs of deploy/k6/;
+# docs/adr/0020-reliability-stage6.md, section 8), checked without a cluster: no kubectl, no .env. The steps are at the top
+# of deploy/k8s/cloud/check.sh: kubeconform -strict of KUBECONFORM_IMAGE against the Kubernetes schemas of
+# CLOUD_K8S_VERSION and against schemas made from the CRDs of the pinned Chaos Mesh, Velero and snapshot controller (no
+# kind is skipped for want of a schema; a missing one fails), then the bounds of the Chaos Mesh experiments and a digest
+# on every image. Needs network access: chart repositories, GitHub. CLOUD_K8S_VERSION is the newest minor that the CI of
+# both Chaos Mesh 2.8 and Velero 1.18 tests (1.33 to 1.35); stage 7 sets it to the EKS version.
+CLOUD_K8S_VERSION := 1.35.9
+
+cloud-check: ## Check the cloud cluster's manifests without a cluster: render deploy/k8s/cloud/charts.json, kubeconform -strict (Kubernetes CLOUD_K8S_VERSION, CRD schemas of the pinned Chaos Mesh, Velero and snapshot controller) on them, on deploy/k8s/cloud/ and on deploy/k6/ manifests; every Chaos Mesh experiment bounded (duration, own namespace), every image pinned by digest (needs network)
+	KUBECONFORM_IMAGE='$(KUBECONFORM_IMAGE)' CLOUD_K8S_VERSION='$(CLOUD_K8S_VERSION)' deploy/k8s/cloud/check.sh

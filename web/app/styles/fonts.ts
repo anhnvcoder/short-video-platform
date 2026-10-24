@@ -12,4 +12,8 @@ export const beVietnamPro = localFont({
   ],
   variable: "--font-be-vietnam-pro",
   display: "swap",
+  // No <link rel="preload"> for the four files: text paints at once in the size-adjusted fallback (swap), while a
+  // preload would make 68 kB of fonts compete with the poster, the page's largest paint, on a slow link. The browser
+  // still fetches each weight as soon as the first text that uses it is laid out.
+  preload: false,
 });

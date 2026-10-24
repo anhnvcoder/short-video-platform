@@ -160,6 +160,7 @@ groups:
       severity: page
       sloth_severity: page
     annotations:
+      runbook_url: https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/feed-availability-budget-burn.md
       summary: 'gateway: feed requests (GET /feed/following, /feed/explore) burn the
         99.9% availability budget'
       title: (page) {{$labels.sloth_service}} {{$labels.sloth_slo}} SLO error budget
@@ -341,6 +342,7 @@ groups:
       severity: page
       sloth_severity: page
     annotations:
+      runbook_url: https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/upload-init-availability-budget-burn.md
       summary: 'gateway: upload init requests (POST /videos) burn the 99.9% availability
         budget'
       title: (page) {{$labels.sloth_service}} {{$labels.sloth_slo}} SLO error budget
@@ -522,6 +524,7 @@ groups:
       severity: page
       sloth_severity: page
     annotations:
+      runbook_url: https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/feed-latency-budget-burn.md
       summary: 'gateway: feed requests slower than 150 ms burn the 99% latency budget'
       title: (page) {{$labels.sloth_service}} {{$labels.sloth_slo}} SLO error budget
         burn rate is too fast.
@@ -701,6 +704,7 @@ groups:
       severity: page
       sloth_severity: page
     annotations:
+      runbook_url: https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/video-ready-latency-budget-burn.md
       summary: 'video-service: videos not READY within 120 s burn the 95% budget'
       title: (page) {{$labels.sloth_service}} {{$labels.sloth_slo}} SLO error budget
         burn rate is too fast.
@@ -722,5 +726,347 @@ groups:
       sloth_severity: ticket
     annotations:
       summary: 'video-service: videos not READY within 120 s burn the 95% budget'
+      title: (ticket) {{$labels.sloth_service}} {{$labels.sloth_slo}} SLO error budget
+        burn rate is too fast.
+- name: sloth-slo-sli-recordings-svp-web-availability
+  rules:
+  - record: slo:sli_error:ratio_rate5m
+    expr: |
+      (sum(rate(http_server_request_duration_seconds_count{service_name="web",http_response_status_code=~"5.."}[5m])) or vector(0))
+      /
+      (sum(rate(http_server_request_duration_seconds_count{service_name="web"}[5m])))
+    labels:
+      sloth_id: svp-web-availability
+      sloth_service: svp
+      sloth_slo: web-availability
+      sloth_window: 5m
+  - record: slo:sli_error:ratio_rate30m
+    expr: |
+      (sum(rate(http_server_request_duration_seconds_count{service_name="web",http_response_status_code=~"5.."}[30m])) or vector(0))
+      /
+      (sum(rate(http_server_request_duration_seconds_count{service_name="web"}[30m])))
+    labels:
+      sloth_id: svp-web-availability
+      sloth_service: svp
+      sloth_slo: web-availability
+      sloth_window: 30m
+  - record: slo:sli_error:ratio_rate1h
+    expr: |
+      (sum(rate(http_server_request_duration_seconds_count{service_name="web",http_response_status_code=~"5.."}[1h])) or vector(0))
+      /
+      (sum(rate(http_server_request_duration_seconds_count{service_name="web"}[1h])))
+    labels:
+      sloth_id: svp-web-availability
+      sloth_service: svp
+      sloth_slo: web-availability
+      sloth_window: 1h
+  - record: slo:sli_error:ratio_rate2h
+    expr: |
+      (sum(rate(http_server_request_duration_seconds_count{service_name="web",http_response_status_code=~"5.."}[2h])) or vector(0))
+      /
+      (sum(rate(http_server_request_duration_seconds_count{service_name="web"}[2h])))
+    labels:
+      sloth_id: svp-web-availability
+      sloth_service: svp
+      sloth_slo: web-availability
+      sloth_window: 2h
+  - record: slo:sli_error:ratio_rate6h
+    expr: |
+      (sum(rate(http_server_request_duration_seconds_count{service_name="web",http_response_status_code=~"5.."}[6h])) or vector(0))
+      /
+      (sum(rate(http_server_request_duration_seconds_count{service_name="web"}[6h])))
+    labels:
+      sloth_id: svp-web-availability
+      sloth_service: svp
+      sloth_slo: web-availability
+      sloth_window: 6h
+  - record: slo:sli_error:ratio_rate1d
+    expr: |
+      (sum(rate(http_server_request_duration_seconds_count{service_name="web",http_response_status_code=~"5.."}[1d])) or vector(0))
+      /
+      (sum(rate(http_server_request_duration_seconds_count{service_name="web"}[1d])))
+    labels:
+      sloth_id: svp-web-availability
+      sloth_service: svp
+      sloth_slo: web-availability
+      sloth_window: 1d
+  - record: slo:sli_error:ratio_rate3d
+    expr: |
+      (sum(rate(http_server_request_duration_seconds_count{service_name="web",http_response_status_code=~"5.."}[3d])) or vector(0))
+      /
+      (sum(rate(http_server_request_duration_seconds_count{service_name="web"}[3d])))
+    labels:
+      sloth_id: svp-web-availability
+      sloth_service: svp
+      sloth_slo: web-availability
+      sloth_window: 3d
+  - record: slo:sli_error:ratio_rate30d
+    expr: |
+      (sum(rate(http_server_request_duration_seconds_count{service_name="web",http_response_status_code=~"5.."}[30d])) or vector(0))
+      /
+      (sum(rate(http_server_request_duration_seconds_count{service_name="web"}[30d])))
+    labels:
+      sloth_id: svp-web-availability
+      sloth_service: svp
+      sloth_slo: web-availability
+      sloth_window: 30d
+- name: sloth-slo-meta-recordings-svp-web-availability
+  rules:
+  - record: slo:objective:ratio
+    expr: vector(0.9990000000000001)
+    labels:
+      sloth_id: svp-web-availability
+      sloth_service: svp
+      sloth_slo: web-availability
+  - record: slo:error_budget:ratio
+    expr: vector(1-0.9990000000000001)
+    labels:
+      sloth_id: svp-web-availability
+      sloth_service: svp
+      sloth_slo: web-availability
+  - record: slo:time_period:days
+    expr: vector(30)
+    labels:
+      sloth_id: svp-web-availability
+      sloth_service: svp
+      sloth_slo: web-availability
+  - record: slo:current_burn_rate:ratio
+    expr: |
+      slo:sli_error:ratio_rate5m{sloth_id="svp-web-availability", sloth_service="svp", sloth_slo="web-availability"}
+      / on(sloth_id, sloth_slo, sloth_service) group_left
+      slo:error_budget:ratio{sloth_id="svp-web-availability", sloth_service="svp", sloth_slo="web-availability"}
+    labels:
+      sloth_id: svp-web-availability
+      sloth_service: svp
+      sloth_slo: web-availability
+  - record: slo:period_burn_rate:ratio
+    expr: |
+      slo:sli_error:ratio_rate30d{sloth_id="svp-web-availability", sloth_service="svp", sloth_slo="web-availability"}
+      / on(sloth_id, sloth_slo, sloth_service) group_left
+      slo:error_budget:ratio{sloth_id="svp-web-availability", sloth_service="svp", sloth_slo="web-availability"}
+    labels:
+      sloth_id: svp-web-availability
+      sloth_service: svp
+      sloth_slo: web-availability
+  - record: slo:period_error_budget_remaining:ratio
+    expr: 1 - slo:period_burn_rate:ratio{sloth_id="svp-web-availability", sloth_service="svp",
+      sloth_slo="web-availability"}
+    labels:
+      sloth_id: svp-web-availability
+      sloth_service: svp
+      sloth_slo: web-availability
+  - record: sloth_slo_info
+    expr: vector(1)
+    labels:
+      sloth_id: svp-web-availability
+      sloth_mode: cli-gen-prom
+      sloth_objective: "99.9"
+      sloth_service: svp
+      sloth_slo: web-availability
+      sloth_spec: prometheus/v1
+      sloth_version: v0.16.0
+- name: sloth-slo-alerts-svp-web-availability
+  rules:
+  - alert: WebAvailabilityBudgetBurn
+    expr: |
+      (
+          max(slo:sli_error:ratio_rate5m{sloth_id="svp-web-availability", sloth_service="svp", sloth_slo="web-availability"} > (14.4 * 0.0009999999999999432)) without (sloth_window)
+          and
+          max(slo:sli_error:ratio_rate1h{sloth_id="svp-web-availability", sloth_service="svp", sloth_slo="web-availability"} > (14.4 * 0.0009999999999999432)) without (sloth_window)
+      )
+      or
+      (
+          max(slo:sli_error:ratio_rate30m{sloth_id="svp-web-availability", sloth_service="svp", sloth_slo="web-availability"} > (6 * 0.0009999999999999432)) without (sloth_window)
+          and
+          max(slo:sli_error:ratio_rate6h{sloth_id="svp-web-availability", sloth_service="svp", sloth_slo="web-availability"} > (6 * 0.0009999999999999432)) without (sloth_window)
+      )
+    labels:
+      severity: page
+      sloth_severity: page
+    annotations:
+      runbook_url: https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/web-availability-budget-burn.md
+      summary: 'web: server responses (pages, Server Actions, /rum) burn the 99.9%
+        availability budget'
+      title: (page) {{$labels.sloth_service}} {{$labels.sloth_slo}} SLO error budget
+        burn rate is too fast.
+  - alert: WebAvailabilityBudgetBurn
+    expr: |
+      (
+          max(slo:sli_error:ratio_rate2h{sloth_id="svp-web-availability", sloth_service="svp", sloth_slo="web-availability"} > (3 * 0.0009999999999999432)) without (sloth_window)
+          and
+          max(slo:sli_error:ratio_rate1d{sloth_id="svp-web-availability", sloth_service="svp", sloth_slo="web-availability"} > (3 * 0.0009999999999999432)) without (sloth_window)
+      )
+      or
+      (
+          max(slo:sli_error:ratio_rate6h{sloth_id="svp-web-availability", sloth_service="svp", sloth_slo="web-availability"} > (1 * 0.0009999999999999432)) without (sloth_window)
+          and
+          max(slo:sli_error:ratio_rate3d{sloth_id="svp-web-availability", sloth_service="svp", sloth_slo="web-availability"} > (1 * 0.0009999999999999432)) without (sloth_window)
+      )
+    labels:
+      severity: ticket
+      sloth_severity: ticket
+    annotations:
+      summary: 'web: server responses (pages, Server Actions, /rum) burn the 99.9%
+        availability budget'
+      title: (ticket) {{$labels.sloth_service}} {{$labels.sloth_slo}} SLO error budget
+        burn rate is too fast.
+- name: sloth-slo-sli-recordings-svp-web-inp
+  rules:
+  - record: slo:sli_error:ratio_rate5m
+    expr: |
+      (sum(rate(svp_web_vital_inp_seconds_count{service_name="web"}[5m])) - sum(rate(svp_web_vital_inp_seconds_bucket{service_name="web",le="0.2"}[5m])))
+      /
+      (sum(rate(svp_web_vital_inp_seconds_count{service_name="web"}[5m])))
+    labels:
+      sloth_id: svp-web-inp
+      sloth_service: svp
+      sloth_slo: web-inp
+      sloth_window: 5m
+  - record: slo:sli_error:ratio_rate30m
+    expr: |
+      (sum(rate(svp_web_vital_inp_seconds_count{service_name="web"}[30m])) - sum(rate(svp_web_vital_inp_seconds_bucket{service_name="web",le="0.2"}[30m])))
+      /
+      (sum(rate(svp_web_vital_inp_seconds_count{service_name="web"}[30m])))
+    labels:
+      sloth_id: svp-web-inp
+      sloth_service: svp
+      sloth_slo: web-inp
+      sloth_window: 30m
+  - record: slo:sli_error:ratio_rate1h
+    expr: |
+      (sum(rate(svp_web_vital_inp_seconds_count{service_name="web"}[1h])) - sum(rate(svp_web_vital_inp_seconds_bucket{service_name="web",le="0.2"}[1h])))
+      /
+      (sum(rate(svp_web_vital_inp_seconds_count{service_name="web"}[1h])))
+    labels:
+      sloth_id: svp-web-inp
+      sloth_service: svp
+      sloth_slo: web-inp
+      sloth_window: 1h
+  - record: slo:sli_error:ratio_rate2h
+    expr: |
+      (sum(rate(svp_web_vital_inp_seconds_count{service_name="web"}[2h])) - sum(rate(svp_web_vital_inp_seconds_bucket{service_name="web",le="0.2"}[2h])))
+      /
+      (sum(rate(svp_web_vital_inp_seconds_count{service_name="web"}[2h])))
+    labels:
+      sloth_id: svp-web-inp
+      sloth_service: svp
+      sloth_slo: web-inp
+      sloth_window: 2h
+  - record: slo:sli_error:ratio_rate6h
+    expr: |
+      (sum(rate(svp_web_vital_inp_seconds_count{service_name="web"}[6h])) - sum(rate(svp_web_vital_inp_seconds_bucket{service_name="web",le="0.2"}[6h])))
+      /
+      (sum(rate(svp_web_vital_inp_seconds_count{service_name="web"}[6h])))
+    labels:
+      sloth_id: svp-web-inp
+      sloth_service: svp
+      sloth_slo: web-inp
+      sloth_window: 6h
+  - record: slo:sli_error:ratio_rate1d
+    expr: |
+      (sum(rate(svp_web_vital_inp_seconds_count{service_name="web"}[1d])) - sum(rate(svp_web_vital_inp_seconds_bucket{service_name="web",le="0.2"}[1d])))
+      /
+      (sum(rate(svp_web_vital_inp_seconds_count{service_name="web"}[1d])))
+    labels:
+      sloth_id: svp-web-inp
+      sloth_service: svp
+      sloth_slo: web-inp
+      sloth_window: 1d
+  - record: slo:sli_error:ratio_rate3d
+    expr: |
+      (sum(rate(svp_web_vital_inp_seconds_count{service_name="web"}[3d])) - sum(rate(svp_web_vital_inp_seconds_bucket{service_name="web",le="0.2"}[3d])))
+      /
+      (sum(rate(svp_web_vital_inp_seconds_count{service_name="web"}[3d])))
+    labels:
+      sloth_id: svp-web-inp
+      sloth_service: svp
+      sloth_slo: web-inp
+      sloth_window: 3d
+  - record: slo:sli_error:ratio_rate30d
+    expr: |
+      (sum(rate(svp_web_vital_inp_seconds_count{service_name="web"}[30d])) - sum(rate(svp_web_vital_inp_seconds_bucket{service_name="web",le="0.2"}[30d])))
+      /
+      (sum(rate(svp_web_vital_inp_seconds_count{service_name="web"}[30d])))
+    labels:
+      sloth_id: svp-web-inp
+      sloth_service: svp
+      sloth_slo: web-inp
+      sloth_window: 30d
+- name: sloth-slo-meta-recordings-svp-web-inp
+  rules:
+  - record: slo:objective:ratio
+    expr: vector(0.75)
+    labels:
+      sloth_id: svp-web-inp
+      sloth_service: svp
+      sloth_slo: web-inp
+  - record: slo:error_budget:ratio
+    expr: vector(1-0.75)
+    labels:
+      sloth_id: svp-web-inp
+      sloth_service: svp
+      sloth_slo: web-inp
+  - record: slo:time_period:days
+    expr: vector(30)
+    labels:
+      sloth_id: svp-web-inp
+      sloth_service: svp
+      sloth_slo: web-inp
+  - record: slo:current_burn_rate:ratio
+    expr: |
+      slo:sli_error:ratio_rate5m{sloth_id="svp-web-inp", sloth_service="svp", sloth_slo="web-inp"}
+      / on(sloth_id, sloth_slo, sloth_service) group_left
+      slo:error_budget:ratio{sloth_id="svp-web-inp", sloth_service="svp", sloth_slo="web-inp"}
+    labels:
+      sloth_id: svp-web-inp
+      sloth_service: svp
+      sloth_slo: web-inp
+  - record: slo:period_burn_rate:ratio
+    expr: |
+      slo:sli_error:ratio_rate30d{sloth_id="svp-web-inp", sloth_service="svp", sloth_slo="web-inp"}
+      / on(sloth_id, sloth_slo, sloth_service) group_left
+      slo:error_budget:ratio{sloth_id="svp-web-inp", sloth_service="svp", sloth_slo="web-inp"}
+    labels:
+      sloth_id: svp-web-inp
+      sloth_service: svp
+      sloth_slo: web-inp
+  - record: slo:period_error_budget_remaining:ratio
+    expr: 1 - slo:period_burn_rate:ratio{sloth_id="svp-web-inp", sloth_service="svp",
+      sloth_slo="web-inp"}
+    labels:
+      sloth_id: svp-web-inp
+      sloth_service: svp
+      sloth_slo: web-inp
+  - record: sloth_slo_info
+    expr: vector(1)
+    labels:
+      sloth_id: svp-web-inp
+      sloth_mode: cli-gen-prom
+      sloth_objective: "75"
+      sloth_service: svp
+      sloth_slo: web-inp
+      sloth_spec: prometheus/v1
+      sloth_version: v0.16.0
+- name: sloth-slo-alerts-svp-web-inp
+  rules:
+  - alert: WebINPBudgetBurn
+    expr: |
+      (
+          max(slo:sli_error:ratio_rate2h{sloth_id="svp-web-inp", sloth_service="svp", sloth_slo="web-inp"} > (3 * 0.25)) without (sloth_window)
+          and
+          max(slo:sli_error:ratio_rate1d{sloth_id="svp-web-inp", sloth_service="svp", sloth_slo="web-inp"} > (3 * 0.25)) without (sloth_window)
+      )
+      or
+      (
+          max(slo:sli_error:ratio_rate6h{sloth_id="svp-web-inp", sloth_service="svp", sloth_slo="web-inp"} > (1 * 0.25)) without (sloth_window)
+          and
+          max(slo:sli_error:ratio_rate3d{sloth_id="svp-web-inp", sloth_service="svp", sloth_slo="web-inp"} > (1 * 0.25)) without (sloth_window)
+      )
+    labels:
+      severity: ticket
+      sloth_severity: ticket
+    annotations:
+      summary: 'web: more than 25% of page loads have an INP above 200 ms (budget
+        burn)'
       title: (ticket) {{$labels.sloth_service}} {{$labels.sloth_slo}} SLO error budget
         burn rate is too fast.

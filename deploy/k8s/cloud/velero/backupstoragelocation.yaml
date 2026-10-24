@@ -1,0 +1,24 @@
+# Where Velero writes backups on the cloud cluster (docs/adr/0020-reliability-stage6.md, section 6): the S3 bucket the
+# stage 7 Terraform makes for it, with public access blocked and encryption by its own KMS key (SSE-KMS). Velero reaches
+# it as ServiceAccount velero/velero-server through EKS Pod Identity, so there is no credential field and no Secret.
+#
+# The three REPLACE values are outputs of the stage 7 Terraform, unknown until then: fill them in the working tree
+# before `kubectl --context <ctx> apply -f deploy/k8s/cloud/velero/`. deploy/k8s/cloud/velero/drill-restore.sh refuses
+# to run while the location is not Available, which is what an unfilled bucket gives.
+#
+# No Secret ever lands in this bucket: the Schedule and the drill exclude secrets (threat model BAK-2). External
+# Secrets, cert-manager and Argo CD make them again after a restore.
+apiVersion: velero.io/v1
+kind: BackupStorageLocation
+metadata:
+  name: default
+  namespace: velero
+spec:
+  provider: aws
+  default: true
+  accessMode: ReadWrite
+  objectStorage:
+    bucket: REPLACE-velero-bucket
+  config:
+    region: REPLACE-region
+    kmsKeyId: REPLACE-kms-key-arn

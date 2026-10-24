@@ -1,0 +1,90 @@
+# Velero 1.18.4 (chart https://vmware-tanzu.github.io/helm-charts velero 12.2.1, deploy/k8s/cloud/charts.json), release
+# velero in namespace velero, on the cloud cluster only (docs/adr/0020-reliability-stage6.md, section 6). What it protects
+# there: the PersistentVolumes inside the cluster (Redpanda's topics and consumer offsets while Redpanda runs in the
+# cluster), and the rebuild of a namespace deleted by mistake, with a measured RTO. Data in managed services (RDS,
+# ElastiCache, S3) has their own backups; the cluster's state is in git (Argo CD).
+#
+# Volumes: CSI snapshots of EBS, without the data mover. No node-agent, so no root pod, no hostPath and no namespace
+# with Pod Security "privileged"; the snapshots stay in EBS in the same region (VolumeSnapshotClass in
+# deploy/k8s/cloud/velero/volumesnapshotclass.yaml, Retain so they outlive the namespace).
+#
+# Installed by hand with helm for one cloud session. The learner runs, with the cloud cluster's context in each command:
+#
+#   kubectl --context <ctx> create namespace velero
+#   kubectl --context <ctx> label namespace velero pod-security.kubernetes.io/enforce=restricted
+#   helm --kube-context <ctx> upgrade --install velero velero --repo https://vmware-tanzu.github.io/helm-charts \
+#     --version 12.2.1 -n velero -f deploy/k8s/cloud/values/velero.yaml
+#   # after filling in the bucket, region and KMS key of the stage 7 Terraform in backupstoragelocation.yaml:
+#   kubectl --context <ctx> apply -f deploy/k8s/cloud/velero/
+#   deploy/k8s/cloud/velero/drill-restore.sh --context <ctx> check
+#
+# and at the end of the session (the drill script's sweep first, while Velero can still delete its snapshots):
+#
+#   deploy/k8s/cloud/velero/drill-restore.sh --context <ctx> sweep
+#   helm --kube-context <ctx> uninstall velero -n velero
+#   kubectl --context <ctx> delete namespace velero
+#   kubectl --context <ctx> get crd -o name | grep '\.velero\.io$' | xargs kubectl --context <ctx> delete
+#
+# `make cloud-check` renders this file with `helm template` and checks the result with kubeconform; every image must be
+# pinned by digest. The schemas of Velero's own kinds come from config/crd/ of velero-io/velero at the tag of the image
+# below.
+
+image:
+  repository: docker.io/velero/velero
+  # 1.18.3 and 1.18.4 fix a backup queue that could get stuck; the chart's default is 1.18.2.
+  tag: v1.18.4@sha256:c89fb5b6d1fd6afd368e0f483e6f5555fd62851a1eada8ac5c72482e674ca17b
+
+# The chart's pre-install/pre-upgrade Job runs `velero install --crds-only --apply` with the image above, so the CRDs are
+# those of 1.18.4: the CRD of restores changed after 1.18.2, the version of the CRDs in the chart's crds/ folder.
+upgradeCRDs: true
+
+# The AWS object store plugin, copied into the shared plugins volume before the server starts. It reads credentials
+# through the AWS SDK's default chain, so EKS Pod Identity (or IRSA as a fallback) works without a Secret.
+initContainers:
+  - name: velero-plugin-for-aws
+    image: docker.io/velero/velero-plugin-for-aws:v1.14.4@sha256:c85a7fa803569e3128c33e4f5766f84ab156c8d171c9f1dd2715581d45ce98fa
+    imagePullPolicy: IfNotPresent
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: [ALL]
+    volumeMounts:
+      - mountPath: /target
+        name: plugins
+
+# Pod Security "restricted" for the server and the CRD Job. The Velero image's user is the name cnb, which the kubelet
+# cannot check as non-root, so a numeric one is given; the plugin image already runs as 65532.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+
+configuration:
+  # CSI snapshots need the feature flag even in 1.18.
+  features: EnableCSI
+  # No data mover: the snapshot stays in EBS (no node-agent, see the top of this file).
+  defaultSnapshotMoveData: false
+
+# The BackupStorageLocation (bucket, region, KMS key) and the Schedule are manifests in deploy/k8s/cloud/velero/, so the
+# chart renders neither, nor a VolumeSnapshotLocation for native EBS snapshots: CSI makes the snapshots.
+backupsEnabled: false
+snapshotsEnabled: false
+deployNodeAgent: false
+
+# EKS Pod Identity association for ServiceAccount velero/velero-server, made by the stage 7 Terraform, with IAM rights
+# on the backup bucket, its KMS key and the EBS snapshot calls only. No Secret with an access key.
+credentials:
+  useSecret: false
+
+# The chart binds velero-server to cluster-admin: a restore creates every kind it restores. Accepted because Velero
+# lives for one cloud session (threat model BAK-2).
+rbac:
+  create: true
+  clusterAdministrator: true

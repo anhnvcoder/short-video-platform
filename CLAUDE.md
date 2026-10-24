@@ -41,6 +41,11 @@ Người học ưu tiên học DevOps + SA.
 - **Monorepo:** `services/<tên>/`, `proto/`, `deploy/`, `docs/`. Thư mục nào tạo khi tới giai đoạn cần nó.
 - **ADR** ở `docs/adr/NNNN-<slug>.md`, theo mẫu trong [`docs/adr/README.md`](docs/adr/README.md). Đảo một quyết
   định cũ thì viết ADR mới và đánh dấu ADR cũ là "Bị thay bởi".
+- **Runbook, postmortem, RFC** ([ADR-0020](docs/adr/0020-reliability-stage6.md) §12, §14): `docs/runbooks/` (mẫu và mục lục ở
+  `README.md`): một runbook mỗi cảnh báo `severity=page`, tên file là tên alert kebab-case, rule page mang `runbook_url` trỏ file
+  đó trên `main` (thêm cảnh báo page thì thêm runbook trong cùng thay đổi); sự cố đã gặp và quy trình tay cũng ở đây.
+  `docs/postmortems/<yymmdd>-<slug>.md`: postmortem không đổ lỗi theo mẫu của `README.md`, mốc thời gian UTC có nguồn.
+  `docs/rfc/NNNN-<slug>.md`: một trang cho người không làm kỹ thuật (vấn đề, phương án, chi phí có nguồn, rủi ro, đề xuất).
 - **Mỗi service một database riêng; không service nào đọc database của service khác.** Cần dữ liệu
   của service khác thì gọi API của nó hoặc dựng bản sao từ event.
 
@@ -62,6 +67,12 @@ Người học ưu tiên học DevOps + SA.
   Trong cluster k3d (giai đoạn 4) cùng tên database (cả `svp_glitchtip`) nằm trên Postgres `svp-pg` của CloudNativePG
   (`svp-pg-rw.svp-data:5432`), gateway, feed-service và web dùng db 10, db 14 và db 9 (session) của Valkey
   `valkey.svp-data:6379`; Postgres và Redis native không bị đụng.
+- **Service có Postgres thử lại kết nối lúc khởi động** (`internal/pgretry`, gọi từ `internal/pgpool.New` và
+  `internal/dbmigrate.Up`; [ADR-0020](docs/adr/0020-reliability-stage6.md) §11): chỉ lỗi mạng (từ chối kết nối, quá hạn dial,
+  mất kết nối lúc bắt tay, DNS quá hạn), trong cửa sổ 30 s, chờ 250 ms gấp đôi tới 2 s, mỗi lần vẫn bị hạn kết nối 5 s; lỗi xác
+  thực, database không có, TLS bị từ chối, tên miền không có thì dừng ngay. Mỗi lần lỗi một dòng WARN `database not reachable,
+  retrying` (`attempt`, `error`, không URL), nối được sau khi lỗi thì INFO `database connected after retries` (`attempts`,
+  `elapsed_ms`).
 - **Docker, compose, k3d chỉ chạy qua `Makefile`.** Mọi target gọi `env -u DOCKER_DEFAULT_PLATFORM docker ...`:
   shell global đặt `DOCKER_DEFAULT_PLATFORM=linux/amd64` cho dự án khác, nếu không bỏ biến này thì
   container chạy amd64 qua giả lập, chậm và tốn RAM. Chạy tay ngoài Makefile cũng phải thêm tiền tố đó.
@@ -154,7 +165,8 @@ liệt kê target):
   `GLITCHTIP_SECRET_KEY`, `GLITCHTIP_ADMIN_PASSWORD`, mật khẩu hai role `svp_glitchtip_*` và
   `GLITCHTIP_ADMIN_EMAIL=admin@svp.local`; cho cluster k3d, compose bỏ qua: `SVP_PG_SUPERUSER_PASSWORD`,
   `SVP_KAFKA_ADMIN_PASSWORD`, `SVP_KAFKA_KEDA_PASSWORD`, `SVP_KAFKA_<SERVICE>_PASSWORD` cho 5 service có Kafka,
-  `SVP_GRAFANA_ADMIN_PASSWORD`). `.env` có sẵn thì chỉ bổ sung biến còn thiếu hoặc đang rỗng, không đổi giá trị đã đặt.
+  `SVP_GRAFANA_ADMIN_PASSWORD`, `SVP_PG_BACKUP_S3_SECRET_KEY` (user MinIO `svp-pg-backup` của backup Postgres; 20 byte hex
+  như secret key S3 khác, vì MinIO giới hạn 40 ký tự)). `.env` có sẵn thì chỉ bổ sung biến còn thiếu hoặc đang rỗng, không đổi giá trị đã đặt.
 - Quy tắc đọc `.env` (`deploy/observability/glitchtip/dotenv.sh`, dùng chung cho `make env`, `make test-stack`,
   `make glitchtip-init`, bootstrap Postgres và script diễn tập): mỗi dòng là dòng trống, comment `#` ở cột 1, hoặc
   `KEY=value` với `KEY` ở cột 1 và `=` ngay sau; giá trị trơn (ASCII in được, không khoảng trắng, nháy, `\`, `$`) hoặc nằm
@@ -242,6 +254,23 @@ liệt kê target):
   báo `severity=page` tới `api.telegram.org` (ngoại lệ hẹp về mạng ngoài của lab) và `drill-alert-to-sentry` kiểm số
   thông báo đã gửi; thiếu thì không gửi gì, bước đó SKIP. Có cả hai biến mà Alertmanager đang chạy chưa nạp receiver thì
   FAIL trước khi tắt service.
+- Giai đoạn 6, tải k6 ([ADR-0020](docs/adr/0020-reliability-stage6.md) §2), target ở `deploy/k6/k6.mk`, k6 chỉ chạy bằng
+  `K6_IMAGE` ghim của `Makefile` (không dùng k6 cài trên máy). `make k6-check`: `k6 inspect --execution-requirements` của
+  `deploy/k6/main.js` với từng profile (`local`, `ci`, `cloud`), `--network none`, sạch là không in gì. `make load-local`
+  (profile `local`, ~24 req/s giữ 5 phút, threshold theo SLO gồm độ trễ) và `make load-ci` (profile `ci`, vài req/s 60 s, chỉ
+  threshold lỗi; job `stack` của CI dùng): trên stack `make up` đang chạy (`OBS=lgtm` để đọc phía server trong Prometheus), có
+  video `READY` (`make smoke` tạo); từ chối khi stack tắt hay cluster k3d chạy; container k6 vào mạng `svp_web`, gọi
+  `http://gateway:8080` và `http://web:3001` (`Host`, `Origin` là `http://localhost:3001`); tóm tắt ở
+  `.k6/<profile>-<time>/summary.json` (gitignore; không `setup_data`, token, cookie, mật khẩu, grep kiểm), exit ≠ 0 khi một
+  threshold trượt. **LOCAL LAB ONLY:** cả hai xoá khoá `svp:gw:rl:register:*` ở db 10 như `make smoke`.
+- `make gameday`, `make gameday-mark M=diagnosed|mitigated|recovered`, `make gameday-end` (game day, ADR-0020 §13, script
+  `deploy/compose/drills/gameday.sh`): chỉ trên stack `make up OBS=lgtm` có video `READY`. `gameday` chạy suốt buổi ở một
+  terminal: tải nền k6 `local` (container `svp-gameday-k6`, giữ `SVP_K6_HOLD`, mặc định 60 phút), chờ 2 phút ổn định, **T0**
+  dừng engagement-service, **T1** khi `CircuitBreakerOpen` có trong Alertmanager; người trực xử lý theo runbook
+  `docs/runbooks/circuit-breaker-open.md` và ghi mốc bằng `gameday-mark` ở terminal khác. `gameday-end` hay Ctrl-C: dừng tải,
+  bật lại service (chỉ khi đã qua T0), ghi dòng thời gian, báo cáo và tóm tắt k6 ở `.k6/gameday-<time>/`. Container
+  `svp-gameday-k6` còn sót thì `gameday` từ chối chạy và in lệnh xoá. Postmortem viết từ mốc thật ở `docs/postmortems/`.
+  **LOCAL LAB ONLY:** xoá khoá `svp:gw:rl:register:*` ở db 10 như `make smoke`.
 - Script diễn tập dừng/khởi động container, chỉ `SELECT` trên `svp_video`, `svp_engagement`, `svp_feed`, và luôn bật lại
   mọi service khi kết thúc. Trên Redis, ngoài hai thao tác xoá ở trên (`svp:gw:rl:register:*` ở db 10,
   `svp:feed:explore:*` ở db 14) script chỉ đọc. `drill-rate-limit`, `drill-obs-threats` và `drill-upload-cleanup` dựng lại
@@ -255,7 +284,9 @@ liệt kê target):
   `make k8s-up`, `k8s-gitops-up` từ chối khi stack compose `svp` đang chạy; `make up` từ chối khi node của
   cluster hay registry `k3d-svp-registry` đang chạy. Cổng chỉ trên `127.0.0.1`: API 6550, HTTPS của Envoy 8443
   (`api.svp.localhost`, `s3.svp.localhost` với chứng chỉ wildcard; web ở `svp.localhost`, listener `https-apex` với chứng
-  chỉ riêng; đều phân giải về loopback), registry 5111. Postgres (CloudNativePG), Valkey,
+  chỉ riêng; đều phân giải về loopback), registry 5111. Postgres (CloudNativePG; từ giai đoạn 6 backup cơ sở và WAL lưu
+  liên tục qua plugin Barman Cloud, component `plugin-barman-cloud` ở `cnpg-system`, vào bucket `pg-backups` của MinIO trong
+  cluster bằng user riêng `svp-pg-backup`, [ADR-0020](docs/adr/0020-reliability-stage6.md) §5), Valkey,
   Redpanda (SASL + ACL), MinIO nằm trong cluster: target giai đoạn 4 không đụng Postgres/Redis native. File sinh ra nằm ở
   `.k8s/` (gitignore). Biến chỉ đặt ở cluster: service có Kafka đăng nhập SASL SCRAM bằng `KAFKA_SASL_USERNAME`,
   `KAFKA_SASL_PASSWORD` (đặt cả hai hay không biến nào; compose không đặt, broker không xác thực); gateway tin một hop
@@ -273,7 +304,9 @@ liệt kê target):
   trừ `kube-system` (`deploy/k8s/pod-security-admission.yaml`, mount từ đường của repo lúc tạo cluster, đọc lại mỗi lần
   node server khởi động): sửa `k3d.yaml` hay dời repo phải `make k8s-down && make k8s-up`, sửa file đó có hiệu lực ở lần
   khởi động sau; `make k8s-up` từ chối cluster tạo khi chưa có cấu hình này, hay khi nguồn mount không còn là file, khác
-  file của repo hiện tại, hay version lệch `podSecurityVersion`.
+  file của repo hiện tại, hay version lệch `podSecurityVersion`. Probe của chart `svp-service` (ADR-0020 §10, cùng cho mọi
+  release): liveness `timeoutSeconds: 5` (chu kỳ 10 s, 3 lần), readiness 2 (chu kỳ 5 s), startup của service gRPC 2 (chu kỳ
+  2 s × 30 lần); media-worker không có probe.
 - Kyverno ([ADR-0015](docs/adr/0015-cicd-devsecops-stage5.md) §8), cùng `ImageValidatingPolicy` `svp-images` (chart
   `deploy/helm/svp-policy`) trên hai đường, chỉ namespace `svp`: `make k8s-up` cài **Audit** (`failurePolicy: Ignore`,
   image `dev-*` chưa ký của registry k3d vẫn chạy, vi phạm ghi vào PolicyReport), `make k8s-gitops-up` **Enforce**
@@ -284,7 +317,10 @@ liệt kê target):
   image (sáu service Go và `web`) tag `dev-<image ID>` (chỉ `--set`, không ghi file), cài
   `deploy/argocd/apps/components.json` theo wave bằng
   `deploy/k8s/install.sh` (trong đó chạy `secrets.sh` sau `svp-cluster`, `glitchtip-init.sh` sau `svp-observability`),
-  xuất CA ra `.k8s/ca.crt`; idempotent, cần `.env` (`make env`), từ chối cluster do Argo CD quản (có Application
+  xuất CA ra `.k8s/ca.crt`. Với Postgres: giữ `serverName` (thế hệ lưu trữ) của Cluster `svp-pg` đang chạy bằng `--set`; từ
+  chối nâng `svp-data` khi `svp-pg` đang phục hồi (`bootstrap.recovery` có mà chưa Ready) hay đã mất mà còn Backup của nó;
+  sau `svp-data` chờ WAL lưu liên tục và thế hệ đang chạy có backup cơ sở (chưa có thì chụp một bản; cluster mới chờ thêm vài
+  phút); idempotent, cần `.env` (`make env`), từ chối cluster do Argo CD quản (có Application
   `svp-root`). Khi pod template của gateway hay web (Argo Rollout) đổi, tức có canary, `k8s-up` tự chạy traffic diễn tập
   trong lúc
   canary rồi dừng, chờ Rollout `Healthy` có hạn; abort hay inconclusive thì FAIL kèm lệnh gỡ (**LOCAL LAB ONLY**: traffic
@@ -292,7 +328,8 @@ liệt kê target):
   native không bị đụng). `k8s-status` in container, node và pod mọi namespace trừ `kube-system`.
 - `make k8s-secrets`, `make k8s-glitchtip-init`, `make k8s-ca`: `k8s-secrets` tạo/cập nhật Secret từ `.env` bằng
   `kubectl apply` qua stdin, không in giá trị (gồm `svp/web-env` chỉ chứa `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY`, phải là base64
-  chuẩn của 32 byte, sai dạng thì dừng); mật khẩu superuser Redpanda đổi thì đặt vào broker đang chạy trước khi apply
+  chuẩn của 32 byte, sai dạng thì dừng; `svp-data/pg-backup-s3` là đăng nhập của user MinIO `svp-pg-backup`, chỉ sidecar của
+  plugin Barman Cloud trong pod Postgres đọc); mật khẩu superuser Redpanda đổi thì đặt vào broker đang chạy trước khi apply
   (cần `redpanda-0` chạy; Admin API không trả lời hay không nhận mật khẩu nào thì dừng, không đổi Secret nào), MinIO hay
   Redpanda chạy với mật khẩu khác `.env` thì restart; sau đó `make k8s-up` để Job init đặt mật khẩu mới và restart service
   có Secret đổi (cluster GitOps: các bước tay ở đầu `deploy/k8s/gitops.sh`). `k8s-glitchtip-init` ghi DSN vào Secret
@@ -341,11 +378,24 @@ liệt kê target):
   NetworkPolicy, ACL Kafka, PSA, `pg_hba`, RL-1 với `X-Forwarded-For` giả, pprof/metrics, UI không lộ, Grafana 401,
   RBAC: không ServiceAccount nào của `svp` đọc Secret hay pod, CloudNativePG và Envoy Gateway chỉ có quyền ở các
   namespace đã thu hẹp, ngoại lệ còn lại in kèm lý do) và các dòng web của giai đoạn 5b phần C (WEB-7, WEB-2, WEB-10,
-  WEB-13, WEB-8; pod web ở FF-3, FF-4, IN-2; route `svp/web` ở OPS-2; chạy đủ ở giai đoạn 7), log ở
+  WEB-13, WEB-8; pod web ở FF-3, FF-4, IN-2; route `svp/web` ở OPS-2) và giai đoạn 6 (BAK-1:
+  request S3 có chữ ký qua Envoy, user `svp-pg-backup` chỉ tới `pg-backups`, user service không tới được bucket đó; operator
+  CloudNativePG ở `cnpg-system` không tạo pod, không exec, không sửa Deployment, không lấy token cho ServiceAccount nào, kiểm bằng
+  `kubectl auth can-i` và tạo thử dry run dưới tên operator mà policy `svp-cnpg-operator-secrets` từ chối; ngoại lệ RBAC của
+  plugin Barman Cloud in kèm lý do), log ở
   `.k8s/drills/threats-<time>.log` được dò các giá trị
   Secret đã đọc. Kết quả và JSON ở `.k8s/drills/`; script trả cluster về như cũ khi kết thúc (uncordon, bỏ ghim KEDA,
   trả bản gateway tốt). **LOCAL LAB ONLY:** trừ `measure-canary`, mọi target này xoá khoá `svp:gw:rl:register:*` ở
   Valkey db 10 của cluster (qua `kubectl exec`).
+- `make drill-k8s-backup [MODE=latest|pitr]` (giai đoạn 6, ADR-0020 §5, script `deploy/k8s/drills/backup.sh`): diễn tập DR
+  tại chỗ, chỉ cluster dev (`k3d-svp` trên `127.0.0.1:6550`, không cluster GitOps vì Argo CD tự sửa `serverName` về git): tạo
+  database `svp_drill` (bảng `markers`, không đụng bảng của service), backup theo yêu cầu, 60 s dòng đánh dấu (`pitr` ép
+  `pg_switch_wal` và đặt mục tiêu ở giữa), xoá Cluster `svp-pg` và PVC, **T0** dựng lại cùng tên bằng `bootstrap.recovery` vào
+  thế hệ lưu trữ mới `svp-pg-<yymmddhhmmss>`, restart một lần 4 service có Postgres và GlitchTip, **T1** khi luồng
+  `k8s-smoke` qua; RTO = T1 − T0, RPO theo dòng đánh dấu còn lại (không dòng nào trở lại thì in cận dưới `RPO at least N s`),
+  số dòng mọi bảng của service trước/sau; WAL không lưu được hay backup chưa xong thì dừng trước khi xoá gì; **không bao giờ
+  xoá backup**. JSON ở `.k8s/drills/backup-<time>.json`. Cần `.k8s/ca.crt`. **LOCAL LAB ONLY:** xoá khoá
+  `svp:gw:rl:register:*` ở Valkey db 10 của cluster như `k8s-smoke`.
 - `make drill-k8s-supplychain [SUPPLYCHAIN_UNSIGNED=<digest GHCR>] [SUPPLYCHAIN_VULNERABLE=<digest GHCR>]
   [SUPPLYCHAIN_ENFORCE_TMP=1]` (giai đoạn 5, script `deploy/k8s/drills/supplychain.sh`): policy Kyverno của `svp`, mỗi ca
   một dòng PASS/FAIL/SKIP và chỉ PASS khi đúng message của rule cần từ chối; pod gửi bằng `--dry-run=server` (trừ ca b là
@@ -377,6 +427,14 @@ liệt kê target):
   in p75, event GlitchTip của lượt `SVP_E2E_GLITCHTIP=1` có frame đã map; forward riêng `127.0.0.1:13200` (Tempo), `19090`
   (Prometheus), `8000` (GlitchTip), cổng bị chiếm thì dừng. **LOCAL LAB ONLY:** `k8s-web-e2e` xoá khoá
   `svp:gw:rl:register:*` ở Valkey db 10 của cluster.
+- `make cloud-check` (giai đoạn 6, ADR-0020 §8, script `deploy/k8s/cloud/check.sh`): kiểm tĩnh manifest viết sẵn cho cluster
+  đo thật (giai đoạn 6b, 7) không cần cluster hay `.env`: `helm template` chart của `deploy/k8s/cloud/charts.json` (Chaos
+  Mesh, Velero), manifest của `deploy/k8s/cloud/chaos/`, `velero/`, Job k6 do `deploy/k6/cloud/render.sh` in, rồi
+  kubeconform `-strict` (`KUBECONFORM_IMAGE` ghim; schema Kubernetes `CLOUD_K8S_VERSION` của `deploy/k8s/k8s.mk` ở commit
+  ghim, schema CRD sinh từ CRD của đúng bản chart ghim; kind không có schema là FAIL); mọi thí nghiệm Chaos Mesh có
+  `duration` và chỉ chọn pod của namespace của nó, mọi image ghim `@sha256:`. Cần mạng (repo chart, GitHub). Lệnh chạy thật
+  (`deploy/k6/cloud/run.sh`, `deploy/k8s/cloud/velero/drill-restore.sh`, `helm`, `kubectl apply` của Chaos Mesh) do người học
+  chạy với context của cluster đo ghi trong lệnh; script từ chối context `k3d-*` và context rỗng.
 - `make hooks`: bật git hook ở `.githooks/` một lần cho mỗi clone. `pre-commit` chạy `gofmt` trên file Go đã stage,
   `golangci-lint run`, `buf lint` và `gitleaks` trên thay đổi đã stage.
 - Giai đoạn 5, CI trên GitHub Actions ([ADR-0015](docs/adr/0015-cicd-devsecops-stage5.md)). Hai workflow, mọi action
@@ -387,8 +445,16 @@ liệt kê target):
     service container; `make web-install`, `make web-check`, `make web-generate-check`), `generate` (`make generate-check`), `buf` (`buf breaking` so với
     merge-base của PR, `main` trước push, hay merge-base với `origin/main` khi dispatch), `config`
     (`deploy/ci/scan-gate.sh --check-ignorefile`, `make slo-check`, `make otelcol-validate`, `make env` rồi
-    `make compose-config`, `make helm-check`, `deploy/k8s/check-image-digests.sh`), `gitleaks` (toàn lịch sử,
-    `--redact`), `trivy-config` (chỉ báo), `sarif` (chỉ `main`), check tổng `ci-ok` (cần đủ 7 job, trừ `sarif`).
+    `make compose-config`, `make helm-check`, `deploy/k8s/check-image-digests.sh`, `make k6-check`, `make cloud-check`),
+    `gitleaks` (toàn lịch sử, `--redact`), `trivy-config` (chỉ báo), `sarif` (chỉ `main`), check tổng `ci-ok` (cần đủ 7 job,
+    trừ `sarif` và `stack`). Job `stack` (giai đoạn 6, ADR-0020 §15; **chỉ báo, ngoài `ci-ok`**, không chặn merge; xem lại
+    khi 20 lượt liên tiếp xanh, không lượt đỏ do môi trường, thì đưa vào `ci-ok`): `ubuntu-24.04`, tối đa 45 phút,
+    `contents: read`, không secret; Postgres, Redis là service container publish trên `127.0.0.1` và IP bridge `172.17.0.1`
+    (`make ci-bridge-check` dừng job khi gateway của network `bridge` khác địa chỉ đó; chỉ cho CI), gói apt
+    `postgresql-client redis-tools ffmpeg jq`, rồi `make env`, `make up`, `make smoke`, `make web-install`, Playwright
+    Chromium và WebKit, `make web-e2e`, `make load-ci`, `make web-lighthouse` (đỏ không làm job đỏ), `make ps` khi lỗi,
+    `make down` luôn chạy; artifact chỉ `k6-summary` (`summary.json` đã grep bí mật) và `lighthouse` (báo cáo đã lọc
+    cookie). Mọi thứ của job này **kiểm sau push**.
   - `.github/workflows/images.yml` (PR, push `main`, dispatch, lịch hằng ngày): chỉ build service đổi so với base
     (`deploy/ci/changed-services.sh`; đổi `images.yml`, `deploy/ci/`, `deploy/k8s/lib.sh` hay dòng
     `TRIVY_IMAGE`/`SYFT_IMAGE`/`COSIGN_IMAGE` của `Makefile` thì cả bảy; `web` chỉ build khi đổi file dưới `web/` hay
@@ -412,16 +478,16 @@ liệt kê target):
   - Chạy lại một job trên máy, từ gốc repo: `make check-go TESTFLAGS=-count=1`; `make web-check`,
     `make web-generate-check`; `make generate-check`;
     `buf breaking --against '.git#ref=<base>'`; `deploy/ci/scan-gate.sh --check-ignorefile`, `make slo-check`,
-    `make otelcol-validate`, `make compose-config`, `make helm-check`, `deploy/k8s/check-image-digests.sh`;
-    `gitleaks git --redact --no-banner`; `make trivy-config`; một chân image (build, quét, cổng, không push):
+    `make otelcol-validate`, `make compose-config`, `make helm-check`, `deploy/k8s/check-image-digests.sh`, `make k6-check`,
+    `make cloud-check`; `gitleaks git --redact --no-banner`; `make trivy-config`; một chân image (build, quét, cổng, không push):
     `deploy/ci/build-image.sh <svc> arm64 "$(mktemp -d)"`; service nào sẽ build: `deploy/ci/changed-services.sh <base>
     HEAD`. Push GHCR, ký, attest, promote chỉ chạy trong CI: không đăng nhập GHCR hay Sigstore từ máy.
   - `make helm-check`: `helm lint` và `helm template` mọi chart của repo với values đường GitOps (`HELM_*_HOME` trong
     thư mục tạm). `deploy/k8s/check-image-digests.sh`: `helm template` mọi chart bên thứ ba với đúng values, mọi image
     (ngoài 7 image của project) phải ghim `@sha256:`. `make trivy-config`: trivy quét cấu hình Dockerfile, chart, chỉ báo.
     `make renovate-check`: `renovate-config-validator --strict` trong `RENOVATE_IMAGE` ghim, không mạng. trivy, syft,
-    cosign, Renovate chạy trên máy chỉ bằng image ghim digest của `Makefile` (`TRIVY_IMAGE`, `SYFT_IMAGE`,
-    `COSIGN_IMAGE`, `RENOVATE_IMAGE`), không cài. Riêng cosign, script (`cosign_` của `deploy/ci/common.sh`) dùng `cosign`
+    cosign, Renovate, k6, kubeconform chạy trên máy chỉ bằng image ghim digest của `Makefile` (`TRIVY_IMAGE`, `SYFT_IMAGE`,
+    `COSIGN_IMAGE`, `RENOVATE_IMAGE`, `K6_IMAGE`, `KUBECONFORM_IMAGE`), không cài. Riêng cosign, script (`cosign_` của `deploy/ci/common.sh`) dùng `cosign`
     trên PATH trước nếu có (CI cài bằng `sigstore/cosign-installer`), không có thì `COSIGN_IMAGE`.
   - `.trivyignore.yaml` ở gốc repo (hiện chưa có): chỉ phần `vulnerabilities`, mỗi mục có `id`, `statement` (lý do) và
     `expired_at` không quá 30 ngày sau ngày chạy; thêm qua PR; bí mật không bỏ qua được. File sai quy tắc làm job `config`
@@ -438,6 +504,9 @@ Quy ước test:
   `svp_engagement_views_<x>_test`: mỗi test một database), tạo từ `SVP_TEST_POSTGRES_URL`; helper ở `internal/pgtest` từ
   chối tên không khớp `^svp_[a-z0-9_]+_test$`, nên test không chạm được database thật của service.
 - Test gateway gọi service qua `bufconn` (gRPC trong bộ nhớ), không mở cổng.
+- Test thử lại kết nối Postgres (`internal/pgretry`, `internal/pgpool`, `internal/dbmigrate`) dùng helper của
+  `internal/pgretry/pgretrytest` (`ClosedPort`, `Blackhole`, `DelayedProxy`: proxy đóng mọi kết nối một lúc rồi mới chuyển tiếp
+  tới database test), mọi cổng do chính test mở; test đo thời gian với cửa sổ thử lại rút ngắn còn 1,5 s.
 - Test Kafka dùng `kfake` (cluster Kafka giả trong bộ nhớ của franz-go), không cần Docker, nên `make check` chạy được khi
   stack đang tắt.
 - Test cần MinIO hay Redpanda thật đọc `SVP_TEST_S3_ENDPOINT`, `SVP_TEST_S3_VIDEO_ACCESS_KEY` /

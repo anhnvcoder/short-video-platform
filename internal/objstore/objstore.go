@@ -201,7 +201,8 @@ func (s *Store) PresignPost(ctx context.Context, key string, sizeBytes int64, co
 	for k, v := range req.Values {
 		fields[k] = v
 	}
-	// The policy requires the field but the SDK does not return it (ADR-0008 section 2).
+	// The policy requires Content-Type to match but the SDK does not return it as a form field; without it storage
+	// would reject the form (ADR-0008 section 2).
 	fields["Content-Type"] = contentType
 	return &PresignedPost{URL: req.URL, Fields: fields, ExpiresAt: expiresAt}, nil
 }

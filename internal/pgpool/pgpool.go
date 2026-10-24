@@ -1,7 +1,9 @@
 // Package pgpool opens the Postgres pool every service uses: traced with otelpgx, pool statistics
-// as metrics, and checked at startup within a bounded time. One constructor keeps the tracing, the
-// leaving out of query parameters and the startup deadline the same in every service
-// (docs/adr/0011-observability-stage3.md, sections 2, 5 and 11).
+// as metrics, and checked at startup within a bounded time, retrying while the database is not
+// reachable over the network. One constructor keeps the tracing, the leaving out of query
+// parameters and the startup deadline the same in every service
+// (docs/adr/0011-observability-stage3.md, sections 2, 5 and 11; docs/adr/0020-reliability-stage6.md,
+// section 11).
 package pgpool
 
 import (
@@ -15,21 +17,23 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/anhnvcoder/short-video-platform/internal/pgretry"
 )
 
 // ConnectTimeout bounds each new connection, dial and authentication included, when the URL sets
 // no connect_timeout.
 const ConnectTimeout = 5 * time.Second
 
-// startupTimeout bounds New, the startup check and the pool warm-up (pool_min_conns), whatever
-// connect_timeout the URL sets.
-const startupTimeout = 5 * time.Second
-
 // ErrInvalidURL means the URL could not be parsed. It never carries the URL, which holds a
 // password.
 var ErrInvalidURL = errors.New("pgpool: invalid database URL; want postgres://user:password@host:port/dbname")
 
-// New returns a pool to databaseURL once a connection to it has succeeded, within five seconds.
+// New returns a pool to databaseURL once a connection to it has succeeded, within 30 seconds.
+// While the connection fails on the network (refused, timed out, closed during the handshake) it
+// retries, logging each failure at WARN; any other failure (authentication, missing database, TLS
+// refused, unknown host) is returned at once, as retrying would only hide a configuration error.
+// Canceling ctx stops the retries at once.
 //
 // Query, batch, prepare, connect and acquire calls get spans from the global tracer provider,
 // as children of the caller's span only (none without one). Spans carry the SQL text with its
@@ -38,6 +42,13 @@ var ErrInvalidURL = errors.New("pgpool: invalid database URL; want postgres://us
 // Pool statistics (pgxpool.*) are reported to the global meter provider; otelpgx keeps them
 // registered after Close, so open one pool per process.
 func New(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
+	return open(ctx, databaseURL, pgretry.Window)
+}
+
+// open is New with the startup window as a parameter, so that tests need not wait 30 s. The window
+// bounds the startup check with its retries and the pool warm-up (pool_min_conns), whatever
+// connect_timeout the URL sets.
+func open(ctx context.Context, databaseURL string, window time.Duration) (*pgxpool.Pool, error) {
 	cfg, err := parseConfig(databaseURL)
 	if err != nil {
 		return nil, err
@@ -45,14 +56,14 @@ func New(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	// The pool warms up (pool_min_conns) on the context it is created with: bound it too, so that
 	// Close after a failed Ping does not wait for connections still dialing. Warm-up cut short
 	// here is redone by the pool's periodic health check.
-	startCtx, cancel := context.WithTimeout(ctx, startupTimeout)
+	startCtx, cancel := context.WithTimeout(ctx, window)
 	defer cancel()
 	pool, err := pgxpool.NewWithConfig(startCtx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("pgpool: create pool: %w", err)
 	}
 	// pgxpool connects lazily; fail at startup instead of on the first request.
-	if err := pool.Ping(startCtx); err != nil {
+	if err := pgretry.Connect(startCtx, pool.Ping); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("pgpool: connect to database: %w", err)
 	}

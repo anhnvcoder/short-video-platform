@@ -1,0 +1,15 @@
+# Template of the drill's restore (deploy/k8s/cloud/velero/drill-restore.sh, step 4): the script replaces the name, the
+# backup's name and the namespace (svp-data here). A restore skips objects that already exist, so the namespace is gone
+# and Argo CD's auto-sync is off before this runs.
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: drill-svp-data
+  namespace: velero
+  labels:
+    svp-drill: velero-restore
+spec:
+  backupName: drill-svp-data
+  includedNamespaces:
+    - svp-data
+  restorePVs: true

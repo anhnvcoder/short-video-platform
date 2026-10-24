@@ -6,6 +6,11 @@
 # UP-5, UP-6, FF-4). Run by the one-shot minio-init container with the root password and the two
 # service secret keys in its environment. Idempotent: running it again keeps the buckets and their
 # objects, and resets the users' secret keys and policies to what this script and the .env say.
+#
+# The k3d cluster's minio-init Job also has SVP_PG_BACKUP_S3_SECRET_KEY: then the bucket pg-backups
+# and its user svp-pg-backup are made too, for the backups of Postgres svp-pg
+# (docs/adr/0020-reliability-stage6.md, section 5; threat model BAK-1). Compose never sets it, so its
+# MinIO gets neither.
 set -eu
 
 : "${MINIO_ROOT_PASSWORD:?}" "${SVP_VIDEO_S3_SECRET_KEY:?}" "${SVP_MEDIA_WORKER_S3_SECRET_KEY:?}"
@@ -32,3 +37,13 @@ user() {
 
 user svp-video-service "$dir/video-service-policy.json" "$SVP_VIDEO_S3_SECRET_KEY"
 user svp-media-worker "$dir/media-worker-policy.json" "$SVP_MEDIA_WORKER_S3_SECRET_KEY"
+
+# Cluster only (see the top). Barman does not create its bucket. Nothing anonymous, and the user may
+# list, read, write and delete in pg-backups alone: the backups hold every database, and no service's
+# user may read them, nor this user any service's bucket.
+if [ -n "${SVP_PG_BACKUP_S3_SECRET_KEY:-}" ]; then
+  mc mb --ignore-existing svp/pg-backups >/dev/null
+  mc anonymous set none svp/pg-backups >/dev/null
+  echo "minio-init: bucket pg-backups ok"
+  user svp-pg-backup "$dir/pg-backup-policy.json" "$SVP_PG_BACKUP_S3_SECRET_KEY"
+fi
