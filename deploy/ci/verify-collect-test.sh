@@ -151,6 +151,9 @@ printf '05\tdrill-alert-to-sentry\tfail\t1\t190\t200\t10\t\n06\tdrill-obs-threat
   echo "probe answered: PROBE-BODY-MARKER"
   echo "== NP-1"
   echo "FAIL  NP-1: probe reached minio"
+  # An item stopped under set -e: bash's own line is left out, the drill's line after it is kept.
+  echo "deploy/k8s/drills/threats.sh: line 1742: BASH-ERROR-MARKER: unbound variable"
+  echo "FAIL  NP-1: the item ended with exit status 1"
   echo "== PROBE-HEADING-MARKER: body"
   echo "  PROBE-INDENT-MARKER   PASS with more"
   echo "== WEB-7"
@@ -322,7 +325,7 @@ grep -q '^ok    IN-4: svp-feed-service .*(svp-admin)' "$work/art-k3d/logs/04-dri
   ok "k3d: a verdict naming Kafka users and svp-admin is kept" || fail "k3d: a verdict naming Kafka users and svp-admin is kept"
 v=$work/art-k3d/logs/04-drill-k8s-threats.verdicts.log
 want=$(printf '%s\n' "== IN-2/IN-4" "ok    IN-4: svp-feed-service may only read its topics (svp-admin)" "== NP-1" \
-  "FAIL  NP-1: probe reached minio" "== WEB-7" \
+  "FAIL  NP-1: probe reached minio" "FAIL  NP-1: the item ended with exit status 1" "== WEB-7" \
   "ok    user @drill_ab12 registered: 303, session cookie __Host-Http-svp_sid in the drill's cookie jar" \
   "drill-k8s-threats (20261025T080000Z-ab12)" "$(printf '  %-14s %s' ITEM RESULT)" \
   "$(printf '  %-14s %s' IN-2/IN-4 PASS)" "$(printf '  %-14s %s' NP-1 FAIL)")
@@ -481,6 +484,104 @@ expect_deadline cancelled "false lcp=cancelled" "$(sample cancelled "$(row 01 up
 expect_deadline no-results "false " "$(sample no-results)"
 grep -q '^runner enough: within_deadline=false ' "$work/sample-deadline.log" &&
   ok "sample: the runner enough line names within_deadline" || fail "sample: the runner enough line names within_deadline"
+# Targets verify-run.sh skipped after a failed build target, or left out by SVP_VERIFY_TARGETS, did not run out of time.
+expect_deadline infrastructure "true " "$(sample infrastructure "$(row 01 up fail 2 100 160 60 '')" \
+  "$(row 02 smoke skipped '' 160 160 0 'infrastructure step failed')")"
+expect_deadline unchosen "true " "$(sample unchosen "$(row 01 up ok 0 100 160 60 '')" \
+  "$(row 02 smoke skipped '' 160 160 0 'not in targets')")"
+
+# --- verify-run.sh: the build target's failure skips the rest at once, SVP_VERIFY_TARGETS picks targets. It runs from
+# a copy in a throwaway tree with a fake .env, a fake make first on PATH (it logs its arguments and fails for the
+# targets FAKE_MAKE_FAIL names) and the fake kubectl above (no cluster answers), so no target, no cluster and no real
+# .env is ever reached. verify-run.sh needs GNU timeout (and GNU date for its time lines: gdate on macOS).
+vr=$work/verify-run
+vb=$work/verify-run-bin
+mkdir -p "$vr/deploy/ci" "$vr/deploy/observability/glitchtip" "$vb"
+cp "$here/verify-run.sh" "$here/verify-mask.sh" "$here/platform.sh" "$vr/deploy/ci/"
+cp "$here/../observability/glitchtip/dotenv.sh" "$vr/deploy/observability/glitchtip/"
+cp "$repo/.env" "$vr/.env"
+cat >"$vb/make" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_MAKE_LOG"
+case " ${FAKE_MAKE_FAIL:-} " in *" $1 "*) exit 2 ;; esac
+EOF
+printf '#!/bin/sh\ncommand -v gdate >/dev/null 2>&1 && exec gdate "$@"\nexec /bin/date "$@"\n' >"$vb/date"
+chmod 755 "$vb/make" "$vb/date"
+# run_verify NAME SCENARIO [VAR=VALUE...]: the copy of verify-run.sh for SCENARIO; its output in $work/run-NAME.log,
+# the make calls in $work/run-NAME.make, its results in $work/run-NAME.out; prints its exit status.
+run_verify() {
+  local name=$1 scenario=$2 rc=0
+  shift 2
+  : >"$work/run-$name.make"
+  env -u GITHUB_ACTIONS PATH="$vb:$work/bin:$PATH" SVP_VERIFY_OUT="$work/run-$name.out" \
+    SVP_VERIFY_SECRETS="$work/run-$name.secrets" FAKE_MAKE_LOG="$work/run-$name.make" SVP_VERIFY_TARGETS= "$@" \
+    "$vr/deploy/ci/verify-run.sh" "$scenario" >"$work/run-$name.log" 2>&1 </dev/null || rc=$?
+  echo "$rc"
+}
+# results NAME: "id name status note" of each target of run NAME, one per line.
+results() { awk -F '\t' 'NR > 1 { print $1, $2, $3, $8 }' "$work/run-$1.out/results.tsv"; }
+same() { if [ "$3" = "$2" ]; then ok "$1"; else fail "$1: want '$2', got '$3'"; fi; }
+compose_names="up smoke drill-obs-threats load-local fallback-alert-under-load web-lighthouse-1 web-lighthouse-2
+web-lighthouse-3 lcp drill-alert-to-sentry"
+k3d_names="k8s-up k8s-smoke ram-rest-start drill-k8s-threats drill-k8s-pdb drill-k8s-canary k8s-web-sourcemaps
+k8s-web-e2e drill-k8s-web-obs drill-k8s-keda ram-peak drill-k8s-backup drill-k8s-backup-pitr ram-rest-end"
+# want_rows NAMES STATUS_OF_FIRST NOTE_OF_REST [ID NAME STATUS NOTE]...: the rows of a run: the first of NAMES with
+# STATUS_OF_FIRST and no note, every other skipped with NOTE_OF_REST, except the rows given whole after it.
+want_rows() {
+  local i=0 name line names=$1 first=$2 rest=$3
+  shift 3
+  for name in $names; do
+    i=$((i + 1))
+    line=$(printf '%02d %s' "$i" "$name")
+    if [ "$i" = 1 ]; then line="$line $first "; else line="$line skipped $rest"; fi
+    for over in "$@"; do [ "${over%% * * *}" = "$(printf '%02d' "$i")" ] && line=$over; done
+    echo "$line"
+  done
+}
+if timeout --version 2>/dev/null | grep -q GNU; then
+  rc=$(run_verify infra compose-obs FAKE_MAKE_FAIL=up)
+  same "verify-run: a failed build target makes the run fail" 1 "$rc"
+  same "verify-run: after a failed build target no other target runs" "up OBS=lgtm" "$(cat "$work/run-infra.make")"
+  same "verify-run: every target after a failed build target is skipped for it" \
+    "$(want_rows "$compose_names" fail 'infrastructure step failed')" "$(results infra)"
+
+  rc=$(run_verify one dev-k3d SVP_VERIFY_TARGETS=drill-k8s-threats)
+  same "verify-run: a run of the chosen targets that pass passes" 0 "$rc"
+  same "verify-run: only the build target and the chosen one run" "$(printf 'k8s-up\ndrill-k8s-threats')" \
+    "$(cat "$work/run-one.make")"
+  same "verify-run: the targets left out keep their ids and are skipped as not in targets" \
+    "$(want_rows "$k3d_names" ok 'not in targets' '04 drill-k8s-threats ok ')" "$(results one)"
+
+  rc=$(run_verify one-fails dev-k3d 'SVP_VERIFY_TARGETS=drill-k8s-pdb  drill-k8s-threats' FAKE_MAKE_FAIL=drill-k8s-pdb)
+  same "verify-run: a chosen target that fails makes the run fail" 1 "$rc"
+  same "verify-run: chosen targets run in the scenario's order, whatever the order given" \
+    "$(printf 'k8s-up\ndrill-k8s-threats\ndrill-k8s-pdb')" "$(cat "$work/run-one-fails.make")"
+
+  rc=$(run_verify peak dev-k3d SVP_VERIFY_TARGETS=ram-peak)
+  same "verify-run: ram-peak without drill-k8s-keda makes the run fail" 1 "$rc"
+  same "verify-run: ram-peak without drill-k8s-keda is skipped for it" \
+    "$(want_rows "$k3d_names" ok 'not in targets' '11 ram-peak skipped drill-k8s-keda did not run')" "$(results peak)"
+
+  rc=$(run_verify unknown dev-k3d 'SVP_VERIFY_TARGETS=drill-k8s-threats drill-k8s-thraets')
+  same "verify-run: a name that is no target of the scenario stops it" 2 "$rc"
+  [ ! -s "$work/run-unknown.make" ] && [ ! -e "$work/run-unknown.out/results.tsv" ] &&
+    ok "verify-run: an unknown name stops it before any target or results.tsv" ||
+    fail "verify-run: an unknown name stops it before any target or results.tsv"
+  # The error names the targets of the scenario: the list that the scenario's own steps make.
+  has run-unknown "an unknown name is named, with the scenario's targets" \
+    "not a target of dev-k3d: drill-k8s-thraets (its targets: $(printf '%s' "$k3d_names" | tr '\n' ' '))"
+  rc=$(run_verify unknown-compose compose-obs SVP_VERIFY_TARGETS=k8s-smoke)
+  same "verify-run: a target of the other scenario is unknown" 2 "$rc"
+  has run-unknown-compose "the compose-obs targets are listed" \
+    "(its targets: $(printf '%s' "$compose_names" | tr '\n' ' '))"
+
+  rc=$(run_verify bad dev-k3d $'SVP_VERIFY_TARGETS=k8s-smoke\n::warning::BAD-TARGET-MARKER')
+  same "verify-run: a target list with another character stops it" 2 "$rc"
+  [ ! -s "$work/run-bad.make" ] && lacks run-bad "the rejected list is not printed back" BAD-TARGET-MARKER ||
+    fail "verify-run: a rejected list starts no target"
+else
+  echo "skip  verify-run: no GNU timeout on PATH (Linux, or coreutils on macOS)"
+fi
 
 # --- changed-services.sh: a change of a verification script builds no image; one of verify-release.sh, which the image
 # jobs run, still builds all seven. GIT_DIR is set for the throwaway repository, so git can never reach another one.

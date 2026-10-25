@@ -1699,7 +1699,9 @@ web7_redirect() {
 
 # web7: the BFF is no open proxy and no token reaches the browser (threat model WEB-7).
 web7() {
-  local p status code i ct handle id what f n=0
+  # i=0, not a bare local: bash 5 leaves a local declared without a value unset, and $((i + 1)) of an unset name
+  # stops the item under set -u (bash 3.2 of macOS sets it to "", so it ran there).
+  local p status code i=0 ct handle id what f n=0
   web_user
   handle=$(jq -r .handle "$work/web.cred")
   id=$(rand_uuid)
@@ -2108,6 +2110,10 @@ run_item() {
   if ((rc == 0)); then
     echo "$1 PASS" >>"$work/results"
   else
+    # Said even after the item's own FAIL lines: a command that stops the item under set -e (an unset name under
+    # set -u, a command not found) prints none, and where only the verdict lines of this output are kept (the CI
+    # runner's artifact), this line is all that tells how the item ended.
+    echo "FAIL  $1: the item ended with exit status $rc" >&2
     echo "$1 FAIL" >>"$work/results"
     failed+=" $1"
   fi

@@ -3,14 +3,14 @@
 # with the same make targets as a dev machine and runs the drills and measurements that machine cannot hold (16 GB).
 # Not a check of pull requests: no ruleset requires it and nothing else triggers it.
 #
-#   gh workflow run verify.yml --ref <main or feat/stage6b-...> -f scenario=<compose-obs|dev-k3d>
+#   gh workflow run verify.yml --ref <main or feat/stage6b-...> -f scenario=<compose-obs|dev-k3d> [-f targets='<name> ...']
 #
 # The repository is public, so the log and the artifact of every run are too, red or not:
 # - only workflow_dispatch (write access to the repository needed), never pull_request_target or workflow_run; no
 #   secret, no environment; every job has contents: read and nothing else;
 # - every action is GitHub's own and pinned to a full commit SHA; checkout never leaves the token in .git/config;
-# - the input reaches the scripts only through env (SCENARIO) and deploy/ci/verify-run.sh checks it again with a case;
-#   if: compares it as an expression, never in a shell;
+# - the inputs reach the scripts only through env (SCENARIO, SVP_VERIFY_TARGETS) and deploy/ci/verify-run.sh checks
+#   them again with a case; if: compares the scenario as an expression, never in a shell;
 # - make env writes a .env of fresh random secrets that lives on this runner until the job ends; the cluster makes more
 #   (GlitchTip's tokens, its CA). deploy/ci/verify-mask.sh masks them in the log as soon as they exist, every target's
 #   output goes to a file on the runner instead of the log, and deploy/ci/verify-collect.sh copies into the artifact
@@ -31,13 +31,19 @@ on:
         options:
           - compose-obs
           - dev-k3d
+      targets:
+        description: Targets to run, separated by spaces; empty runs every one, the build target always runs (deploy/ci/verify-run.sh)
+        type: string
+        required: false
+        default: ""
 
 permissions: {}
 
-# One run at a time: a problem common to the scenarios (a script that does not run on Linux yet) is fixed before the
-# next run. A third dispatch while one runs and one waits replaces the waiting one.
+# One run of each scenario at a time, the two scenarios side by side: each has a runner of its own, and both run on
+# Linux by now, so a fix rarely waits on the other's run. A third dispatch of a scenario while one runs and one waits
+# replaces the waiting one.
 concurrency:
-  group: verify
+  group: verify-${{ inputs.scenario }}
   cancel-in-progress: false
 
 jobs:
@@ -55,6 +61,7 @@ jobs:
       contents: read
     env:
       SCENARIO: ${{ inputs.scenario }}
+      SVP_VERIFY_TARGETS: ${{ inputs.targets }}
       SVP_VERIFY_JOB_MINUTES: 120
       SVP_VERIFY_STEP_MINUTES: 75
     services:
@@ -165,6 +172,7 @@ jobs:
       contents: read
     env:
       SCENARIO: ${{ inputs.scenario }}
+      SVP_VERIFY_TARGETS: ${{ inputs.targets }}
       SVP_VERIFY_JOB_MINUTES: 330
       SVP_VERIFY_STEP_MINUTES: 285
     steps:
