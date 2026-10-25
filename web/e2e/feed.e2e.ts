@@ -56,6 +56,18 @@ authedTest(
   },
 );
 
+// hls.js's ES module build carries no inlined transmuxer worker: the player pool gives it the worker file the build
+// serves, so segments are transmuxed off the main thread instead of one long task each (features/feed/player-pool.ts).
+authedTest("the first video plays with hls.js's transmuxer in a worker loaded from its own file", async ({ page }) => {
+  const workers: string[] = [];
+  page.on("worker", (worker) => workers.push(new URL(worker.url()).pathname));
+  await page.goto("/");
+  await expect(playingVideo(feedItem(page, 0))).toHaveCount(1);
+  await expect
+    .poll(() => workers.filter((path) => /^\/_next\/static\/media\/hls\.worker\.[\w-]+\.js$/.test(path)).length)
+    .toBeGreaterThan(0);
+});
+
 // The next item's poster sits inside the browser's lazy-load margin, so it would download beside the current poster,
 // the page's largest paint. The next item gets it two ways, each held back: its <img> renders only after the window's
 // load event, which waits for the current poster; the player's <video> for it, which carries the same poster, waits for

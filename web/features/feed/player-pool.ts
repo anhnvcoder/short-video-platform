@@ -43,6 +43,11 @@ export function slotOf(index: number): number {
 }
 
 const hlsConfig: Partial<HlsConfig> = {
+  // The transmuxer runs in hls.js's own worker file, served as a static asset of the build. The ES module builds carry
+  // no inlined worker: without workerPath, hls.js demuxes and remuxes every segment on the main thread, one long task
+  // per segment while the page is still hydrating. A worker that fails to start makes hls.js fall back to that inline
+  // path by itself (a non-fatal error), so playback does not depend on it.
+  workerPath: new URL("hls.js/dist/hls.worker.js", import.meta.url).href,
   // No level above what the element shows: a phone does not fetch 1080p for a 390 px wide column.
   capLevelToPlayerSize: true,
   // The first segment comes from the lowest level, the quickest to arrive; the bandwidth it measures lets hls.js move

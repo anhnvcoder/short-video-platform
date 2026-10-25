@@ -3,7 +3,16 @@
 import { ChevronDown, ChevronUp, Link2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { useEffect, useEffectEvent, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import {
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  useTransition,
+  type ReactNode,
+} from "react";
 import { preload } from "react-dom";
 import type { RailFollow } from "@/components/feed/action-rail";
 import { FeedItem } from "@/components/feed/feed-item";
@@ -135,6 +144,18 @@ export function FeedScreen({
     () => false,
   );
 
+  // The server renders a feed page with its first page (feed-route.tsx), so the router keeps this page until the other
+  // tab's has arrived. Meanwhile that tab is shown selected, the skeleton lies over this feed and nothing plays: the
+  // switch answers at once. The feed stays mounted under it, with its scroll position and players, in case the user
+  // comes back before the other tab arrives.
+  const [switching, startSwitch] = useTransition();
+  const [switchTo, setSwitchTo] = useState(kind);
+  const leaving = switching && switchTo !== kind;
+  function selectTab(next: FeedKind) {
+    setSwitchTo(next);
+    startSwitch(() => router.push(next === "explore" ? "/" : "/following"));
+  }
+
   const pool = useRef<PlayerPool | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const view = useRef<{ index: number; counter: ViewCounter } | null>(null);
@@ -215,7 +236,7 @@ export function FeedScreen({
     () => items.map((item, index) => ({ index, playlistUrl: item.playlist_url, posterUrl: item.thumbnail_url })),
     [items],
   );
-  const shouldPlay = pausedIndex !== active && !hidden;
+  const shouldPlay = pausedIndex !== active && !hidden && !leaving;
   useEffect(() => {
     pool.current?.sync(active, sources, (index) => itemPart(scroller.current, index, "video-host"), shouldPlay);
   }, [active, sources, shouldPlay]);
@@ -336,7 +357,8 @@ export function FeedScreen({
   }
 
   const onKeyDown = useEffectEvent((event: KeyboardEvent) => {
-    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || ignoresShortcut(event)) {
+    // While leaving for the other tab, this feed is under the skeleton: no shortcut acts on what cannot be seen.
+    if (leaving || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || ignoresShortcut(event)) {
       return;
     }
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -428,11 +450,12 @@ export function FeedScreen({
 
   return (
     <FeedFrame
-      kind={kind}
+      kind={leaving ? switchTo : kind}
+      onSelect={selectTab}
       overlays={
         <>
           {!online && <OfflineBanner />}
-          {items.length > 0 && (
+          {items.length > 0 && !leaving && (
             <div className="absolute top-1/2 right-8 z-20 hidden -translate-y-1/2 flex-col gap-3 md:flex">
               <IconButton
                 label={t("previous")}
@@ -476,6 +499,11 @@ export function FeedScreen({
       }
     >
       {body}
+      {leaving && (
+        <div className="absolute inset-0 z-10">
+          <FeedSkeleton />
+        </div>
+      )}
     </FeedFrame>
   );
 }

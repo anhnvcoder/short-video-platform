@@ -266,6 +266,19 @@ describe("PlayerPool", () => {
     }
   });
 
+  it("gives every instance hls.js's worker file, so segments are transmuxed off the main thread", async () => {
+    const pool = new PlayerPool(mediaOrigin, callbacks(), loader);
+    const elements = hosts(2);
+    pool.sync(0, sources(2), (index) => elements[index] ?? null, true);
+    await settle();
+    start(elements[0]);
+    await settle();
+    expect(live()).toHaveLength(2);
+    for (const instance of live()) {
+      expect(instance.config.workerPath).toMatch(/\/hls\.worker[^/]*\.js$/);
+    }
+  });
+
   it("loads the neighbours only once the current video starts", async () => {
     const pool = new PlayerPool(mediaOrigin, callbacks(), loader);
     const elements = hosts(3);
