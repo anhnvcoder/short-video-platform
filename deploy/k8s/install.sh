@@ -259,6 +259,34 @@ pg_backup_sets() {
     fail "Cluster svp-data/svp-pg is missing while Backups of it remain (${backups% }): it was deleted after it had data, a restore drill stopped half way? Installing svp-data would create an empty database in its place. Finish the restore as docs/runbooks/postgres-restore.md says (make drill-k8s-backup printed its commands), or start over with no data: make k8s-down && make k8s-up"
 }
 
+# rollouts_plugin_sets: sets the array rollouts_sets to the flag that gives Argo Rollouts its Gateway API traffic router
+# plugin built for the nodes' architecture. The plugin is a native binary: the controller downloads it when it starts
+# and executes it at the first reconcile of a Rollout with a canary. deploy/k8s/values/argo-rollouts.yaml pins the
+# linux-arm64 asset, for the nodes of a Mac, and the GitOps path installs that file as it is. On amd64 nodes (a Linux
+# x86_64 host, such as a CI runner) that binary cannot run: the controller fails to start the plugin on every reconcile,
+# before it scales the Rollout's ReplicaSet, so the gateway never gets a pod. There the asset of the same release built
+# for amd64 is passed with --set-json, pinned here by its sha256 (computed on the downloaded file, equal to the digest
+# GitHub shows for the asset). The values file must name the same release, so a new release cannot update one pin and
+# leave the other behind. arm64 nodes get no flag: the release is upgraded exactly as before.
+rollouts_plugin_release=https://github.com/argoproj-labs/rollouts-plugin-trafficrouter-gatewayapi/releases/download/v0.17.0
+rollouts_plugin_sets() {
+  local archs
+  rollouts_sets=()
+  grep -qxF "      location: $rollouts_plugin_release/gatewayapi-plugin-linux-arm64" \
+    "$repo_root/deploy/k8s/values/argo-rollouts.yaml" ||
+    fail "deploy/k8s/values/argo-rollouts.yaml does not pin $rollouts_plugin_release/gatewayapi-plugin-linux-arm64: when the plugin's release changes, change the amd64 pin of rollouts_plugin_sets in deploy/k8s/install.sh with it"
+  archs=$(kc get nodes -o jsonpath='{range .items[*]}{.metadata.labels.kubernetes\.io/arch}{"\n"}{end}' | sort -u) ||
+    fail "read the architecture of the nodes of svp"
+  case $archs in
+    arm64) ;;
+    amd64)
+      rollouts_sets=(--set-json "controller.trafficRouterPlugins=[{\"name\":\"argoproj-labs/gatewayAPI\",\"location\":\"$rollouts_plugin_release/gatewayapi-plugin-linux-amd64\",\"sha256\":\"1904ca787d33107c140521899d61fff030ee75d99908bd175fca5a4647759061\"}]")
+      ok "Argo Rollouts gets the Gateway API plugin built for amd64 nodes"
+      ;;
+    *) fail "nodes of svp run '$archs': no Gateway API plugin of Argo Rollouts is pinned for that architecture" ;;
+  esac
+}
+
 # pg_base_backup: after chart svp-data, that Postgres svp-pg archives its WAL and that its archive generation has a base
 # backup to restore from (docs/adr/0020-reliability-stage6.md, section 5). On a new cluster ScheduledBackup svp-pg-daily
 # takes the first one at once (immediate; a hook of the chart, made once the minio-init Job has made bucket pg-backups
@@ -480,6 +508,10 @@ while IFS=$sep read -r name namespace wave path repo chart version values canary
   if [ "$name" = svp-data ]; then
     pg_backup_sets
     args+=(${pg_sets[@]+"${pg_sets[@]}"})
+  fi
+  if [ "$name" = argo-rollouts ]; then
+    rollouts_plugin_sets
+    args+=(${rollouts_sets[@]+"${rollouts_sets[@]}"})
   fi
   watcher=
   # The Collector mounts ConfigMap otel-collector-config of chart svp-observability, which its own chart cannot
