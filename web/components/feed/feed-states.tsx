@@ -2,6 +2,7 @@ import { CircleAlert, CircleCheck, Compass, RotateCcw, RotateCw, Users, WifiOff,
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import type { ReactNode } from "react";
+import { LinkPending } from "@/components/shell/link-pending";
 import { Button, Skeleton } from "@/components/ui";
 import { focusRing } from "@/components/ui/styles";
 import { cn } from "@/lib/cn";
@@ -70,7 +71,9 @@ export function EmptyFeed({ kind }: { kind: "explore" | "following" }) {
           focusRing,
         )}
       >
-        <Compass aria-hidden="true" size={18} />
+        <LinkPending size={18}>
+          <Compass aria-hidden="true" size={18} />
+        </LinkPending>
         {t("followingAction")}
       </Link>
     </Message>

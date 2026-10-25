@@ -1,4 +1,5 @@
 import { NextIntlClientProvider, useMessages } from "next-intl";
+import { linkPendingMessages } from "@/components/shell/link-pending-messages";
 import { requireSession } from "@/server/current-user";
 import { serverEnv } from "@/server/env";
 import { loadFirstFeedPage } from "@/server/feed";
@@ -14,8 +15,8 @@ import { FeedScreen } from "./feed-screen";
 export function FeedRoute({ kind }: { kind: FeedKind }) {
   const messages = useMessages();
   return (
-    // Only the feed's namespace goes to the browser.
-    <NextIntlClientProvider messages={{ feed: messages.feed }}>
+    // Only the feed's namespace, and the spinner of the empty following feed's link, go to the browser.
+    <NextIntlClientProvider messages={{ feed: messages.feed, ...linkPendingMessages(messages) }}>
       <LoadedFeed kind={kind} />
     </NextIntlClientProvider>
   );

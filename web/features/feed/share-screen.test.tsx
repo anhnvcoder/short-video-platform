@@ -1,10 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
+import { useLinkStatus } from "next/link";
 import { useRouter } from "next/navigation";
 import { NextIntlClientProvider } from "next-intl";
 import { afterAll, afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { Locale } from "@/i18n/config";
+import { linkPendingMessages } from "@/components/shell/link-pending-messages";
 import { messagesFor } from "@/i18n/messages";
 import { formatCompact } from "@/lib/format";
 import { server } from "@/lib/test/msw-server";
@@ -12,6 +14,11 @@ import type { FeedItem } from "./api";
 import { ShareScreen } from "./share-screen";
 
 vi.mock("next/navigation", () => ({ useRouter: vi.fn() }));
+// Whether the navigation a link started still waits for its page; only the App Router knows, so a test says.
+vi.mock("next/link", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/link")>()),
+  useLinkStatus: vi.fn(() => ({ pending: false })),
+}));
 // No MediaSource in jsdom: the pool takes the native path, which only sets video.src.
 vi.mock("./hls-loader", () => ({ loadHls: () => Promise.resolve({ isSupported: () => false }) }));
 
@@ -45,7 +52,11 @@ function renderShare({
 }: { video?: FeedItem; viewerId?: string | null; locale?: Locale } = {}) {
   const messages = messagesFor(locale);
   return render(
-    <NextIntlClientProvider locale={locale} messages={{ feed: messages.feed, share: messages.share }}>
+    // The messages the /v/[id] page gives its provider: no other namespace reaches the screen.
+    <NextIntlClientProvider
+      locale={locale}
+      messages={{ feed: messages.feed, share: messages.share, ...linkPendingMessages(messages) }}
+    >
       <QueryClientProvider client={new QueryClient()}>
         <ShareScreen video={video} viewerId={viewerId} mediaOrigin={mediaOrigin} loadedAt={loadedAt} appName="SVP" />
       </QueryClientProvider>
@@ -239,6 +250,22 @@ describe("ShareScreen for a guest", () => {
     expect(screen.getByText(share().guestHintNoName)).toBeTruthy();
     expect((await playingVideo()).getAttribute("src")).toBe(baseVideo.playlist_url);
   });
+
+  it.each<Locale>(["vi", "en"])(
+    "%s: the app's name, a link to the feed, shows a spinner after it while the feed's page loads",
+    async (locale) => {
+      onTestFinished(() => {
+        vi.mocked(useLinkStatus).mockReturnValue({ pending: false });
+      });
+      vi.mocked(useLinkStatus).mockReturnValue({ pending: true });
+      renderShare({ locale });
+      const home = within(screen.getByRole("banner")).getAllByRole("link")[0]!;
+      expect(home.getAttribute("href")).toBe("/");
+      await waitFor(() =>
+        expect(within(home).getByRole("status").textContent).toBe(messagesFor(locale).common.loading),
+      );
+    },
+  );
 
   it("loads the poster first: a high-priority preload in the head and an eager image", () => {
     renderShare();

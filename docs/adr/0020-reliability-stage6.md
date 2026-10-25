@@ -991,11 +991,32 @@ những request đó vào mô hình mô phỏng của Lighthouse (Lantern), nên
   2 674, 3 152 ms, median **3 144 ms** (chưa đạt), TBT 224, 322, 216 ms (median 224, chưa đạt); `/v/{id}` LCP 2 360, 2 358,
   3 908 ms, median **2 360 ms** (đạt), TBT 195, 220, 236 ms (median 220, chưa đạt); CLS ≤ 0,05; `benchmarkIndex` 2 290–3 640. Pha
   LCP của lần chạy thứ ba: `/` TTFB 454, Load Delay 1 148, Load 255, Render Delay 1 292 ms; `/v/{id}` 453, 337, 147, 2 969 ms. e2e
-  29/29 mỗi trình duyệt ở cả ba lần chạy. Render Delay của `/` còn 1 292 ms (trước 1 714–3 153), nhưng Load Delay lên 1 148 ms
-  (trước 0–578): ảnh LCP bắt đầu tải muộn hơn, nên median LCP của `/` chỉ bớt khoảng 100–350 ms.
-- **Chưa đạt, việc còn lại** (việc code tiếp theo của giai đoạn 6b, mỗi cái đo lại bằng job `stack` và `compose-obs`): preload ảnh
-  LCP (poster của video đầu) để bớt Load Delay của `/`; font (đòn bẩy (b): bớt weight, −17 kB mỗi weight, đổi thiết kế); hydrate
-  của `/v/{id}` (Render Delay 2 969 ms ở lượt chậm). Số thực địa vẫn là RUM (LCP p75 0,57 s trên cluster dev của runner, ADR-0021).
+  29/29 mỗi trình duyệt ở cả ba lần chạy. Median LCP của `/` bớt khoảng 100–350 ms.
+- **Bảng pha LCP không phải số mô phỏng.** Ở chế độ `simulate`, Lighthouse 12.6.1 (`core/computed/metrics/lcp-breakdown.js`) lấy
+  thời điểm **quan sát** của request ảnh nhân với tỉ lệ LCP mô phỏng / LCP quan sát (3 152 / 165 = 19,1): Load Delay 1 148 ms chỉ
+  là 82,7 ms quan sát × 19,1 − TTFB, không phải ảnh tải muộn. Thực tế ở lượt đó: poster được request lúc 82,7 ms, ngay sau CSS
+  (69 ms) và trước mọi script (87 ms), `fetchpriority=high`, đã có preload trong `<head>` (`features/feed/feed-screen.tsx`);
+  `lcp-discovery-insight` đạt cả ba mục, `prioritize-lcp-image` tiết kiệm 0 ms; pha quan sát TTFB 26, Load Delay 56, Load 15,
+  Render Delay 68 ms (LCP 165 ms). Preload ảnh LCP vì vậy không còn là đòn bẩy.
+- **LCP mô phỏng của `/` là tổng byte xong trước LCP quan sát.** Lantern đưa vào đồ thị LCP mọi request xong trước LCP quan sát và
+  mọi script bắt đầu chạy trước mốc đó (cùng CPU ×4 của chúng). Trên runner trang vẽ ở 165 ms, khi mọi script tải lần đầu đã tải
+  xong và chạy (script async chạy ngay khi tới, trước khung đầu), nên đồ thị gồm 345 kB: 17 script 210 kB, 4 font 67 kB, poster
+  40 kB, HTML 17 kB, CSS 10 kB. Đo trên máy bằng bản build thật với gateway và origin media giả, Lighthouse 12.6.1 cùng cấu hình
+  (LCP mô phỏng 2 940 ms, quan sát ~100 ms), rồi bỏ từng nhóm request khỏi devtools log của cùng một lượt và chạy lại phần audit
+  (`lighthouse -A`): bỏ mọi script 1 656 ms (−1 290), chỉ chunk react-dom 74 kB −380, chunk runtime của Next 47 kB −150, năm chunk
+  riêng của feed −150, bốn font −150 (FCP 1 369 → 763 ms), sáu script nhỏ (13 kB) 0, poster cùng origin với app +300 ms (chung 6
+  kết nối HTTP/1.1 với script). Đường găng là chunk react-dom trên một kết nối mới (slow start) cộng thời gian chạy của nó; số byte
+  JS của Next 16 và React 19 không giảm được tới mức cần (khoảng −650 ms trên runner).
+- **TBT** (long task hydrate, profile CPU ×4 trên máy): React render khoảng 55 ms và lần đầu nạp dữ liệu ICU của locale 25–33 ms
+  trong cùng một task. Chi phí ICU là một lần mỗi trang, ở lệnh `Intl` đầu tiên: để server viết sẵn chuỗi "x giờ trước" thì chi
+  phí chuyển sang `Intl.NumberFormat` của số đếm, bỏ cả số đếm thì chuyển sang `resolveLocale` của intl-messageformat (next-intl
+  dịch chuỗi có tham số). Tách mỗi mục feed vào một `Suspense` thêm một long task 60–70 ms, task đầu không đổi. Không giữ thay đổi
+  nào. Cùng các task đó trên runner dài khoảng gấp đôi trên máy (TBT trên máy 16–78 ms, runner 216–322 ms), vì stack chạy cùng máy.
+- **Chưa đạt, đòn bẩy còn lại** (mỗi cái đo lại bằng job `stack` và `compose-obs`): font tải sau `load` (bỏ bốn font khỏi đồ thị:
+  −150 ms LCP, −600 ms FCP; đổi thiết kế: chữ hiện bằng font dự phòng đã chỉnh cỡ tới sau `load` rồi mới đổi, CLS cần đo lại);
+  nén brotli và HTTP/2 ở trước web (compose phục vụ thẳng từ server standalone của Next: gzip, HTTP/1.1, mỗi kết nối mới chịu slow
+  start trong mô hình Lantern); bớt JS tải lần đầu của framework. Đổi cách chấm cổng (số thực địa RUM thay Lantern) là một quyết
+  định riêng, không làm ở đây vì không nới ngưỡng. Số thực địa vẫn là RUM (LCP p75 0,57 s trên cluster dev của runner, ADR-0021).
 
 ### Game day
 

@@ -123,13 +123,18 @@ describe("/v/[id] page", () => {
     expect(rateLimitWait(error)).toBeNull();
   });
 
-  it("hands the share screen the video, the viewer and the media origin, with the feed and share messages only", async () => {
+  it("hands the share screen the video, the viewer and the media origin, with the feed and share messages and its link's spinner label only", async () => {
     loader.load.mockResolvedValue({ ...shown, viewerId: "0192f0c1-7a3e-7c4b-9d2e-000000000001" });
     const element = (await VideoPage(params(videoId))) as ReactElement<{
       messages: Record<string, unknown>;
       children: ReactElement<Record<string, unknown>>;
     }>;
-    expect(Object.keys(element.props.messages)).toEqual(["feed", "share"]);
+    // A nested provider replaces the root's messages: what is not here, the share screen cannot translate.
+    expect(element.props.messages).toEqual({
+      feed: messagesFor("vi").feed,
+      share: messagesFor("vi").share,
+      common: { loading: messagesFor("vi").common.loading },
+    });
     expect(element.props.children.props).toEqual({
       video,
       viewerId: "0192f0c1-7a3e-7c4b-9d2e-000000000001",

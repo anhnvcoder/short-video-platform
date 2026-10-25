@@ -1,11 +1,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
+import { useLinkStatus } from "next/link";
 import { useRouter } from "next/navigation";
 import { NextIntlClientProvider } from "next-intl";
 import { use, useEffect, useState, type ReactNode } from "react";
 import { afterAll, afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { Locale } from "@/i18n/config";
+import { linkPendingMessages } from "@/components/shell/link-pending-messages";
 import { messagesFor } from "@/i18n/messages";
 import { formatCompact } from "@/lib/format";
 import { server } from "@/lib/test/msw-server";
@@ -13,6 +15,11 @@ import type { FeedItem, FeedKind, FeedPage } from "./api";
 import { FeedScreen } from "./feed-screen";
 
 vi.mock("next/navigation", () => ({ useRouter: vi.fn() }));
+// Whether the navigation a link started still waits for its page; only the App Router knows, so a test says.
+vi.mock("next/link", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/link")>()),
+  useLinkStatus: vi.fn(() => ({ pending: false })),
+}));
 // No MediaSource in jsdom: the pool takes the native path, which only sets video.src.
 vi.mock("./hls-loader", () => ({ loadHls: () => Promise.resolve({ isSupported: () => false }) }));
 
@@ -92,7 +99,11 @@ function renderFeed({
   beside?: ReactNode;
 } = {}) {
   return render(
-    <NextIntlClientProvider locale={locale} messages={{ feed: messagesFor(locale).feed }}>
+    // The messages the feed route gives its provider: no other namespace reaches the screen.
+    <NextIntlClientProvider
+      locale={locale}
+      messages={{ feed: messagesFor(locale).feed, ...linkPendingMessages(messagesFor(locale)) }}
+    >
       <QueryClientProvider client={client}>
         <FeedScreen
           kind={kind}
@@ -427,6 +438,21 @@ describe("FeedScreen", () => {
     expect(screen.getByRole("link", { name: t().empty.followingAction }).getAttribute("href")).toBe("/");
     expect(screen.queryByRole("feed")).toBeNull();
   });
+
+  it.each<Locale>(["vi", "en"])(
+    "%s: Explore of the empty following feed shows a spinner while the explore feed's page loads",
+    async (locale) => {
+      onTestFinished(() => {
+        vi.mocked(useLinkStatus).mockReturnValue({ pending: false });
+      });
+      vi.mocked(useLinkStatus).mockReturnValue({ pending: true });
+      renderFeed({ kind: "following", initialPage: page([]), locale });
+      const explore = screen.getByRole("link", { name: messagesFor(locale).feed.empty.followingAction });
+      await waitFor(() =>
+        expect(within(explore).getByRole("status").textContent).toBe(messagesFor(locale).common.loading),
+      );
+    },
+  );
 
   it("an empty explore feed says there is nothing yet", () => {
     renderFeed({ kind: "explore", initialPage: page([]) });
@@ -996,8 +1022,10 @@ describe("FeedScreen", () => {
     expect(tab(t().tabs.following).getAttribute("aria-selected")).toBe("true");
     expect(tab(t().tabs.explore).getAttribute("aria-selected")).toBe("false");
     expect(loading()?.getAttribute("aria-busy")).toBe("true");
-    // The old feed stays under the skeleton, paused, and its shortcuts do nothing.
+    // The old feed stays under the skeleton, paused, out of reach of the keyboard and screen readers (inert), and its
+    // shortcuts do nothing.
     expect(articles()[0]).toBeTruthy();
+    expect(articles()[0]?.closest("[inert]")).toBeTruthy();
     expect(vi.mocked(HTMLMediaElement.prototype.pause).mock.contexts).toContain(video);
     // Paused, as the browser's element now is.
     Object.defineProperty(video, "paused", { configurable: true, get: () => true });
@@ -1012,6 +1040,7 @@ describe("FeedScreen", () => {
     expect(router.push).toHaveBeenLastCalledWith("/");
     expect(tab(t().tabs.explore).getAttribute("aria-selected")).toBe("true");
     expect(loading()).toBeNull();
+    expect(articles()[0]?.closest("[inert]")).toBeNull();
     await waitFor(() => expect(vi.mocked(HTMLMediaElement.prototype.play).mock.calls.length).toBeGreaterThan(played));
 
     // Following again; once its page arrives the switch is over (in the app the new page then replaces this one).

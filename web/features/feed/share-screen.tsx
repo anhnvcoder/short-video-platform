@@ -10,6 +10,7 @@ import type { RailFollow } from "@/components/feed/action-rail";
 import { FeedItem } from "@/components/feed/feed-item";
 import { LoginPrompt } from "@/components/feed/login-prompt";
 import { primaryAction } from "@/components/shell/error-screen";
+import { LinkPending } from "@/components/shell/link-pending";
 import { useCountdown } from "@/components/shell/use-countdown";
 import { Avatar, Button, Toast, ToastRegion } from "@/components/ui";
 import { focusRing } from "@/components/ui/styles";
@@ -241,6 +242,7 @@ export function ShareScreen({ video, viewerId, mediaOrigin, loadedAt, appName }:
           )}
         >
           {appName}
+          <LinkPending size={16} className="ml-2 inline" />
         </Link>
         {guest && (
           <nav className="flex gap-2">

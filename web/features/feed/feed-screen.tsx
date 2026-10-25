@@ -498,7 +498,11 @@ export function FeedScreen({
         </>
       }
     >
-      {body}
+      {/* Under the skeleton while leaving for the other tab: inert keeps the keyboard and screen readers out of a feed
+          that cannot be seen, so Tab and Enter never like or follow a video the user does not see. */}
+      <div inert={leaving} className="h-full">
+        {body}
+      </div>
       {leaving && (
         <div className="absolute inset-0 z-10">
           <FeedSkeleton />
