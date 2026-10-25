@@ -52,3 +52,7 @@ overrides:
   # CVE-2026-41907 (out-of-range writes of v3, v5, v6 into a caller's buffer): no fix below 11; 11.1.1 is the fixed line
   # that still ships CommonJS for lhci's require('uuid'), and lhci calls only uuid.v4() (the flags file of collect).
   "@lhci/cli>uuid@<11.0.0": 11.1.1
+  # CVE-2026-111181: fixed in 1.20.9, a patch of the same 1.x line with the same dependencies and the same trusted
+  # publishing provenance; express 4 (lhci's server) asks for ~1.20.5, which the fix satisfies. The override keeps the
+  # fixed version from sliding back while express still accepts the vulnerable ones.
+  "express>body-parser@<1.20.9": 1.20.9
