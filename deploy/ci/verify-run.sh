@@ -11,7 +11,9 @@
 # exits non-zero is a result, not the end of the scenario (load-local over its latency threshold, web-lighthouse over
 # its LCP budget): the next target still runs, and $SVP_VERIFY_OUT/results.tsv gets one line per target (id, name,
 # ok|fail|timeout|skipped|cancelled, exit status, start and end in seconds since the epoch, seconds, note). Exits 1
-# when any target was not ok.
+# when any target was not ok. Once the last target has its line, $SVP_VERIFY_OUT/run-end gets the time: without it the
+# run was cut short (cancelled, or the step stopped by its timeout-minutes) and results.tsv may lack the target that
+# was running and every later one, so deploy/ci/verify-sample.sh does not count the run as ended in time.
 #
 # The first target builds what the others use (up for compose-obs, k8s-up for dev-k3d). When it is not ok, every
 # later target is skipped at once with the note "infrastructure step failed": none of them can pass, and waiting for
@@ -513,9 +515,11 @@ if [ -n "$unknown" ]; then
   exit 2
 fi
 mkdir -p "$out/logs" || exit 1
+rm -f "$out/run-end"
 printf 'id\tname\tstatus\texit\tstart\tend\tseconds\tnote\n' >"$results"
 [ -n "$targets" ] && echo "verify-run $scenario: targets $build $targets; the others are skipped"
 scenario_targets
+now >"$out/run-end"
 
 echo "verify-run $scenario: $n target(s), $not_ok not ok (results.tsv; the outputs reach the artifact after verify-collect.sh)"
 [ "$not_ok" = 0 ]

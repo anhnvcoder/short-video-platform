@@ -395,6 +395,15 @@ restart_on_secret_change() {
 # CloudNativePG (an error line quotes the statement that failed, values included).
 log_tail_namespaces="argo-rollouts cert-manager cnpg-system keda kyverno svp-data svp-obs"
 
+# mark_log NAMESPACE < LOG: prints each line of LOG as "    [NAMESPACE] LINE", the form verify-collect.sh tells a quoted
+# container log by, and keeps only for the namespaces of log_tail_namespaces: a line left unmarked (a panic of a
+# service, which is no JSON record) would reach the public artifact of a verification run. Every line is marked
+# whatever its bytes (LC_ALL=C: sed refuses bytes that are not UTF-8 under a UTF-8 locale), the last one ends with a
+# newline even when LOG's does not (else the next line printed would be glued to it), and an empty LOG prints nothing.
+mark_log() {
+  { cat; echo; } | LC_ALL=C sed -e '${' -e '/^$/d' -e '}' -e "s/^/    [$1] /"
+}
+
 # unready_report NAMESPACE: after a release that did not get ready, prints to stderr each container of NAMESPACE that
 # is not ready, and each init container that has not exited 0: its state, how its last attempt ended, and, for a
 # container whose log may be shown (log_tail_namespaces), the last lines of its log, and of the attempt before when it
@@ -431,11 +440,11 @@ unready_report() {
         continue
       fi
       echo "  last lines of its log:" >&2
-      { kc -n "$ns" logs "$pod" -c "$container" --tail=40 </dev/null 2>&1 || true; } | sed "s/^/    [$ns] /" >&2
+      { kc -n "$ns" logs "$pod" -c "$container" --tail=40 </dev/null 2>&1 || true; } | mark_log "$ns" >&2
       if [ "$restarts" != 0 ]; then
         echo "  last lines of the attempt before:" >&2
         { kc -n "$ns" logs "$pod" -c "$container" --previous --tail=40 </dev/null 2>&1 || true; } |
-          sed "s/^/    [$ns] /" >&2
+          mark_log "$ns" >&2
       fi
     done
 }

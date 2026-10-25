@@ -640,6 +640,131 @@ describe("FeedScreen", () => {
     );
   });
 
+  it.each([
+    ["before", false],
+    ["after", true],
+  ])(
+    "Back while the like is on its way, the refetch reads the page before the like and answers %s it ends: the video shows liked all along",
+    async (_, answersAfter) => {
+      const liked = { view_count: 3, like_count: 12_401, liked_by_me: true };
+      const likes: string[] = [];
+      let likeAnswered = () => {};
+      // Each read of the first page waits for the test, which answers it with the page it chooses.
+      const reads: ((page: FeedPage) => void)[] = [];
+      server.use(
+        http.put("*/api/videos/:id/like", async () => {
+          likes.push("PUT");
+          await new Promise<void>((resolve) => (likeAnswered = resolve));
+          return new HttpResponse(null, { status: 204 });
+        }),
+        http.get("*/api/feed/explore", async () =>
+          HttpResponse.json(await new Promise<FeedPage>((resolve) => reads.push(resolve))),
+        ),
+      );
+      const client = new QueryClient();
+      const first = { initialPage: page([item(1), item(2)]), initialPageFetchedAt: Date.now() - 120_000 };
+      const explore = renderFeed({ client, ...first });
+      fireEvent.click(within(articles()[0] as HTMLElement).getByRole("button", { name: likeName(), pressed: false }));
+      explore.unmount();
+      renderFeed({
+        client,
+        kind: "following",
+        initialPage: page([item(5)]),
+        initialPageFetchedAt: Date.now(),
+      }).unmount();
+      await waitFor(() => expect(client.getQueryCache().find({ queryKey: ["feed", "explore"] })).toBeUndefined());
+
+      // Back: the replayed page predates the like, and the PUT has not been answered yet.
+      renderFeed({ client, ...first });
+      const shown = () => within(articles()[0] as HTMLElement).getByRole("button", { name: likeName() });
+      const showsLiked = () => {
+        expect(shown().getAttribute("aria-pressed")).toBe("true");
+        expect(shown().textContent).toBe(formatCompact(12_401, "vi"));
+      };
+      showsLiked();
+      await waitFor(() => expect(reads).toHaveLength(1));
+      const stale = page([item(1), item(2)]);
+      if (!answersAfter) {
+        await act(async () => reads[0]?.(stale));
+        await waitFor(() => expect(client.isFetching()).toBe(0));
+        showsLiked();
+      }
+
+      await act(async () => likeAnswered());
+      await waitFor(() => expect(client.isMutating()).toBe(0));
+      showsLiked();
+      if (answersAfter) {
+        // The read in flight may predate the like: it is dropped and the page is read again.
+        await waitFor(() => expect(reads).toHaveLength(2));
+        await act(async () => reads[0]?.(stale));
+        showsLiked();
+        await act(async () => reads[1]?.(page([item(1, { stats: liked }), item(2)])));
+        await waitFor(() => expect(client.isFetching()).toBe(0));
+      }
+      showsLiked();
+      expect(reads).toHaveLength(answersAfter ? 2 : 1);
+      // The screen that left sent the like; the screen mounted again sends none.
+      expect(likes).toEqual(["PUT"]);
+    },
+  );
+
+  it("Back after the like ended, another tab unliked since and the refetch fails: the video shows the newest state read", async () => {
+    server.use(
+      http.put("*/api/videos/:id/like", () => new HttpResponse(null, { status: 204 })),
+      http.get("*/api/feed/explore", () => problem(404, "NOT_FOUND")),
+    );
+    const client = new QueryClient();
+    const first = { initialPage: page([item(1), item(2)]), initialPageFetchedAt: Date.now() - 120_000 };
+    const explore = renderFeed({ client, ...first });
+    fireEvent.click(within(articles()[0] as HTMLElement).getByRole("button", { name: likeName(), pressed: false }));
+    await waitFor(() => expect(client.isMutating()).toBe(0));
+    explore.unmount();
+    // Following was rendered after another tab unliked the video.
+    const following = renderFeed({
+      client,
+      kind: "following",
+      initialPage: page([item(1)]),
+      initialPageFetchedAt: Date.now(),
+    });
+    const shown = () => within(articles()[0] as HTMLElement).getByRole("button", { name: likeName() });
+    expect(shown().getAttribute("aria-pressed")).toBe("false");
+    following.unmount();
+    await waitFor(() => expect(client.getQueryCache().find({ queryKey: ["feed", "explore"] })).toBeUndefined());
+
+    renderFeed({ client, ...first });
+    await waitFor(() => expect(client.getQueryState(["feed", "explore"])?.fetchStatus).toBe("idle"));
+    expect(shown().getAttribute("aria-pressed")).toBe("false");
+    expect(shown().textContent).toBe(formatCompact(12_400, "vi"));
+  });
+
+  it("a like whose answer was lost, then Back: the page read again shows the like the server applied", async () => {
+    const likes: string[] = [];
+    const liked = { view_count: 3, like_count: 12_401, liked_by_me: true };
+    server.use(
+      http.put("*/api/videos/:id/like", () => {
+        likes.push("PUT");
+        return HttpResponse.error();
+      }),
+      http.get("*/api/feed/explore", () => HttpResponse.json(page([item(1, { stats: liked }), item(2)]))),
+    );
+    const client = new QueryClient();
+    const first = { initialPage: page([item(1), item(2)]), initialPageFetchedAt: Date.now() - 120_000 };
+    const explore = renderFeed({ client, ...first });
+    const like = () => within(articles()[0] as HTMLElement).getByRole("button", { name: likeName() });
+    fireEvent.click(like());
+    expect(like().getAttribute("aria-pressed")).toBe("true");
+    await waitFor(() => expect(like().getAttribute("aria-pressed")).toBe("false"));
+    explore.unmount();
+    renderFeed({ client, kind: "following", initialPage: page([item(5)]), initialPageFetchedAt: Date.now() }).unmount();
+    await waitFor(() => expect(client.getQueryCache().find({ queryKey: ["feed", "explore"] })).toBeUndefined());
+
+    renderFeed({ client, ...first });
+    expect(like().getAttribute("aria-pressed")).toBe("false");
+    await waitFor(() => expect(like().getAttribute("aria-pressed")).toBe("true"));
+    expect(like().textContent).toBe(formatCompact(12_401, "vi"));
+    expect(likes).toEqual(["PUT"]);
+  });
+
   it("a first page from a new server render is not fetched again, even with the server's clock two minutes off", async () => {
     const calls = vi.fn();
     server.use(

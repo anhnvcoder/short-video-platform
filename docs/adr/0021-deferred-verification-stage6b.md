@@ -266,7 +266,11 @@ Code, cấu hình và tài liệu dùng đúng các tên này; đổi tên nào 
   bước RAM nghỉ chờ đủ 900 s), mỗi lượt phí 30–40 phút; lượt chỉ để xem `drill-k8s-threats` vẫn chạy đủ 14 bước (khoảng 80 phút).
   - Bước dựng (`up` của `compose-obs`, `k8s-up` của `dev-k3d`) không `ok` thì mọi bước sau ghi `skipped` với note
     `infrastructure step failed`, không chạy, không chờ; các bước gom, lọc, tải vẫn chạy. Tiêu chí `within_deadline` chỉ tính bước
-    `timeout`, `cancelled` và `skipped` vì `deadline`, nên các bước đó không làm runner "thiếu".
+    `timeout`, `cancelled` và `skipped` vì `deadline`, nên các bước đó không làm runner "thiếu". Tiêu chí đó còn cần dấu
+    `run-end` mà `verify-run.sh` ghi sau dòng của bước cuối (sửa 2026-10-25): lượt bị huỷ hay bị `timeout-minutes` cắt có thể dừng
+    trước khi bước đang chạy kịp có dòng `cancelled` (runner không chờ), `results.tsv` khi đó trông như đủ mà thiếu bước đang chạy
+    và mọi bước sau; thiếu dấu thì `within_deadline=false` và `runner.txt` ghi `verify-run.sh reached its end false`. File dấu
+    không vào artifact (ngoài danh sách cho phép, không cảnh báo).
   - Input `targets` (rỗng là mọi bước) chọn bước để chạy: bước dựng luôn chạy; bước không được chọn ghi `skipped` với note
     `not in targets`, không làm lượt đỏ, giữ số thứ tự (tên log như mọi lượt). Tên không thuộc danh sách bước của kịch bản (danh
     sách sinh từ chính trình tự của `verify-run.sh`) hay ký tự ngoài `a-z`, `0-9`, `-`, khoảng trắng thì `verify-run.sh` dừng
@@ -358,7 +362,7 @@ Code, cấu hình và tài liệu dùng đúng các tên này; đổi tên nào 
   | --- | --- | --- |
   | `svp-data` | Redpanda (log text của seastar: kiểm hệ thống lúc khởi động, lỗi cấu hình, bộ nhớ), Valkey, MinIO, sidecar của chart, Job init | Mọi pod Postgres của CloudNativePG (nhãn `cnpg.io/cluster`): dòng lỗi trích câu lệnh thất bại, gồm cả giá trị |
   | `svp-obs` | Prometheus, Alertmanager, Grafana, Loki, Tempo, Pyroscope, Collector (logfmt hay console của zap, không exporter `debug`), operator của kube-prometheus-stack | GlitchTip (nhãn `app.kubernetes.io/name=glitchtip`): access log mang `sentry_key=` là khoá công khai của DSN, mà phép quét chỉ biết nguyên DSN; lỗi của nó có thể trích event nhận được |
-  | `cnpg-system`, `keda`, `argo-rollouts`, `kyverno`, `cert-manager` | Operator và controller: lỗi reconcile, webhook, chứng chỉ (CloudNativePG, KEDA in JSON nên đã bị bỏ theo luật JSON) | — |
+  | `cnpg-system`, `keda`, `argo-rollouts`, `kyverno`, `cert-manager` | Operator và controller: lỗi reconcile, webhook, chứng chỉ (CloudNativePG in JSON nên đã bị bỏ theo luật JSON; KEDA in dạng console của zap, mặc định của chart `keda` 2.21.0 cho operator, metrics server và webhook (`logging.operator.format: console`, `deploy/k8s/values/keda.yaml` không đổi), nên đuôi log của nó được giữ) | — |
   | `svp` (7 service của project) | Không bao giờ: chỉ trạng thái, lý do, mã thoát, và `terminationMessage` khi `terminationMessagePolicy` là `File` (message của `FallbackToLogsOnError` là đuôi log nên không in) | Log của service có thể mang dữ liệu người dùng |
   | `envoy-gateway-system` | Không | Access log của proxy Envoy mang đường dẫn và query, gồm chữ ký của presigned upload |
   | `kube-system`, `argocd` và namespace khác | Không | Không cần cho chẩn đoán cài đặt; ngoài danh sách thì bỏ (fail-closed) |
