@@ -562,6 +562,31 @@ ngoài danh sách này cần hỏi trước. Phần A **chỉ cài gói của ph
   ReDoS CVE-2023-25883 cho dòng 6.x) đăng ngày 2023-07-10 **không** provenance, sau khi 7.5.4 đã có provenance; thứ tự đăng
   làm nó trông như bị hạ cấp. `eslint-plugin-import` (qua `eslint-config-next`) cần `^6.3.1`. Ngoại lệ ghim đúng một
   version, kiểm bằng tay; gói khác không được miễn.
+- **Lỗ hổng trong cây dev của `@lhci/cli`** (giai đoạn 6b, 2026-10-25): `make web-lockfile-scan` báo 8 HIGH, 1 MEDIUM, 2 LOW,
+  đều chỉ qua `@lhci/cli` 0.15.1 → `lighthouse` 12.6.1, không gói nào vào image `web`. `@lhci/cli` 0.15.1 là bản mới nhất và
+  ghim `lighthouse` 12.6.1, nên nâng gói cha không gỡ được gì. Thứ tự xử lý: nâng gói cha, rồi `overrides` của
+  `web/pnpm-workspace.yaml` (mỗi mục khoá theo gói cha, gói khác không đổi theo), cuối cùng mới bỏ qua có hạn. Khoá
+  override ghi tên gói cha **không kèm version** và gói con kèm khoảng version không bản vá nào thoả
+  (`"@lhci/cli>tmp@<0.2.0"`): pnpm âm thầm bỏ qua override có version gói cha không còn khớp, nên khoá
+  `@lhci/cli@0.15.1>tmp` sẽ mất bản vá ngay lần Renovate nâng `@lhci/cli` mà `pnpm install --frozen-lockfile` vẫn xanh (đã
+  thử: đổi khoá sang `@0.15.2>tmp` thì `tmp` 0.1.0 trở lại, không cảnh báo). pnpm áp override khi khoảng này giao với khoảng
+  gói cha yêu cầu (đã thử: khoảng không giao thì không áp), nên gói cha sau này xin dòng đã có bản vá tự giải ra bản đó, không
+  bị ép về version của override:
+  - `overrides`: `semver` của `lighthouse` lên 7.8.5 (bản đã có trong cây; `lighthouse` khai `semver` nhưng không import,
+    còn bản backport 5.7.2 không có provenance nên `trustPolicy` từ chối, không đáng thêm ngoại lệ cho gói không ai nạp);
+    `tmp` của `@lhci/cli` và `external-editor` lên 0.2.7 (hai chỗ gọi chỉ dùng `fileSync({ postfix })`, `tmpNameSync`, 0.2
+    vẫn giữ); `uuid` của `@lhci/cli` lên 11.1.1 (8.x không có bản vá; 11 vẫn có CommonJS cho `require('uuid')`, lhci chỉ gọi
+    `uuid.v4()`). `body-parser` của `express` lên 1.20.9 cùng major, thêm sau khi bản này đủ 3 ngày (`minimumReleaseAge`);
+    tới lúc đó `make web-lockfile-scan` còn 1 HIGH (CVE-2026-111181, `body-parser` 1.20.8, chỉ chạy khi `lhci collect` dựng
+    server tĩnh).
+  - `.trivyignore.yaml`, mỗi mục ghim `purls` đúng gói và version (cùng CVE ở gói hay version khác vẫn bị báo, kể cả trong
+    quét image): `extract-zip` 2.0.1 (chưa có bản vá; chỉ `@puppeteer/browsers` gọi khi tải trình duyệt, lab dùng Chromium
+    của Playwright), `basic-ftp` 5.3.1 (bản vá chỉ ở major 6, `get-uri` mới nhất vẫn cần `^5.3.1`; chỉ tới được qua PAC proxy
+    tải bằng ftp), `zod` 3.25.76 của `chromium-bidi` 14.0.0 (bản vá chỉ ở zod 4, API mới mà `chromium-bidi` không viết cho;
+    `puppeteer-core` chỉ nạp `chromium-bidi` khi dùng WebDriver BiDi, Lighthouse dùng CDP).
+  - Kiểm: `lhci collect` (cả `--staticDistDir`, tức server express), `upload`, `assert` chạy được trên trang tĩnh với Chromium
+    của Playwright, và lượt đó không nạp `extract-zip`, `basic-ftp`, `get-uri`, `chromium-bidi`, `zod` nào. Mục bỏ qua hết hạn
+    sau tối đa 30 ngày thì xem lại bản vá.
 - **Quy trình ngoại lệ cho bản vá bảo mật mới hơn 3 ngày:** `minimumReleaseAge` chặn cả Renovate, `pnpm install
   --frozen-lockfile` ở CI lẫn Dockerfile, nên bản vá CVE (ví dụ của `next`) vừa phát hành không cài được. PR vá thêm
   `minimumReleaseAgeExclude: [<gói>@<version>]` vào `web/pnpm-workspace.yaml`, ghi lý do và link advisory trong comment
