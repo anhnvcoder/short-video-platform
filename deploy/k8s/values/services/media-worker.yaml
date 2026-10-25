@@ -6,8 +6,8 @@ image:
   # writes the three lines below; the GitOps cluster pulls the digest, the tag names the commit for people. Empty:
   # no release yet. The dev path (make k8s-up) ignores them and passes its own registry, tag and an empty digest.
   repository: ghcr.io/anhnvcoder/short-video-platform/media-worker
-  tag: "b9931622536c"
-  digest: "sha256:e4e574472d3428d5f4a3309943b8872ce0b11f18db940f4e2bdec60346255be7"
+  tag: "a9b035aea00d"
+  digest: "sha256:52ce12948549793f0bd15a15ea7e050b181bee88bed2ecf069e2afa67a21e449"
 protocol: none
 resources:
   # As compose (threat model FF-3): one transcode peaked at 734 MiB.
