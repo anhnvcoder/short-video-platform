@@ -72,12 +72,14 @@
 #                              no sample saw it. Skipped when measure-upload did not run
 #   object-store-roundtrip     the way back to MinIO, tried on this runner's data: searches the log of s3-init (make up
 #                              ran it) for every secret value of .env (only counts printed), waits until no video
-#                              is PROCESSING (SELECT on svp_video), make down, make object-store-copy TO=minio (into a
-#                              new volume svp_minio-data of the runner), which must pass and name no READY video's key
-#                              lost, with at least one READY video made on RustFS by the targets before; then, passed or
-#                              not, make up OBS=lgtm again on RustFS (s3-init a second time, on a store it already
-#                              initialised: its log searched the same way) and make smoke. Last: it stops and starts
-#                              the whole stack, so a target after it would run on another stack than in earlier runs
+#                              is PROCESSING (SELECT on svp_video), takes one sample of verify-sample.sh when it keeps
+#                              samples (the compose containers' restarts, which make down removes with them), make
+#                              down, make object-store-copy TO=minio (into a new volume svp_minio-data of the runner),
+#                              which must pass and name no READY video's key lost, with at least one READY video made
+#                              on RustFS by the targets before; then, passed or not, make up OBS=lgtm again on RustFS
+#                              (s3-init a second time, on a store it already initialised: its log searched the same
+#                              way) and make smoke. Last: it stops and starts the whole stack, so a target after it
+#                              would run on another stack than in earlier runs
 #   ram-rest-<label> (k3d)     the cluster at rest: every pod Ready (or ended:
 #                              Succeeded, Failed), 60 s, then the median of the next 6 samples of verify-sample.sh
 #                              (10 s apart) of docker stats MEM USAGE of the k3d containers; anon, active_file and
@@ -470,6 +472,11 @@ object_store_roundtrip() {
   ready=$(pg "SELECT count(*) FROM videos WHERE status = 'READY'") || ready=
   echo "videos READY in svp_video, made on RustFS by the targets before: ${ready:-unknown}"
   case $ready in '' | 0) echo "FAIL  no READY video: the copy would prove nothing about the objects of one"; rc=1 ;; esac
+  # The sampler reads restarts every 10 s; one reading now keeps a restart since its last one, as make down removes the
+  # containers and make up makes them anew with a count of 0.
+  if [ -d "$SVP_VERIFY_OUT/samples" ]; then
+    "$here/verify-sample.sh" sample || echo "verify-sample.sh sample failed"
+  fi
   make down || { echo "FAIL  make down"; return 1; }
   copy_out=$(mktemp)
   make object-store-copy TO=minio 2>&1 | tee "$copy_out"

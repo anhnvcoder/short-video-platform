@@ -7,9 +7,10 @@
 # output is one of the fake results, as is a migrate Job's log marked by mark_log of the same file. verify-mask.sh
 # cluster on a binary value of 200 KiB, timed, and on small ones against the cut it made before. Then the
 # deadline criterion of the summary of deploy/ci/verify-sample.sh, with a fake docker and a fake sudo first on PATH;
-# one sample of its docker.tsv (workers transcoding, memory.stat of the nodes) and compose.tsv with a fake docker,
-# kubectl and pgrep and a fixture of /proc; its peak over a fixture of docker.tsv, and the object store's peak over one
-# of compose.tsv. Then deploy/ci/verify-run.sh with a fake make (and a fake psql for the copy back to MinIO).
+# and its count of the compose containers' restarts over a fixture of restarts.tsv; one sample of its docker.tsv
+# (workers transcoding, memory.stat of the nodes), compose.tsv and restarts.tsv with a fake docker, kubectl and pgrep
+# and a fixture of /proc; its peak over a fixture of docker.tsv, and the object store's peak over one of compose.tsv.
+# Then deploy/ci/verify-run.sh with a fake make (and a fake psql and docker for the copy back to MinIO).
 # Last, that deploy/ci/changed-services.sh builds no image for a change of these scripts, in a throwaway git repository
 # holding a copy of it. Runs on macOS and Linux, no network, no Docker, no cluster.
 #
@@ -634,7 +635,8 @@ echo compose-obs >"$out/scenario"
 # The object store's files of a compose-obs run: the samples of each compose container, the store's RAM over
 # measure-upload and that target's summary, the outputs of the object store's tests and of the copy back to MinIO; and
 # a copy's output that printed the store's root password (a value of .env).
-printf '100\tsvp-s3-1\t130\n100\tsvp-gateway-1\t40\n' >"$out/samples/compose.tsv"
+printf '100\tsvp-s3-1\t130.6\n100\tsvp-gateway-1\t40\n' >"$out/samples/compose.tsv"
+printf '100\tsvp-web-1\t2026-10-25T08:00:00.123456789Z\t1\n' >"$out/samples/restarts.tsv"
 echo '{"container":"svp-s3-1","samples":30,"peak_mib":210,"limit_mib":512,"peak_under_limit":true}' \
   >"$out/ram-s3-upload.json"
 echo 'RAM of svp-s3-1 during measure-upload: peak 210 MiB at 1970-01-01T00:01:40Z over 30 sample(s)' \
@@ -653,7 +655,8 @@ jq -n '{measured_at: "2026-10-25T08:00:00Z", browser: "chromium", file_mb: 100.2
   throughput_mb_s: 23.9, cpu: {window_ms: 4300, task_ms: 300, script_ms: 120, task_share_pct: 7}, ready_ms: 190000}' \
   >"$repo/web/test-results/measure-upload-2.json"
 collect compose "$work/secrets-compose" FAKE_KUBECTL_FAIL=1
-for src in '$SVP_VERIFY_OUT/samples/compose.tsv' '$SVP_VERIFY_OUT/ram-s3-upload.json' \
+for src in '$SVP_VERIFY_OUT/samples/compose.tsv' '$SVP_VERIFY_OUT/samples/restarts.tsv' \
+  '$SVP_VERIFY_OUT/ram-s3-upload.json' \
   '$SVP_VERIFY_OUT/ram-s3-upload.txt' '$SVP_VERIFY_OUT/logs/14-test-stack-objstore.log' \
   '$SVP_VERIFY_OUT/logs/19-object-store-roundtrip.log' web/test-results/measure-upload-2.json; do
   expect compose "$src" kept
@@ -732,6 +735,25 @@ same "sample: runner.json has the highest MEM USAGE of each compose container, w
   "svp-s3-1=260@1970-01-01T00:01:50Z svp-web-1=300@1970-01-01T00:01:40Z" \
   "$(jq -r '.compose_container_memory_max_mib | to_entries | map("\(.key)=\(.value.mib)@\(.value.at)") | join(" ")' \
     "$so/runner.json")"
+# Restarts of compose containers, also of those removed since (make down, a drill that recreates a service): web
+# restarted once, then was made anew (count 0 again); the store restarted twice, was made anew and restarted once more;
+# the gateway never. The fake docker lists no container now, as after make down.
+printf '%s\n' '100 svp-web-1 2026-10-25T08:00:00.1Z 0' '110 svp-web-1 2026-10-25T08:00:00.1Z 1' \
+  '120 svp-web-1 2026-10-25T08:30:00.1Z 0' '100 svp-s3-1 2026-10-25T08:00:00.2Z 2' \
+  '120 svp-s3-1 2026-10-25T08:30:00.2Z 0' '130 svp-s3-1 2026-10-25T08:30:00.2Z 1' \
+  '100 svp-gateway-1 2026-10-25T08:00:00.3Z 0' | tr ' ' '\t' >"$so/samples/restarts.tsv"
+sample restarts "$(row 01 up ok 0 100 160 60 '')" >/dev/null
+same "sample: a restart counts after its container was made anew; the counts of each container of a name are summed" \
+  "svp-s3-1=3 svp-web-1=1 false" \
+  "$(jq -r '"\(.compose_restarts | join(" ")) \(.runner_enough.compose_no_restart)"' "$so/runner.json")"
+grep -q '^runner: OOMKilled \[\], kernel OOM lines 0, compose restarts \[svp-s3-1=3 svp-web-1=1\]$' \
+  "$work/sample-restarts.log" && ok "sample: runner.txt names the restarts" ||
+  fail "sample: runner.txt names the restarts"
+printf '100\tsvp-web-1\t2026-10-25T08:00:00.1Z\t0\n' >"$so/samples/restarts.tsv"
+sample no-restart "$(row 01 up ok 0 100 160 60 '')" >/dev/null
+same "sample: no restart, compose_no_restart" " true" \
+  "$(jq -r '"\(.compose_restarts | join(" ")) \(.runner_enough.compose_no_restart)"' "$so/runner.json")"
+: >"$so/samples/restarts.tsv"
 grep -q '^runner enough: within_deadline=false ' "$work/sample-deadline.log" &&
   ok "sample: the runner enough line names within_deadline" || fail "sample: the runner enough line names within_deadline"
 # Targets verify-run.sh skipped after a failed build target, or left out by SVP_VERIFY_TARGETS, did not run out of time.
@@ -768,8 +790,18 @@ case $1 in
   stats)
     printf 'k3d-svp-server-0\t150.00%%\t3GiB / 15.6GiB\nk3d-svp-agent-0\t120.00%%\t2.5GiB / 15.6GiB\nk3d-svp-registry\t0.00%%\t20MiB / 15.6GiB\n'
     [ -z "${FAKE_COMPOSE:-}" ] ||
-      printf 'svp-s3-1\t3.00%%\t130.6MiB / 512MiB\nsvp-web-1\t1.00%%\t1.25GiB / 1.5GiB\nother-1\t0.00%%\t9MiB / 1GiB\n' ;;
-  inspect) echo "running 0 2026-10-25T00:00:00Z" ;;
+      printf 'svp-s3-1\t3.00%%\t%s / 512MiB\nsvp-web-1\t1.00%%\t1.25GiB / 1.5GiB\nother-1\t0.00%%\t9MiB / 1GiB\n' \
+        "${FAKE_S3_MEM:-130.6MiB}" ;;
+  ps)
+    [ "$*" = "ps -aq --filter label=com.docker.compose.project=svp" ] || exit 2
+    [ -z "${FAKE_COMPOSE:-}" ] || printf 'c0ffee000001\nc0ffee000002\n' ;;
+  inspect)
+    if [ "$3" = '{{.Name}} {{.Created}} {{.RestartCount}}' ]; then
+      [ "$4 $5" = "c0ffee000001 c0ffee000002" ] || exit 2
+      printf '/svp-s3-1 2026-10-25T00:00:01.5Z 0\n/svp-web-1 2026-10-25T00:00:02.5Z 1\n'
+    else
+      echo "running 0 2026-10-25T00:00:00Z"
+    fi ;;
   exec)
     [ "$2" = "${FAKE_EXEC_FAIL:-}" ] && exit 1
     case $2 in
@@ -803,12 +835,26 @@ same "sample: 3 Running workers, 2 transcoding (ffmpeg in their pod), memory.sta
   "$(row_tail 5652 0 150.00 120.00 3 0 running 0 2026-10-25T00:00:00Z 2 1536 700 150)" "$(take_sample)"
 same "sample: no worker Running counts 0 transcoding" \
   "$(row_tail 5652 0 150.00 120.00 0 0 running 0 2026-10-25T00:00:00Z 0 1536 700 150)" "$(take_sample FAKE_UIDS=)"
-[ ! -s "$ss/samples/compose.tsv" ] && ok "sample: no compose container, no compose.tsv line" ||
-  fail "sample: no compose container, no compose.tsv line"
+[ ! -s "$ss/samples/compose.tsv" ] && [ ! -s "$ss/samples/restarts.tsv" ] &&
+  ok "sample: no compose container, no compose.tsv or restarts.tsv line" ||
+  fail "sample: no compose container, no compose.tsv or restarts.tsv line"
 same "sample: compose containers are summed in docker.tsv" \
   "$(row_tail 5652 1411 150.00 120.00 3 0 running 0 2026-10-25T00:00:00Z 2 1536 700 150)" "$(take_sample FAKE_COMPOSE=1)"
-same "sample: compose.tsv has a line per compose container, in MiB" "svp-s3-1 131|svp-web-1 1280" \
-  "$(cut -f 2,3 "$ss/samples/compose.tsv" | tr '\t' ' ' | paste -sd '|' -)"
+same "sample: compose.tsv has a line per compose container, in MiB as docker stats gives it" \
+  "svp-s3-1 130.6|svp-web-1 1280" "$(cut -f 2,3 "$ss/samples/compose.tsv" | tr '\t' ' ' | paste -sd '|' -)"
+same "sample: restarts.tsv has each compose container's name, creation time and RestartCount" \
+  "svp-s3-1 2026-10-25T00:00:01.5Z 0|svp-web-1 2026-10-25T00:00:02.5Z 1" \
+  "$(cut -f 2- "$ss/samples/restarts.tsv" | tr '\t' ' ' | paste -sd '|' -)"
+# The store just under its limit, as docker stats prints it: the sample keeps 511.6 and s3-peak passes on it.
+take_sample FAKE_COMPOSE=1 FAKE_S3_MEM=511.6MiB >/dev/null
+t_s3=$(awk -F '\t' '$2 == "svp-s3-1" { print $1 }' "$ss/samples/compose.tsv")
+if env "${job[@]}" SVP_VERIFY_OUT="$ss" "$here/verify-sample.sh" s3-peak "$t_s3" "$t_s3" \
+  >"$work/s3-peak-sampled.log" 2>&1; then
+  same "sample: 511.6MiB of docker stats is under the 512 MiB limit of s3-peak" "511.6 true" \
+    "$(jq -r '"\(.peak_mib) \(.peak_under_limit)"' "$ss/ram-s3-upload.json")"
+else
+  fail "sample: 511.6MiB of docker stats is under the 512 MiB limit of s3-peak (s3-peak failed)"
+fi
 same "sample: the API not answering gives - for the workers; one node's memory.stat unread gives - for all three" \
   "$(row_tail 5652 0 150.00 120.00 - - running 0 2026-10-25T00:00:00Z - - - -)" \
   "$(take_sample FAKE_KUBECTL_FAIL=1 FAKE_EXEC_FAIL=k3d-svp-agent-0)"
@@ -878,6 +924,8 @@ grep -qx 'RAM of svp-s3-1 during measure-upload: peak 300 MiB at 1970-01-01T00:0
   "$work/s3-peak-ok.log" && ok "s3-peak: ram-s3-upload.txt is printed" || fail "s3-peak: ram-s3-upload.txt is printed"
 same "s3-peak: a sample at the limit fails" "1 2 null null 512 1970-01-01T00:02:30Z false" \
   "$(s3_peak limit '120 svp-s3-1 300' '150 svp-s3-1 512')"
+same "s3-peak: a sample a fraction under the limit passes" "0 2 null null 511.6 1970-01-01T00:02:30Z true" \
+  "$(s3_peak under '120 svp-s3-1 300' '150 svp-s3-1 511.6')"
 same "s3-peak: no sample of the store in the window fails, with no peak" "1 0 110 1970-01-01T00:01:20Z null null null" \
   "$(s3_peak none '80 svp-s3-1 110' '150 svp-web-1 900' '210 svp-s3-1 600')"
 if env "${job[@]}" SVP_VERIFY_OUT="$po" "$here/verify-sample.sh" s3-peak 100 >/dev/null 2>&1; then
@@ -888,12 +936,13 @@ fi
 
 # --- verify-run.sh: the build target's failure skips the rest at once, SVP_VERIFY_TARGETS picks targets. It runs from
 # a copy in a throwaway tree with a fake .env, a fake make first on PATH (it logs its arguments and fails for the
-# targets FAKE_MAKE_FAIL names) and the fake kubectl above (no cluster answers), so no target, no cluster and no real
-# .env is ever reached. verify-run.sh needs GNU timeout (and GNU date for its time lines: gdate on macOS).
+# targets FAKE_MAKE_FAIL names), a fake docker and the fake kubectl above (no cluster answers), so no target, no
+# container, no cluster and no real .env is ever reached. verify-run.sh needs GNU timeout (and GNU date for its time
+# lines: gdate on macOS).
 vr=$work/verify-run
 vb=$work/verify-run-bin
 mkdir -p "$vr/deploy/ci" "$vr/deploy/observability/glitchtip" "$vb"
-cp "$here/verify-run.sh" "$here/verify-mask.sh" "$here/platform.sh" "$vr/deploy/ci/"
+cp "$here/verify-run.sh" "$here/verify-mask.sh" "$here/verify-sample.sh" "$here/platform.sh" "$vr/deploy/ci/"
 cp "$here/../observability/glitchtip/dotenv.sh" "$vr/deploy/observability/glitchtip/"
 cp "$repo/.env" "$vr/.env"
 cat >"$vb/make" <<'EOF'
@@ -905,6 +954,16 @@ case " ${FAKE_MAKE_FAIL:-} " in *" $1 "*) exit 2 ;; esac
 case " ${FAKE_MAKE_SLOW:-} " in *" $1 "*) sleep 60 ;; esac
 EOF
 printf '#!/bin/sh\ncommand -v gdate >/dev/null 2>&1 && exec gdate "$@"\nexec /bin/date "$@"\n' >"$vb/date"
+# The fake docker of verify-sample.sh sample: one container of compose project svp, restarted once; docker ps logged
+# with the make calls, so its place among them shows. Nothing else answers (no stats, no k3d server).
+cat >"$vb/docker" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  "ps -aq --filter label=com.docker.compose.project=svp") echo "docker ps" >>"$FAKE_MAKE_LOG"; echo c0ffee000001 ;;
+  "inspect -f {{.Name}} {{.Created}} {{.RestartCount}} c0ffee000001") echo "/svp-web-1 2026-10-25T08:00:00.1Z 1" ;;
+  *) exit 1 ;;
+esac
+EOF
 # The fake psql of the copy back to MinIO: the count of the videos of a status, FAKE_PSQL_<STATUS> (0 when unset), only
 # for the database, user and password verify-run.sh must give.
 cat >"$vb/psql" <<'EOF'
@@ -916,7 +975,7 @@ case $* in
   *) exit 2 ;;
 esac
 EOF
-chmod 755 "$vb/make" "$vb/date" "$vb/psql"
+chmod 755 "$vb/make" "$vb/date" "$vb/psql" "$vb/docker"
 # run_verify NAME SCENARIO [VAR=VALUE...]: the copy of verify-run.sh for SCENARIO; its output in $work/run-NAME.log,
 # the make calls in $work/run-NAME.make, its results in $work/run-NAME.out; prints its exit status. It runs as on a
 # machine, without the variables of any CI: a runner sets CI=true, which alone makes platform.sh refuse to run.
@@ -1059,6 +1118,13 @@ if timeout --version 2>/dev/null | grep -q GNU; then
   same "verify-run: object-store-roundtrip reads the s3-init log, stops the stack, copies back, starts it on RustFS" \
     "$(printf '%s\n' 'up OBS=lgtm' '-s logs SVC=s3-init' down 'object-store-copy TO=minio' 'up OBS=lgtm' \
       '-s logs SVC=s3-init' smoke)" "$(cat "$work/run-roundtrip-pass.make")"
+  # With the sampler's samples there, one sample just before make down keeps the restart of a container it removes.
+  mkdir -p "$work/run-roundtrip-sampled.out/samples"
+  same "verify-run: object-store-roundtrip passes with the sampler's samples" ok "$(roundtrip sampled)"
+  same "verify-run: object-store-roundtrip reads the compose containers' restarts just before make down" \
+    "$(printf '%s\n' 'docker ps' down)" "$(grep -A 1 -x 'docker ps' "$work/run-roundtrip-sampled.make")"
+  same "verify-run: that reading is in restarts.tsv" "svp-web-1 2026-10-25T08:00:00.1Z 1" \
+    "$(cut -f 2- "$work/run-roundtrip-sampled.out/samples/restarts.tsv" | tr '\t' ' ')"
   rlog pass | grep -qx 's3-init (before the copy): 1 log line(s), 0 with a secret value of .env' &&
     rlog pass | grep -qx 'videos READY in svp_video, made on RustFS by the targets before: 3' &&
     ok "verify-run: object-store-roundtrip prints the counts" || fail "verify-run: object-store-roundtrip prints the counts"

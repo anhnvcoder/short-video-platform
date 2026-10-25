@@ -20,8 +20,9 @@
 #                            taken, and the last sample before START (the store before the upload); exits 1 when no
 #                            sample of the window saw the container, or the highest is not under its 512 MiB
 #                            mem_limit; also on macOS (awk and jq only)
-#   verify-sample.sh sample  takes one docker.tsv and compose.tsv sample now, as the loop does every 10 s
-#                            (deploy/ci/verify-collect-test.sh runs it with a fake docker, kubectl and pgrep)
+#   verify-sample.sh sample  takes one docker.tsv, compose.tsv and restarts.tsv sample now, as the loop does every
+#                            10 s (deploy/ci/verify-collect-test.sh runs it with a fake docker, kubectl and pgrep;
+#                            deploy/ci/verify-run.sh just before it removes the compose containers)
 #
 # Samples, in $SVP_VERIFY_OUT/samples/ (one line each, seconds since the epoch first):
 #   host.tsv         every 5 s   MemAvailable (KiB), swap in use (KiB), CPU busy % since the line before (/proc/stat;
@@ -35,8 +36,12 @@
 #                                transcode now, that is run an ffmpeg process (below); anon, active_file and kernel of
 #                                memory.stat summed over the two k3d nodes, in MiB ("-" unless both were read)
 #   compose.tsv      every 10 s  MEM USAGE of each compose container (svp-*) in MiB, from the same docker stats as
-#                                docker.tsv: container name, MiB (one line per container; the object store's peak
-#                                during an upload is read from it)
+#                                docker.tsv: container name, MiB as docker stats gives it, not rounded (one line per
+#                                container; the object store's peak during an upload is read from it and compared
+#                                with its limit, so 511.6 MiB must not read as 512)
+#   restarts.tsv     every 10 s  RestartCount of each container of compose project svp, running or not: container
+#                                name, its creation time (which tells a container made anew under the same name from
+#                                the one before it), RestartCount
 #   pods.tsv         every 30 s  kubectl top pods --containers of namespaces svp, svp-data and cnpg-system: namespace,
 #                                pod, container, CPU in millicores, working set in MiB (the web pods, the Postgres pods
 #                                with the Barman Cloud sidecar, the plugin itself: what the web's resources and the
@@ -52,7 +57,9 @@
 #                                is read all along, not once at the end
 #   event-polls.tsv  every 60 s  ok or fail: whether that read of the events worked
 # The summary: runner.json and runner.txt (lowest MemAvailable, highest swap and CPU, lowest free disk, containers
-# OOMKilled, OOM lines of the kernel, compose containers that restarted, nodes not Ready or not answering, a k3s
+# OOMKilled, OOM lines of the kernel, compose containers that restarted (from restarts.tsv and a last reading: every
+# container the samples saw, also one removed since, as make down and a drill that recreates a service do; a new
+# container starts again at 0), nodes not Ready or not answering, a k3s
 # server restart or stop, the events above and the target outputs that mention a 429, the highest working set of each
 # container sampled in pods.tsv, the targets the deadline cut (results.tsv of deploy/ci/verify-run.sh: timeout,
 # cancelled, or skipped for the deadline), whether verify-run.sh reached its end (its run-end mark), and the criteria of the table "runner đủ" for the scenario of
@@ -140,6 +147,13 @@ node_memstat() {
     END { if (bad || n != 2) print "-\t-\t-"; else printf "%.0f\t%.0f\t%.0f\n", a / 1048576, f / 1048576, k / 1048576 }'
 }
 
+# restarts_sample T: one restarts.tsv line per container of compose project svp (see restarts.tsv above).
+restarts_sample() {
+  docker_ ps -aq --filter label=com.docker.compose.project=svp 2>/dev/null |
+    xargs -r env -u DOCKER_DEFAULT_PLATFORM docker inspect -f '{{.Name}} {{.Created}} {{.RestartCount}}' 2>/dev/null |
+    awk -v t="$1" -v OFS='\t' '{ sub(/^\//, "", $1); print t, $1, $2, $3 }' >>"$samples/restarts.tsv"
+}
+
 docker_sample() {
   local t=$1 stats server agent workers=- notready=- transcoding=- memstat=$'-\t-\t-' nodes state uids
   stats=$(docker_ stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}' 2>/dev/null) || stats=
@@ -149,7 +163,8 @@ docker_sample() {
     $1 == "k3d-svp-server-0" { s = cpu } $1 == "k3d-svp-agent-0" { a = cpu }
     END { printf "%.0f %.0f %s %s\n", k, c, (s == "" ? "-" : s), (a == "" ? "-" : a) }')
   printf '%s\n' "$stats" | awk -F '\t' -v t="$t" "$awk_mem"'
-    $1 ~ /^svp-/ { split($3, m, " / "); printf "%s\t%s\t%.0f\n", t, $1, mib(m[1]) }' >>"$samples/compose.tsv"
+    $1 ~ /^svp-/ { split($3, m, " / "); printf "%s\t%s\t%.6g\n", t, $1, mib(m[1]) }' >>"$samples/compose.tsv"
+  restarts_sample "$t"
   # The server's state also once it stopped: a server that went away must show in the samples, not drop out of them.
   state=$(docker_ inspect -f '{{if .State.Running}}running{{else}}stopped{{end}} {{.RestartCount}} {{.State.StartedAt}}' \
     k3d-svp-server-0 2>/dev/null) || state="- - -"
@@ -246,9 +261,11 @@ summary() {
   } >"$out/df-after.txt" 2>&1
   oom=$(docker_ ps -aq | xargs -r env -u DOCKER_DEFAULT_PLATFORM docker inspect -f '{{.Name}} {{.State.OOMKilled}}' 2>/dev/null |
     awk '$2 == "true" { sub(/^\//, "", $1); printf "%s%s", (n++ ? " " : ""), $1 }')
-  restarted=$(docker_ ps -aq --filter label=com.docker.compose.project=svp |
-    xargs -r env -u DOCKER_DEFAULT_PLATFORM docker inspect -f '{{.Name}} {{.RestartCount}}' 2>/dev/null |
-    awk '$2 > 0 { sub(/^\//, "", $1); printf "%s%s=%s", (n++ ? " " : ""), $1, $2 }')
+  # The highest count of each container (name and creation time), summed by name.
+  restarts_sample "$(date +%s)"
+  restarted=$(awk -F '\t' '{ k = $2 "\t" $3; if ($4 + 0 > m[k] + 0) m[k] = $4 + 0 }
+    END { for (k in m) { split(k, a, "\t"); c[a[1]] += m[k] } for (x in c) if (c[x] > 0) print x "=" c[x] }' \
+    "$samples/restarts.tsv" | sort | paste -sd ' ' -)
   # A count only: the lines name processes, and the log is public. "unknown" when dmesg needs a password (a VM).
   if kernel_log=$(sudo -n dmesg 2>/dev/null); then
     kernel_oom=$(printf '%s\n' "$kernel_log" | grep -Eci 'out of memory|oom-kill') || :
@@ -405,7 +422,7 @@ case ${1:-} in
   start)
     running && fail "a sampler already runs (pid $pid)"
     mkdir -p "$samples"
-    for f in host docker compose pods disk events event-polls; do : >"$samples/$f.tsv"; done
+    for f in host docker compose restarts pods disk events event-polls; do : >"$samples/$f.tsv"; done
     {
       echo "kernel: $(uname -r)  cpus: $(nproc)"
       free -m
