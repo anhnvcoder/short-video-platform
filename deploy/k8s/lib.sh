@@ -385,6 +385,61 @@ restart_on_secret_change() {
     fail "record on $kind $ns/$workload the version of Secret $name its pods read"
 }
 
+# The namespaces whose containers' logs unready_report prints, and the only ones whose log lines
+# deploy/ci/verify-collect.sh keeps in the public artifact (and job log) of a verification run: third-party servers,
+# operators and controllers, whose logs speak of their own start, configuration and peers (Redpanda's startup checks and
+# the memory error that stops it, an operator's reconcile errors). Left out: svp (the project's services, whose logs may
+# hold user data), envoy-gateway-system (the Envoy proxies' access log holds request paths and query strings, the
+# signatures of presigned uploads among them), kube-system and argocd. Within these, unready_report also skips
+# GlitchTip (its access log holds the DSN's public key, its errors the events it received) and every Postgres pod of
+# CloudNativePG (an error line quotes the statement that failed, values included).
+log_tail_namespaces="argo-rollouts cert-manager cnpg-system keda kyverno svp-data svp-obs"
+
+# unready_report NAMESPACE: after a release that did not get ready, prints to stderr each container of NAMESPACE that
+# is not ready, and each init container that has not exited 0: its state, how its last attempt ended, and, for a
+# container whose log may be shown (log_tail_namespaces), the last lines of its log, and of the attempt before when it
+# restarted. Helm says no more than "1 pods have failed", and the kubelet keeps the log of the current and the previous
+# attempt only, so a container that crashes at every start is gone with its reason once the cluster is: a verification
+# run on a machine that is thrown away right after has nothing else to show. Pods that completed (Jobs) are left out.
+# Each log line is printed as "    [NAMESPACE] LINE", the form verify-collect.sh keeps only for these namespaces. The
+# message of the last attempt is a log tail too when the container's terminationMessagePolicy is
+# FallbackToLogsOnError, so it is printed only where the log may be.
+unready_report() {
+  local ns=$1 sep=$'\x1f' pod container restarts state last show
+  kc -n "$ns" get pods -o json 2>/dev/null | jq -r --arg ns "$ns" --arg shown " $log_tail_namespaces " '
+    def st: to_entries[0] // {key: "unknown", value: {}}
+      | "\(.key)\(if .value.reason then " " + .value.reason else "" end)\(if .value.exitCode != null then " (exit \(.value.exitCode))" else "" end)";
+    .items[] | select(.status.phase != "Succeeded") | .metadata.name as $pod
+    | (($shown | contains(" " + $ns + " ")) and ((.metadata.labels // {})
+        | (has("cnpg.io/cluster") or .["app.kubernetes.io/name"] == "glitchtip") | not)) as $show
+    | ([.spec.initContainers[]?, .spec.containers[]?] | map({(.name): (.terminationMessagePolicy // "File")}) | add // {})
+      as $policy
+    | ((.status.initContainerStatuses // []) | map(select(.state.terminated.exitCode != 0)))
+      + ((.status.containerStatuses // []) | map(select(.ready | not)))
+    | .[]
+    | ($show or $policy[.name] != "FallbackToLogsOnError") as $message
+    | [$pod, .name, (.restartCount | tostring), (.state | st),
+       (if .lastState.terminated then (.lastState | st)
+          + (if $message then .lastState.terminated.message // "" | if . != "" then ": " + . else "" end else "" end)
+        else "" end),
+       (if $show then "yes" else "" end)]
+    | map(gsub("[[:cntrl:]]"; " ")) | join("\u001f")' 2>/dev/null |
+    while IFS=$sep read -r pod container restarts state last show; do
+      echo "pod $ns/$pod, container $container: $state, $restarts restart(s)${last:+; attempt before: $last}" >&2
+      if [ -z "$show" ]; then
+        echo "  its log is not printed (see log_tail_namespaces of deploy/k8s/lib.sh)" >&2
+        continue
+      fi
+      echo "  last lines of its log:" >&2
+      { kc -n "$ns" logs "$pod" -c "$container" --tail=40 </dev/null 2>&1 || true; } | sed "s/^/    [$ns] /" >&2
+      if [ "$restarts" != 0 ]; then
+        echo "  last lines of the attempt before:" >&2
+        { kc -n "$ns" logs "$pod" -c "$container" --previous --tail=40 </dev/null 2>&1 || true; } |
+          sed "s/^/    [$ns] /" >&2
+      fi
+    done
+}
+
 # The seven services whose images the cluster runs, in the order they are built: web last, since the six Go images
 # share the Go module cache and build fast, so their errors show before the web build, the longest of all.
 svp_services=(gateway user-service video-service engagement-service feed-service media-worker web)

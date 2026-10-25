@@ -454,7 +454,7 @@ liệt kê target):
     bước trước đỏ, SARIF `trivy-lockfile-web`), `generate` (`make generate-check`), `buf` (`buf breaking` so với
     merge-base của PR, `main` trước push, hay merge-base với `origin/main` khi dispatch), `config`
     (`deploy/ci/scan-gate.sh --check-ignorefile`, `deploy/ci/platform-guard.sh`, `deploy/ci/platform-test.sh`,
-    `make slo-check`, `make otelcol-validate`, `make env` rồi
+    `deploy/ci/verify-collect-test.sh`, `make slo-check`, `make otelcol-validate`, `make env` rồi
     `make compose-config`, `make helm-check`, `deploy/k8s/check-image-digests.sh`, `make k6-check`, `make cloud-check`),
     `gitleaks` (toàn lịch sử, `--redact`), `trivy-config` (chỉ báo), `sarif` (chỉ `main`), check tổng `ci-ok` (cần đủ 7 job,
     trừ `sarif` và `stack`). Job `stack` (giai đoạn 6, ADR-0020 §15; **chỉ báo, ngoài `ci-ok`**, không chặn merge; xem lại
@@ -504,7 +504,9 @@ liệt kê target):
     `runner.json`, `runner.txt` "runner đủ"), `verify-mask.sh` (`::add-mask::` giá trị bí mật của `.env` sau mỗi target và
     của Secret trong cluster), `verify-collect.sh` (artifact `verify-<kịch bản>`, giữ 30 ngày: chỉ file theo danh sách cho
     phép, quét theo giá trị bí mật đã biết và theo mẫu, file nghi bị bỏ kèm `::warning::`, `files.txt` liệt kê file giữ và
-    bỏ). `deploy/ci/verify-collect-test.sh` chạy trên máy (giá trị giả, `docker`/`kubectl` giả, không mạng).
+    bỏ; đầu ra target bỏ dòng log JSON, access log và dòng log container `    [<namespace>] …` ngoài `log_tail_namespaces` của
+    `deploy/k8s/lib.sh`: chỉ đuôi log hạ tầng bên thứ ba mà `make k8s-up` in khi release không Ready, không bao giờ `svp`).
+    `deploy/ci/verify-collect-test.sh` chạy trên máy và ở job `config` (giá trị giả, `docker`/`kubectl` giả, không mạng).
   - Check bắt buộc của ruleset `main`: `ci-ok`, `images-ok`, chỉ nhận từ app GitHub Actions. Ruleset, năm cài đặt repo
     của ADR-0015 §11 (quyền mặc định của `GITHUB_TOKEN` chỉ đọc kèm "Allow GitHub Actions to create and approve pull
     requests"; Actions chỉ cho action của GitHub và `sigstore/cosign-installer`, ghim SHA bắt buộc; duyệt workflow của PR

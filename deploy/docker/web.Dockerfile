@@ -38,7 +38,7 @@ COPY . .
 # deploy/k8s/lib.sh), empty for compose. next.config.ts makes it Next's deploymentId. Declared here, after the install,
 # so a new id rebuilds from this step on and keeps the install layer.
 ARG SVP_BUILD_ID=
-# Source maps (section 9): next build writes one beside each browser chunk and stylesheet, each file ending with a
+# Source maps: next build writes one beside each browser chunk and stylesheet, each file ending with a
 # sourceMappingURL comment that names its map (a hashed name of its own), and maps of the server's bundles in the
 # standalone tree. A served map would publish the whole client source, so:
 #   - every map of .next/static moves to /sourcemaps/_next/static (the path the browser fetches the chunk from), with a

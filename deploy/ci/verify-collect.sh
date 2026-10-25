@@ -16,11 +16,14 @@
 #                                 SKIP, WARN, with the item headings, the closing table and the last line around
 #                                 them), ram-*.json, ram-*.txt, rate-limit-load.json, lcp.json, k8s-status.txt,
 #                                 events.txt, compose-ps.txt
-# A target's output may quote a service's own log (install.sh prints the log of a failed migrate Job,
-# drill-alert-to-sentry the gateway's access log line it found in Loki), and no service log may reach the artifact:
-# the copy of a target's output leaves out every line of a JSON log record (a "msg" or "level" key, the form of the
-# services' slog and of most third-party servers) and every line quoting an access log ("access log of trace"), and
-# files.txt says how many lines it left out.
+# A target's output may quote a container's log, and no service log may reach the artifact. make k8s-up prints the log
+# of a failed migrate Job and, after a release that did not get ready, the last lines of each unready container's log
+# (unready_report of deploy/k8s/lib.sh), each line as "    [NAMESPACE] LINE"; drill-alert-to-sentry prints the gateway's
+# access log line it found in Loki. The copy of a target's output leaves out every such line of a namespace not in
+# log_tail_namespaces of deploy/k8s/lib.sh (third-party servers and operators only: never svp, the project's services),
+# every line of a JSON log record (a "msg" or "level" key, the form of the services' slog and of most third-party
+# servers) and every line quoting an access log ("access log of trace"), and files.txt says how many lines it left out.
+# What is kept of a third-party log goes through the scan below like the rest of the file.
 # From the checkout (all read from the stack/cluster): .k8s/drills/*.json and traffic-*.log (each line a time, a user,
 # a route, a status and a duration), .k6/<run>/summary.json, web/test-results/measure-*.json and glitchtip-*.json, the
 # Lighthouse reports web/test-results/lighthouse/*.json and *.html. Everything else under those places is listed in
@@ -65,6 +68,9 @@ export SVP_VERIFY_REPO=$repo SVP_VERIFY_SECRETS=$secrets
 max_bytes=$((5 * 1024 * 1024))
 jwt_re='eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.'
 service_log_re='"(msg|level)"[[:space:]]*:|access log of trace'
+# The namespaces whose container log lines may stay, read from deploy/k8s/lib.sh, which prints them; none (every
+# such line left out) when it cannot be read.
+log_tail_namespaces=$(. "$here/../k8s/lib.sh" >/dev/null 2>&1 && printf '%s' "$log_tail_namespaces") || log_tail_namespaces=
 # The lines of a threat model drill that reach the artifact, each a fixed form with no probe output in it: a verdict;
 # the "== ITEM" heading of drill-k8s-threats each check falls under; its closing table, "  ITEM  PASS|FAIL" under a
 # header "  ITEM  RESULT" and a title "drill-k8s-threats (<time>-<hex>)"; the closing "...: all checks passed".
@@ -187,7 +193,10 @@ if [ -d "$out" ]; then
           grep -avE -- "$service_log_re" >"$work/verdicts" || :
         consider "$work/verdicts" "$src (verdict lines)" "${sub%.log}.verdicts.log" verdicts ;;
       logs/*.log)
-        grep -avE -- "$service_log_re" "$file" >"$work/output" || :
+        # A marked log line is "    [NAMESPACE] ", the namespace starting at character 6.
+        grep -avE -- "$service_log_re" "$file" | LC_ALL=C awk -v shown=" $log_tail_namespaces " '
+          match($0, /^    \[[a-z0-9-]+\] /) && !index(shown, " " substr($0, 6, RLENGTH - 7) " ") { next }
+          { print }' >"$work/output" || :
         # grep -c, not wc -l: a last line without a newline counts too.
         removed=$(($(grep -ac '' "$file") - $(grep -ac '' "$work/output")))
         note=

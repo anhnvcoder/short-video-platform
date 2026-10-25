@@ -115,7 +115,7 @@ Trigger: `pull_request`, `push` vào `main`, `workflow_dispatch`. Không trigger
 | `web` | `make web-install`, `make web-check`, `make web-generate-check`, `make web-lockfile-scan` (trivy trên `web/pnpm-lock.yaml`, gồm dev dependency vì chúng chạy trong CI và tạo ra bundle: CRITICAL làm job đỏ, HIGH trở xuống chỉ vào summary và SARIF; bỏ qua chỉ qua `.trivyignore.yaml`, mỗi mục đúng gói@version (`purls`), tối đa 30 ngày; bước này chạy cả khi bước trước đỏ) | Mọi lượt | Không bao giờ | Có |
 | `generate` | `make generate-check`: code sinh đã commit khớp | Mọi lượt | Không bao giờ | Có |
 | `buf` | `buf breaking` so với base | Mọi lượt | Không skip; push tạo nhánh mới thì bước in "buf breaking skipped" (không có gì để so) và xanh | Có |
-| `config` | Quy tắc hai tệp bỏ qua của trivy, `platform-guard.sh`, `platform-test.sh`, rule Prometheus, Collector, compose, chart, digest bên thứ ba, k6, manifest cloud | Mọi lượt | Không bao giờ | Có |
+| `config` | Quy tắc hai tệp bỏ qua của trivy, `platform-guard.sh`, `platform-test.sh`, `verify-collect-test.sh`, rule Prometheus, Collector, compose, chart, digest bên thứ ba, k6, manifest cloud | Mọi lượt | Không bao giờ | Có |
 | `gitleaks` | Quét bí mật toàn lịch sử, `--redact` | Mọi lượt | Không bao giờ | Có |
 | `trivy-config` | Quét misconfig, chỉ báo (phát hiện không làm job đỏ; trừ các mục có hạn của `deploy/ci/trivy-config-ignore.yaml`) | Mọi lượt | Không bao giờ | Có (chỉ khi lệnh lỗi, không khi có phát hiện) |
 | `stack` | Stack compose đầu-cuối: smoke, e2e Chromium và WebKit, k6 `ci`, Lighthouse | Mọi lượt | Không bao giờ | Không |
@@ -203,10 +203,14 @@ Trang một lượt chạy (Actions → chọn lượt) có đồ thị job, dan
   cho sự kiện này (ví dụ cả nhóm `build`, `sign`, `promote`, `drill-*` ở lượt PR). Muốn biết skip có đúng không, mở log job
   `images-ok`: mỗi job một dòng `ok    <job> skipped: not part of this run`, hay `::error::<job> was skipped, but this run needed
   it`.
-- **Summary của job** (cuộn xuống dưới đồ thị): bảng mà script ghi qua `ci_summary` của adapter. Có ở: `check` (golangci-lint:
-  mức, rule, vị trí mỗi phát hiện, tối đa 50 dòng), `web` (bảng cổng lockfile CRITICAL/HIGH/MEDIUM/LOW, rồi bảng SARIF), `gitleaks`,
-  `trivy-config`, `buf` (khi bỏ qua), mỗi chân build của `images.yml` (bảng cổng: số lỗ hổng theo mức và bí mật), `plan` (chế độ,
-  base, image được chọn và lý do), `promote` (service nào không được promote). Vitest, Playwright, k6 không ghi summary: kết quả ở
+- **Summary của job** (cuộn xuống dưới đồ thị), từ hai nguồn. Script ghi qua `ci_summary` của adapter: bảng cổng lockfile
+  CRITICAL/HIGH/MEDIUM/LOW của `web` và bảng cổng của mỗi chân build của `images.yml` (số lỗ hổng theo mức và bí mật), cả hai của
+  `scan-gate.sh`; `plan` (chế độ, base, image được chọn và lý do); `promote` (service nào không được promote); `values-check` (lệnh
+  làm mới khi đỏ); `rescan.sh` của lượt quét lại hằng ngày hay dispatch `rescan=true` (service chưa phát hành bị bỏ qua, hay không
+  có digest đã phát hành nào để quét). Chính YAML của `ci.yml` ghi thẳng `$GITHUB_STEP_SUMMARY`: bảng SARIF (mức, rule, vị trí
+  mỗi phát hiện, tối đa 50 dòng) của golangci-lint ở `check`, lockfile ở `web` (sau bảng cổng), `gitleaks`, `trivy-config`, và
+  dòng "buf breaking skipped" của `buf` khi bỏ qua; khi chuyển nền tảng, các bước này viết lại cùng YAML
+  ([ADR-0023](adr/0023-ci-platform-neutral.md)). Vitest, Playwright, k6 không ghi summary: kết quả ở
   log của bước tương ứng (`make web-check`, `make web-e2e`, `make load-ci`).
 - **Annotation:** dòng `::warning::`/`::error::` của script hiện ở đầu trang, kèm job. Ví dụ: `last-success` cảnh báo khi API
   không trả lời (lượt build cả bảy), `verify-collect.sh` cảnh báo khi bỏ một file khỏi artifact vì nghi có bí mật (không in đoạn

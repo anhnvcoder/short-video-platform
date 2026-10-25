@@ -2,7 +2,9 @@
 # Tests for the artifact filter of the verification runs, deploy/ci/verify-collect.sh, and for deploy/ci/verify-mask.sh
 # it calls. Everything is a fixture in a temporary directory: a fake checkout with a fake .env (the repository's .env is
 # never read), a fake results folder, and a fake kubectl first on PATH that lists made-up Secrets or fails. The fake
-# secrets, the JWT and the private key header are made at run time, so no file of the repository holds one. Then the
+# secrets, the JWT and the private key header are made at run time, so no file of the repository holds one. Before the
+# filter, unready_report of deploy/k8s/lib.sh, with the same fake kubectl listing made-up pods and their logs; its
+# output is one of the fake results. Then the
 # deadline criterion of the summary of deploy/ci/verify-sample.sh, with a fake docker and a fake sudo first on PATH;
 # one sample of its docker.tsv (workers transcoding, memory.stat of the nodes) with a fake docker, kubectl and pgrep and
 # a fixture of /proc; and its peak over a fixture of docker.tsv.
@@ -66,10 +68,21 @@ JWT_SIGNING_KID=kid-of-the-signing-key
 EOF
 
 # The fake kubectl: kubectl --context k3d-svp --request-timeout=10s -n NS get secrets -o json. FAKE_KUBECTL_FAIL=1
-# makes it fail, as for a cluster that no longer answers.
+# makes it fail, as for a cluster that no longer answers. For unready_report: kubectl --context k3d-svp -n NS get pods
+# -o json prints pods-NS.json; kubectl --context k3d-svp -n NS logs POD -c CONTAINER [--previous] --tail=40 prints
+# logs/NS.POD.CONTAINER[.previous]; both are recorded in calls.
 cat >"$work/bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
 [ "${FAKE_KUBECTL_FAIL:-}" = 1 ] && { echo "The connection to the server was refused" >&2; exit 1; }
+if [ "$1 $2 $3" = "--context k3d-svp -n" ]; then
+  echo "$*" >>"$FAKE_KUBECTL_DIR/calls"
+  if [ "$5 $6 $7 $8" = "get pods -o json" ]; then cat "$FAKE_KUBECTL_DIR/pods-$4.json"; exit; fi
+  [ "$5 $7" = "logs -c" ] || exit 2
+  f=$FAKE_KUBECTL_DIR/logs/$4.$6.$8
+  case " $* " in *" --previous "*) f=$f.previous ;; esac
+  if [ -f "$f" ]; then cat "$f"; else echo "Error from server (NotFound): no log" >&2; exit 1; fi
+  exit
+fi
 [ "$1 $2 $3" = "--context k3d-svp --request-timeout=10s" ] && [ "$4" = -n ] &&
   [ "$6 $7 $8 $9" = "get secrets -o json" ] || exit 2
 f=$FAKE_KUBECTL_DIR/$5.json
@@ -111,6 +124,91 @@ identifiers="svp-pg-backup svp-admin scram_sha256 svp-keda svp-feed-service svp-
 admin-of-grafana kid-of-the-signing-key"
 export FAKE_KUBECTL_DIR=$work/kube
 
+# --- unready_report of deploy/k8s/lib.sh: which containers it reports, and whose log it prints. In svp-data a Redpanda
+# broker in a crash loop (its log, and the attempt before, printed), its ready sidecar (not reported), a Postgres pod
+# of CloudNativePG and a completed Job; in svp-obs GlitchTip; in svp two services. Every log the fake kubectl could
+# print is a marker, so what reaches the output shows.
+# unready_pods ITEMS NAMESPACE: the pods NAMESPACE lists, ITEMS a jq expression of their array.
+unready_pods() {
+  jq -n "{items: $1}" >"$work/kube/pods-$2.json"
+}
+unready_pods '[
+  {metadata: {name: "redpanda-0", labels: {"app.kubernetes.io/name": "redpanda"}},
+   spec: {containers: [{name: "redpanda", terminationMessagePolicy: "FallbackToLogsOnError"}, {name: "sidecar"}]},
+   status: {phase: "Running", containerStatuses: [
+     {name: "redpanda", ready: false, restartCount: 2, state: {waiting: {reason: "CrashLoopBackOff"}},
+      lastState: {terminated: {reason: "Error", exitCode: 1, message: "INFRA-MESSAGE-MARKER"}}},
+     {name: "sidecar", ready: true, restartCount: 0, state: {running: {}}}]}},
+  {metadata: {name: "svp-pg-1", labels: {"cnpg.io/cluster": "svp-pg"}},
+   spec: {containers: [{name: "postgres", terminationMessagePolicy: "FallbackToLogsOnError"}]},
+   status: {phase: "Running", containerStatuses: [
+     {name: "postgres", ready: false, restartCount: 1, state: {running: {}},
+      lastState: {terminated: {reason: "Error", exitCode: 1, message: "PG-MESSAGE-MARKER"}}}]}},
+  {metadata: {name: "redpanda-init-x"}, spec: {containers: [{name: "init"}]},
+   status: {phase: "Succeeded", containerStatuses: [
+     {name: "init", ready: false, restartCount: 0, state: {terminated: {reason: "Completed", exitCode: 0}}}]}}]' \
+  svp-data
+unready_pods '[
+  {metadata: {name: "glitchtip-abc", labels: {"app.kubernetes.io/name": "glitchtip"}},
+   spec: {containers: [{name: "glitchtip"}]},
+   status: {phase: "Running", containerStatuses: [
+     {name: "glitchtip", ready: false, restartCount: 0, state: {waiting: {reason: "CrashLoopBackOff"}}}]}}]' svp-obs
+unready_pods '[
+  {metadata: {name: "gateway-abc"}, spec: {containers: [{name: "gateway"}]},
+   status: {phase: "Running", containerStatuses: [
+     {name: "gateway", ready: false, restartCount: 3, state: {waiting: {reason: "CrashLoopBackOff"}},
+      lastState: {terminated: {reason: "Error", exitCode: 2, message: "TERM-FILE-MARKER"}}}]}},
+  {metadata: {name: "media-worker-abc"},
+   spec: {containers: [{name: "media-worker", terminationMessagePolicy: "FallbackToLogsOnError"}]},
+   status: {phase: "Running", containerStatuses: [
+     {name: "media-worker", ready: false, restartCount: 1, state: {running: {}},
+      lastState: {terminated: {reason: "Error", exitCode: 1, message: "APP-FALLBACK-MARKER"}}}]}}]' svp
+mkdir -p "$work/kube/logs"
+printf '%s\n' "Could not initialize seastar: std::runtime_error (insufficient physical memory: needed 1073741824" \
+  "" INFRA-TAIL-MARKER >"$work/kube/logs/svp-data.redpanda-0.redpanda"
+echo INFRA-PREVIOUS-MARKER >"$work/kube/logs/svp-data.redpanda-0.redpanda.previous"
+echo SIDECAR-MARKER >"$work/kube/logs/svp-data.redpanda-0.sidecar"
+echo 'ERROR: duplicate key, STATEMENT: INSERT ... PG-LOG-MARKER' >"$work/kube/logs/svp-data.svp-pg-1.postgres"
+echo 'GET /api/1/envelope/?sentry_key=GLITCHTIP-MARKER' >"$work/kube/logs/svp-obs.glitchtip-abc.glitchtip"
+for f in svp.gateway-abc.gateway svp.gateway-abc.gateway.previous svp.media-worker-abc.media-worker \
+  svp.media-worker-abc.media-worker.previous; do
+  echo "APP-LOG-MARKER of $f" >"$work/kube/logs/$f"
+done
+: >"$work/kube/calls"
+unready=$work/unready.txt
+(
+  PATH=$work/bin:$PATH
+  . "$here/../k8s/lib.sh"
+  for ns in svp-data svp-obs svp; do unready_report "$ns"; done
+) 2>"$unready" >/dev/null
+has_line() { if grep -qxF -- "$2" "$unready"; then ok "unready: $1"; else fail "unready: $1"; fi; }
+has_line "an infrastructure container's state, how it ended and its message" \
+  "pod svp-data/redpanda-0, container redpanda: waiting CrashLoopBackOff, 2 restart(s); attempt before: terminated Error (exit 1): INFRA-MESSAGE-MARKER"
+has_line "its log, each line marked with its namespace" "    [svp-data] INFRA-TAIL-MARKER"
+has_line "an empty line of its log marked too" "    [svp-data] "
+has_line "the log of its attempt before" "    [svp-data] INFRA-PREVIOUS-MARKER"
+has_line "a service's state, how it ended and its message from the termination log file" \
+  "pod svp/gateway-abc, container gateway: waiting CrashLoopBackOff, 3 restart(s); attempt before: terminated Error (exit 2): TERM-FILE-MARKER"
+has_line "a service whose message falls back to its log: state and exit only" \
+  "pod svp/media-worker-abc, container media-worker: running, 1 restart(s); attempt before: terminated Error (exit 1)"
+has_line "GlitchTip's state" "pod svp-obs/glitchtip-abc, container glitchtip: waiting CrashLoopBackOff, 0 restart(s)"
+has_line "Postgres' state, without its message" \
+  "pod svp-data/svp-pg-1, container postgres: running, 1 restart(s); attempt before: terminated Error (exit 1)"
+for m in APP-LOG-MARKER APP-FALLBACK-MARKER GLITCHTIP-MARKER PG-LOG-MARKER PG-MESSAGE-MARKER SIDECAR-MARKER \
+  redpanda-init-x; do
+  if grep -qF -- "$m" "$unready"; then fail "unready: no $m in its output"; else ok "unready: no $m in its output"; fi
+done
+if grep -E ' logs (gateway|media-worker|glitchtip|svp-pg)-' "$work/kube/calls" | grep -q .; then
+  fail "unready: no log of a service, GlitchTip or Postgres is read"
+else
+  ok "unready: no log of a service, GlitchTip or Postgres is read"
+fi
+shown=$(. "$here/../k8s/lib.sh" && echo " $log_tail_namespaces ")
+case $shown in
+  *" svp "* | *" envoy-gateway-system "* | *" kube-system "* | "  ") fail "unready: log_tail_namespaces has neither svp, Envoy nor kube-system, and is not empty" ;;
+  *) ok "unready: log_tail_namespaces has neither svp, Envoy nor kube-system, and is not empty" ;;
+esac
+
 # --- The fake results of a k3d run.
 out=$work/out
 mkdir -p "$out/logs" "$out/samples"
@@ -120,15 +218,28 @@ printf '01\tk8s-up\tok\t0\t100\t160\t60\t\n02\tk8s-smoke\tfail\t1\t160\t170\t10\
 printf '03\tdrill-k8s-keda\tfail\t1\t170\t180\t10\t\n04\tdrill-k8s-threats\tfail\t1\t180\t190\t10\t\n' >>"$out/results.tsv"
 printf '05\tdrill-alert-to-sentry\tfail\t1\t190\t200\t10\t\n06\tdrill-obs-threats\tok\t0\t200\t210\t10\t\n' \
   >>"$out/results.tsv"
+printf '12\tk8s-up\tfail\t1\t210\t220\t10\t\n13\tk8s-up\tfail\t1\t220\t230\t10\t\n' >>"$out/results.tsv"
 # A target that quotes service logs: the log of a failed migrate Job (JSON records, one with a secret) and the
 # gateway's access log line of a trace, between lines of its own.
 {
   echo "ok    cluster ready"
   echo "Job svp/feed-service-migrate failed; log of its last failed attempt, copied before its pod was deleted:"
-  echo '{"time":"2026-10-25T08:00:00Z","level":"WARN","msg":"database not reachable, retrying","attempt":1}'
-  echo "{\"time\":\"2026-10-25T08:00:01Z\", \"level\": \"ERROR\", \"msg\":\"dsn $quoted_secret\"}"
+  echo '    [svp] {"time":"2026-10-25T08:00:00Z","level":"WARN","msg":"database not reachable, retrying","attempt":1}'
+  echo "    [svp] {\"time\":\"2026-10-25T08:00:01Z\", \"level\": \"ERROR\", \"msg\":\"dsn $quoted_secret\"}"
+  echo "    [svp] panic: MIGRATE-PANIC-MARKER"
   echo "FAIL  install feed-service"
 } >"$out/logs/01-k8s-up.log"
+# A failed make k8s-up with the report of unready_report above, and two log lines of namespaces whose logs never get
+# in, as a mistake of unready_report would print them; another whose broker log holds a cluster secret.
+{
+  echo "helm upgrade --install redpanda (wave 3, namespace svp-data)"
+  cat "$unready"
+  echo "    [svp] APP-FORGED-MARKER"
+  echo "    [envoy-gateway-system] ENVOY-MARKER"
+  echo "FAIL  install redpanda"
+} >"$out/logs/12-k8s-up.log"
+printf '    [svp-data] SECRET-TAIL-MARKER sasl password %s\nFAIL  install redpanda\n' "$kafka_secret" \
+  >"$out/logs/13-k8s-up.log"
 {
   echo "ok    T2 08:00:05Z: earliest error trace after T0 abc"
   echo 'ok    T3 08:00:09Z: gateway access log of trace abc: {"route":"/feed","status":"503","user_id":"USER-ID-MARKER"}'
@@ -360,8 +471,30 @@ else
 fi
 grep -q '^FAIL  install feed-service' "$a/01-k8s-up.log" && grep -q '^FAIL  T4' "$a/05-drill-alert-to-sentry.log" &&
   ok "k3d: the targets' own lines around them are kept" || fail "k3d: the targets' own lines around them are kept"
-grep -qF "$(printf 'kept\t$SVP_VERIFY_OUT/logs/01-k8s-up.log\tlogs/01-k8s-up.log\t2 service log line(s) left out')" \
+grep -qF "$(printf 'kept\t$SVP_VERIFY_OUT/logs/01-k8s-up.log\tlogs/01-k8s-up.log\t3 service log line(s) left out')" \
   "$work/art-k3d/files.txt" && ok "k3d: files.txt counts the lines left out" || fail "k3d: files.txt counts the lines left out"
+grep -q MIGRATE-PANIC-MARKER "$a/01-k8s-up.log" && fail "k3d: a migrate Job's log line that is no JSON is left out" ||
+  ok "k3d: a migrate Job's log line that is no JSON is left out"
+# The log tails of unready_report: an infrastructure container's kept, a line of namespace svp or of Envoy left out,
+# in the artifact and in the end of the failed target printed to the job's log alike.
+expect k3d '$SVP_VERIFY_OUT/logs/12-k8s-up.log' kept
+expect k3d '$SVP_VERIFY_OUT/logs/13-k8s-up.log' secret-value
+grep -qxF "    [svp-data] INFRA-TAIL-MARKER" "$a/12-k8s-up.log" && grep -qF INFRA-MESSAGE-MARKER "$a/12-k8s-up.log" &&
+  grep -q '^pod svp/gateway-abc, container gateway: ' "$a/12-k8s-up.log" &&
+  ok "k3d: the log tail of an infrastructure container and every container's state are kept" ||
+  fail "k3d: the log tail of an infrastructure container and every container's state are kept"
+if grep -qE 'APP-FORGED-MARKER|ENVOY-MARKER' "$a/12-k8s-up.log"; then
+  fail "k3d: a log line of namespace svp or envoy-gateway-system is left out"
+else
+  ok "k3d: a log line of namespace svp or envoy-gateway-system is left out"
+fi
+grep -qF "$(printf 'kept\t$SVP_VERIFY_OUT/logs/12-k8s-up.log\tlogs/12-k8s-up.log\t2 service log line(s) left out')" \
+  "$work/art-k3d/files.txt" && ok "k3d: files.txt counts the log lines of other namespaces" ||
+  fail "k3d: files.txt counts the log lines of other namespaces"
+has k3d "the log tail of an infrastructure container of a failed target is printed" '    [svp-data] INFRA-TAIL-MARKER'
+lacks k3d "a log line of namespace svp of a failed target is not printed" APP-FORGED-MARKER
+lacks k3d "a log line of Envoy of a failed target is not printed" ENVOY-MARKER
+lacks k3d "a log tail with a secret is not printed" SECRET-TAIL-MARKER
 lacks k3d "a failed target's service log lines are not printed" 'USER-ID-MARKER'
 no_leak k3d
 has k3d "the end of a failed target's clean output is printed" KEDA-TAIL-MARKER
@@ -622,12 +755,14 @@ EOF
 printf '#!/bin/sh\ncommand -v gdate >/dev/null 2>&1 && exec gdate "$@"\nexec /bin/date "$@"\n' >"$vb/date"
 chmod 755 "$vb/make" "$vb/date"
 # run_verify NAME SCENARIO [VAR=VALUE...]: the copy of verify-run.sh for SCENARIO; its output in $work/run-NAME.log,
-# the make calls in $work/run-NAME.make, its results in $work/run-NAME.out; prints its exit status.
+# the make calls in $work/run-NAME.make, its results in $work/run-NAME.out; prints its exit status. It runs as on a
+# machine, without the variables of any CI: a runner sets CI=true, which alone makes platform.sh refuse to run.
 run_verify() {
   local name=$1 scenario=$2 rc=0
   shift 2
   : >"$work/run-$name.make"
-  env -u GITHUB_ACTIONS PATH="$vb:$work/bin:$PATH" SVP_VERIFY_OUT="$work/run-$name.out" \
+  env -u GITHUB_ACTIONS -u CI -u GITLAB_CI -u JENKINS_URL -u TF_BUILD PATH="$vb:$work/bin:$PATH" \
+    SVP_VERIFY_OUT="$work/run-$name.out" \
     SVP_VERIFY_SECRETS="$work/run-$name.secrets" FAKE_MAKE_LOG="$work/run-$name.make" SVP_VERIFY_TARGETS= "$@" \
     "$vr/deploy/ci/verify-run.sh" "$scenario" >"$work/run-$name.log" 2>&1 </dev/null || rc=$?
   echo "$rc"

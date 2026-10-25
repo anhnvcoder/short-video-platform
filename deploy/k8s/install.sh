@@ -71,35 +71,6 @@ watch_migrate() {
   done
 }
 
-# unready_report NAMESPACE: after a release that did not get ready, prints to stderr each container of NAMESPACE that
-# is not ready, and each init container that has not exited 0: its state, how its last attempt ended, and the last
-# lines of its log, and of the attempt before when it restarted. Helm says no more than "1 pods have failed", and the kubelet
-# keeps the log of the current and the previous attempt only, so a container that crashes at every start is gone with
-# its reason once the cluster is: a verification run on a machine that is thrown away right after has nothing else to
-# show. Pods that completed (Jobs) are left out.
-unready_report() {
-  local ns=$1 pod container restarts state last
-  kc -n "$ns" get pods -o json 2>/dev/null | jq -r '
-    def st: to_entries[0] // {key: "unknown", value: {}}
-      | "\(.key)\(if .value.reason then " " + .value.reason else "" end)\(if .value.exitCode != null then " (exit \(.value.exitCode))" else "" end)";
-    .items[] | select(.status.phase != "Succeeded") | .metadata.name as $pod
-    | ((.status.initContainerStatuses // []) | map(select(.state.terminated.exitCode != 0)))
-      + ((.status.containerStatuses // []) | map(select(.ready | not)))
-    | .[]
-    | [$pod, .name, (.restartCount | tostring), (.state | st),
-       (if .lastState.terminated then (.lastState | st) + (.lastState.terminated.message // "" | if . != "" then ": " + . else "" end) else "" end)]
-    | map(gsub("[[:cntrl:]]"; " ")) | join("\u001f")' 2>/dev/null |
-    while IFS=$sep read -r pod container restarts state last; do
-      echo "pod $ns/$pod, container $container: $state, $restarts restart(s)${last:+; attempt before: $last}" >&2
-      echo "  last lines of its log:" >&2
-      { kc -n "$ns" logs "$pod" -c "$container" --tail=40 </dev/null 2>&1 || true; } | sed 's/^/    /' >&2
-      if [ "$restarts" != 0 ]; then
-        echo "  last lines of the attempt before:" >&2
-        { kc -n "$ns" logs "$pod" -c "$container" --previous --tail=40 </dev/null 2>&1 || true; } | sed 's/^/    /' >&2
-      fi
-    done
-}
-
 # The gateway and the web client are Argo Rollouts Rollouts: an upgrade that changes the pod template (new code,
 # or a value a drill left in the release) is a new revision, which goes out as a canary only when Envoy has measured
 # enough responses of it, and helm --wait does not know Rollouts. So when the Rollout already exists and a canary is
@@ -577,7 +548,9 @@ while IFS=$sep read -r name namespace wave path repo chart version values canary
     if [ -s "$migrate_log" ] && [ "$(kc -n "$namespace" get job "$name-migrate" \
       -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null)" = True ]; then
       echo "Job $namespace/$name-migrate failed; log of its last failed attempt, copied before its pod was deleted:" >&2
-      cat "$migrate_log" >&2
+      # Marked as unready_report marks a log line (deploy/k8s/lib.sh): the log of a service is shown on the machine
+      # that runs this, and the public artifact of a verification run leaves out every log line of namespace svp.
+      sed "s/^/    [$namespace] /" "$migrate_log" >&2
     fi
     unready_report "$namespace" || true
     fail "install $name"

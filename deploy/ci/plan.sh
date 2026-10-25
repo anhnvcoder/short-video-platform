@@ -16,7 +16,7 @@
 #
 # Mode: rescan on schedule or dispatch rescan=true; drill on dispatch drill=true; otherwise build. Both inputs at once,
 # rescan or drill off main, services outside build or values_ref outside rescan: refused (the run fails), never
-# guessed. Base of the build (section 3; never github.event.before, which loses the changes of a queued run that was
+# guessed. Base of the build (never github.event.before, which loses the changes of a queued run that was
 # replaced and of a run that failed):
 #   push to main       head_sha of the newest successful push run of images.yml on main (last-success.sh); none →
 #                      all seven

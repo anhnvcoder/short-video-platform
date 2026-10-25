@@ -322,7 +322,8 @@ Code, cấu hình và tài liệu dùng đúng các tên này; đổi tên nào 
 - **Log của job công khai, kể cả khi đỏ:** biện pháp chính vẫn là script không in giá trị bí mật (quy ước đã có ở mọi target, drill
   tự dò log của chính nó). Trong `verify-*.sh` và các bước của `verify.yml`: không `set -x`, không `env`/`printenv`, không in `.env`,
   không `docker compose config` thiếu `--quiet`, không `kubectl get secret` ra stdout, không `make logs` hay `kubectl logs` của
-  service vào log job (lỗi thì chỉ `make ps`, `make k8s-status`, `kubectl get events`: trạng thái, không nội dung). Giá trị đọc vào
+  service vào log job (lỗi thì chỉ `make ps`, `make k8s-status`, `kubectl get events`: trạng thái, không nội dung; ngoại lệ duy nhất
+  là đuôi log của container hạ tầng bên thứ ba, theo luật ở dưới). Giá trị đọc vào
   biến rồi chuyền qua stdin hay file mode 600 trong `$RUNNER_TEMP`, như `secrets.sh` đã làm.
 - **Mask:** `verify-mask.sh env` ngay sau `make env`: `::add-mask::` cho giá trị của mọi biến trong `.env` có tên kết thúc bằng
   `PASSWORD`, `SECRET`, `SECRET_KEY`, `TOKEN`, `_KEY`, `_KEYS` hay là `SENTRY_DSN`, độ dài ≥ 8 (che giá trị ngắn hay không bí mật như
@@ -332,13 +333,40 @@ Code, cấu hình và tài liệu dùng đúng các tên này; đổi tên nào 
   target kế, còn trong chính target đó chỉ quy ước không in che. `verify-mask.sh cluster` sau khi cluster lên và trước khi gom: mỗi giá trị
   (và mỗi dòng của giá trị nhiều dòng) ≥ 8 ký tự của mọi Secret trong `svp`, `svp-data`, `svp-obs`, `argocd`, `velero`. Lệnh mask
   không bao giờ được in lại (không `set -x`).
-- **Danh sách cho phép** (`verify-collect.sh`, chép vào `$RUNNER_TEMP/verify-artifact/`): JSON và bảng của `.k8s/drills/*.json`,
+- **Danh sách cho phép** (`verify-collect.sh`, chép vào `$RUNNER_TEMP/verify-artifact/`): đầu ra của mỗi target
+  `logs/NN-<target>.log` sau khi bỏ các dòng log theo luật ở dưới (của hai diễn tập threat model chỉ giữ dòng phán quyết), JSON và
+  bảng của `.k8s/drills/*.json`,
   `.k8s/drills/traffic-*.log` (mỗi dòng chỉ có thời điểm, `u1`…`u4`/`web`, tên route, mã HTTP, mili giây), `.k6/*/summary.json`,
   JSON kết quả của `web/test-results/` mà target đo ghi (`measure-*`, `glitchtip-*.json`), báo cáo Lighthouse đã lọc cookie
   (`web/test-results/lighthouse/*.json`, `*.html`, như job `stack`), mẫu của sampler, bảng RAM, đầu ra `make k8s-status` và `kubectl
   get events -A` lúc cuối, `df` trước/sau. Mỗi file tối đa 5 MiB.
 - **Cấm, dù script nào ghi ra:** `.env`, kubeconfig, `.k8s/ca.*`, `.k8s/helm/`, `.k8s/drills/threats-*.log` (nội dung thăm dò),
   trace, video, ảnh, HAR, báo cáo HTML của Playwright, `machine.json` của k6, thư mục ẩn, mọi log của service.
+- **Dòng log trong đầu ra của target, một luật cho artifact và log job** (log job chỉ nhận 40 dòng cuối của target đỏ lấy từ bản đã
+  lọc trong artifact, nên cái gì artifact giữ thì log job in được, không hơn). `verify-collect.sh` bỏ mọi dòng của bản ghi log JSON
+  (khoá `"msg"`, `"level"`: slog của service và phần lớn server bên thứ ba) và mọi dòng trích access log (`access log of trace`).
+  Sau một release không Ready, `make k8s-up` in trạng thái mỗi container chưa Ready (lý do, mã thoát), và chỉ với container hạ tầng
+  bên thứ ba thì in thêm 40 dòng cuối của log, của lần chạy trước khi đã restart (`unready_report` của `deploy/k8s/lib.sh`), mỗi
+  dòng dạng `    [<namespace>] <dòng>`; log của Job migrate thất bại cũng in theo dạng đó. `verify-collect.sh` chỉ giữ dòng có
+  dấu đó khi namespace nằm trong `log_tail_namespaces` của `deploy/k8s/lib.sh` (đọc từ chính file đó, không đọc được thì bỏ mọi dòng
+  có dấu). Lý do: lỗi của Redpanda ở lượt `dev-k3d` 2 ([40137101975](https://github.com/anhnvcoder/short-video-platform/actions/runs/40137101975),
+  `Could not initialize seastar: std::runtime_error (insufficient physical memory …)`) chỉ thấy được qua log của broker; Helm chỉ
+  báo `1 pods have failed`, còn cluster bị huỷ cùng runner. Quét giá trị bí mật chỉ khớp **nguyên** giá trị (không khớp mảnh), nên
+  phạm vi là danh sách namespace và loại trừ có lý do, không phải tin vào phép quét:
+
+  | Namespace | Log được in | Bị loại, lý do |
+  | --- | --- | --- |
+  | `svp-data` | Redpanda (log text của seastar: kiểm hệ thống lúc khởi động, lỗi cấu hình, bộ nhớ), Valkey, MinIO, sidecar của chart, Job init | Mọi pod Postgres của CloudNativePG (nhãn `cnpg.io/cluster`): dòng lỗi trích câu lệnh thất bại, gồm cả giá trị |
+  | `svp-obs` | Prometheus, Alertmanager, Grafana, Loki, Tempo, Pyroscope, Collector (logfmt hay console của zap, không exporter `debug`), operator của kube-prometheus-stack | GlitchTip (nhãn `app.kubernetes.io/name=glitchtip`): access log mang `sentry_key=` là khoá công khai của DSN, mà phép quét chỉ biết nguyên DSN; lỗi của nó có thể trích event nhận được |
+  | `cnpg-system`, `keda`, `argo-rollouts`, `kyverno`, `cert-manager` | Operator và controller: lỗi reconcile, webhook, chứng chỉ (CloudNativePG, KEDA in JSON nên đã bị bỏ theo luật JSON) | — |
+  | `svp` (7 service của project) | Không bao giờ: chỉ trạng thái, lý do, mã thoát, và `terminationMessage` khi `terminationMessagePolicy` là `File` (message của `FallbackToLogsOnError` là đuôi log nên không in) | Log của service có thể mang dữ liệu người dùng |
+  | `envoy-gateway-system` | Không | Access log của proxy Envoy mang đường dẫn và query, gồm chữ ký của presigned upload |
+  | `kube-system`, `argocd` và namespace khác | Không | Không cần cho chẩn đoán cài đặt; ngoài danh sách thì bỏ (fail-closed) |
+
+  Log thật đã đọc: chỉ đuôi log của `redpanda-0` (cả hai lần chạy) và sidecar của nó ở lượt 2 nói trên; các dòng còn lại của bảng
+  dựa trên định dạng log của từng server, chưa gặp lỗi thật. Mỗi file vẫn qua phép quét bên dưới như mọi file khác, khớp thì bỏ cả
+  file. Trên máy người học (`make k8s-up`) cùng luật: không in log của service ở `svp` để một đường code duy nhất; riêng log của Job
+  migrate thất bại vẫn hiện trên terminal (Helm xoá pod của nó), artifact bỏ vì là namespace `svp`.
 - **Quét trước khi chép mỗi file** (fail-closed): (1) theo **giá trị**: mọi giá trị bí mật của `.env` (cùng luật tên như mask), và
   mọi giá trị trong Secret của các namespace ở trên đọc lúc cuối (cluster còn sống) hay lúc vừa lên (bản đã đọc, file mode 600 trong
   `$RUNNER_TEMP`, không upload), mỗi giá trị ở dạng thô và dạng base64; (2) theo **mẫu**:
@@ -1047,7 +1075,8 @@ Phần 1:
 
 - Workflow `verify.yml` và tiêu chí "runner đủ" (§2–§5): `.github/workflows/verify.yml`, `deploy/ci/verify-host.sh`,
   `deploy/ci/verify-run.sh`, `deploy/ci/verify-sample.sh`, `deploy/ci/verify-mask.sh`, `deploy/ci/verify-collect.sh`,
-  `deploy/ci/verify-collect-test.sh`.
+  `deploy/ci/verify-collect-test.sh` (chạy cả ở job `config` của `.github/workflows/ci.yml`); đuôi log hạ tầng (§4):
+  `log_tail_namespaces`, `unready_report` của `deploy/k8s/lib.sh`, gọi từ `deploy/k8s/install.sh`.
 - Bỏ qua có hạn cho cảnh báo `trivy-config` (§9): `deploy/ci/trivy-config-ignore.yaml`, `deploy/ci/scan-gate.sh`
   (`--check-ignorefile`), target `trivy-config` của `Makefile`, job `config` của `.github/workflows/ci.yml`.
 - Cổng quét `web/pnpm-lock.yaml` (§10): target `web-lockfile-scan` của `Makefile`, `deploy/ci/scan-gate.sh` (`--fs`), job `web` của
