@@ -26,12 +26,16 @@ function firstPageServer(kind: FeedKind = "explore") {
 let stamps = 0;
 const stamp = (offsetMs = 0) => Date.now() + offsetMs + ++stamps;
 
-// One visit to a feed screen with the page the server (or the router's replay) handed over.
+// One visit to a feed screen with the page the server (or the router's replay) handed over. A visit gets a cache of its
+// own unless it is given the one of the visit before.
 function visit(
   fetchedAt: number | undefined,
-  { kind = "explore", strict = false }: { kind?: FeedKind; strict?: boolean } = {},
+  {
+    kind = "explore",
+    strict = false,
+    client = new QueryClient(),
+  }: { kind?: FeedKind; strict?: boolean; client?: QueryClient } = {},
 ) {
-  const client = new QueryClient();
   const wrapper = ({ children }: { children: ReactNode }) => {
     const tree = <QueryClientProvider client={client}>{children}</QueryClientProvider>;
     return strict ? <StrictMode>{tree}</StrictMode> : tree;
@@ -71,6 +75,22 @@ describe("useFeed", () => {
     const { result } = visit(fetchedAt);
     // The replayed page shows until the newer one arrives.
     expect(result.current.data?.pages).toEqual([serverPage]);
+    expect(result.current.isFetching).toBe(true);
+    await waitFor(() => expect(result.current.data?.pages).toEqual([newerPage]));
+    expect(calls).toEqual(["explore"]);
+  });
+
+  // Back can land before React Query's timer has dropped the feed the screen left (WebKit, a few ms after the switch):
+  // the new screen then reads that feed, fetched at the first visit and still fresh, and the replayed page's stamp
+  // alone has to bring the request.
+  it("Back before the left feed is dropped from the cache: the replayed page is fetched again all the same", async () => {
+    const calls = firstPageServer();
+    const fetchedAt = stamp();
+    const client = new QueryClient();
+    visit(fetchedAt, { client }).unmount();
+    expect(client.getQueryCache().find({ queryKey: ["feed", "explore"] })).toBeDefined();
+
+    const { result } = visit(fetchedAt, { client });
     expect(result.current.isFetching).toBe(true);
     await waitFor(() => expect(result.current.data?.pages).toEqual([newerPage]));
     expect(calls).toEqual(["explore"]);

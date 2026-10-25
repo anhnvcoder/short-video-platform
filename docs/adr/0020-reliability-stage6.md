@@ -3,8 +3,8 @@
 - Trạng thái: Chấp nhận; phần local hiện thực và đã kiểm trên máy ngày 2026-10-24 (mục Kết quả). Ghi chú 2026-10-24: phần đo
   thật chia giai đoạn 6b "Kiểm chứng dồn" (không cần dịch vụ AWS/GCP) và giai đoạn 7 (dịch vụ cloud), mục 1. Ghi chú 2026-10-25:
   phần 1 của giai đoạn 6b đã chạy trên runner ([0021](0021-deferred-verification-stage6b.md), mục Kết quả): job `stack`, canary
-  gateway dưới probe mới, RAM plugin, hai lượt backup trên runner, điều kiện mới của `RateLimitFallbackActive` đạt; LCP `/` chưa
-  đạt; k6 tải lớn, Chaos Mesh, Velero, hai media-worker trên cluster GitOps ở phần sau của giai đoạn 6b. §2 (`render.sh` nhận số
+  gateway dưới probe mới, RAM plugin, hai lượt backup trên runner, điều kiện mới của `RateLimitFallbackActive` đạt; LCP `/` (và
+  `/v/{id}` ở lượt cuối) chưa đạt; k6 tải lớn, Chaos Mesh, Velero, hai media-worker trên cluster GitOps ở phần sau của giai đoạn 6b. §2 (`render.sh` nhận số
   pod), §6, §7 (Velero, Chaos Mesh trên k3d của runner) sẽ chỉnh bởi 0021 khi hiện thực phần đó; quyết định giữ `Suspense` của
   feed (Kết quả "LCP") đảo theo D17 của 0021 (đòn bẩy (a) đã làm, LCP `/` vẫn chưa đạt)
 - Ngày: 2026-10-24
@@ -812,7 +812,7 @@ Phần local đóng ngày 2026-10-24. Chi tiết và số đo ở các tiểu m�
 | Game day | Đạt: một buổi dưới tải k6, TTD 75 s, hồi phục T0 + 184 s, postmortem từ mốc thật ("Game day") |
 | RFC | Đạt: `docs/rfc/0001-reliability.md` |
 | Stack trong CI | **Đạt** (2026-10-24, lượt PR [40133806424](https://github.com/anhnvcoder/short-video-platform/actions/runs/40133806424), ba lần chạy liền xanh; mục Kiểm chứng sau) |
-| LCP | **Chưa đạt** theo số Lighthouse mô phỏng (median `/` 3 666 ms, `/v/{id}` 2 688 ms); quyết định giữ `Suspense`, xem lại ở giai đoạn 6b ("LCP"). Giai đoạn 6b trên runner: `/` vẫn **chưa đạt** sau khi bỏ `Suspense` (median 3 253 ms trước, kịch bản `compose-obs`; 3 144 ms sau, job `stack`), `/v/{id}` đạt (median 2 182 và 2 360 ms), TBT trên 200 ms ("LCP", đoạn "Giai đoạn 6b") |
+| LCP | **Chưa đạt** theo số Lighthouse mô phỏng (median `/` 3 666 ms, `/v/{id}` 2 688 ms); quyết định giữ `Suspense`, xem lại ở giai đoạn 6b ("LCP"). Giai đoạn 6b trên runner: `/` vẫn **chưa đạt** sau khi bỏ `Suspense` (median 3 253 ms trước, kịch bản `compose-obs`; 3 144 ms sau, job `stack`), `/v/{id}` đạt (median 2 182 và 2 360 ms), TBT trên 200 ms; sau các sửa cuối của phần 1 (`3f0d4cc`, phần tử LCP là ảnh ở cả hai trang) `/` 2 582 và 3 055 ms, `/v/{id}` 2 917 và 3 130 ms, TBT 303–408 ms: **chưa đạt** cả hai trang, LCP quan sát 174–234 ms, đòn bẩy còn lại là việc riêng ở phần sau ("LCP", đoạn "Giai đoạn 6b") |
 | Kiểm tĩnh phần cloud | Đạt: `make cloud-check` sạch (49/49 valid), ca cố ý hỏng FAIL |
 
 Kiểm toàn repo trên working tree cuối của giai đoạn (2026-10-24, trên máy): `make check`, thêm hai lượt
@@ -1012,10 +1012,30 @@ những request đó vào mô hình mô phỏng của Lighthouse (Lantern), nên
   phí chuyển sang `Intl.NumberFormat` của số đếm, bỏ cả số đếm thì chuyển sang `resolveLocale` của intl-messageformat (next-intl
   dịch chuỗi có tham số). Tách mỗi mục feed vào một `Suspense` thêm một long task 60–70 ms, task đầu không đổi. Không giữ thay đổi
   nào. Cùng các task đó trên runner dài khoảng gấp đôi trên máy (TBT trên máy 16–78 ms, runner 216–322 ms), vì stack chạy cùng máy.
-- **Chưa đạt, đòn bẩy còn lại** (mỗi cái đo lại bằng job `stack` và `compose-obs`): font tải sau `load` (bỏ bốn font khỏi đồ thị:
+- **Sửa thêm, đo lại bằng job `stack`** (một lượt mỗi trang mỗi lần chạy):
+  - `1b85c10` ([40170693114](https://github.com/anhnvcoder/short-video-platform/actions/runs/40170693114), ba lần chạy): chỉ khối tài khoản của sidebar nằm trong `Suspense` (trước là cả sidebar, nút
+    Log out bị tháo khỏi DOM khi tên user tới), feed cũ `inert` dưới skeleton khi chuyển tab, link về feed hiện trạng thái chờ.
+    `/` LCP 3 171, 5 104, 5 009 ms (median **5 009 ms**), TBT 438, 543, 383 ms; `/v/{id}` LCP 2 790, 3 091, 2 471 ms (median
+    2 790 ms), TBT 361, 369, 342 ms, CLS 0,117 ở lần chạy thứ ba. Ở lần hai và ba, phần tử LCP của `/` là `<video>` của player thay
+    `<img>`: `<video>` mang `poster` đúng URL ảnh của `<img>` bên dưới, cùng khung; khi `<img>` chưa vẽ trước lúc hydrate chèn
+    `<video>`, hai phần tử vẽ cùng frame, Chrome báo `<video>` và LCP thành mốc vẽ sau hydrate (Render Delay 3 951 ms). Không do
+    các thay đổi trên: lượt `/v/{id}` 3 908 ms của `db35f86` đã là `<video>`, và bản trước các thay đổi tái hiện được trên máy. CLS
+    `/v/{id}`: dòng gợi ý cho khách ở thanh dưới trang chia sẻ xuống 2 dòng ở font dự phòng, 1 dòng ở Be Vietnam Pro, nên thanh thấp
+    đi 20 px khi font tới (tái hiện bằng font dự phòng rộng: CLS 0,046).
+  - `3f0d4cc` ([40176522127](https://github.com/anhnvcoder/short-video-platform/actions/runs/40176522127), ba lần chạy): `<video>` không còn `poster` (ảnh của mục là poster duy nhất, `<video>`
+    chưa có frame không vẽ gì), dòng gợi ý giữ chỗ 2 dòng. Lần chạy đầu dừng ở e2e (WebKit, ca Back về Khám phá ngay sau like:
+    lỗi của feed, không liên quan LCP, sửa sau ở `features/feed/use-feed.ts`), Lighthouse không chạy; lần hai, ba: `/` LCP 2 582,
+    3 055 ms, TBT 376, 408 ms, CLS 0; `/v/{id}` LCP 2 917, 3 130 ms, TBT 303, 358 ms, CLS 0,002; phần tử LCP của cả hai trang là
+    `<img>`. LCP quan sát ở lần ba: `/` 234 ms, `/v/{id}` 174 ms (`benchmarkIndex` 2 048 và 1 941).
+- **Kết luận phần 1 của giai đoạn 6b:** LCP `/` **chưa đạt** theo Lantern (2 582–3 171 ms ở mọi lượt có `<img>` là phần tử LCP),
+  `/v/{id}` không ổn định dưới 2 500 ms (median 2 360 ms ở `db35f86`, 2 917 và 3 130 ms ở `3f0d4cc`), TBT 303–543 ms trên ngưỡng
+  200 ms. Trang vẽ thật sớm: LCP quan sát 165–234 ms trên runner, RUM p75 0,57 s. Không chỉnh thêm trong phần 1 (tránh vòng
+  chỉnh-đo trên cùng một số Lantern dao động vài trăm ms giữa các lần chạy): mỗi đòn bẩy dưới đây là một việc riêng ở phần sau.
+- **Chưa đạt, đòn bẩy còn lại** (mỗi cái đo lại bằng job `stack` và `compose-obs`; số là phép bỏ request khỏi log ở trên): bớt JS
+  tải lần đầu (chunk react-dom −380 ms, runtime của Next −150 ms, năm chunk riêng của feed −150 ms); font tải sau `load` (bỏ bốn font khỏi đồ thị:
   −150 ms LCP, −600 ms FCP; đổi thiết kế: chữ hiện bằng font dự phòng đã chỉnh cỡ tới sau `load` rồi mới đổi, CLS cần đo lại);
   nén brotli và HTTP/2 ở trước web (compose phục vụ thẳng từ server standalone của Next: gzip, HTTP/1.1, mỗi kết nối mới chịu slow
-  start trong mô hình Lantern); bớt JS tải lần đầu của framework. Đổi cách chấm cổng (số thực địa RUM thay Lantern) là một quyết
+  start trong mô hình Lantern). Đổi cách chấm cổng (số thực địa RUM thay Lantern) là một quyết
   định riêng, không làm ở đây vì không nới ngưỡng. Số thực địa vẫn là RUM (LCP p75 0,57 s trên cluster dev của runner, ADR-0021).
 
 ### Game day

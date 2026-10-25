@@ -36,7 +36,9 @@ function remember(page: string) {
 // the page it hands over can be old, even a second old with a like made on it since. Such a page carries a stamp this
 // tab has already shown: it starts stale, and React Query fetches the first page again in the background, which
 // replaces the old one. A stamp not seen yet is a new server render: it counts as fresh from the mount, so it is not
-// asked for twice.
+// asked for twice. Back can come before React Query's timer has dropped the feed the screen left (a few ms after a tab
+// switch): the screen then reads that feed, still fresh, and `initialData` does not apply; a replay therefore always
+// fetches on mount, whatever the cache holds.
 //
 // `enabled` false holds the first request: the server was told to wait (429) and the client waits out the rest.
 export function useFeed(
@@ -50,6 +52,7 @@ export function useFeed(
   // can render a component more than once before that (StrictMode in development, a render it throws away), and those
   // renders must not take the page for a replay.
   const [initialDataUpdatedAt] = useState(() => (page !== null && seenPages.has(page) ? 0 : Date.now()));
+  const replayed = initialDataUpdatedAt === 0;
   useEffect(() => {
     if (page !== null) {
       remember(page);
@@ -65,6 +68,7 @@ export function useFeed(
     ...(initialPage ? { initialData: { pages: [initialPage], pageParams: [""] }, initialDataUpdatedAt } : {}),
     enabled,
     staleTime: firstPageFreshMs,
+    refetchOnMount: replayed ? "always" : true,
     gcTime: 0,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
