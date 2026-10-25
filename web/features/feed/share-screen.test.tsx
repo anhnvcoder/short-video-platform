@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { useLinkStatus } from "next/link";
 import { useRouter } from "next/navigation";
@@ -49,7 +49,14 @@ function renderShare({
   video = baseVideo,
   viewerId = null,
   locale = "vi",
-}: { video?: FeedItem; viewerId?: string | null; locale?: Locale } = {}) {
+  client = new QueryClient(),
+}: {
+  video?: FeedItem;
+  viewerId?: string | null;
+  locale?: Locale;
+  // The tab's client, shared by the renders of one test as it is by the pages of a tab.
+  client?: QueryClient;
+} = {}) {
   const messages = messagesFor(locale);
   return render(
     // The messages the /v/[id] page gives its provider: no other namespace reaches the screen.
@@ -57,7 +64,7 @@ function renderShare({
       locale={locale}
       messages={{ feed: messages.feed, share: messages.share, ...linkPendingMessages(messages) }}
     >
-      <QueryClientProvider client={new QueryClient()}>
+      <QueryClientProvider client={client}>
         <ShareScreen video={video} viewerId={viewerId} mediaOrigin={mediaOrigin} loadedAt={loadedAt} appName="SVP" />
       </QueryClientProvider>
     </NextIntlClientProvider>,
@@ -325,6 +332,34 @@ describe("ShareScreen for a logged-in user", () => {
     expect(like.getAttribute("aria-label")).toBe(feed().likeWithCount.replace("{count}", formatCompact(12_401, "vi")));
     await waitFor(() => expect(likes).toEqual([videoId]));
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("Back while the like is on its way: the replayed page shows the like, and keeps it once answered", async () => {
+    let likeAnswered = () => {};
+    const likes: string[] = [];
+    server.use(
+      http.put("*/api/videos/:id/like", async () => {
+        likes.push("PUT");
+        await new Promise<void>((resolve) => (likeAnswered = resolve));
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const client = new QueryClient();
+    const first = renderShare({ viewerId: viewer, client });
+    fireEvent.click(likeButton());
+    first.unmount();
+
+    // Back: the router replays the page as it came, from before the like.
+    renderShare({ viewerId: viewer, client });
+    const shown = () =>
+      within(stage()).getByRole("button", { name: new RegExp(`^${feed().likeWithCount.replace("{count}", ".+")}$`) });
+    expect(shown().getAttribute("aria-pressed")).toBe("true");
+    expect(shown().textContent).toBe(formatCompact(12_401, "vi"));
+    await waitFor(() => expect(likes).toEqual(["PUT"]));
+    await act(async () => likeAnswered());
+    await waitFor(() => expect(client.isMutating()).toBe(0));
+    expect(shown().getAttribute("aria-pressed")).toBe("true");
+    expect(shown().textContent).toBe(formatCompact(12_401, "vi"));
   });
 
   it("follows for real", async () => {
