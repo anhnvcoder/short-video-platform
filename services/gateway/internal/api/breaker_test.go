@@ -87,7 +87,8 @@ func TestEngagementBreakerOpen(t *testing.T) {
 func TestUserBreakerOpen(t *testing.T) {
 	logs := captureLog(t)
 	e := newEnvDialed(t, httpx.ClientAddr{}, downLimits(t),
-		[]grpc.DialOption{grpc.WithUnaryInterceptor(breaker.New("user-service", userv1.UserService_GetProfiles_FullMethodName))}, nil)
+		[]grpc.DialOption{grpc.WithUnaryInterceptor(breaker.New("user-service", userv1.UserService_GetProfiles_FullMethodName))},
+		[]grpc.DialOption{patientExtras()})
 	e.users.fail(status.Error(codes.Unavailable, "user-service is down"))
 	token := e.token(t, userA)
 

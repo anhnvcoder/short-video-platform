@@ -513,6 +513,29 @@ func newEnvDialed(t *testing.T, clientAddr httpx.ClientAddr, limits *ratelimit.L
 	}
 }
 
+// newEnvPatient is newEnv for tests that check what GetStats and GetProfiles add to an answer:
+// on both connections those two calls outlive statsTimeout (see patientExtras).
+func newEnvPatient(t *testing.T) *env {
+	t.Helper()
+	return newEnvDialed(t, httpx.ClientAddr{}, downLimits(t), []grpc.DialOption{patientExtras()}, []grpc.DialOption{patientExtras()})
+}
+
+// patientExtras gives GetStats and GetProfiles a deadline of callTimeout instead of the
+// gateway's statsTimeout. Under a loaded -race run of the whole repo a call through bufconn can
+// take more than 100 ms by itself, so a test expecting the stats or the authors would fail for
+// the machine's sake, not the gateway's. Tests about statsTimeout itself do not use it.
+func patientExtras() grpc.DialOption {
+	return grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		if method == engagementv1.EngagementService_GetStats_FullMethodName || method == userv1.UserService_GetProfiles_FullMethodName {
+			var cancel context.CancelFunc
+			// WithoutCancel keeps the outgoing metadata and the trace, and drops the deadline.
+			ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), callTimeout)
+			defer cancel()
+		}
+		return invoker(ctx, method, req, reply, cc, opts...)
+	})
+}
+
 // callCount is the number of RPCs every fake service received.
 func (e *env) callCount() int {
 	return len(e.users.recorded()) + len(e.videos.recorded()) + len(e.feeds.recorded()) + len(e.engagement.recorded())
@@ -894,7 +917,7 @@ func TestInitUploadRejectsBadJSON(t *testing.T) {
 }
 
 func TestGetVideo(t *testing.T) {
-	e := newEnv(t)
+	e := newEnvPatient(t)
 
 	t.Run("ready", func(t *testing.T) {
 		rec := e.do(t, http.MethodGet, "/videos/"+videoID, "", e.token(t, userA))
@@ -1356,7 +1379,7 @@ func TestFeed(t *testing.T) {
 		{"/feed/explore", feedv1.FeedService_GetExploreFeed_FullMethodName, ""},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
-			e := newEnv(t)
+			e := newEnvPatient(t)
 			rec := e.do(t, http.MethodGet, tc.path+"?page_size=5&cursor=abc", "", e.token(t, userA))
 			wantStatus(t, rec, http.StatusOK)
 			wantJSON(t, rec)
@@ -1459,7 +1482,7 @@ func TestFeedEmptyPage(t *testing.T) {
 // TestFeedStatsMatchedByVideoID gives GetStats an answer in another order, missing one item and
 // with an id not on the page.
 func TestFeedStatsMatchedByVideoID(t *testing.T) {
-	e := newEnv(t)
+	e := newEnvPatient(t)
 	e.stats.setStats([]*engagementv1.VideoStats{
 		{VideoId: "01928c6e-7b3a-7cde-8f01-999999999999", ViewCount: 9},
 		{VideoId: videoID2, ViewCount: 42, LikeCount: 3, LikedByMe: true},
@@ -1699,7 +1722,7 @@ func TestEngagementErrors(t *testing.T) {
 // TestFeedIgnoresClientUserID is threat model IN-1 on the feed: both services get the user id
 // of the token and no client header.
 func TestFeedIgnoresClientUserID(t *testing.T) {
-	e := newEnv(t)
+	e := newEnvPatient(t)
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/feed/following", nil)
 	r.Header.Set("Authorization", "Bearer "+e.token(t, userA))
 	r.Header.Set("X-User-Id", userB)

@@ -7,12 +7,14 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"go.opentelemetry.io/otel"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -21,6 +23,7 @@ import (
 	videov1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/video/v1"
 	"github.com/anhnvcoder/short-video-platform/internal/callerid"
 	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
+	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/httpx"
 )
 
 func TestRegisterWithHandle(t *testing.T) {
@@ -230,7 +233,7 @@ func TestAuthorVideos(t *testing.T) {
 		{"someone else's", "/users/" + userB + "/videos", userB},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			e := newEnv(t)
+			e := newEnvPatient(t)
 			rec := e.do(t, http.MethodGet, tc.path+"?page_size=18&cursor=abc", "", e.token(t, userA))
 			wantStatus(t, rec, http.StatusOK)
 			wantJSON(t, rec)
@@ -297,7 +300,7 @@ func TestAuthorVideosEmptyPage(t *testing.T) {
 // TestAuthorVideosWithoutProfile: user-service has no profile for the author, so the items go
 // without author and keep their stats.
 func TestAuthorVideosWithoutProfile(t *testing.T) {
-	e := newEnv(t)
+	e := newEnvPatient(t)
 	rec := e.do(t, http.MethodGet, "/users/"+userC+"/videos", "", e.token(t, userA))
 	wantStatus(t, rec, http.StatusOK)
 	got := decode[struct {
@@ -354,7 +357,7 @@ func TestAuthorVideosErrors(t *testing.T) {
 // its own deadline, for the other call to arrive: called one after the other, the first would
 // time out and its part of the answer would be missing.
 func TestExtrasSideBySide(t *testing.T) {
-	e := newEnv(t)
+	e := newEnvPatient(t)
 	statsIn, authorsIn := make(chan struct{}), make(chan struct{})
 	meet := func(mine, other chan struct{}) func(ctx context.Context, _ string) error {
 		return func(ctx context.Context, _ string) error {
@@ -385,20 +388,36 @@ func TestExtrasSideBySide(t *testing.T) {
 }
 
 // TestFeedWithoutAuthorsWhenUserServiceSlow: GetProfiles past its 100 ms leaves every item
-// without author, keeps the stats, and is only logged.
+// without author, keeps the stats, and is only logged. The deadline and the number of calls are
+// read where the gateway makes the call: under a loaded -race run the call may not even reach the
+// fake user-service within 100 ms. GetStats outlives statsTimeout (patientExtras), so the stats
+// do not race it either.
 func TestFeedWithoutAuthorsWhenUserServiceSlow(t *testing.T) {
 	logs := captureLog(t)
-	e := newEnv(t)
-	seen := make(chan time.Duration, 1)
+	// getProfiles is a GetProfiles call as the gateway made it: when, and with which deadline (the
+	// zero time when it had none).
+	type getProfiles struct{ at, deadline time.Time }
+	var (
+		mu    sync.Mutex
+		calls []getProfiles
+	)
+	watch := grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		if method == userv1.UserService_GetProfiles_FullMethodName {
+			d, _ := ctx.Deadline()
+			mu.Lock()
+			calls = append(calls, getProfiles{at: time.Now(), deadline: d})
+			mu.Unlock()
+		}
+		return invoker(ctx, method, req, reply, cc, opts...)
+	})
+	e := newEnvDialed(t, httpx.ClientAddr{}, downLimits(t), []grpc.DialOption{watch}, []grpc.DialOption{patientExtras()})
 	e.users.setHook(func(ctx context.Context, _ string) error {
-		d, _ := ctx.Deadline()
-		seen <- time.Until(d)
 		<-ctx.Done()
 		return ctx.Err()
 	})
 	start := time.Now()
 	rec := e.do(t, http.MethodGet, "/feed/following", "", e.token(t, userA))
-	elapsed := time.Since(start)
+	end := time.Now()
 	wantStatus(t, rec, http.StatusOK)
 	got := decode[struct {
 		Items []map[string]any `json:"items"`
@@ -414,17 +433,26 @@ func TestFeedWithoutAuthorsWhenUserServiceSlow(t *testing.T) {
 			t.Errorf("item %v has no stats", item["video_id"])
 		}
 	}
-	if d := <-seen; d > statsTimeout || d <= 0 {
-		t.Errorf("user-service saw a deadline %v away, want at most %v", d, statsTimeout)
+	mu.Lock()
+	seen := slices.Clone(calls)
+	mu.Unlock()
+	if len(seen) != 1 {
+		t.Fatalf("gateway made %d GetProfiles calls, want 1: no retry", len(seen))
 	}
-	if elapsed > statsTimeout+150*time.Millisecond {
-		t.Errorf("request took %v, want about %v at most", elapsed, statsTimeout)
+	// The gateway set the deadline after start and before the call went out, so a deadline of
+	// statsTimeout is at least statsTimeout after start and at most statsTimeout after the call,
+	// whatever the machine's load.
+	if c := seen[0]; c.deadline.Before(start.Add(statsTimeout)) || c.deadline.Sub(c.at) > statsTimeout {
+		t.Errorf("GetProfiles deadline %v after the request started and %v after the call, want statsTimeout (%v)",
+			c.deadline.Sub(start), c.deadline.Sub(c.at), statsTimeout)
 	}
-	if !strings.Contains(logs.String(), `"level":"WARN","msg":"served without authors"`) {
-		t.Errorf("no WARN about the missing authors:\n%s", logs)
+	// The deadline above bounds the wait; this only catches a request left to the 3 s call
+	// deadline, as a busy machine can spend more than statsTimeout on the request alone.
+	if elapsed := end.Sub(start); elapsed >= callTimeout {
+		t.Errorf("request took %v, want under %v", elapsed, callTimeout)
 	}
-	if n := len(e.users.recorded()); n != 1 {
-		t.Errorf("user-service got %d calls, want 1: no retry", n)
+	if w := logLines(t, logs, "served without authors"); len(w) != 1 || w[0]["level"] != "WARN" || w[0]["grpc_code"] != "DeadlineExceeded" {
+		t.Errorf("want one WARN about the authors missing after the deadline:\n%s", logs)
 	}
 }
 
@@ -439,7 +467,7 @@ func wantNoCaller(t *testing.T, b *backend) {
 }
 
 func TestPublicVideo(t *testing.T) {
-	e := newEnv(t)
+	e := newEnvPatient(t)
 	// No Authorization, a token that is not a JWT, and a valid token: the same answer, and no
 	// call carries a caller.
 	for _, auth := range []string{"", "not-a-jwt", e.token(t, userB)} {
