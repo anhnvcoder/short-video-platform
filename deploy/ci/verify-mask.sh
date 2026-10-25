@@ -136,8 +136,11 @@ case ${1:-} in
     # the rest of the value unmasked. It is cut at U+FFFD too, what jq decodes a byte that is not UTF-8 to: a piece
     # holding one would never match the bytes a log or a file shows. A binary value (a gzipped config) gets cut into
     # many short pieces that way; masking those is harmless, and the value as stored, plain base64, is masked whole
-    # all the same.
-    jq -R -r '., (@base64d | [splits("[[:cntrl:]\ufffd]")][] | gsub("^\\s+|\\s+$"; ""))' "$work/b64" |
+    # all the same. The cut points are the code points jq's [[:cntrl:]] matches (U+0000-001F, U+007F-009F) and
+    # U+FFFD, each turned into a newline and split on, in time proportional to the value: jq's splits() with a regex
+    # takes time that grows with the square of it, minutes for a binary value of 200 KiB.
+    jq -R -r '., (@base64d | explode | map(if . < 32 or (. >= 127 and . < 160) or . == 65533 then 10 else . end)
+      | implode | split("\n")[] | gsub("^\\s+|\\s+$"; ""))' "$work/b64" |
       while IFS= read -r v || [ -n "$v" ]; do [ "${#v}" -lt "$min_len" ] || printf '%s\n' "$v"; done >"$work/cluster"
     keep cluster
     ;;

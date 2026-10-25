@@ -45,7 +45,7 @@
 # OOMKilled, OOM lines of the kernel, compose containers that restarted, nodes not Ready or not answering, a k3s
 # server restart or stop, the events above and the target outputs that mention a 429, the highest working set of each
 # container sampled in pods.tsv, the targets the deadline cut (results.tsv of deploy/ci/verify-run.sh: timeout,
-# cancelled, or skipped for the deadline), and the criteria of the table "runner đủ" for the scenario of
+# cancelled, or skipped for the deadline), whether verify-run.sh reached its end (its run-end mark), and the criteria of the table "runner đủ" for the scenario of
 # $SVP_VERIFY_OUT/scenario), df-after.txt, and while the cluster runs make k8s-status and kubectl get events -A
 # (k8s-status.txt, events.txt), or while compose runs make ps (compose-ps.txt). Only numbers, states and names reach
 # the log: never an event's text, never a service's log.
@@ -217,9 +217,14 @@ loop() {
 
 summary() {
   local oom kernel_log kernel_oom restarted logs429 root scenario results=$out/results.tsv results_read=true
+  local run_ended=true
   scenario=$(cat "$out/scenario" 2>/dev/null) || scenario=unknown
   # No results.tsv: verify-run.sh never ran to its first line, so the job cannot be said to have ended in time.
   [ -f "$results" ] || results=/dev/null results_read=false
+  # No run-end: verify-run.sh was stopped before its last target had its line (a cancelled run, a step stopped by its
+  # timeout-minutes). It writes the cancelled line only after the target it stops has exited, which the runner may not
+  # wait for, so results.tsv alone can look complete with the running target and every later one missing.
+  [ -f "$out/run-end" ] || run_ended=false
   root=$(docker_ info -f '{{.DockerRootDir}}' 2>/dev/null) || root=/
   {
     df -h "$root"
@@ -250,7 +255,7 @@ summary() {
 
   jq -n --rawfile host "$samples/host.tsv" --rawfile docker "$samples/docker.tsv" --rawfile disk "$samples/disk.tsv" \
     --rawfile pods "$samples/pods.tsv" --rawfile events "$samples/events.tsv" --rawfile polls "$samples/event-polls.tsv" \
-    --rawfile results "$results" --argjson results_read "$results_read" \
+    --rawfile results "$results" --argjson results_read "$results_read" --argjson run_ended "$run_ended" \
     --arg scenario "$scenario" --arg oom "$oom" --arg kernel_oom "$kernel_oom" --arg restarted "$restarted" \
     --argjson logs429 "$logs429" '
     def rows($s): $s | split("\n") | map(select(length > 0) | split("\t"));
@@ -290,12 +295,13 @@ summary() {
       kernel_oom_lines: $kernel_oom,
       compose_restarts: ($restarted | split(" ") | map(select(length > 0))),
       results_read: $results_read,
+      run_ended: $run_ended,
       # A target stopped by its own limit or by the deadline, one cancelled when the step ended, one never started
       # for the deadline: each means the scenario did not fit the time of the job.
       targets_cut: (rows($results) | .[1:] | map(select(.[2] == "timeout" or .[2] == "cancelled"
         or (.[2] == "skipped" and .[7] == "deadline")) | "\(.[1])=\(.[2])"))
     } | .runner_enough = ({
-      within_deadline: (.results_read and (.targets_cut | length) == 0),
+      within_deadline: (.results_read and .run_ended and (.targets_cut | length) == 0),
       mem_available_2gib: ((.mem_available_min_mib // 0) >= 2048),
       no_oom: ((.oom_killed | length) == 0 and .kernel_oom_lines == "0"),
       disk: (.disk_low_seen | not)
@@ -311,7 +317,7 @@ summary() {
     "runner: OOMKilled [\(.oom_killed | join(" "))], kernel OOM lines \(.kernel_oom_lines), compose restarts [\(.compose_restarts | join(" "))]",
     "runner: k3s server states \(.k3d_server_states), samples with it not running \(.k3d_server_not_running_samples); nodes not Ready in \(.nodes_not_ready_samples) sample(s), not answering in \(.nodes_unanswered_samples)",
     "runner: events read \(.event_polls.ok) time(s) (\(.event_polls.failed) failed), evictions \(.evictions), pulls refused 429 \(.image_pulls_429), target outputs with a 429 \(.target_outputs_with_429)",
-    "runner: results.tsv read \(.results_read), targets cut short [\(.targets_cut | join(" "))]",
+    "runner: results.tsv read \(.results_read), verify-run.sh reached its end \(.run_ended), targets cut short [\(.targets_cut | join(" "))]",
     "runner enough: " + (.runner_enough | to_entries | map("\(.key)=\(.value)") | join(" "))' "$out/runner.json" |
     tee "$out/runner.txt"
 }

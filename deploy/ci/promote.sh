@@ -33,8 +33,8 @@
 # repository. git runs for real either way, with one limit: a machine pushes bot/promote only to an origin on its own
 # disk (the scratch repository of a test). The real origin's bot/promote is the branch of the release pull request CI
 # keeps up to date: a push from a machine would put new commits under that pull request's title and body, which only
-# CI writes. So with any other origin (https, ssh, host:path) a machine refuses before reading anything, and with
-# PROMOTE_DRY_RUN=1 prints the push instead of running it.
+# CI writes. So when any push URL of origin is another (https, ssh, host:path) a machine refuses before reading
+# anything, and with PROMOTE_DRY_RUN=1 prints the push instead of running it.
 set -euo pipefail
 
 # shellcheck source=deploy/ci/common.sh
@@ -50,17 +50,21 @@ run_url=$(ci_run_url) && bot_name=$(ci_bot_name) && bot_email=$(ci_bot_email) &&
 git_() { git -C "$repo_root" "$@"; }
 
 # push: empty when this run must not push (a machine, an origin off this machine, a dry run; see the top of this
-# file). The URL is git's own, with insteadOf and pushInsteadOf applied, and is never printed: it may hold a token.
+# file). The URLs are git's own, with insteadOf and pushInsteadOf applied, and are never printed: one may hold a token.
+# Every push URL is checked, not only the first: git push origin pushes to each of them (every remote.origin.pushurl,
+# or every remote.origin.url when there is none), so one off the disk among them is enough to refuse.
 push=yes
 if [ "$platform" = local ]; then
-  origin_url=$(git_ remote get-url --push origin) || fail "this clone has no remote origin"
-  case $origin_url in
-  /* | ./* | ../* | file://*) ;;
-  *)
-    [ -n "$dry" ] || fail "origin is not a repository on this machine's disk: only CI pushes $branch there, since its pull request belongs to CI. PROMOTE_DRY_RUN=1 runs everything else and prints the push and the pull request"
-    push=
-    ;;
-  esac
+  origin_urls=$(git_ remote get-url --push --all origin) || fail "this clone has no remote origin"
+  while IFS= read -r origin_url; do
+    case $origin_url in
+    /* | ./* | ../* | file://*) ;;
+    *)
+      [ -n "$dry" ] || fail "origin is not a repository on this machine's disk: only CI pushes $branch there, since its pull request belongs to CI. PROMOTE_DRY_RUN=1 runs everything else and prints the push and the pull request"
+      push=
+      ;;
+    esac
+  done <<<"$origin_urls"
 fi
 # is_ancestor A B: true when commit A is B or one of B's ancestors.
 is_ancestor() { git_ merge-base --is-ancestor "$1" "$2"; }

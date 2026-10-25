@@ -548,9 +548,10 @@ while IFS=$sep read -r name namespace wave path repo chart version values canary
     if [ -s "$migrate_log" ] && [ "$(kc -n "$namespace" get job "$name-migrate" \
       -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null)" = True ]; then
       echo "Job $namespace/$name-migrate failed; log of its last failed attempt, copied before its pod was deleted:" >&2
-      # Marked as unready_report marks a log line (deploy/k8s/lib.sh): the log of a service is shown on the machine
-      # that runs this, and the public artifact of a verification run leaves out every log line of namespace svp.
-      sed "s/^/    [$namespace] /" "$migrate_log" >&2
+      # Marked as unready_report marks a log line (mark_log of deploy/k8s/lib.sh): the log of a service is shown on
+      # the machine that runs this, and the public artifact of a verification run leaves out every log line of
+      # namespace svp.
+      mark_log "$namespace" <"$migrate_log" >&2
     fi
     unready_report "$namespace" || true
     fail "install $name"

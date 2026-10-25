@@ -9,8 +9,8 @@
 #   - another CI (GitLab CI, a CI=true one): a clear error, nothing written;
 #   - the scripts give what they gave when they read GitHub's variables themselves: plan.sh, vuln-predicate.sh,
 #     scan-gate.sh, values-check.sh (the signing identity is read from the policy's values) and promote.sh (a dry run
-#     and a local run in a throwaway git repository with a throwaway origin; on a machine, an origin off its disk is
-#     refused, or with PROMOTE_DRY_RUN=1 the push is printed, and the branch never moves);
+#     and a local run in a throwaway git repository with a throwaway origin; on a machine, an origin with any push URL
+#     off its disk is refused, or with PROMOTE_DRY_RUN=1 the push is printed, and the branch never moves);
 #   - platform-guard.sh passes the throwaway checkout and fails, naming file:line, a script that reads GITHUB_OUTPUT or
 #     calls gh itself;
 #   - changed-services.sh builds all seven images for a change of platform.sh, as for common.sh, and none for a change
@@ -390,6 +390,27 @@ check "promote.sh dry run on a machine: the pull request and its body are printe
 check "promote.sh dry run on a machine: no gh call" test ! -s "$work/gh.log"
 same "promote.sh on a machine, origin off the disk: the branch did not move" "$pushed" "$(origin rev-parse bot/promote)"
 g config --unset remote.origin.pushurl
+
+# git push origin pushes to every push URL: one off the disk among them, first or second, refuses the run as one alone
+# does. So does a URL on the disk that pushInsteadOf turns into one off it. No URL is printed.
+off_disk=https://example.invalid/octo/repo.git
+for order in "$work/origin.git $off_disk" "$off_disk $work/origin.git" pushinsteadof; do
+  if [ "$order" = pushinsteadof ]; then
+    g config "url.$off_disk.pushInsteadOf" "$work/origin.git"
+  else
+    for url in $order; do g remote set-url --add --push origin "$url"; done
+  fi
+  fresh
+  if on local "$tree/deploy/ci/promote.sh" "$work/releases-c" >"$work/promote.out" 2>&1; then
+    fail "promote.sh on a machine, push URLs ($order): refused"
+  else
+    same "promote.sh on a machine, push URLs ($order): refused before anything else, no URL printed" "$refusal" \
+      "$(cat "$work/promote.out")"
+  fi
+  check "promote.sh on a machine, push URLs ($order): no gh call" test ! -s "$work/gh.log"
+  same "promote.sh on a machine, push URLs ($order): the branch did not move" "$pushed" "$(origin rev-parse bot/promote)"
+  g config --unset-all remote.origin.pushurl || g config --remove-section "url.$off_disk"
+done
 
 # With the throwaway origin, as before: pushed for real, the pull request printed.
 fresh

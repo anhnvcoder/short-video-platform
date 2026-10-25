@@ -4,7 +4,8 @@
 # never read), a fake results folder, and a fake kubectl first on PATH that lists made-up Secrets or fails. The fake
 # secrets, the JWT and the private key header are made at run time, so no file of the repository holds one. Before the
 # filter, unready_report of deploy/k8s/lib.sh, with the same fake kubectl listing made-up pods and their logs; its
-# output is one of the fake results. Then the
+# output is one of the fake results, as is a migrate Job's log marked by mark_log of the same file. verify-mask.sh
+# cluster on a binary value of 200 KiB, timed, and on small ones against the cut it made before. Then the
 # deadline criterion of the summary of deploy/ci/verify-sample.sh, with a fake docker and a fake sudo first on PATH;
 # one sample of its docker.tsv (workers transcoding, memory.stat of the nodes) with a fake docker, kubectl and pgrep and
 # a fixture of /proc; and its peak over a fixture of docker.tsv.
@@ -209,6 +210,23 @@ case $shown in
   *) ok "unready: log_tail_namespaces has neither svp, Envoy nor kube-system, and is not empty" ;;
 esac
 
+# --- mark_log of deploy/k8s/lib.sh, which marks the log of a failed migrate Job in deploy/k8s/install.sh: every line
+# marked, an empty one, one with control characters and bytes that are not UTF-8, and the last one without a newline
+# (given one); an empty log prints nothing.
+# mark_log_of NAMESPACE < LOG: mark_log of lib.sh itself.
+mark_log_of() { (. "$here/../k8s/lib.sh" && mark_log "$1"); }
+printf 'first\n\npanic: x\r\001y\377z\nlast' | mark_log_of svp >"$work/marked"
+printf '    [svp] first\n    [svp] \n    [svp] panic: x\r\001y\377z\n    [svp] last\n' >"$work/marked.want"
+cmp -s "$work/marked" "$work/marked.want" && ok "mark_log: every line marked, whatever its bytes, the last one ended" ||
+  fail "mark_log: every line marked, whatever its bytes, the last one ended"
+printf 'one\n' | mark_log_of svp >"$work/marked"
+[ "$(cat "$work/marked")" = "    [svp] one" ] && ok "mark_log: one line, one marked line" || fail "mark_log: one line, one marked line"
+mark_log_of svp </dev/null >"$work/marked"
+[ ! -s "$work/marked" ] && ok "mark_log: an empty log prints nothing" || fail "mark_log: an empty log prints nothing"
+grep -qF 'mark_log "$namespace" <"$migrate_log" >&2' "$here/../k8s/install.sh" &&
+  ok "mark_log: install.sh marks a failed migrate Job's log with it" ||
+  fail "mark_log: install.sh marks a failed migrate Job's log with it"
+
 # --- The fake results of a k3d run.
 out=$work/out
 mkdir -p "$out/logs" "$out/samples"
@@ -219,14 +237,16 @@ printf '03\tdrill-k8s-keda\tfail\t1\t170\t180\t10\t\n04\tdrill-k8s-threats\tfail
 printf '05\tdrill-alert-to-sentry\tfail\t1\t190\t200\t10\t\n06\tdrill-obs-threats\tok\t0\t200\t210\t10\t\n' \
   >>"$out/results.tsv"
 printf '12\tk8s-up\tfail\t1\t210\t220\t10\t\n13\tk8s-up\tfail\t1\t220\t230\t10\t\n' >>"$out/results.tsv"
-# A target that quotes service logs: the log of a failed migrate Job (JSON records, one with a secret) and the
-# gateway's access log line of a trace, between lines of its own.
+# A target that quotes service logs: the log of a failed migrate Job (JSON records, one with a secret, and a panic),
+# marked by mark_log as install.sh marks it, and the gateway's access log line of a trace, between lines of its own.
 {
   echo "ok    cluster ready"
   echo "Job svp/feed-service-migrate failed; log of its last failed attempt, copied before its pod was deleted:"
-  echo '    [svp] {"time":"2026-10-25T08:00:00Z","level":"WARN","msg":"database not reachable, retrying","attempt":1}'
-  echo "    [svp] {\"time\":\"2026-10-25T08:00:01Z\", \"level\": \"ERROR\", \"msg\":\"dsn $quoted_secret\"}"
-  echo "    [svp] panic: MIGRATE-PANIC-MARKER"
+  {
+    echo '{"time":"2026-10-25T08:00:00Z","level":"WARN","msg":"database not reachable, retrying","attempt":1}'
+    echo "{\"time\":\"2026-10-25T08:00:01Z\", \"level\": \"ERROR\", \"msg\":\"dsn $quoted_secret\"}"
+    echo "panic: MIGRATE-PANIC-MARKER"
+  } | mark_log_of svp
   echo "FAIL  install feed-service"
 } >"$out/logs/01-k8s-up.log"
 # A failed make k8s-up with the report of unready_report above, and two log lines of namespaces whose logs never get
@@ -290,6 +310,7 @@ echo '{"label":"start","mem_usage_median_mib":5800}' >"$out/ram-rest-start.json"
 printf 'RAM at rest (start): MEM USAGE median 5800 MiB\nfree -m of the runner at rest:\n%s\n' \
   "Mem:  15995  9000  1200  50  5795  6700" >"$out/ram-rest-start.txt"
 echo '{}' >"$out/.hidden.json"
+echo 230 >"$out/run-end"
 
 # --- The fake checkout's results.
 d=$repo/.k8s/drills
@@ -389,6 +410,49 @@ else
   ok "mask: a second call masks nothing new and prints no marker"
 fi
 
+# --- verify-mask.sh cluster on binary values, each a Secret of namespace svp-obs of a cluster of its own. The cut it
+# made with jq's splits() took minutes for 200 KiB (its time grows with the square of the value): a value that size is
+# done in seconds now. On small values it keeps what that cut kept: random bytes, and text with CR, NUL, tab, the C1
+# control NEL, U+FFFD itself, a byte that is not UTF-8, blanks around a line, several lines.
+# mask_cluster NAME DIR FILE...: verify-mask.sh cluster with a fake kubectl listing one Secret per FILE (raw bytes), in a
+# list of its own ($work/NAME.secrets/cluster.values); its output in $work/NAME.log.
+mask_cluster() {
+  local name=$1 dir=$2 f i=0
+  shift 2
+  mkdir -p "$dir"
+  for f in "$@"; do
+    i=$((i + 1))
+    base64 <"$f" | tr -d '\n' | jq -R -s --arg k "v$i" '{($k): .}'
+  done | jq -s '{items: [{type: "Opaque", metadata: {name: "binary"}, data: add}]}' >"$dir/svp-obs.json"
+  env "${job[@]}" PATH="$work/bin:$PATH" FAKE_KUBECTL_DIR="$dir" SVP_VERIFY_SECRETS="$work/$name.secrets" \
+    "$here/verify-mask.sh" cluster >"$work/$name.log" 2>&1 || fail "$name: verify-mask.sh cluster exits 0"
+}
+mb=$work/mask-bin
+mkdir -p "$mb"
+head -c 204800 /dev/urandom >"$mb/big"
+started=$SECONDS
+mask_cluster mask-big "$mb/kube-big" "$mb/big"
+took=$((SECONDS - started))
+[ "$took" -le 10 ] && ok "mask: a binary value of 200 KiB is cut in ${took} s (10 at most)" ||
+  fail "mask: a binary value of 200 KiB is cut in ${took} s (10 at most)"
+# comm, not grep -xF: BSD grep runs out of memory on a pattern that long.
+{ base64 <"$mb/big" | tr -d '\n'; echo; } >"$mb/big.b64"
+[ "$(LC_ALL=C comm -12 "$mb/big.b64" "$work/mask-big.secrets/cluster.values" | grep -c .)" = 1 ] &&
+  ok "mask: the binary value of 200 KiB is kept whole in base64" || fail "mask: the binary value of 200 KiB is kept whole in base64"
+for i in 1 2 3; do head -c 3000 /dev/urandom >"$mb/small-$i"; done
+printf '%s' "$binary_value" >"$mb/small-4"
+printf '  lead-and-trail-%s  \r\ncr-nul-%s\000tab-%s\tnel-%s\302\205fffd-%s\357\277\275bad-%s\377end-of-it\n\n' \
+  "$(openssl rand -hex 4)" "$(openssl rand -hex 4)" "$(openssl rand -hex 4)" "$(openssl rand -hex 4)" \
+  "$(openssl rand -hex 4)" "$(openssl rand -hex 4)" >"$mb/small-5"
+mask_cluster mask-small "$mb/kube-small" "$mb"/small-*
+# The cut as it was, with the length rule of verify-mask.sh, over the same values.
+for f in "$mb"/small-*; do base64 <"$f" | tr -d '\n'; echo; done |
+  jq -R -r '., (@base64d | [splits("[[:cntrl:]\ufffd]")][] | gsub("^\\s+|\\s+$"; ""))' |
+  while IFS= read -r v || [ -n "$v" ]; do [ "${#v}" -lt 8 ] || printf '%s\n' "$v"; done | LC_ALL=C sort -u >"$mb/want"
+cmp -s "$mb/want" "$work/mask-small.secrets/cluster.values" &&
+  ok "mask: small binary and text values give the pieces the regex cut gave ($(wc -l <"$mb/want" | tr -d ' ') lines)" ||
+  fail "mask: small binary and text values give the pieces the regex cut gave"
+
 # --- k3d run, cluster readable.
 collect k3d "$work/secrets-k3d"
 for src in '$SVP_VERIFY_OUT/results.tsv' '$SVP_VERIFY_OUT/scenario' '$SVP_VERIFY_OUT/samples/host.tsv' \
@@ -406,6 +470,8 @@ expect k3d .k8s/drills/jwt-1.json jwt
 expect k3d .k8s/drills/binary-piece-1.json secret-value
 expect k3d '$SVP_VERIFY_OUT/logs/02-k8s-smoke.log' secret-value
 expect k3d '$SVP_VERIFY_OUT/sampler.pid' not-allowed
+expect k3d '$SVP_VERIFY_OUT/run-end' not-allowed
+lacks k3d "verify-run.sh's end mark is dropped without a warning" 'run-end'
 expect k3d '$SVP_VERIFY_OUT/.hidden.json' hidden
 expect k3d .k8s/drills/backup-1.json secret-value
 expect k3d .k8s/drills/b64-1.json secret-value
@@ -594,15 +660,19 @@ echo compose-obs >"$so/scenario"
 printf '100\t4000000\t0\t12\n105\t3900000\t0\t40\n' >"$so/samples/host.tsv"
 printf '100\t50000000000\t100000000000\t0\n' >"$so/samples/disk.tsv"
 for f in docker pods events event-polls; do : >"$so/samples/$f.tsv"; done
-# sample NAME [ROW...]: verify-sample.sh stop over a results.tsv of ROWs (none: no results.tsv); prints
-# within_deadline of runner.json and the targets it lists as cut, its output in $work/sample-NAME.log.
+# sample [--no-end] NAME [ROW...]: verify-sample.sh stop over a results.tsv of ROWs (none: no results.tsv) and, with
+# ROWs and without --no-end, the end mark of verify-run.sh; prints within_deadline of runner.json and the targets it
+# lists as cut, its output in $work/sample-NAME.log.
 sample() {
-  local name=$1
+  local name end=1
+  [ "$1" = --no-end ] && { end=; shift; }
+  name=$1
   shift
-  rm -f "$so/results.tsv" "$so/runner.json"
+  rm -f "$so/results.tsv" "$so/runner.json" "$so/run-end"
   if [ "$#" -gt 0 ]; then
     printf 'id\tname\tstatus\texit\tstart\tend\tseconds\tnote\n' >"$so/results.tsv"
     printf '%s\n' "$@" >>"$so/results.tsv"
+    [ -z "$end" ] || echo 200 >"$so/run-end"
   fi
   env "${job[@]}" PATH="$sb:$PATH" SVP_VERIFY_OUT="$so" "$here/verify-sample.sh" stop >"$work/sample-$name.log" 2>&1 ||
     fail "sample $name: verify-sample.sh stop exits 0"
@@ -622,6 +692,12 @@ expect_deadline deadline "false lcp=skipped" "$(sample deadline "$(row 01 up ok 
 expect_deadline cancelled "false lcp=cancelled" "$(sample cancelled "$(row 01 up ok 0 100 160 60 '')" \
   "$(row 02 lcp cancelled '' 170 180 10 'the run was cancelled or the step timed out')")"
 expect_deadline no-results "false " "$(sample no-results)"
+# Cancelled, or stopped by the step's timeout-minutes, before the running target got its line: every line there is
+# looks fine, only the end mark is missing.
+expect_deadline no-end "false " "$(sample --no-end no-end "$(row 01 up ok 0 100 160 60 '')")"
+grep -q '^runner: results.tsv read true, verify-run.sh reached its end false, ' "$work/sample-no-end.log" &&
+  ok "sample: runner.txt says verify-run.sh did not reach its end" ||
+  fail "sample: runner.txt says verify-run.sh did not reach its end"
 grep -q '^runner enough: within_deadline=false ' "$work/sample-deadline.log" &&
   ok "sample: the runner enough line names within_deadline" || fail "sample: the runner enough line names within_deadline"
 # Targets verify-run.sh skipped after a failed build target, or left out by SVP_VERIFY_TARGETS, did not run out of time.
@@ -751,6 +827,7 @@ cat >"$vb/make" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_MAKE_LOG"
 case " ${FAKE_MAKE_FAIL:-} " in *" $1 "*) exit 2 ;; esac
+case " ${FAKE_MAKE_SLOW:-} " in *" $1 "*) sleep 60 ;; esac
 EOF
 printf '#!/bin/sh\ncommand -v gdate >/dev/null 2>&1 && exec gdate "$@"\nexec /bin/date "$@"\n' >"$vb/date"
 chmod 755 "$vb/make" "$vb/date"
@@ -792,6 +869,25 @@ if timeout --version 2>/dev/null | grep -q GNU; then
   same "verify-run: after a failed build target no other target runs" "up OBS=lgtm" "$(cat "$work/run-infra.make")"
   same "verify-run: every target after a failed build target is skipped for it" \
     "$(want_rows "$compose_names" fail 'infrastructure step failed')" "$(results infra)"
+  [ -s "$work/run-infra.out/run-end" ] && ok "verify-run: a run that reached its last target writes its end mark" ||
+    fail "verify-run: a run that reached its last target writes its end mark"
+
+  # A run stopped while a target runs (a cancel, the step's timeout-minutes): that target is cancelled, no end mark.
+  : >"$work/run-cut.make"
+  env -u GITHUB_ACTIONS -u CI -u GITLAB_CI -u JENKINS_URL -u TF_BUILD PATH="$vb:$work/bin:$PATH" \
+    SVP_VERIFY_OUT="$work/run-cut.out" SVP_VERIFY_SECRETS="$work/run-cut.secrets" FAKE_MAKE_LOG="$work/run-cut.make" \
+    SVP_VERIFY_TARGETS=smoke FAKE_MAKE_SLOW=smoke "$vr/deploy/ci/verify-run.sh" compose-obs >"$work/run-cut.log" 2>&1 \
+    </dev/null &
+  cut_pid=$!
+  for _ in $(seq 1 100); do
+    grep -q '^smoke' "$work/run-cut.make" && break
+    sleep 0.1
+  done
+  kill -TERM "$cut_pid"
+  wait "$cut_pid" || :
+  [ ! -e "$work/run-cut.out/run-end" ] && results cut | grep -qx '02 smoke cancelled the run was cancelled or the step timed out' &&
+    ok "verify-run: a run stopped mid-target records it cancelled and writes no end mark" ||
+    fail "verify-run: a run stopped mid-target records it cancelled and writes no end mark"
 
   rc=$(run_verify one dev-k3d SVP_VERIFY_TARGETS=drill-k8s-threats)
   same "verify-run: a run of the chosen targets that pass passes" 0 "$rc"
