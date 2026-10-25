@@ -6,8 +6,8 @@ image:
   # writes the three lines below; the GitOps cluster pulls the digest, the tag names the commit for people. Empty:
   # no release yet. The dev path (make k8s-up) ignores them and passes its own registry, tag and an empty digest.
   repository: ghcr.io/anhnvcoder/short-video-platform/video-service
-  tag: "aca9d11a7e4f"
-  digest: "sha256:7784cbbb7919a95fe22403233ab3568969979814e4a1850c75597a868bcdf5cc"
+  tag: "1ded60f3678f"
+  digest: "sha256:cb547a3e0dd62e87fd0e83c45f3515b4a8531182918d200eb897e4aeb0c68703"
 protocol: grpc
 port: 9102
 migrate: true
