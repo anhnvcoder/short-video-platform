@@ -2,7 +2,7 @@
 # values-check.sh BASE: for every file of deploy/k8s/values/services/ that changed from commit BASE to HEAD (all seven
 # when BASE is empty), a non-empty image.digest must name a release that may enter main: right repository, signed by
 # images.yml on main, one vuln attestation covering both platforms, no CRITICAL, at most 48 hours old
-# (verify-release.sh; docs/adr/0015-cicd-devsecops-stage5.md, section 7). Kyverno accepts attestations up to 72 hours,
+# (verify-release.sh). Kyverno accepts attestations up to 72 hours,
 # so a digest that enters main with an older one (a rolled-up promote PR, a revert to an old digest) would have its
 # new pods refused; this check catches it before the merge. Uses no token.
 #

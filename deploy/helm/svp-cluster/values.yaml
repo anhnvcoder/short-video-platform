@@ -1,4 +1,4 @@
-# Base of the cluster (docs/adr/0014-kubernetes-local-stage4.md, sections 2, 3 and 9). Installed by deploy/k8s/install.sh
+# Base of the cluster. Installed by deploy/k8s/install.sh
 # (wave 1 of deploy/argocd/apps/components.json), after cert-manager and Envoy Gateway brought their CRDs.
 
 # The project's namespaces. Every one gets Pod Security "restricted", a default-deny NetworkPolicy and allow-dns.
@@ -36,7 +36,7 @@ platformNamespaces:
   - name: keda
   - name: kyverno
 
-# Kyverno (wave 2; docs/adr/0015-cicd-devsecops-stage5.md, section 8), the one platform namespace whose pods also get
+# Kyverno (wave 2), the one platform namespace whose pods also get
 # NetworkPolicies here: it verifies images against registries and Sigstore on the internet, and the API server sends it
 # every pod of svp (Kyverno itself starts no pod there). default-deny and allow-dns as in the project's namespaces,
 # allow-kube-api for its pods labelled svp-kube-api=allow (deploy/k8s/values/kyverno.yaml), and two of its own

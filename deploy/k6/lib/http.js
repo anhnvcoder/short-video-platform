@@ -5,7 +5,7 @@ import { forwardedForIP } from "./config.js";
 
 // 4xx answers are the client's, so http_req_failed counts only 5xx and connection errors, as the SLOs count 5xx. A 429
 // is counted on its own instead: the script hitting a rate limit means its user pool is too small, not that the system
-// failed (ADR-0020, section 2).
+// failed.
 http.setResponseCallback(http.expectedStatuses({ min: 200, max: 499 }));
 
 export const rateLimited = new Counter("svp_rate_limited");

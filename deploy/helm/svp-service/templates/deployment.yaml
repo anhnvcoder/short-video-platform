@@ -1,10 +1,10 @@
 {{- /*
-The service itself (ADR-0014 section 10). Configuration is environment variables only, as in compose: the plain ones
+The service itself. Configuration is environment variables only, as in compose: the plain ones
 from the values, the secret ones from Secret <service>-env, which deploy/k8s/secrets.sh writes from .env
 (deploy/k8s/install.sh restarts this Deployment when that Secret has changed, since a process reads its environment
 only when it starts).
 
-With canary set (the gateway, the web client) it is an Argo Rollouts Rollout instead (ADR-0014 section 13): the same
+With canary set (the gateway, the web client) it is an Argo Rollouts Rollout instead: the same
 pod template, and a new revision goes out as a canary behind Envoy rather than as a rolling update. Each revision's ReplicaSet gets the
 label rollouts-pod-template-hash, which the controller adds to the selectors of Services <release> (stable) and
 <release>-canary.

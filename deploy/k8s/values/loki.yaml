@@ -1,6 +1,6 @@
 # Loki 3.7.8 (chart https://grafana-community.github.io/helm-charts loki 18.17.1, where the OSS chart moved from
-# grafana/helm-charts), release loki in namespace svp-obs, wave 3 of deploy/argocd/apps/components.json
-# (docs/adr/0014-kubernetes-local-stage4.md, sections 2 and 11). One single-binary pod on a local volume: the logs of one
+# grafana/helm-charts), release loki in namespace svp-obs, wave 3 of deploy/argocd/apps/components.json.
+# One single-binary pod on a local volume: the logs of one
 # lab, far below what needs the scalable modes and their object storage. The Collector sends logs to the native OTLP
 # endpoint http://loki.svp-obs:3100/otlp; Grafana reads at loki.svp-obs:3100. The pod already meets Pod Security
 # "restricted" with the chart's defaults.
@@ -9,11 +9,11 @@ deploymentMode: Monolithic
 
 loki:
   # By digest (multi-arch index: linux/amd64 and linux/arm64), the chart's appVersion beside it for the reader: a tag
-  # can be pushed again to other content, a digest cannot (docs/adr/0015-cicd-devsecops-stage5.md, section 8). The chart
+  # can be pushed again to other content, a digest cannot. The chart
   # renders registry/repository:tag, so tag holds version@digest (its version label becomes 3.7.8-sha256-<hex>, a valid
   # label value); deploy/k8s/check-image-digests.sh fails on an image without one. Not the chart's own digest key:
-  # Renovate's helm-values manager finds a pin only as repository and tag under a key ending in "image" (ADR-0015
-  # section 10) and updates both parts of tag, so version and digest change together; registry and repository are the
+  # Renovate's helm-values manager finds a pin only as repository and tag under a key ending in "image"
+  # and updates both parts of tag, so version and digest change together; registry and repository are the
   # chart's defaults written out.
   image:
     registry: docker.io

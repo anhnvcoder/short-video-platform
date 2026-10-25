@@ -2,7 +2,7 @@
 // video-service and media-worker: presigned POST forms for uploads and the HEAD, GET, PUT and
 // DELETE calls on the uploads and media buckets. Clients send the file straight to storage with a
 // presigned POST whose signed policy fixes the key and caps the size, so storage enforces the
-// limit and the file never passes through a service (ADR-0004, ADR-0008 sections 2, 3 and 4).
+// limit and the file never passes through a service.
 //
 // A key is the contract key verbatim, and its prefix picks the bucket: "uploads/<video_id>" lives
 // in the uploads bucket, "media/<video_id>/..." in the media bucket.
@@ -25,8 +25,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
-	// Deprecated upstream; docs/adr/0011-observability-stage3.md, section 2, keeps it for now and
-	// asks to revisit it before upgrading the AWS SDK or moving to the cloud.
+	// Deprecated upstream, with no promise of further fixes; kept for now because it builds against
+	// the pinned AWS SDK. Revisit it before upgrading the AWS SDK or moving to the cloud.
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws" //nolint:staticcheck // see above
 )
 
@@ -73,8 +73,7 @@ func notKeyChar(r rune) bool {
 }
 
 // Config holds what New needs; the services fill it from the S3_* variables, so the same image runs
-// under compose, Kubernetes and the cloud with only the environment changing (ADR-0008
-// section 11).
+// under compose, Kubernetes and the cloud with only the environment changing.
 type Config struct {
 	// Endpoint is the URL the service calls, e.g. http://minio:9000.
 	Endpoint string
@@ -123,7 +122,7 @@ func New(cfg Config) (*Store, error) {
 		public = cfg.Endpoint
 	}
 	// Built from s3.Options rather than config.LoadDefaultConfig, which would also read
-	// ~/.aws and the AWS_* variables (ADR-0008 section 2).
+	// ~/.aws and the AWS_* variables and could pick up credentials other than the S3_* ones.
 	opts := s3.Options{
 		Region:                     cfg.Region,
 		BaseEndpoint:               aws.String(cfg.Endpoint),
@@ -202,7 +201,7 @@ func (s *Store) PresignPost(ctx context.Context, key string, sizeBytes int64, co
 		fields[k] = v
 	}
 	// The policy requires Content-Type to match but the SDK does not return it as a form field; without it storage
-	// would reject the form (ADR-0008 section 2).
+	// would reject the form.
 	fields["Content-Type"] = contentType
 	return &PresignedPost{URL: req.URL, Fields: fields, ExpiresAt: expiresAt}, nil
 }

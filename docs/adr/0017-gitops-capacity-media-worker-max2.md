@@ -137,3 +137,9 @@ Chọn **C** (người học chọn ngày 2026-10-21).
   - (c) vẫn trượt với 2 worker: xét D (hạ limit CPU của worker) hay giảm CPU của thành phần khác, ghi bằng ADR mới.
   - Docker VM có thêm CPU, hay chuyển lên cluster cloud (giai đoạn 7) với node thật: tính lại `maxReplicaCount` theo CPU
     của node, tối đa bằng số partition.
+
+## Hiện thực ở
+
+- `deploy/k8s/values/services/media-worker.yaml`: KEDA scale media-worker tối đa 2 replica.
+- `deploy/k8s/drills/keda.sh`: tiêu chí (c), k3s server không restart suốt diễn tập.
+- `deploy/k8s/cloud/values/chaos-mesh.yaml`: Chaos Mesh chỉ cài trên cluster cloud, vì máy 16 GB không còn chỗ.

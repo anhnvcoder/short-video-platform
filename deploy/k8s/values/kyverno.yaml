@@ -1,5 +1,5 @@
 # Kyverno v1.19.1 (chart https://kyverno.github.io/kyverno/ kyverno 3.9.1), release kyverno in namespace kyverno, wave 2
-# of deploy/argocd/apps/components.json (docs/adr/0015-cicd-devsecops-stage5.md, section 8): the admission controller,
+# of deploy/argocd/apps/components.json: the admission controller,
 # which verifies the signature and the vuln attestation of every image a pod of namespace svp runs, the reports
 # controller (PolicyReports of the dev path's Audit mode), and the CRDs. The policy itself, ImageValidatingPolicy
 # svp-images, is chart deploy/helm/svp-policy (wave 3), before any pod of svp (wave 7).
@@ -28,11 +28,11 @@ admissionController:
     # ConfigMaps of every namespace). The image policy reads only the pod in the request and its namespace, which the
     # controller's own ClusterRole covers: without view it logs no forbidden and verifies as before.
     createViewRoleBinding: false
-  # One replica: the lab's machine has 16 GB (docs/adr/0014-kubernetes-local-stage4.md, section 2); a second one would
+  # One replica: the lab's machine has 16 GB; a second one would
   # only matter for an upgrade or a node drain without a gap in admission.
   replicas: 1
   # Each image of the chart by digest (multi-arch index: linux/amd64 and linux/arm64), the version beside it for the
-  # reader: a tag can be pushed again to other content, a digest cannot (ADR-0015 section 8). The chart renders
+  # reader: a tag can be pushed again to other content, a digest cannot. The chart renders
   # registry/repository:tag, so tag holds version@digest; deploy/k8s/check-image-digests.sh fails on an image without
   # one. Registry ghcr.io instead of the chart's reg.kyverno.io, which is the same GHCR repository under another name
   # (the same digests): one registry fewer the nodes depend on, and the one Renovate's docker datasource reads.
@@ -55,8 +55,7 @@ admissionController:
       # Go counts as heap from the start: about 48 MiB for 1 MiB, but 3 GiB for 64 MiB, far past the GOMEMLIMIT
       # Kyverno derives from the 384Mi limit, so the GC would run without pause. 1 MiB keeps the payloads of the seven
       # services and the two drill images several times over. A result is then trusted for up to 60 minutes, so an
-      # attestation older than 72 hours by less than that, or Sigstore failing after it was cached, still admits a pod
-      # (ADR-0015 section 8).
+      # attestation older than 72 hours by less than that, or Sigstore failing after it was cached, still admits a pod.
       imageVerifyCacheMaxSize: "1048576"
 
 reportsController:
@@ -115,7 +114,7 @@ features:
     enabled: false
   # The PolicyException kinds stay off, as the chart has them: an exception is a way to exempt an image from the
   # signature check, and CVE-2026-100704 (fixed in Kyverno 1.19.1) was one that skipped the check for the whole
-  # resource (ADR-0015 section 8).
+  # resource.
   policyExceptions:
     enabled: false
   registryClient:

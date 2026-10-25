@@ -1,4 +1,4 @@
-# Release web of chart deploy/helm/svp-service (docs/adr/0019-web-k3d-supply-chain-observability.md): the web client,
+# Release web of chart deploy/helm/svp-service: the web client,
 # Next's standalone server built from web/ by deploy/docker/web.Dockerfile.
 image:
   # Releases on GHCR, built, scanned and signed by CI (.github/workflows/images.yml). The promote pull request
@@ -24,7 +24,7 @@ env:
   # Kubernetes sets HOSTNAME to the pod's name, which overrides the image's HOSTNAME=0.0.0.0: Next's standalone server
   # would then listen on the pod's address only, not on loopback, where kubectl port-forward connects.
   HOSTNAME: 0.0.0.0
-  # The only host the BFF calls: the gateway's Service, inside the cluster (docs/adr/0016-web-client.md, section 5).
+  # The only host the BFF calls: the gateway's Service, inside the cluster.
   GATEWAY_URL: http://gateway:8080
   # Sessions and refresh locks in Valkey db 9 (keys svp:web:), beside the gateway's db 10 and feed-service's db 14.
   REDIS_URL: redis://valkey.svp-data:6379/9
@@ -48,7 +48,7 @@ egressTo: [gateway, valkey, collector, glitchtip]
 httpRoute:
   host: svp.localhost
   sectionName: https-apex
-# A Rollout with an analysed canary, the steps of the gateway's (ADR-0019 section 3). `make k8s-up` runs drill traffic
+# A Rollout with an analysed canary, the steps of the gateway's. `make k8s-up` runs drill traffic
 # while a canary is in progress (deploy/k8s/install.sh); it requests /login and one static asset through Envoy.
 canary: true
 # 5xx below 1%, as for the gateway. p99 below 500 ms rather than the gateway's 150: a page is rendered on the server

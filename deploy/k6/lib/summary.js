@@ -1,7 +1,7 @@
 import { profile, routes, targets, forwardedForIP } from "./config.js";
 
 // handleSummary: a chosen subset of the end-of-test data, never the whole of it. The object k6 passes in also holds
-// setup_data, the pool's tokens and session cookies, so it is never written as is (ADR-0020, section 2); nor are
+// setup_data, the pool's tokens and session cookies, so it is never written as is; nor are
 // --summary-export or --out json used. With SVP_K6_RESULTS set (make load-local, make load-ci) the JSON goes to
 // <SVP_K6_RESULTS>/summary.json; without it (the cloud Job) to one stdout line starting with "svp-k6-summary ", which
 // the learner gathers from the pods' logs. A short table goes to stdout either way.

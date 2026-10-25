@@ -4,7 +4,7 @@ import { chosenHandleSchema, normalizeHandle, type AuthState } from "./auth-stat
 import type { AuthFailure } from "./gateway";
 import type { BffServices } from "./runtime";
 
-// Login, register and logout of the BFF (docs/adr/0016-web-client.md, section 5), apart from the Next request APIs so
+// Login, register and logout of the BFF, apart from the Next request APIs so
 // tests can drive them. server/auth-actions.ts and app/logout/route.ts wire them to cookies, headers and redirects.
 
 // The gateway checks the same rules; checking here saves a round trip and shows the error on the field.

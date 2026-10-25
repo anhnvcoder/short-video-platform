@@ -1,4 +1,4 @@
-// Load test of the SLOs (docs/adr/0020-reliability-stage6.md, section 2): the API scenarios of api.js and the web
+// Load test of the SLOs: the API scenarios of api.js and the web
 // scenarios of web.js in one k6 process, at the rates of the profile SVP_K6_PROFILE picks (local, ci, cloud; see
 // lib/config.js). Run it through make load-local / make load-ci (deploy/k6/load.sh) or the cloud Job
 // (deploy/k6/cloud/), never with a k6 that is not K6_IMAGE.

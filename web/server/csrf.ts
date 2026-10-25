@@ -1,7 +1,7 @@
 import "server-only";
 
 // CSRF check for every request that may change state: every method but GET and HEAD, Server Actions, Route Handlers
-// and /api/* alike (docs/adr/0016-web-client.md, section 5). No route changes state on GET.
+// and /api/* alike. No route changes state on GET.
 //
 // Sec-Fetch-Site must be exactly same-origin, not same-site: s3.svp.localhost serves files users uploaded and is the
 // same site as svp.localhost, and a SameSite=Lax cookie still goes along with a request from a sibling host. Browsers

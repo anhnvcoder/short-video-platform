@@ -1,4 +1,4 @@
-# Images of the seven services (docs/adr/0015-cicd-devsecops-stage5.md, sections 3-7 and 9): build only what changed,
+# Images of the seven services: build only what changed,
 # on native amd64 and arm64 runners; scan the local image with trivy and block secrets and CRITICAL vulnerabilities
 # BEFORE anything is pushed; push exactly what was scanned; join a multi-arch index; sign it keyless with cosign and
 # attest the SBOM (syft) and the scan result; promote the signed digests through a pull request; rescan released

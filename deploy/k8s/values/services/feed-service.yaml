@@ -1,4 +1,4 @@
-# Release feed-service of chart deploy/helm/svp-service (docs/adr/0014-kubernetes-local-stage4.md, section 10).
+# Release feed-service of chart deploy/helm/svp-service.
 # Secret feed-service-env holds DATABASE_URL (app role) and the Kafka login; feed-service-migrate-env the migrator
 # role's DATABASE_URL.
 image:
@@ -17,9 +17,9 @@ resources:
   limits: {cpu: "1", memory: 256Mi}
 env:
   LISTEN_ADDR: ":9104"
-  # Consumes user.follows.v1 and video.lifecycle.v1 to build the timelines on write (ADR-0009 sections 7 and 11).
+  # Consumes user.follows.v1 and video.lifecycle.v1 to build the timelines on write.
   KAFKA_BROKERS: redpanda.svp-data.svc.cluster.local:9092
-  # The first explore page is cached in Valkey db 14 for 5 s (ADR-0010 section 3).
+  # The first explore page is cached in Valkey db 14 for 5 s.
   REDIS_URL: redis://valkey.svp-data:6379/14
   PYROSCOPE_SERVER_ADDRESS: http://pyroscope.svp-obs:4040
   SENTRY_ENVIRONMENT: k3d

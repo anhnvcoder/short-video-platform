@@ -1,7 +1,7 @@
 import "server-only";
 import type { Breadcrumb, Event } from "@sentry/nextjs";
 
-// What may reach the error tracker (threat model WEB-9, docs/adr/0019-web-k3d-supply-chain-observability.md, section 8),
+// What may reach the error tracker (threat model WEB-9),
 // one set of rules for the server's own errors and for the browser's reports. Dropping free-form fields is the main
 // defence; the patterns below are a second layer for what an error message may still carry.
 

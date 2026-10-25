@@ -9,13 +9,12 @@
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 
-# k3d's own helper images, pinned by digest (multi-arch index): k3d otherwise picks them by its version tag
-# (docs/adr/0014-kubernetes-local-stage4.md, section 1).
+# k3d's own helper images, pinned by digest (multi-arch index): k3d otherwise picks them by its version tag.
 # renovate: datasource=docker depName=ghcr.io/k3d-io/k3d-proxy
 export K3D_IMAGE_LOADBALANCER=ghcr.io/k3d-io/k3d-proxy:5.9.0@sha256:7be40abfeb6ac9a81d0d4157a7cbf3aacc68a64a1780ca2efb160f1aea915177
 # renovate: datasource=docker depName=ghcr.io/k3d-io/k3d-tools
 export K3D_IMAGE_TOOLS=ghcr.io/k3d-io/k3d-tools:5.9.0@sha256:c57abce697e66feeb826922718738fe186b47779312d49d4e51e6fb9b8a6f34d
-# The local registry (ADR-0014 section 6): k3d prefixes the name, so the container is k3d-svp-registry; inside it listens on
+# The local registry: k3d prefixes the name, so the container is k3d-svp-registry; inside it listens on
 # 5000, published on 127.0.0.1:5111 only.
 # renovate: datasource=docker depName=docker.io/library/registry
 registry_image=docker.io/library/registry:3.1.2@sha256:ddf754342cfc8acc51a56d5d0ab6af06826461864460636d8bd5c546dab2a7b8
@@ -53,8 +52,8 @@ wait_until() {
   done
 }
 
-# port_free PORT: true when nothing accepts connections on 127.0.0.1:PORT. The lab's ports are fixed (ADR-0014 sections 2
-# and 6), so a taken port is an error to report, never a reason to pick another.
+# port_free PORT: true when nothing accepts connections on 127.0.0.1:PORT. The lab's ports are fixed, so a taken port is
+# an error to report, never a reason to pick another.
 port_free() { ! nc -z -w 1 127.0.0.1 "$1" >/dev/null 2>&1; }
 
 # ensure_registry: creates the registry k3d-svp-registry on 127.0.0.1:5111, starts it when it exists but is stopped,
@@ -102,7 +101,7 @@ ensure_cluster() {
   [ -n "$want" ] && [ "$psa_versions" = "$want $want $want " ] ||
     fail "enforce-, audit- and warn-version of deploy/k8s/pod-security-admission.yaml (${psa_versions% }) must all equal podSecurityVersion of deploy/helm/svp-cluster/values.yaml ('$want')$recreate"
   if [ -n "$exists" ]; then
-    # Pod Security "restricted" by default (ADR-0014 section 3) exists only in a cluster created with it: the argument and
+    # Pod Security "restricted" by default exists only in a cluster created with it: the argument and
     # mount k3d.yaml gives the server node at creation. A cluster made before them enforces nothing in namespaces
     # without PSA labels (default, kube-public, kube-node-lease) and is not changed in place.
     node=$(docker_ inspect --format '{{join .Config.Cmd " "}}' k3d-svp-server-0) &&
@@ -276,7 +275,7 @@ argocd_root_app() {
 # carries the policy's match on namespace svp (Kyverno ANDs it with the selector of its own ConfigMap). A policy with
 # its own webhookConfiguration.timeoutSeconds (svp-images and every temporary policy of the drills) gets a webhook of
 # its own, ivpol.validate.kyverno.svc-fail-finegrained-<policy> (-ignore- in Audit); the webhook is still found by what
-# it selects, not by that name, which is Kyverno's to change (docs/adr/0015-cicd-devsecops-stage5.md, section 8).
+# it selects, not by that name, which is Kyverno's to change.
 image_policy_ready() {
   local name=$1 want=${2:-} pol
   pol=$(kc get imagevalidatingpolicies.policies.kyverno.io "$name" -o json 2>/dev/null) || return 1
@@ -291,7 +290,7 @@ image_policy_ready() {
 }
 
 # workload_kind NAMESPACE NAME: rollout when NAME is an Argo Rollouts Rollout (the gateway, which chart svp-service
-# renders as one: docs/adr/0014-kubernetes-local-stage4.md, section 13), deployment otherwise. Before Argo Rollouts is
+# renders as one for its canary), deployment otherwise. Before Argo Rollouts is
 # installed the kind does not exist and the answer is deployment.
 workload_kind() {
   if kc -n "$1" get rollouts.argoproj.io "$2" >/dev/null 2>&1; then echo rollout; else echo deployment; fi
@@ -327,7 +326,7 @@ test_output() {
 }
 
 # pg_backup NAME: creates Backup svp-data/NAME of Postgres svp-pg, a base backup by the Barman Cloud plugin into the
-# archive generation the Cluster archives to (docs/adr/0020-reliability-stage6.md, section 5), owned by nothing, so
+# archive generation the Cluster archives to, owned by nothing, so
 # that deleting the Cluster leaves it, and waits up to 600 s until it is completed. CloudNativePG never retries a
 # Backup: one that fails is final, so this fails at once with the error it recorded. Prints nothing.
 pg_backup() {
@@ -492,7 +491,7 @@ build_image() {
 
 # build_dev_images: builds the seven images from the working tree, pushes each to the registry as
 # 127.0.0.1:5111/svp/<service>:dev-<first 12 hex digits of its image ID>, and sets dev_tag_<service with _ for -> to
-# that tag (ADR-0014 section 6). The build cache gives the same image ID for the same inputs, so a run with no code
+# that tag. The build cache gives the same image ID for the same inputs, so a run with no code
 # change yields the same tags, the pod templates do not change, and no new ReplicaSet (later: no canary) starts. Run
 # after ensure_registry.
 build_dev_images() {
@@ -523,7 +522,7 @@ image_paths() {
   fi
 }
 
-# Release images (docs/adr/0015-cicd-devsecops-stage5.md, sections 5 and 9): built, scanned and signed by CI only,
+# Release images: built, scanned and signed by CI only,
 # under this prefix on GHCR, one image per service; nothing else may be pushed there. The promote pull request writes
 # a release's repository, tag (first 12 hex digits of its commit, for people) and digest (what pods run) into
 # deploy/k8s/values/services/<service>.yaml; the GitOps cluster pulls them anonymously by digest. The dev path never

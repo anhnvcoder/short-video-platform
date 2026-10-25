@@ -126,8 +126,7 @@ describe("checkRegistration", () => {
   const valid = { email: "a@example.com", password: "12345678" };
 
   // The handle rule: trimmed, lowered for A-Z only, then 3-30 characters of [a-z0-9_] starting with a letter, and not
-  // the generated form u_ + 12 hex digits, which only the server hands out
-  // (docs/adr/0018-web-profiles-public-video-upload.md, section 1).
+  // the generated form u_ + 12 hex digits, which only the server hands out.
   it.each([
     ["Alice", "alice"],
     ["  bob\t", "bob"],

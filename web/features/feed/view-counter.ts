@@ -1,5 +1,5 @@
 // Counts real playback of one view of a video and reports the view once it reaches the threshold
-// (docs/adr/0016-web-client.md, section 8): the gap in currentTime between two `timeupdate` events counts only while
+// (2 s, viewThresholdSeconds): the gap in currentTime between two `timeupdate` events counts only while
 // the video plays, the page is visible and no seek is running, and only when the gap is small. A seek, a loop back to
 // the start or a long stall in between moves currentTime by more than a normal gap (browsers fire `timeupdate` every
 // 15–250 ms), so it adds nothing.

@@ -44,7 +44,7 @@ const toastMs = 5000;
 const headerLink =
   "inline-flex min-h-11 items-center rounded-md px-3 text-[15px] font-semibold text-foreground hover:bg-surface-hover hover:text-foreground md:px-4.5";
 
-// The share page /v/{id} (docs/adr/0018-web-profiles-public-video-upload.md, section 7; web/design/SVP Mobile.dc.html
+// The share page /v/{id} (web/design/SVP Mobile.dc.html
 // M38, SVP Desktop.dc.html D04): one video played by the feed's player pool, its author, title and counts. A guest's
 // like and follow ask them to log in and come back here, and their watching records no view; a logged-in user likes,
 // follows and records a view after 2 s of playback as in the feed.
@@ -58,7 +58,7 @@ export function ShareScreen({ video, viewerId, mediaOrigin, loadedAt, appName }:
   const pagePath = `/v/${video.video_id}`;
   const login = loginHref(pagePath);
   const register = `/register?next=${encodeURIComponent(pagePath)}`;
-  // Profiles need a login (ADR-0018, section 7): a guest sees the name without a link.
+  // Profiles need a login: a guest sees the name without a link.
   const authorHref = author && !guest ? `/u/${author.handle}` : null;
   const publishedAgo = usePublishedAgo(useNow(loadedAt))(video.published_at);
   const posterUrl = isMediaUrl(video.thumbnail_url, mediaOrigin) ? video.thumbnail_url : null;

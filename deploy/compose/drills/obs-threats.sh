@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Drill: the stage 3 rows of the threat model (docs/threat-model.md, section 5) on the stack of
-# `make up OBS=lgtm` (docs/adr/0011-observability-stage3.md, sections 1 and 4 to 9). Each item prints
+# `make up OBS=lgtm`. Each item prints
 # ok or FAIL lines; an item that fails does not stop the next ones (the stack is restored first),
 # and the script exits non-zero when any failed:
 #   JWT-8  a fresh user with a random email and password registers, logs in (access token), reads
@@ -25,8 +25,7 @@
 #          svp_ratelimit_decisions_total{store="fallback"} > 0 for the new gateway instance, and
 #          Alertmanager a new RateLimitFallbackActive alert within 4 minutes of the first login;
 #          the gateway is recreated with its default settings;
-#   WEB-9  through the web client at http://localhost:3001 (threat model 4.9;
-#          docs/adr/0019-web-k3d-supply-chain-observability.md, sections 8, 10 and 11), as a browser
+#   WEB-9  through the web client at http://localhost:3001 (threat model 4.9), as a browser
 #          without JavaScript would: GET /login?next=<a random marker in the query>, register and
 #          log in through the /register and /login forms (their Server Actions; the session
 #          cookie svp_sid stays in a private cookie jar), log out and in again, the feed (/ and
@@ -516,7 +515,7 @@ web9() {
       --data-binary "{\"path\":$i,\"metrics\":[{\"name\":\"LCP\",\"value\":1234.5},{\"name\":\"CLS\",\"value\":0.02}]}")
     [[ $status == 204 ]] || fail "WEB-9: POST /rum with a beacon is 204 (status $status)"
   done
-  # An error report carrying what the redaction rules must take out (ADR-0019 section 8): the email, the tokens and the
+  # An error report carrying what the redaction rules must take out: the email, the tokens and the
   # sid in the message, the ?next= URL and the presigned form's signature and policy in a frame's URL query.
   awk -F '\t' 'BEGIN { split("access-token refresh-token sid upload-policy upload-signature email", k, " ") }
     { v[$1] = $2 } END { for (i = 1; i <= 6; i++) print v[k[i]] }' "$work/web9.values" | {

@@ -636,3 +636,20 @@ Chọn **B**. Ngoài phần A (ghi lại ở Hệ quả):
   - Thời gian transcode video 60 s trên 2 CPU vượt 90 s, hoặc kích thước HLS lệch A6 quá 30%: đổi preset hoặc ladder.
   - Thời gian tới khung hình đầu tiên ở 360p vượt 2 s trên mạng 4G giả lập: thử segment 2 s.
   - Cần nhiều hơn 3 media-worker song song: tăng partition của `video.lifecycle.v1` (chỉ tăng được, không giảm được).
+
+## Hiện thực ở
+
+- Kafka và consumer (§1, §8): `internal/kafkax/` (franz-go, commit tay, DLQ); bảng `processed_events` và xử lý event ở
+  `services/video-service/internal/server/transcode.go`.
+- Object storage (§2–§4): `internal/objstore/` (aws-sdk-go-v2, presigned POST, hai endpoint, object key), test chạy thật ở
+  `internal/objstore/integration_test.go`.
+- Redpanda (§5): `deploy/redpanda/bootstrap.yaml`, `deploy/redpanda/create-topics.sh`. MinIO (§6): `deploy/minio/init.sh`,
+  service `minio` của `deploy/compose/compose.yaml`.
+- Outbox một relay (§7): `internal/outbox/`, `services/video-service/migrations/00002_create_outbox.sql`.
+- media-worker, HLS và ffmpeg (§9, §10): `services/media-worker/` (`cmd/media-worker/main.go`, `internal/worker/`,
+  `internal/transcode/`), `deploy/docker/media-worker.Dockerfile`; trên k3d `deploy/k8s/values/services/media-worker.yaml`,
+  `deploy/k8s/drills/keda.sh`.
+- Cấu hình mới, cổng và RAM (§11, §12): `services/video-service/cmd/video-service/main.go`,
+  `services/video-service/internal/server/server.go`, `deploy/compose/compose.yaml`.
+- Diễn tập: `deploy/compose/drills/kill-worker.sh`, `deploy/compose/drills/duplicate-events.sh`,
+  `deploy/compose/drills/measure-ready.sh`.

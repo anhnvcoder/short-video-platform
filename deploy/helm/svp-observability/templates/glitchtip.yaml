@@ -1,5 +1,5 @@
 {{- /*
-GlitchTip in svp-obs (ADR-0014 sections 3, 8 and 11; ADR-0011 section 7): the error tracker the five services report
+GlitchTip in svp-obs: the error tracker the five services report
 to, as in compose. Two parts, as there:
 
 - Job glitchtip-init migrates database svp_glitchtip (migrator role, MAINTENANCE_DATABASE_URL), creates the cache

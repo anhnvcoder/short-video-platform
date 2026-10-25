@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Creates or updates the Postgres roles and databases of user-service, video-service,
-# engagement-service, feed-service and the GlitchTip error tracker (svp_glitchtip,
-# docs/adr/0011-observability-stage3.md, section 7) on the local Postgres (127.0.0.1:5432) as the
-# superuser, by running bootstrap.sql once per database.
+# engagement-service, feed-service and the GlitchTip error tracker (svp_glitchtip) on the local
+# Postgres (127.0.0.1:5432) as the superuser, by running bootstrap.sql once per database.
 # Idempotent. Reads only the role passwords from the env file, with the strict rule of
 # deploy/observability/glitchtip/dotenv.sh (the one compose agrees with), never prints them, and
 # reads all of them before it changes anything.

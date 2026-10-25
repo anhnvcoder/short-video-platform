@@ -1,5 +1,5 @@
 -- +goose Up
--- author_id has no foreign key: users live in user-service's database (ADR-0001).
+-- author_id has no foreign key: users live in user-service's database.
 -- duration_ms, playlist_key, thumbnail_key and published_at stay NULL until the video is READY.
 CREATE TABLE videos (
     id            uuid        PRIMARY KEY,

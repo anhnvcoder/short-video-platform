@@ -1,6 +1,6 @@
-# AppProject svp: what the Applications of the GitOps path may read and where they may write
-# (docs/adr/0014-kubernetes-local-stage4.md, section 12). Applied by deploy/k8s/gitops.sh before root Application
-# svp-root, which belongs to it like every Application it makes (deploy/argocd/apps). Anything outside these lists is
+# AppProject svp: what the Applications of the GitOps path may read and where they may write. Applied by
+# deploy/k8s/gitops.sh before root Application svp-root, which belongs to it like every Application it makes
+# (deploy/argocd/apps). Anything outside these lists is
 # refused by Argo CD before it reaches the cluster, whatever a chart or a values file in git asks for. AppProject
 # default, emptied, follows.
 apiVersion: argoproj.io/v1alpha1

@@ -1040,3 +1040,19 @@ chromium-publishing, upload có rớt kết nối trên webkit-publishing) đạ
     `make web-lockfile-scan`), §6 (quy tắc của tệp bỏ qua thứ hai) (mục 3, 9, 10).
   - ADR-0019 §9: source map của image CI kéo từ giai đoạn 7 về giai đoạn 6b, `images.yml` xuất artifact `web-sourcemaps-<arch>` (mục 6).
   - ADR-0020 §6, §7 (Velero, Chaos Mesh chạy trên k3d của runner với phủ riêng), §2 (`render.sh` nhận số pod) (mục 7, 8).
+
+## Hiện thực ở
+
+Phần 1:
+
+- Workflow `verify.yml` và tiêu chí "runner đủ" (§2–§5): `.github/workflows/verify.yml`, `deploy/ci/verify-host.sh`,
+  `deploy/ci/verify-run.sh`, `deploy/ci/verify-sample.sh`, `deploy/ci/verify-mask.sh`, `deploy/ci/verify-collect.sh`,
+  `deploy/ci/verify-collect-test.sh`.
+- Bỏ qua có hạn cho cảnh báo `trivy-config` (§9): `deploy/ci/trivy-config-ignore.yaml`, `deploy/ci/scan-gate.sh`
+  (`--check-ignorefile`), target `trivy-config` của `Makefile`, job `config` của `.github/workflows/ci.yml`.
+- Cổng quét `web/pnpm-lock.yaml` (§10): target `web-lockfile-scan` của `Makefile`, `deploy/ci/scan-gate.sh` (`--fs`), job `web` của
+  `.github/workflows/ci.yml`.
+- `RateLimitFallbackActive` theo tỷ lệ dự phòng (§11): `deploy/observability/prometheus/rules/svp-alerts.yaml`,
+  `deploy/observability/prometheus/rules/svp-alerts.test.yaml`.
+
+Phần 2–4 chưa hiện thực.

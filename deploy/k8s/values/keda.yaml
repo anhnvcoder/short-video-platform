@@ -1,5 +1,5 @@
 # KEDA 2.21.0 (chart https://kedacore.github.io/charts keda 2.21.0), release keda in namespace keda, wave 2 of
-# deploy/argocd/apps/components.json (docs/adr/0014-kubernetes-local-stage4.md, sections 1, 10 and 12): the operator,
+# deploy/argocd/apps/components.json: the operator,
 # its metrics API server (external.metrics.k8s.io, which the HPA controller reads) and its admission webhooks, plus
 # the CRDs. The ScaledObject of media-worker is in chart svp-service (wave 7), the ClusterTriggerAuthentication it logs
 # in with in chart svp-data (wave 4). The chart's pods already meet Pod Security "restricted" (non-root, read-only
@@ -50,11 +50,11 @@ image:
   # start of a pod, so a cluster restarted offline could not start KEDA.
   pullPolicy: IfNotPresent
   # By digest (multi-arch index: linux/amd64 and linux/arm64), the chart's version beside it for the reader: a tag can
-  # be pushed again to other content, a digest cannot (docs/adr/0015-cicd-devsecops-stage5.md, section 8). The chart
+  # be pushed again to other content, a digest cannot. The chart
   # renders registry/repository:tag, so tag holds version@digest; deploy/k8s/check-image-digests.sh fails on an image
   # without one. These keys do not end in "image", so Renovate's helm-values manager does not see them: the
-  # "# renovate:" line right above each tag names the image for the custom manager that updates it (ADR-0015 section
-  # 10), the chart's default registry/repository.
+  # "# renovate:" line right above each tag names the image for the custom manager that updates it,
+  # the chart's default registry/repository.
   keda:
     # renovate: datasource=docker depName=ghcr.io/kedacore/keda
     tag: 2.21.0@sha256:81fe6547ce8d1cc29273f887b76507e9b853e5bc1f875ec23fe60061a38ed809

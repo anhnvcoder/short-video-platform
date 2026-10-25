@@ -1,5 +1,5 @@
 # Redpanda 26.2.4 (chart https://charts.redpanda.com redpanda 26.2.4), release redpanda in namespace svp-data, wave 3
-# of deploy/argocd/apps/components.json (docs/adr/0014-kubernetes-local-stage4.md, sections 4 and 5; threat model IN-4).
+# of deploy/argocd/apps/components.json (threat model IN-4).
 # One broker, SASL SCRAM-SHA-256 on the Kafka listener, Admin API authenticated, no TLS (encrypting traffic inside the
 # cluster is IN-3, stage 6). Topics, application users and their ACLs come from the init Job of chart svp-data
 # (wave 4), which also brings the NetworkPolicies of svp-data.
@@ -25,7 +25,7 @@ statefulset:
       # opens that egress only for pods with this label.
       svp-kube-api: allow
     spec:
-      # Pod Security "restricted" (ADR-0014 section 3; the namespace rejects pods that do not meet it): the chart's
+      # Pod Security "restricted" (the namespace rejects pods that do not meet it): the chart's
       # defaults only reach "baseline".
       securityContext:
         runAsNonRoot: true

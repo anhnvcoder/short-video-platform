@@ -8,7 +8,7 @@ import { stack } from "./stack";
 // Shared helpers of the end-to-end tests.
 //
 // Rate limits: the BFF reaches the gateway from the one address of the `web` container, so all browsers share the
-// gateway's per-IP buckets (docs/adr/0016-web-client.md, section 4): register (burst 20 per hour), login-ip (burst 30,
+// gateway's per-IP buckets: register (burst 20 per hour), login-ip (burst 30,
 // 60 per minute). Test users are therefore registered straight at the gateway, and each project logs in through the
 // web about 8 times and registers through it once (the main flow); e2e/seed.sh resets the register bucket before every
 // run. Each user logs in at most 3 times, under the login-email burst of 5. Registering at the gateway uses the bucket
@@ -26,13 +26,13 @@ export const gatewayURL = stack.gatewayURL;
 export type Credentials = { email: string; password: string };
 export type Account = Credentials & { handle: string; userId: string };
 
-// A handle of the form people choose (docs/adr/0018-web-profiles-public-video-upload.md, section 1), random per call.
+// A handle of the form people choose, random per call.
 export function randomHandle(): string {
   return `e2e_${randomBytes(6).toString("hex")}`;
 }
 
-// The handle user-service gives a user registered without one: u_ and the last 12 hex digits of the id (ADR-0018,
-// section 1). The seeded authors of e2e/seed.sh have such handles, and their display name is the same text.
+// The handle user-service gives a user registered without one: u_ and the last 12 hex digits of the id.
+// The seeded authors of e2e/seed.sh have such handles, and their display name is the same text.
 export function generatedHandle(userId: string): string {
   return `u_${userId.slice(-12)}`;
 }

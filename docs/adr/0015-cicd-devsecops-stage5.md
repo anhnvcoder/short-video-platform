@@ -1173,3 +1173,25 @@ tới #6), chữ ký đọc ẩn danh bằng cosign, và trên hai cluster GitOp
   - Image runner Ubuntu 24.04 bị ngừng, hay Docker trên runner chuyển sang containerd image store (kiểm lại phép so config
     digest của mục 4).
   - Có thêm người làm repo: bắt 1 approval, `strict_required_status_checks_policy`, tách quyền promote.
+
+## Hiện thực ở
+
+- Workflow, quyền, job của `ci.yml` (§1, §2): `.github/workflows/ci.yml`, `.github/workflows/images.yml`, target `check`,
+  `generate-check` của `Makefile`.
+- Chỉ build service đổi (§3): `deploy/ci/changed-services.sh`, `deploy/ci/last-success.sh`, `deploy/ci/plan.sh`.
+- Image đa kiến trúc, quét trước khi push (§4–§6): `deploy/ci/build-image.sh`, `deploy/ci/push-image.sh`, `deploy/ci/merge-index.sh`,
+  `deploy/ci/scan-gate.sh`, `deploy/ci/common.sh`, `deploy/docker/service.Dockerfile`, `deploy/docker/web.Dockerfile`,
+  `.trivyignore.yaml`, image diễn tập `deploy/ci/drill/vulnerable.Dockerfile`.
+- SBOM, chữ ký, attestation, rescan (§7): `deploy/ci/sign-image.sh`, `deploy/ci/vuln-predicate.sh`, `deploy/ci/rescan.sh`,
+  `deploy/ci/verify-release.sh`.
+- Kyverno (§8): `deploy/helm/svp-policy/` (`templates/imagevalidatingpolicy.yaml`, `values.yaml`), `deploy/k8s/values/kyverno.yaml`,
+  namespace và NetworkPolicy của Kyverno ở `deploy/helm/svp-cluster/` (`values.yaml`, `templates/networkpolicies.yaml`), cách cài
+  Audit/Enforce ở `deploy/k8s/install.sh`, `deploy/k8s/lib.sh`; diễn tập `deploy/k8s/drills/supplychain.sh`,
+  `deploy/k8s/drills/threats.sh`.
+- Promote qua PR GitOps (§9): `deploy/ci/promote.sh`, `deploy/ci/values-check.sh`, `deploy/k8s/values/services/`,
+  `deploy/k8s/gitops.sh`, `deploy/k8s/drills/gitops.sh`, `deploy/k8s/install.sh` (đường dev không đọc digest phát hành).
+- Renovate và ghim digest (§10): `renovate.json`, `deploy/k8s/check-image-digests.sh`; dòng ghim `# renovate:` ở `Makefile`,
+  `deploy/k8s/lib.sh`, `deploy/k8s/k8s.mk` và values bên thứ ba ở `deploy/k8s/values/` (`argo-cd.yaml`, `argo-rollouts.yaml`,
+  `cert-manager.yaml`, `cloudnative-pg.yaml`, `envoy-gateway.yaml`, `keda.yaml`, `kube-prometheus-stack.yaml`, `kyverno.yaml`,
+  `loki.yaml`, `otel-collector.yaml`, `plugin-barman-cloud.yaml`, `pyroscope.yaml`, `tempo.yaml`).
+- Bảo vệ `main` (§11): `.github/rulesets/main.json`.

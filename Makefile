@@ -2,7 +2,7 @@
 
 # Pinned tool versions, installed by `make tools` rather than as `tool` directives in go.mod: sqlc and golangci-lint
 # would pull hundreds of modules into the application's dependency graph, and `go install` builds each of them with
-# this machine's Go (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 3).
+# this machine's Go.
 # The "# renovate:" line above a pin names where Renovate looks up its new versions (renovate.json; go = the Go module
 # proxy, the module `go install` builds).
 # renovate: datasource=go depName=google.golang.org/protobuf
@@ -15,11 +15,11 @@ SQLC_VERSION               := v1.31.1
 GOLANGCI_LINT_VERSION      := v2.14.0
 # renovate: datasource=go depName=github.com/zricethezav/gitleaks/v8
 GITLEAKS_VERSION           := v8.30.1
-# SLO rule generator (docs/adr/0011-observability-stage3.md, section 8). `go install` leaves the
-# version empty and Sloth would then write "dev" in the header of the file it generates.
+# SLO rule generator: Sloth turns the SLO spec into Prometheus recording and burn-rate alert rules. `go install` leaves
+# the version empty and Sloth would then write "dev" in the header of the file it generates.
 # renovate: datasource=go depName=github.com/slok/sloth
 SLOTH_VERSION              := v0.16.0
-# Local Kubernetes (docs/adr/0014-kubernetes-local-stage4.md, section 1). Without both -X flags k3d reports v5-dev and
+# Local Kubernetes (k3d, cluster svp). Without both -X flags k3d reports v5-dev and
 # pulls its proxy and tools images as :latest, and its default node image is an older k3s; the node image itself is
 # pinned by digest in deploy/k8s/k3d.yaml.
 # renovate: datasource=go depName=github.com/k3d-io/k3d/v5
@@ -29,9 +29,8 @@ K3S_IMAGE_TAG              := v1.36.5-k3s1
 # One line on purpose: a backslash-newline inside the single quotes of a recipe reaches the shell as a literal backslash
 # on GNU Make 4.x (Make 3.81 joined the lines), and the linker then gets a broken -ldflags.
 K3D_LDFLAGS                := -X github.com/k3d-io/k3d/v5/version.Version=$(K3D_VERSION) -X github.com/k3d-io/k3d/v5/version.K3sVersion=$(K3S_IMAGE_TAG)
-# Linter of the GitHub Actions workflows, run by `make actionlint` inside `make check`
-# (docs/adr/0015-cicd-devsecops-stage5.md, section 1). It also runs shellcheck on every `run:` script when shellcheck is
-# on PATH: the CI runner has it, a dev machine need not.
+# Linter of the GitHub Actions workflows, run by `make actionlint` inside `make check`. It also runs shellcheck on every
+# `run:` script when shellcheck is on PATH: the CI runner has it, a dev machine need not.
 # renovate: datasource=go depName=github.com/rhysd/actionlint
 ACTIONLINT_VERSION         := v1.7.12
 
@@ -45,7 +44,7 @@ HELM_VERSION               := v4.3.1
 HELM_LINUX_AMD64_SHA256    := 0403a88ae20913d11b10a2467b50087721fea7581736da6b9d3992f5357fe54b
 # Scanner and SBOM generator, run from their official images pinned by digest, the same reference on a dev machine and
 # in CI: nothing to install and no setup action to trust (both trivy setup actions were hijacked in March 2026), and a
-# digest cannot be moved like a tag (ADR-0015, section 1).
+# digest cannot be moved like a tag.
 # renovate: datasource=docker depName=ghcr.io/aquasecurity/trivy
 TRIVY_IMAGE := ghcr.io/aquasecurity/trivy:0.76.0@sha256:2416d1f74045b57274df1a340eee6b510cacd73c66a6ccb8da092b117eb7d222
 # renovate: datasource=docker depName=ghcr.io/anchore/syft
@@ -54,13 +53,13 @@ SYFT_IMAGE  := ghcr.io/anchore/syft:v1.54.1@sha256:3eb5379ba7b409c3f4069b6861105
 # creates anything): signing happens in CI alone, with the cosign that sigstore/cosign-installer installs there.
 # renovate: datasource=docker depName=ghcr.io/sigstore/cosign/cosign
 COSIGN_IMAGE := ghcr.io/sigstore/cosign/cosign:v3.1.3@sha256:9e5c2f2edc34351160407ca3416c61855bdf9403c3c5936e0f0be7fc261611b8
-# Load generator of the SLO scripts in deploy/k6/ (docs/adr/0020-reliability-stage6.md, section 2), from its official image
+# Load generator of the SLO scripts in deploy/k6/, from its official image
 # pinned by digest: the same k6 on a dev machine, in CI and as a Job in the cloud cluster, where the 1 000 req/s run has to
 # start inside the cluster to measure the system rather than the home network. The k6 of Homebrew is not pinned. v2: the v1
 # line only gets security fixes.
 # renovate: datasource=docker depName=grafana/k6
 K6_IMAGE := grafana/k6:2.3.0@sha256:9c2dee7f8ed74d317e4027c06a10f169b625638189de8d4555d0b3486a5aeb34
-# Schema check of the manifests written for the cloud cluster (make cloud-check, ADR-0020 section 8), with nothing
+# Schema check of the manifests written for the cloud cluster (make cloud-check), with nothing
 # installed: the image is FROM scratch with kubeconform and openapi2jsonschema, which turns the CRDs of the pinned charts
 # into schemas, so no Python is needed. It runs as root unless docker run gets --user.
 # renovate: datasource=docker depName=ghcr.io/yannh/kubeconform
@@ -80,7 +79,7 @@ LINTFLAGS ?=
 # Local dev Postgres superuser DSN, published in CLAUDE.md; integration tests create their own databases from it.
 SVP_TEST_POSTGRES_URL ?= postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
 # Local Redis, db 15: the project's test database, used by no service or other project, so tests never touch their data
-# and never need FLUSHDB (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 1).
+# and never need FLUSHDB.
 SVP_TEST_REDIS_URL ?= redis://127.0.0.1:6379/15
 
 .DEFAULT_GOAL := help
@@ -121,7 +120,7 @@ generate-go: ## Generate Go code from proto/ (buf) and from SQL (sqlc, per servi
 	buf generate
 	@for f in $(wildcard services/*/sqlc.yaml); do echo "sqlc generate -f $$f"; sqlc generate -f $$f || exit 1; done
 
-# Generated Go code must match its sources (docs/adr/0015-cicd-devsecops-stage5.md, section 2). `make generate-go` runs
+# Generated Go code must match its sources. `make generate-go` runs
 # in a scratch copy of the files git tracks plus the untracked ones it does not ignore (so .env is never read), and the
 # result is compared with a second, untouched copy of the same files: the working tree is never written, so uncommitted
 # edits of generated code survive, and a file that generation adds counts as a difference too. A tracked file deleted
@@ -195,7 +194,7 @@ check: check-go web-check ## Run every check: Go (check-go) and the web client (
 
 check-go: fmt-check vet lint actionlint buf-lint test ## Run the Go, workflow and proto checks
 
-# Every chart of the repository, as the GitOps path renders it (ADR-0015, section 2): each component of components.json
+# Every chart of the repository, as the GitOps path renders it: each component of components.json
 # with a `path`, under its release name and namespace, with its values file, and the app-of-apps chart itself. A release
 # of svp-service whose values carry no image.digest yet (none before the first promotion) gets an all-zero digest, so it
 # goes down the digest branch of the GitOps path instead of failing on the dev tag the dev path passes. Helm's cache,
@@ -218,10 +217,10 @@ helm-check: ## helm lint and helm template every chart of the repository with th
 	  helm template "$$name" "$$path" --namespace "$$ns" "$$@" > /dev/null || exit 1; \
 	done < "$$tmp/charts"
 
-# Misconfiguration scan of the Dockerfiles, charts and manifests with the pinned trivy (ADR-0015, section 2). It only
+# Misconfiguration scan of the Dockerfiles, charts and manifests with the pinned trivy. It only
 # reports: exit 0 whatever it finds. The findings that are deliberate choices are left out by
-# deploy/ci/trivy-config-ignore.yaml, each for its paths and until its expired_at, with the reason in the file
-# (docs/adr/0021-deferred-verification-stage6b.md, section 9). TRIVY_CONFIG_SARIF set to an absolute path writes a SARIF
+# deploy/ci/trivy-config-ignore.yaml, each for its paths and until its expired_at, with the reason in the file.
+# TRIVY_CONFIG_SARIF set to an absolute path writes a SARIF
 # report there (CI uploads it); unset, a table goes to the terminal. The repository is mounted read-only and the container runs as the caller,
 # so the report belongs to them; the policy bundle trivy downloads goes to a cache inside the container.
 TRIVY_CONFIG_SARIF ?=
@@ -234,8 +233,8 @@ trivy-config: ## trivy config on the repository, report only (TRIVY_CONFIG_SARIF
 		"$$@" --quiet --cache-dir /tmp/trivy --ignorefile deploy/ci/trivy-config-ignore.yaml --exit-code 0 .
 
 # Vulnerability gate of the web client's npm dependencies, read from the lockfile: the web image shows trivy only the
-# few packages left in its node_modules, since the bundler folds the server's dependencies into its chunks
-# (docs/adr/0021-deferred-verification-stage6b.md, section 10). Development dependencies count too: they run in CI and
+# few packages left in its node_modules, since the bundler folds the server's dependencies into its chunks.
+# Development dependencies count too: they run in CI and
 # build the bundle that ships. deploy/ci/scan-gate.sh decides as for an image: any CRITICAL left after
 # .trivyignore.yaml fails, fixed upstream or not; HIGH and below are only counted. Only the lockfile is mounted
 # (read-only), at web/pnpm-lock.yaml under the scan root so the findings point at the file of the repository. A report
@@ -273,7 +272,7 @@ web-lockfile-scan: ## trivy fs on web/pnpm-lock.yaml, dev dependencies included;
 # Checks renovate.json as the GitHub App reads it, a repository config (--no-global), and fails on any error or on an
 # option that needs migrating (--strict): with the pinned Renovate image, no network, the repository mounted read-only
 # (renovate.json must stay readable by the image's uid 12021). The App runs the Renovate version Mend deploys, which can
-# lag this one by up to a week (docs/adr/0015-cicd-devsecops-stage5.md, section 10).
+# lag this one by up to a week.
 # renovate: datasource=docker depName=ghcr.io/renovatebot/renovate
 RENOVATE_IMAGE := ghcr.io/renovatebot/renovate:44.165.1@sha256:455f4169a364a4c8bdc38a08694e3509649f3d7cb9aaea35c86946b38015ac47
 renovate-check: ## Validate renovate.json with the pinned Renovate (renovate-config-validator --strict, no network)
@@ -283,7 +282,7 @@ renovate-check: ## Validate renovate.json with the pinned Renovate (renovate-con
 hooks: ## Point git at .githooks (run once per clone)
 	git config core.hooksPath .githooks
 
-# Web client in web/ (docs/adr/0016-web-client.md, section 10). Node's major is pinned in web/.nvmrc and pnpm's exact
+# Web client in web/. Node's major is pinned in web/.nvmrc and pnpm's exact
 # version in the packageManager field of web/package.json; every web target checks both before it runs anything and,
 # on a mismatch, prints the command that installs the right one. nvm leaves PATH to the shell and its default may be
 # another major, so the newest nvm install of the pinned major goes first on PATH; without one (CI's setup-node) PATH
@@ -321,9 +320,8 @@ web-generate-check: ## Fail when make web-generate would change web/gen/api.d.ts
 	echo "make web-generate changes web/gen/api.d.ts (run make web-generate and commit the result):"; \
 	diff -u gen/api.d.ts "$$tmp/api.d.ts"; exit 1
 
-# Bundle budgets (docs/adr/0016-web-client.md, section 10; for /upload and /v/[id]
-# docs/adr/0018-web-profiles-public-video-upload.md, section 11) on the output of next build, gzip, checked by
-# size-limit with web/.size-limit.json. Each route has two budgets. The first covers what the route adds to Next's
+# Bundle budgets on the output of next build, gzip, checked by size-limit with web/.size-limit.json. Each route has
+# two budgets. The first covers what the route adds to Next's
 # runtime: the chunks the build's client reference manifest lists for the route's layouts, page and error boundaries
 # (the scripts of its HTML), plus the chunks those load lazily (hls.js on the feed and /v/[id]). The second covers the
 # whole first load, that set plus the runtime (rootMainFiles of build-manifest.json: React, react-dom, Next's router,
@@ -442,15 +440,14 @@ measure-upload: ## Upload a ~100 MB video from Chromium through /upload; print t
 	@$(WEB) bash e2e/measure-upload.sh
 
 # Needs the stack (make up) and Playwright's Chromium (pnpm exec playwright install chromium in web/); one run per page,
-# so the numbers carry noise. Not in CI until the stack runs there (docs/adr/0018-web-profiles-public-video-upload.md,
-# section 10). LOCAL LAB ONLY like web-e2e: web/lighthouse/run.sh registers a fresh user and deletes the gateway's
-# register rate limit keys in Redis db 10 first.
+# so the numbers carry noise. Not in CI until the stack runs there. LOCAL LAB ONLY like web-e2e: web/lighthouse/run.sh
+# registers a fresh user and deletes the gateway's register rate limit keys in Redis db 10 first.
 web-lighthouse: ## Lighthouse (mobile, one run per page) of the feed logged in and /v/{id} logged out: LCP/CLS/TBT thresholds, reports in web/test-results/lighthouse/
 	@$(WEB) bash lighthouse/run.sh
 
 # Needs the stack with GlitchTip (make up OBS=lgtm, which writes SENTRY_SOURCEMAPS_TOKEN to .env); builds the stage
 # sourcemaps of the web image from the working tree, which the build cache answers with the maps of the image make up
-# built (deploy/observability/glitchtip/sourcemaps.sh; docs/adr/0019-web-k3d-supply-chain-observability.md, section 9).
+# built (deploy/observability/glitchtip/sourcemaps.sh).
 web-sourcemaps: ## Upload the source maps of the web client's browser bundle, from the build the stack of make up OBS=lgtm runs, to its GlitchTip (http://127.0.0.1:8000); checks first that the web serves that build
 	@$(WEB) bash ../deploy/observability/glitchtip/sourcemaps.sh compose
 

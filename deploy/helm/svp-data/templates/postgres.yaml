@@ -1,5 +1,5 @@
 {{- /*
-Postgres for every service, run by the CloudNativePG operator (ADR-0014 section 4; threat model IN-6, IN-9): one
+Postgres for every service, run by the CloudNativePG operator (threat model IN-6, IN-9): one
 instance, several databases, each service with its own migrator and app roles. Clients reach it at
 svp-pg-rw.svp-data:5432 with sslmode=require (the operator issues the server certificate).
 

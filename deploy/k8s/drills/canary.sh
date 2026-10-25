@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Canary of the gateway on cluster svp (docs/adr/0014-kubernetes-local-stage4.md, section 13).
+# Canary of the gateway on cluster svp.
 #
 #   canary.sh drill    (make drill-k8s-canary) on the dev path, the gateway's Helm release from the working tree, no
 #     git; with drill traffic running (deploy/k8s/drills/traffic.sh; started here unless one runs, and then stopped):

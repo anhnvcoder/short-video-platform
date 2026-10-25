@@ -1,4 +1,4 @@
-# Deferred verification of stage 6b (docs/adr/0021-deferred-verification-stage6b.md), on a fresh GitHub-hosted runner
+# Deferred verification of stage 6b, on a fresh GitHub-hosted runner
 # of the public repository: one scenario per run dispatched by hand, and once a week both scenarios of part 1 side by
 # side on main, every target. It builds the compose stack or the k3d cluster with the same make targets as a dev
 # machine and runs the drills and measurements that machine cannot hold (16 GB). Not a check of pull requests: no
@@ -27,7 +27,7 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: Scenario (docs/adr/0021-deferred-verification-stage6b.md, section 5)
+        description: Scenario (compose-obs is the compose stack with OBS=lgtm, dev-k3d the k3d cluster of the dev path)
         type: choice
         required: true
         options:
@@ -63,7 +63,7 @@ jobs:
   compose:
     if: github.event_name == 'schedule' || inputs.scenario == 'compose-obs'
     runs-on: ubuntu-24.04
-    # Setup about 20 minutes, the scenario step 75, then 25 for the steps after it (ADR-0021, section 2).
+    # Setup about 20 minutes, the scenario step 75, then 25 for the steps after it.
     timeout-minutes: 120
     permissions:
       contents: read

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# plan.sh: the first job of images.yml (docs/adr/0015-cicd-devsecops-stage5.md, sections 3, 4 and 7). Decides what
+# plan.sh: the first job of images.yml. Decides what
 # this run does and hands it to the jobs after it as outputs (ci_output of platform.sh; stdout on a machine):
 #   mode            build | rescan | drill
 #   images          JSON array of the images to build (build: changed services; drill: the two drill images)

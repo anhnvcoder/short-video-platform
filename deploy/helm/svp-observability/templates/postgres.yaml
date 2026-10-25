@@ -1,5 +1,5 @@
 {{- /*
-Metrics of Postgres svp-pg (docs/adr/0020-reliability-stage6.md, section 5): Prometheus scrapes the exporter of the
+Metrics of Postgres svp-pg: Prometheus scrapes the exporter of the
 CloudNativePG instance manager on its port metrics (9187), which serves the cnpg_* metrics (WAL archiver, replication,
 database sizes) and the Barman Cloud plugin's barman_cloud_cloudnative_pg_io_* (last available and last failed
 backup, first recoverability point), read by alerts PostgresWALArchivingFailing and PostgresBackupTooOld

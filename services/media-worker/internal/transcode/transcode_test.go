@@ -186,8 +186,8 @@ func TestRunLadderFollowsShortSide(t *testing.T) {
 	}
 }
 
-// TestRunRotatedPhoneVideo covers the usual phone upload, since most videos are portrait
-// (ADR-0004): landscape frames stored with a 90° display matrix. Autorotation must make every
+// TestRunRotatedPhoneVideo covers the usual phone upload, since most videos are portrait:
+// landscape frames stored with a 90° display matrix. Autorotation must make every
 // output portrait.
 func TestRunRotatedPhoneVideo(t *testing.T) {
 	requireFFmpeg(t)

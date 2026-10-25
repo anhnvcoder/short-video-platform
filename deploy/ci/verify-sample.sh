@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Samples the machine of a verification run in the background, so a red run can be told apart from a runner that ran
-# short (docs/adr/0021-deferred-verification-stage6b.md, section 2, "runner đủ"). Linux only (/proc, GNU df, setsid).
+# short of disk, RAM or CPU. Linux only (/proc, GNU df, setsid).
 #
 #   verify-sample.sh start   records free -m, swapon --show, nproc and the kernel in host-start.txt, then starts the
 #                            sampler (this script's internal loop mode) detached, its pid in
@@ -11,7 +11,7 @@
 #                            ram-peak.json and ram-peak.txt from the docker.tsv samples between START and END (seconds
 #                            since the epoch; deploy/ci/verify-run.sh gives the start and end of drill-k8s-keda): the
 #                            highest median of 6 samples in a row that each saw 2 workers transcoding (the cluster's
-#                            peak of ADR-0014 section 2), with the same median of MEM USAGE minus active_file, the
+#                            peak), with the same median of MEM USAGE minus active_file, the
 #                            longest run of such samples, and the highest sample; also on macOS (awk and jq only)
 #   verify-sample.sh sample  takes one docker.tsv sample now, as the loop does every 10 s
 #                            (deploy/ci/verify-collect-test.sh runs it with a fake docker, kubectl and pgrep)
@@ -20,7 +20,7 @@
 #   host.tsv         every 5 s   MemAvailable (KiB), swap in use (KiB), CPU busy % since the line before (/proc/stat;
 #                                iowait counted idle)
 #   docker.tsv       every 10 s  MEM USAGE of docker stats --no-stream summed over the k3d containers (k3d-svp-*, the
-#                                registry included: the cluster budget of ADR-0014 section 2) and over the compose
+#                                registry included, as the cluster's RAM budget counts it) and over the compose
 #                                containers (svp-*), in MiB; CPU % of k3d-svp-server-0 and k3d-svp-agent-0; the Running
 #                                media-worker pods and the nodes not Ready ("-" when the API did not answer, or without
 #                                a cluster); the state of container k3d-svp-server-0 (running or stopped), its

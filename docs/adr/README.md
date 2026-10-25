@@ -15,6 +15,8 @@ là để người đọc sau (kể cả chính mình sáu tháng sau) hiểu **
 - Trạng thái: **Đề xuất** (chờ duyệt) → **Chấp nhận**; về sau có thể thành **Bị thay bởi NNNN** hoặc **Bỏ**. ADR vẫn đứng
   nhưng có một chi tiết được ADR sau chỉnh thì ghi **Chấp nhận; <phần> chỉnh bởi NNNN**.
 - ADR đã chấp nhận không sửa nội dung quyết định. Đổi ý thì viết ADR mới và cập nhật trạng thái ADR cũ.
+- Code không nhắc ADR (comment tự nói lý do), nên mỗi ADR có mục **Hiện thực ở** liệt kê file và thư mục hiện thực quyết định
+  của nó, để tìm ngược từ quyết định tới code; thêm hay dời file hiện thực thì sửa mục này trong cùng thay đổi.
 
 ## Mẫu
 
@@ -44,6 +46,10 @@ Chọn ..., vì ...
 - Được: ...
 - Phải trả: ...
 - Xem lại khi: <điều kiện đo được>
+
+## Hiện thực ở
+
+- `<đường dẫn>`: <phần nào của quyết định>
 ```
 
 ## Danh sách

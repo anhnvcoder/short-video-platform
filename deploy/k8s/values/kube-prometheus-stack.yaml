@@ -1,6 +1,6 @@
 # kube-prometheus-stack 92.10.1 (chart https://prometheus-community.github.io/helm-charts), release kube-prometheus-stack
-# in namespace svp-obs, wave 2 of deploy/argocd/apps/components.json (docs/adr/0014-kubernetes-local-stage4.md,
-# sections 2, 3 and 11): the Prometheus operator and its CRDs, Prometheus v3.15.0, Alertmanager v0.34.1, Grafana
+# in namespace svp-obs, wave 2 of deploy/argocd/apps/components.json: the Prometheus operator and its CRDs,
+# Prometheus v3.15.0, Alertmanager v0.34.1, Grafana
 # 13.2.4 and kube-state-metrics. Prometheus takes the place of the one inside grafana/otel-lgtm in compose, set up the
 # same way (deploy/observability/prometheus/prometheus.yaml), so the dashboards, rules and promtool tests of stage 3
 # run unchanged. The project's rules, dashboards and Grafana datasources other than Prometheus and Alertmanager come
@@ -98,11 +98,11 @@ prometheusOperator:
     requests: {cpu: 20m, memory: 32Mi}
     limits: {memory: 128Mi}
   # Images by digest (multi-arch index: linux/amd64 and linux/arm64), the chart's tags beside them for the reader: a tag
-  # can be pushed again to other content, a digest cannot (docs/adr/0015-cicd-devsecops-stage5.md, section 8). The
+  # can be pushed again to other content, a digest cannot. The
   # chart renders registry/repository:tag when its own digest key, sha, is empty, so tag holds version@digest;
   # deploy/k8s/check-image-digests.sh fails on an image without one. registry and repository are the chart's defaults
-  # written out: Renovate's helm-values manager finds a pin only as repository and tag under a key ending in "image"
-  # (ADR-0015 section 10), and updates both parts of tag. Prometheus and Alertmanager below also set version and leave
+  # written out: Renovate's helm-values manager finds a pin only as repository and tag under a key ending in "image",
+  # and updates both parts of tag. Prometheus and Alertmanager below also set version and leave
   # repository out (see there).
   image:
     registry: quay.io
@@ -145,7 +145,7 @@ prometheus:
     # could not with a digest in it: so version holds the same version without the digest, and the two always change
     # together. And repository stays out of this file on purpose: with it, Renovate's helm-values manager would read
     # tag and move it without version. Instead the "# renovate:" line names the image (the chart's default
-    # registry/repository) for the custom manager that writes version and tag together (ADR-0015 section 10).
+    # registry/repository) for the custom manager that writes version and tag together.
     # renovate: datasource=docker depName=quay.io/prometheus/prometheus
     version: v3.15.0-distroless
     image:
@@ -193,7 +193,7 @@ prometheus:
     enableFeatures: [exemplar-storage]
     # Tempo's metrics-generator writes the service graph and span metrics to /api/v1/write.
     enableRemoteWriteReceiver: true
-    # Rules run every 15 s, the services' export interval (ADR-0011, sections 5 and 8); the cluster's own scrapes
+    # Rules run every 15 s, the services' export interval; the cluster's own scrapes
     # (kubelet, kube-state-metrics, the stack itself) every 15 s too.
     evaluationInterval: 15s
     scrapeInterval: 15s
@@ -323,7 +323,7 @@ grafana:
                 - path: namespace
                   fieldRef: {fieldPath: metadata.namespace}
   # Grafana 13 alone used 286 MiB at rest with the dashboards loaded (kubectl top, working set), above the 250 MiB the
-  # ADR-0014 section 2 planned for Grafana and both sidecars; the limit leaves room for queries over a wide time range.
+  # lab's RAM budget planned for Grafana and both sidecars; the limit leaves room for queries over a wide time range.
   resources:
     requests: {cpu: 50m, memory: 256Mi}
     limits: {memory: 448Mi}

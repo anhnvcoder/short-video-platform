@@ -252,6 +252,11 @@ có thể mất dữ liệu: nó không xoá volume nào, và endpoint chỉ đ�
   - plugin Barman Cloud bỏ RustFS khỏi e2e vì lỗi tương thích;
   - RAM của store vượt 512 MiB ở mục 9 hay 10 của kế hoạch kiểm.
 
+## Hiện thực ở
+
+Chưa hiện thực; file sẽ đổi liệt kê ở mục "Danh sách file phải đổi". Hiện chỉ một chỗ phụ thuộc quyết định này: mục bỏ qua cảnh
+báo của MinIO trong chart ở `deploy/ci/trivy-config-ignore.yaml`, bỏ cùng MinIO khi chuyển.
+
 ## Nguồn
 
 Đọc ngày 2026-10-24.

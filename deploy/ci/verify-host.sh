@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Checks and prepares the machine of a verification run before any make target (docs/adr/0021-deferred-verification-
-# stage6b.md, sections 2 and 3): the GitHub runner ubuntu-24.04, or the rented Linux VM that stands in for it. Fails
+# Checks and prepares the machine of a verification run before any make target: the GitHub runner
+# ubuntu-24.04, or the rented Linux VM that stands in for it. Fails
 # with the numbers, so a run that would have died hours later for want of disk or a name stops here.
 #
 #   verify-host.sh compose-obs|dev-k3d

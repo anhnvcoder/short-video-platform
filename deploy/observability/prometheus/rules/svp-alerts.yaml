@@ -1,4 +1,4 @@
-# Hand-written alerts of docs/adr/0011-observability-stage3.md, section 8; the SLO burn-rate alerts
+# Hand-written alerts; the SLO burn-rate alerts
 # are in slo-generated.yaml. Evaluated every 15 s. Tested by svp-alerts.test.yaml
 # (`make slo-check`). Every alert pages but PostgresBackupTooOld and RateLimitFallbackElevated (ticket); annotations name the
 # service, target or pod, never a user value, and runbook_url points to the runbook of the alert
@@ -42,7 +42,7 @@ groups:
           summary: "Kafka consumer group {{ $labels.redpanda_group }} has had lag for 20 minutes"
           runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/kafka-consumer-lag-high.md"
 
-      # Rate limiting runs on the in-memory fallback store (ADR-0010, section 2) when a Redis command
+      # Rate limiting runs on the in-memory fallback store when a Redis command
       # fails or exceeds its 50 ms limit. One slow command is not an outage: under load a few a minute
       # time out (about 3 in 1 200 decisions in the game day of 2026-10-24), so the page is on the share
       # of fallback decisions, per gateway instance (a pod that lost Redis is not diluted by a healthy
@@ -124,7 +124,7 @@ groups:
       # Background loops: svp_loop_last_success_seconds is the Unix time of the last successful step,
       # 0 before the first one. One rule per loop, two branches that exclude each other:
       # - the loop has succeeded: a fresh sample reports a last success older than threshold + for
-      #   listed below (ADR-0011 section 8 derives each from the loop's interval and slowest step), measured at that
+      #   listed below (each derived from the loop's interval and slowest step), measured at that
       #   sample's own time;
       # - it never has: every sample over that same span is 0, so the window (span + 20 s) holds at
       #   least span / 15 + 1 samples.
@@ -201,7 +201,7 @@ groups:
           summary: "{{ $labels.service_name }}: background loop {{ $labels.loop }} has not succeeded for 3 hours 10 minutes"
           runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
 
-  # Backups of Postgres svp-pg in the k3d cluster (docs/adr/0020-reliability-stage6.md, section 5):
+  # Backups of Postgres svp-pg in the k3d cluster:
   # Prometheus scrapes the exporter of its instance (PodMonitor svp-pg), so unlike the OTLP gauges
   # above these series get staleness markers and `for` works as usual. Compose has no such series
   # (its Postgres is the host's, which is not backed up), so neither alert ever fires there.

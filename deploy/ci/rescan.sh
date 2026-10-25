@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# rescan.sh: the daily rescan of released images (docs/adr/0015-cicd-devsecops-stage5.md, section 7). A release was
+# rescan.sh: the daily rescan of released images. A release was
 # clean when it was built; new vulnerabilities are published every day, and Kyverno accepts a vuln attestation for
 # 72 hours only, so every released digest is scanned again with the newest DB and its attestation replaced.
 #

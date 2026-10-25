@@ -1,4 +1,4 @@
-// Profiles, scenarios and thresholds of the load test (docs/adr/0020-reliability-stage6.md, section 2). One profile is
+// Profiles, scenarios and thresholds of the load test. One profile is
 // picked with SVP_K6_PROFILE; every rate below is per minute, so a route of less than one request a second (POST
 // /videos) needs no fractional rate. Cloud rates are the totals of the whole Job: k6 splits them across the `pods`
 // processes by --execution-segment, while each pod registers its own pool in setup() (one pool per source address).
@@ -18,8 +18,8 @@ export const routes = {
   login: { route: "/login", app: "web", status: 200 },
 };
 
-// Pool sizes keep every per-user and per-address limit of the gateway out of reach (the route, class, key and limit
-// table of ADR-0020, section 2): `users` register and log in once at the gateway (register burst 20 per address, login
+// Pool sizes keep every per-user and per-address limit of the gateway out of reach, whatever its route, class and
+// key: `users` register and log in once at the gateway (register burst 20 per address, login
 // burst 30), `webSessions` of them log in once more through the web form; a user's read rate stays under 10/s and its
 // POST /videos under the 3 open uploads per 15 minutes of video-service. `pods` is how many k6 processes share the
 // rates, each with its own pool: the per-user numbers hold only when every one of them runs its share (setup() checks
@@ -153,8 +153,8 @@ export function scenarios(execNames) {
   return out;
 }
 
-// The SLO -> threshold table of ADR-0020, section 2. Every route also gets threshold-less sub-metrics ([]) so that the
-// summary reports its count, failures, p95 and p99 on their own.
+// Thresholds from the SLOs, each named in its comment below. Every route also gets threshold-less sub-metrics ([]) so
+// that the summary reports its count, failures, p95 and p99 on their own.
 export function thresholds() {
   const t = {};
   for (const { route } of Object.values(routes)) {
@@ -170,7 +170,7 @@ export function thresholds() {
   // web-availability over every page of the web client.
   t["http_req_failed{app:web,phase:load}"] = ["rate<0.001"];
   if (profile.latencyThresholds) {
-    // feed-latency: 99% within 150 ms. Web SSR latency has no SLO (ADR-0020, section 3), its p95/p99 are only reported.
+    // feed-latency: 99% within 150 ms. Web SSR latency has no SLO, its p95/p99 are only reported.
     for (const key of ["explore", "following"]) {
       t[`http_req_duration{route:${routes[key].route},phase:load}`] = ["p(99)<150"];
     }

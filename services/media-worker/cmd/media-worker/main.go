@@ -1,18 +1,16 @@
 // Command media-worker consumes video.uploaded, transcodes the source to HLS and publishes the
-// result (docs/adr/0008-async-upload-pipeline-stage2a.md, section 9). It has no database, no
-// listening port and no gRPC.
+// result. It has no database, no listening port and no gRPC.
 //
 // Subcommands:
 //
 //	serve  run the worker (default when no subcommand is given)
 //
-// Configuration comes from the environment (ADR-0008 section 11): KAFKA_BROKERS, S3_ENDPOINT,
+// Configuration comes from the environment: KAFKA_BROKERS, S3_ENDPOINT,
 // S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY (required), S3_REGION (default us-east-1),
 // S3_UPLOADS_BUCKET (default uploads), S3_MEDIA_BUCKET (default media) and WORK_DIR (default
-// /work). The OTEL_* variables of docs/adr/0011-observability-stage3.md send traces, metrics and
-// logs to the Collector; the worker has no profiler and no error tracker, since its network
-// reaches only Redpanda, MinIO and the Collector, and ffmpeg runs as a child process the
-// profiler would not see (sections 6 and 7).
+// /work). The OTEL_* variables send traces, metrics and logs to the Collector; the worker has no
+// profiler and no error tracker, since its network reaches only Redpanda, MinIO and the
+// Collector, and ffmpeg runs as a child process the profiler would not see.
 package main
 
 import (

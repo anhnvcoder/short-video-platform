@@ -1,4 +1,4 @@
-# Daily backup of the namespace that holds Redpanda's volumes (docs/adr/0020-reliability-stage6.md, section 6), at 03:00
+# Daily backup of the namespace that holds Redpanda's volumes, at 03:00
 # UTC (the Velero container's clock), kept 72 hours. Its RPO for Kafka events is the schedule: events written after the
 # last backup are gone after a restore, since the outbox relay has already marked them sent. Velero restores a namespace
 # lost as a whole; the durability of events rests on Redpanda's replication or a managed Kafka.

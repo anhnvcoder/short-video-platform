@@ -10,7 +10,7 @@ import { gatewayClient, retryAfterSeconds } from "./gateway";
 import { bffServices } from "./runtime";
 import { sessionCookieName } from "./session";
 
-// Data of the public share page /v/{id} (docs/adr/0018-web-profiles-public-video-upload.md, section 7). A visitor
+// Data of the public share page /v/{id}. A visitor
 // without a session cookie gets the public video (GET /public/videos/{id}, no token) and the session store is never
 // reached; a visitor with a usable session gets GET /videos/{id} with the session's token, which says whether they like
 // the video. The token stays in this module: only the video, checked field by field, is returned.
@@ -161,7 +161,7 @@ export const loadVideoPage = cache((videoId: string, options: { timeoutMs?: numb
 // HLS master playlist (RFC 8216, section 4).
 const hlsType = "application/vnd.apple.mpegurl";
 
-// Tags of the page (ADR-0018, section 7). Values are plain text: Next writes them as attributes of <meta>, escaped by
+// Tags of the page. Values are plain text: Next writes them as attributes of <meta>, escaped by
 // React, so a title holding HTML or quotes stays text (WEB-1, WEB-18). A media URL off MEDIA_ORIGIN leaves its tag out.
 export function videoMetadata(
   video: FeedItem,

@@ -1,4 +1,4 @@
-# Root of the GitOps path (docs/adr/0014-kubernetes-local-stage4.md, section 12). Each Application below reads its chart
+# Root of the GitOps path. Each Application below reads its chart
 # and values from this repository at this revision; upstream charts come from the repositories pinned in components.json.
 # Root Application svp-root (deploy/k8s/gitops.sh) sets targetRevision to the revision it follows itself, the one whose
 # release tags the bootstrap has checked.

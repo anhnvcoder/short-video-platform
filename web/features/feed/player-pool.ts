@@ -3,7 +3,7 @@ import { loadHls, type HlsClass, type HlsConfig, type HlsInstance } from "./hls-
 import { isMediaUrl } from "./media-url";
 
 // A fixed pool of three <video> elements, each with at most one hls.js instance, for the previous, current and next
-// item of the feed (docs/adr/0016-web-client.md, section 8). Moving through the feed changes a slot's source and moves
+// item of the feed. Moving through the feed changes a slot's source and moves
 // its element into the item's host; it never creates or drops a <video>: WebKit grows memory when media elements come
 // and go (WebKit bug 216820), and each live hls.js instance holds a MediaSource and buffers.
 //

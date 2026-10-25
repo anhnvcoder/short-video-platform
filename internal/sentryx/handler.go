@@ -136,8 +136,7 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 // DescribeError returns what may leave the process about err: kind, the type of the innermost
 // error along its errors.Unwrap chain (%T, such as *pgconn.PgError), and code, the SQLSTATE of a
 // Postgres error or the code of a gRPC status, empty otherwise. The error's text is never read:
-// it can quote a parameter, an email or a token (docs/adr/0011-observability-stage3.md,
-// section 7).
+// it can quote a parameter, an email or a token.
 func DescribeError(err error) (kind, code string) {
 	for next := errors.Unwrap(err); next != nil; next = errors.Unwrap(err) {
 		err = next

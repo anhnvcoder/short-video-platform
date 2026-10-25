@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Drill: deliver the stage 2B events twice and check the counters and the feed read model do not
-# change (ADR-0009 sections 4 and 7). With fresh users A and B, B following A and A's video READY
+# change. With fresh users A and B, B following A and A's video READY
 # in B's feed, liked by B and viewed 5 times by B (counted once: the gateway forwards one view per
 # user and video every 60 s, RL-3):
 #   1. stop engagement-service, move group engagement-service on engagement.views.v1 back to the

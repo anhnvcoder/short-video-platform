@@ -1,7 +1,7 @@
 import { handleClientError } from "@/features/monitoring/reporter";
 
-// Runs in the browser before the app hydrates (docs/adr/0019-web-k3d-supply-chain-observability.md, sections 3 and
-// 8): errors nothing caught are reported, and a chunk that failed to load reloads the page once.
+// Runs in the browser before the app hydrates: errors nothing caught are reported, and a chunk that failed to load
+// reloads the page once.
 
 window.addEventListener("error", (event) => {
   // No error object: a cross-origin script's "Script error.", which says nothing.

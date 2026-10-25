@@ -731,3 +731,23 @@ mục làm việc của máy, không commit (repo public, khoảng 300 MB mỗi 
   - Số lần tải lại vì action lệch bản (đo ở phần sau của giai đoạn 6b, kịch bản `web-canary`) là đáng kể, hay cluster có node khác kiến trúc (hai bản của một
     commit cùng `deploymentId` nhưng khác id action và chunk, nên Next không thấy lệch khi điều hướng và đường tải lại chỉ đỡ
     một lần): xét khoá cố định không bí mật lúc build để id action ít đổi (mục 1).
+
+## Hiện thực ở
+
+- Image `web` trong chuỗi cung ứng (§1): `deploy/docker/web.Dockerfile`, `deploy/ci/build-image.sh` (`SVP_BUILD_ID`),
+  `deploy/k8s/k8s.mk`, `deploy/k8s/install.sh`.
+- Release `web`, canary và lệch phiên bản (§2, §3): `deploy/k8s/values/services/web.yaml`, `deploy/helm/svp-service/`
+  (`templates/canary.yaml`, `templates/httproute.yaml`, `values.yaml`), `deploy/k8s/values/argo-rollouts.yaml`,
+  `web/features/monitoring/skew-reload.ts`.
+- NetworkPolicy và session ở Valkey (§4, §5): `deploy/k8s/values/services/web.yaml`, `deploy/helm/svp-data/templates/valkey.yaml`.
+- Trace context từ web tới gateway (§7): `services/gateway/internal/httpx/middleware.go` (`TRUST_TRACE_CONTEXT`),
+  `deploy/helm/svp-service/templates/httproute.yaml` (Envoy bỏ header trace của client), `deploy/k8s/values/services/gateway.yaml`,
+  `deploy/compose/compose.yaml`.
+- Lỗi web tới GlitchTip và source map (§8, §9): `web/server/sentry/`, `web/features/monitoring/reporter.ts`, `web/instrumentation.ts`,
+  `web/instrumentation-client.ts`, `deploy/observability/glitchtip/` (`sourcemaps.sh`, `init.sh`, `bootstrap.py`),
+  `deploy/k8s/glitchtip-init.sh`, `deploy/k8s/secrets.sh`.
+- OTel ở server Next và RUM (§10, §11): `web/server/telemetry/` (`otel.ts`, `rum.ts`, `vitals.ts`), `web/features/rum/beacon.ts`,
+  `deploy/observability/grafana/dashboards/svp-web.json`.
+- Kiểm (§12): `web/e2e/glitchtip.e2e.ts`, `web/e2e/stack.ts`, `deploy/compose/drills/obs-threats.sh` (WEB-9),
+  `deploy/k8s/drills/threats.sh`, `deploy/k8s/drills/traffic.sh`, `deploy/k8s/drills/web-obs.sh`, target `web-sourcemaps`,
+  `k8s-web-*` của `Makefile` và `deploy/k8s/k8s.mk`.

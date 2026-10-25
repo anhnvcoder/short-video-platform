@@ -677,3 +677,18 @@ với cổng mới đã kiểm tĩnh: `docker compose config` của `core` + `ob
   - Trước bài k6 của giai đoạn 6 (k6 login hàng loạt) hay khi `refresh_tokens` vượt 1 triệu dòng: làm job dọn.
   - Lên cloud (giai đoạn 7): IP client thật qua load balancer, Redis/Valkey có xác thực và TLS cho session.
   - WebKit sửa bug 232088: bỏ dạng cookie không tiền tố.
+
+## Hiện thực ở
+
+- Web client và BFF (§1, §5, §6, §8): `web/` (`proxy.ts`; `server/`: `session.ts`, `session-access.ts`, `auth.ts`, `csrf.ts`,
+  `csp.ts`, `env.ts`, `gateway.ts`, `api-proxy.ts`; `features/feed/`; `app/logout/route.ts`).
+- Refresh token (§2, §3): `services/user-service/internal/server/refresh.go`,
+  `services/user-service/migrations/00004_create_refresh_tokens.sql`, `services/user-service/queries/refresh_tokens.sql`.
+- Contract REST và lớp rate limit `refresh` (§4): `services/gateway/internal/api/api.go`, `services/gateway/internal/ratelimit/ratelimit.go`,
+  `services/gateway/cmd/gateway/main.go` (Refresh không retry, Logout có), `services/gateway/openapi.yaml`.
+- Host và cổng (§7): service `web` của `deploy/compose/compose.yaml`, `deploy/docker/web.Dockerfile`; trên k3d
+  `deploy/k8s/values/services/web.yaml`.
+- Dependency npm và công cụ (§10): `web/package.json`, `web/pnpm-workspace.yaml` (setting chuỗi cung ứng), target `web-*` của
+  `Makefile`, job `web` của `.github/workflows/ci.yml`.
+- Kiểm: `web/e2e/` (`fixtures.ts`, `stack.ts`, `security.e2e.ts`, `a11y.e2e.ts`, `first-frame.e2e.ts`), `web/playwright.config.ts`,
+  `deploy/compose/smoke.sh` (refresh, dùng lại token cũ, logout).

@@ -1,9 +1,8 @@
 // Command feed-service serves svp.feed.v1.FeedService over gRPC from its read model, which it
-// builds from user.follows.v1 and video.lifecycle.v1 (docs/adr/0009-engagement-feed-stage2b.md,
-// sections 6 to 8).
+// builds from user.follows.v1 and video.lifecycle.v1.
 //
 // Subcommands, in the service binary because its distroless image has no shell, curl or migration
-// tool (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 7):
+// tool:
 //
 //	serve        run the service (default when no subcommand is given)
 //	migrate      apply the database migrations, then exit
@@ -13,16 +12,13 @@
 // 30 days.
 //
 // Configuration comes from the environment: LISTEN_ADDR (default 127.0.0.1:9104) and
-// DATABASE_URL (required for serve and migrate); serve also needs KAFKA_BROKERS
-// (docs/adr/0009-engagement-feed-stage2b.md, section 12) and reads REDIS_URL (default
-// redis://127.0.0.1:6379/14) for the explore cache. Redis is not needed to start or to serve: a
-// failed or slow cache read falls back to Postgres
-// (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 1). serve exports
-// telemetry when OTEL_EXPORTER_OTLP_ENDPOINT is set, profiles when PYROSCOPE_SERVER_ADDRESS is,
-// and reports errors when SENTRY_DSN is (docs/adr/0011-observability-stage3.md).
+// DATABASE_URL (required for serve and migrate); serve also needs KAFKA_BROKERS and reads
+// REDIS_URL (default redis://127.0.0.1:6379/14) for the explore cache. Redis is not needed to
+// start or to serve: a failed or slow cache read falls back to Postgres. serve exports telemetry
+// when OTEL_EXPORTER_OTLP_ENDPOINT is set, profiles when PYROSCOPE_SERVER_ADDRESS is, and reports
+// errors when SENTRY_DSN is.
 //
-// Release images are built, scanned and signed in CI, and clusters run them by digest
-// (docs/adr/0015-cicd-devsecops-stage5.md).
+// Release images are built, scanned and signed in CI, and clusters run them by digest.
 package main
 
 import (
@@ -58,17 +54,16 @@ const (
 	defaultListenAddr = "127.0.0.1:9104"
 	defaultRedisURL   = "redis://127.0.0.1:6379/14"
 	// cacheKeyPrefix starts every Redis key of the service. A Redis db number is no access
-	// boundary; a prefix per service is, once a cloud Redis grants access by key prefix
-	// (ADR-0010, section 1).
+	// boundary; a prefix per service is, once a cloud Redis grants access by key prefix.
 	cacheKeyPrefix     = "svp:feed:"
 	healthcheckTimeout = 3 * time.Second
 	// consumerRestartDelay is the wait before a consumer that stopped on an error is replaced.
 	consumerRestartDelay = 5 * time.Second
-	// pruneInterval is how often timeline rows older than 30 days are deleted (ADR-0009,
-	// section 6). Reads filter them out meanwhile.
+	// pruneInterval is how often timeline rows older than 30 days are deleted. Reads filter them
+	// out meanwhile.
 	pruneInterval = time.Hour
 	// pruneTimeout bounds one prune run, every batch included, so a run stuck on a lock or a slow
-	// database gives up and leaves the rest to the next run (ADR-0011, section 11).
+	// database gives up and leaves the rest to the next run.
 	pruneTimeout = 2 * time.Minute
 )
 
@@ -89,7 +84,7 @@ func main() {
 }
 
 // loggedError is a serve failure that serve has already logged, while the error tracker and the
-// telemetry providers were still running, so that it reaches both (ADR-0011, sections 4 and 7).
+// telemetry providers were still running, so that it reaches both.
 type loggedError struct{ error }
 
 func (e loggedError) Unwrap() error { return e.error }
@@ -228,7 +223,7 @@ func runConsumer(ctx context.Context, logger *slog.Logger, delay time.Duration, 
 // runPrune calls prune once at start and then every interval until ctx is canceled, each run
 // within timeout. A failed run is logged and left to the next one: reads filter expired rows out
 // whatever prune does. prune reports each batch it deletes to loop through onBatch, so a run that
-// keeps working through a backlog past its timeout does not look stalled (ADR-0011, section 5).
+// keeps working through a backlog past its timeout does not look stalled.
 func runPrune(ctx context.Context, logger *slog.Logger, interval, timeout time.Duration, loop *telemetry.Loop,
 	prune func(ctx context.Context, onBatch func()) (int64, error),
 ) {

@@ -1,6 +1,6 @@
 # Grafana datasources of grafana/otel-lgtm 0.36.0, mounted read-only over the image's
-# /otel-lgtm/grafana/conf/provisioning/datasources/grafana-datasources.yaml
-# (docs/adr/0011-observability-stage3.md, sections 4 and 9). Same as the image's file except
+# /otel-lgtm/grafana/conf/provisioning/datasources/grafana-datasources.yaml.
+# Same as the image's file except
 # timeInterval 15s, the services' metric export interval. Dashboards and scripts rely on these
 # UIDs: prometheus, tempo, loki, pyroscope. `$$` is a literal `$` in Grafana provisioning.
 apiVersion: 1

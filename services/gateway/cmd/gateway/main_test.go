@@ -115,9 +115,9 @@ var backends = []backend{userBackend, videoBackend, feedBackend, engagementBacke
 
 func TestServiceConfig(t *testing.T) {
 	type name struct{ Service, Method string }
-	// The idempotent methods of ADR-0010 section 4, Logout (ADR-0016) and the reads and the
-	// display name change of ADR-0018 section 5: only these are retried, as a second try of any
-	// other would repeat its effect or overrun a 100 ms budget.
+	// Only the methods a second try cannot change are retried: Follow, Unfollow, Logout,
+	// UpdateDisplayName, CompleteUpload, Like, Unlike and the reads. A second try of any other
+	// would repeat its effect, and GetStats and GetProfiles would overrun their 100 ms budget.
 	want := map[string][]name{
 		"user-service": {
 			{"svp.user.v1.UserService", "Follow"},
@@ -308,7 +308,7 @@ func TestBreakerPerBackend(t *testing.T) {
 }
 
 // TestSlowStatsDoNotOpenBreaker: GetStats running past its 100 ms budget again and again leaves
-// engagement-service's breaker closed, so likes and views still reach it (ADR-0010 section 4).
+// engagement-service's breaker closed, so likes and views still reach it.
 func TestSlowStatsDoNotOpenBreaker(t *testing.T) {
 	getStats := engagementv1.EngagementService_GetStats_FullMethodName
 	f, conn := connect(t, engagementBackend, func(ctx context.Context, method string, _ int) error {
@@ -344,8 +344,7 @@ func TestSlowStatsDoNotOpenBreaker(t *testing.T) {
 }
 
 // TestSlowProfilesDoNotOpenBreaker: GetProfiles running past the authors' 100 ms budget again
-// and again leaves user-service's breaker closed, so logins and follows still reach it
-// (ADR-0018 section 5).
+// and again leaves user-service's breaker closed, so logins and follows still reach it.
 func TestSlowProfilesDoNotOpenBreaker(t *testing.T) {
 	getProfiles := userv1.UserService_GetProfiles_FullMethodName
 	f, conn := connect(t, userBackend, func(ctx context.Context, method string, _ int) error {

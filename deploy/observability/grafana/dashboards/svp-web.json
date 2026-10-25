@@ -1,7 +1,7 @@
 {
   "uid": "svp-web",
   "title": "SVP — Web vitals (RUM)",
-  "description": "LCP, INP and CLS of the web client's page loads, measured in the browser with web-vitals and recorded by the web server as OTel histograms (ADR-0019 §11): 75th percentile per route and sample counts.",
+  "description": "LCP, INP and CLS of the web client's page loads, measured in the browser with web-vitals and recorded by the web server as OTel histograms: 75th percentile per route and sample counts.",
   "tags": [
     "svp"
   ],

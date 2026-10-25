@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Uploads the source maps of the web client's browser bundle to GlitchTip, so a browser error's stack shows in the
-# source (docs/adr/0019-web-k3d-supply-chain-observability.md, section 9):
+# source:
 #   compose  `make web-sourcemaps`: the web of `make up` (http://localhost:3001) and GlitchTip of `make up OBS=lgtm`
 #            (http://127.0.0.1:8000), token SENTRY_SOURCEMAPS_TOKEN of .env (written by make glitchtip-init);
 #   k3d      `make k8s-web-sourcemaps`: the web of cluster svp (https://svp.localhost:8443, CA .k8s/ca.crt) and its

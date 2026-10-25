@@ -7,7 +7,7 @@ export interface Follows {
   toggle(authorId: string): void;
 }
 
-// Follow state of the authors on this page (docs/adr/0016-web-client.md, section 8). The gateway does not say whether
+// Follow state of the authors on this page. The gateway does not say whether
 // the caller follows an author, so the following feed starts with every author followed and the explore feed with
 // none; a tap changes the state once the server has confirmed it, for every video of that author on the page.
 export function useFollows(kind: FeedKind, onError: (error: unknown, wanted: boolean) => void): Follows {

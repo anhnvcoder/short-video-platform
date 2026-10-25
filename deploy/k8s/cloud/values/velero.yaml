@@ -1,5 +1,5 @@
 # Velero 1.18.4 (chart https://vmware-tanzu.github.io/helm-charts velero 12.2.1, deploy/k8s/cloud/charts.json), release
-# velero in namespace velero, on the cloud cluster only (docs/adr/0020-reliability-stage6.md, section 6). What it protects
+# velero in namespace velero, on the cloud cluster only. What it protects
 # there: the PersistentVolumes inside the cluster (Redpanda's topics and consumer offsets while Redpanda runs in the
 # cluster), and the rebuild of a namespace deleted by mistake, with a measured RTO. Data in managed services (RDS,
 # ElastiCache, S3) has their own backups; the cluster's state is in git (Argo CD).

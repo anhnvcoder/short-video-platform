@@ -14,11 +14,11 @@ import type { Event } from "@sentry/nextjs";
 import type { ServerEnv } from "../env";
 import { vitals } from "./vitals";
 
-// Traces and metrics of the Next server over OTLP/gRPC to the Collector, as for the Go services (internal/telemetry;
-// docs/adr/0019-web-k3d-supply-chain-observability.md, section 10). Logs stay on stdout: no OTLP log exporter.
+// Traces and metrics of the Next server over OTLP/gRPC to the Collector, as for the Go services (internal/telemetry).
+// Logs stay on stdout: no OTLP log exporter.
 
-// W3C TraceContext on the calls the server makes, never read from the requests it receives
-// (docs/adr/0019-web-k3d-supply-chain-observability.md, section 7). Nothing in front of the compose web container drops
+// W3C TraceContext on the calls the server makes, never read from the requests it receives.
+// Nothing in front of the compose web container drops
 // a browser's traceparent, so reading it would let any client pick the trace id of the web's spans and, through the
 // BFF's calls, of the gateway's. Every request to the web opens a new trace, Next's own span too (Next reads the
 // incoming context through this global propagator), and the BFF's calls carry that trace to the gateway. No baggage.

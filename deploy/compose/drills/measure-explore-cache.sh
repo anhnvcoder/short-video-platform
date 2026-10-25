@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Measures the explore feed cache of feed-service (ADR-0010, sections 3 and 7): the first explore
+# Measures the explore feed cache of feed-service: the first explore
 # page is cached in Redis db 14 for 5 s and concurrent misses share one Postgres read
 # (singleflight). The drill deletes the cached first pages (svp:feed:explore:*), then:
 #   1. wave 1: N concurrent GET /feed/explore (one curl process, a connection each) on the empty
@@ -14,7 +14,7 @@
 # so earlier runs never count and the Docker VM's clock need not match the host's. The waves
 # overlap, so they are not counted apart: wave 1 starts on the emptied cache and reads at least
 # once, so 1 read in all is 1 in wave 1 and 0 in wave 2.
-# A cache command past its 50 ms budget is served from Postgres by design (ADR-0010, section 3).
+# A cache command past its 50 ms budget is served from Postgres by design: a slow Redis must not slow the feed.
 # Each load line says why the cache did not serve the read (cache=miss|timeout|error) and how
 # caching the page after it ended (cache_write=ok|timeout|error); a write past the budget may
 # store nothing, so the next read finds no page (cache=miss) because Redis was slow. The cache

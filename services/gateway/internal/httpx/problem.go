@@ -58,9 +58,8 @@ func WriteProblem(w http.ResponseWriter, r *http.Request, status int, code, deta
 }
 
 // WriteRateLimited writes the 429 problem of a request the rate limit class refused (code
-// RATE_LIMITED, docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md section 2), with a
-// Retry-After header of retryAfter in whole seconds, rounded up and at least 1. The access log
-// line of the request names class.
+// RATE_LIMITED), with a Retry-After header of retryAfter in whole seconds, rounded up and at
+// least 1. The access log line of the request names class.
 func WriteRateLimited(w http.ResponseWriter, r *http.Request, class string, retryAfter time.Duration) {
 	if state, ok := r.Context().Value(logStateKey).(*logState); ok {
 		state.rateLimit = class
@@ -87,8 +86,8 @@ func Routes(mux *http.ServeMux) http.Handler {
 }
 
 // setRoute names the request's span "METHOD /route" and sets http.route on the span and on
-// http.server.request.duration (docs/adr/0011-observability-stage3.md, section 2). The route is
-// the path of the mux pattern, such as /videos/{video_id}, never the URL path, which holds ids.
+// http.server.request.duration. The route is the path of the mux pattern, such as
+// /videos/{video_id}, never the URL path, which holds ids.
 // otelhttp cannot see the pattern itself: ServeMux sets it on a copy of the request made deeper
 // in the chain.
 func setRoute(r *http.Request, pattern string) {

@@ -29,9 +29,9 @@ const (
 	rejectWithin = 10 * time.Millisecond
 )
 
-// fast are the thresholds of ADR-0010 section 4 (adr in breaker.go) with a short open period, so tests reach half-open quickly.
+// fast are the production thresholds (breaker.go) with a short open period, so tests reach half-open quickly.
 var fast = func() thresholds {
-	th := adr
+	th := production
 	th.openFor = 50 * time.Millisecond
 	return th
 }()

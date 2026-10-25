@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs one verification scenario: its make targets in order, each under a time limit of its own, with its whole output
-# in a file (docs/adr/0021-deferred-verification-stage6b.md, sections 2, 3 and 5). Same on the GitHub runner
+# in a file. Same on the GitHub runner
 # (.github/workflows/verify.yml) and on the rented Linux VM that stands in for it.
 #
 #   verify-run.sh compose-obs|dev-k3d
@@ -59,7 +59,7 @@
 #   web-lighthouse-<n>         make web-lighthouse, its manifest.json kept as manifest-<n>.json
 #   lcp                        median LCP of / and /v/{id} over the three runs, with Lighthouse's benchmarkIndex;
 #                              lcp.json; fails when a median is over 2500 ms
-#   ram-rest-<label> (k3d)     the cluster at rest as ADR-0014 section 2 measures it: every pod Ready (or ended:
+#   ram-rest-<label> (k3d)     the cluster at rest: every pod Ready (or ended:
 #                              Succeeded, Failed), 60 s, then the median of the next 6 samples of verify-sample.sh
 #                              (10 s apart) of docker stats MEM USAGE of the k3d containers; anon, active_file and
 #                              kernel of memory.stat of each node; kubectl top pods --containers, each container and
@@ -461,7 +461,7 @@ ram_rest() {
 
 export -f load_local_watch fallback_alert_check lighthouse_run lcp_median kc not_ready ram_rest
 
-# --- The scenarios (docs/adr/0021-deferred-verification-stage6b.md, section 5). Called twice: with listing set, step
+# --- The scenarios. Called twice: with listing set, step
 # and skip only add each name to names, which SVP_VERIFY_TARGETS is checked against; then for the run.
 scenario_targets() {
   case $scenario in
@@ -473,7 +473,7 @@ scenario_targets() {
       step fallback-alert-under-load 1 bash -c fallback_alert_check
       for i in 1 2 3; do step "web-lighthouse-$i" 10 bash -c 'lighthouse_run "$1"' _ "$i"; done
       step lcp 1 bash -c lcp_median
-      # Last: not in the ADR's list for this scenario, and the longest wait (an alert of an earlier run must resolve
+      # Last: an extra on top of the scenario's main sequence, and the longest wait (an alert of an earlier run must resolve
       # first), so the deadline cuts it before anything else.
       step drill-alert-to-sentry 40 make drill-alert-to-sentry
       ;;

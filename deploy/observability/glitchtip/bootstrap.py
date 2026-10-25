@@ -1,10 +1,8 @@
 # Creates what the services and the drills need in GlitchTip, through the image's ORM. GlitchTip, not Sentry: sentry.io
 # is blocked on this machine on purpose, self-hosted Sentry needs far more RAM than the lab has, and GlitchTip speaks
-# the Sentry protocol, so the SDKs only need another DSN to switch
-# (docs/adr/0011-observability-stage3.md, section 7): the admin user, organization `svp`, team and
+# the Sentry protocol, so the SDKs only need another DSN to switch: the admin user, organization `svp`, team and
 # project `svp` with its DSN, the API token `svp-drill` (event:read, project:read), and the API token
-# `svp-sourcemaps` (project:releases) that uploads the web client's source maps
-# (docs/adr/0019-web-k3d-supply-chain-observability.md, section 9).
+# `svp-sourcemaps` (project:releases) that uploads the web client's source maps.
 # Idempotent: a second run creates nothing and changes no key, token or password.
 #
 # Run inside the glitchtip-init container: python manage.py shell < /init/bootstrap.py

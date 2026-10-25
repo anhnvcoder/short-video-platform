@@ -30,14 +30,13 @@ import (
 
 const (
 	// callTimeout is the deadline of every gRPC call a request makes, so no request waits on a
-	// service for longer; the services pass it on and never set a longer one (ADR-0002).
+	// service for longer; the services pass it on and never set a longer one.
 	callTimeout = 3 * time.Second
 	// readyTimeout bounds the health checks of /readyz.
 	readyTimeout = 1 * time.Second
 	// statsTimeout bounds each of the two calls that add stats and authors to the videos of an
-	// answer, one GetStats and one GetProfiles side by side (ADR-0009 section 9, ADR-0018 section
-	// 5): the feed answers within its 150 ms p99 budget even when engagement-service or
-	// user-service is slow.
+	// answer, one GetStats and one GetProfiles side by side: the feed answers within its 150 ms p99
+	// budget even when engagement-service or user-service is slow.
 	statsTimeout = 100 * time.Millisecond
 )
 
@@ -62,7 +61,7 @@ type dependency struct {
 
 // New returns the gateway's HTTP handler: every route on its own mux, behind Trace, Recover,
 // AccessLog and ValidUTF8, with RequireAuth in front of the routes that need a caller. Every
-// route but healthz and readyz is rate limited by limits (ADR-0010 section 2): register, login,
+// route but healthz and readyz is rate limited by limits: register, login,
 // refresh, logout and the public video by client IP, the others by the authenticated user,
 // after RequireAuth. A
 // request that matches no route gets a problem response too. userConn, videoConn, feedConn and engagementConn reach
@@ -104,7 +103,7 @@ func New(userConn, videoConn, feedConn, engagementConn grpc.ClientConnInterface,
 	mux.HandleFunc("POST /auth/refresh", s.refresh)
 	mux.HandleFunc("POST /auth/logout", s.logout)
 	// The one route outside /auth without RequireAuth: the public share page reads it without
-	// logging in (ADR-0018 section 6).
+	// logging in.
 	mux.HandleFunc("GET /public/videos/{video_id}", s.getPublicVideo)
 	mux.Handle("GET /me", authed(ratelimit.Read, s.getMe))
 	mux.Handle("PATCH /me", authed(ratelimit.Write, s.updateMe))
@@ -239,10 +238,10 @@ type refreshTokenRequest struct {
 }
 
 // refresh and logout need no Bearer: the access token may have just expired, and the refresh
-// token is the credential. Both check the client IP before reading the body (class refresh,
-// ADR-0016 section 4). A missing or empty refresh_token goes on to user-service, which answers
-// it like any other token it cannot use. The refresh token is a credential: it never goes into
-// a log line, a span or a problem (threat model JWT-8).
+// token is the credential. Both check the client IP before reading the body (class refresh). A
+// missing or empty refresh_token goes on to user-service, which answers it like any other token
+// it cannot use. The refresh token is a credential: it never goes into a log line, a span or a
+// problem (threat model JWT-8).
 //
 // The Refresh call is never retried, not even on UNAVAILABLE: the presented token is used up, so
 // a second attempt would be a reuse and revoke the whole family.
@@ -482,7 +481,7 @@ type publicVideoStats struct {
 	LikeCount int64 `json:"like_count"`
 }
 
-// getPublicVideo serves the public share page (ADR-0018 section 6). It never reads the
+// getPublicVideo serves the public share page. It never reads the
 // Authorization header, a wrong token included, so nothing here has a caller: GetPublicVideo
 // and GetStats go out without x-user-id, and the answer is the same for everyone. The rate
 // limit by client IP comes before any call, so a caller over it costs no service anything
@@ -764,12 +763,11 @@ func (s *server) serveFeed(w http.ResponseWriter, r *http.Request, fetch func(ct
 
 // addExtras reads what the gateway adds to the videos of one answer: the stats of videoIDs with
 // one GetStats call and the profiles of the authors with one GetProfiles call, side by side, so
-// a page waits for the slower of the two rather than their sum (ADR-0018 section 5). Each call
-// has its own statsTimeout and no retry: 100 ms holds no second try (ADR-0010 section 4). The
-// answers come back by video id and by user id, so their order and count do not matter; a
-// video or author without a match gets nothing, and a nil map answers nil for every key. A
-// call that fails only leaves its part out (see getStats, getAuthors). An empty page makes no
-// call.
+// a page waits for the slower of the two rather than their sum. Each call has its own
+// statsTimeout and no retry: 100 ms holds no second try. The answers come back by video id and
+// by user id, so their order and count do not matter; a video or author without a match gets
+// nothing, and a nil map answers nil for every key. A call that fails only leaves its part out
+// (see getStats, getAuthors). An empty page makes no call.
 //
 // GetStats goes out with the caller's x-user-id when the request has one, for liked_by_me; on
 // the public route there is none, and engagement-service then reads no like.
@@ -789,7 +787,7 @@ func (s *server) addExtras(r *http.Request, videoIDs, authorIDs []string) (map[s
 // getStats returns the stats of ids by video id, or nil when GetStats fails. The error is only
 // logged: a slow or failing engagement-service must not fail the answer (architecture §7.2),
 // so it does not go through the §8.4 table. While engagement-service's circuit breaker is open
-// the call fails at once, without waiting for statsTimeout (ADR-0010 section 4).
+// the call fails at once, without waiting for statsTimeout.
 func (s *server) getStats(r *http.Request, ids []string) map[string]*videoStats {
 	ctx, cancel := context.WithTimeout(httpx.OutgoingContext(r.Context()), statsTimeout)
 	defer cancel()

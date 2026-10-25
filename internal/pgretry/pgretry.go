@@ -1,7 +1,7 @@
 // Package pgretry retries the first connection to Postgres at startup while the database is not
 // reachable over the network, for a bounded time. internal/pgpool (service pools) and
 // internal/dbmigrate (migrate Jobs) both use it, so that the errors retried, the waits and the
-// log lines stay the same in both (docs/adr/0020-reliability-stage6.md, section 11). It imports
+// log lines stay the same in both. It imports
 // neither of them, nor internal/pgtest, which imports internal/dbmigrate.
 package pgretry
 

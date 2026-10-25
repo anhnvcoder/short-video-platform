@@ -39,12 +39,11 @@ export interface ShownProfile {
   followedByMe: boolean;
 }
 
-// Videos a page asks for: 3 rows of the 3-column grid on a phone, 3 rows of 6 on a wide screen
-// (docs/adr/0018-web-profiles-public-video-upload.md, section 4).
+// Videos a page asks for: 3 rows of the 3-column grid on a phone, 3 rows of 6 on a wide screen.
 export const videoPageSize = 18;
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-// A handle as user-service stores it (ADR-0018, section 1).
+// A handle as user-service stores it.
 const handlePattern = /^[a-z][a-z0-9_]{2,29}$/;
 const statuses: ReadonlySet<string> = new Set<VideoStatus>(["UPLOADING", "PROCESSING", "READY", "FAILED"]);
 

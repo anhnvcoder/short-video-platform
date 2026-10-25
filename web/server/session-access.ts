@@ -2,8 +2,7 @@ import "server-only";
 import type { AuthGateway } from "./gateway";
 import { hashSid, type Session, type SessionStore } from "./session";
 
-// Hands out a usable access token for a session, refreshing it shortly before it expires
-// (docs/adr/0016-web-client.md, section 5).
+// Hands out a usable access token for a session, refreshing it shortly before it expires.
 //
 // A refresh token works once: presenting it a second time revokes the whole family and logs the user out. So at most
 // one refresh per session may be in flight anywhere: requests of one process share one promise, and processes

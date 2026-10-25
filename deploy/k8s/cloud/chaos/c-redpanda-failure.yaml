@@ -1,4 +1,4 @@
-# Experiment (c): Redpanda down for 5 minutes (docs/adr/0020-reliability-stage6.md, section 7). Cloud cluster only.
+# Experiment (c): Redpanda down for 5 minutes. Cloud cluster only.
 # Chaos Mesh must target svp-data first:
 #
 #   helm --kube-context <ctx> upgrade chaos-mesh chaos-mesh --repo https://charts.chaos-mesh.org --version 2.8.5 \
@@ -11,7 +11,7 @@
 # to READY through the API (the upload flow of deploy/compose/smoke.sh).
 #
 # Steady-state hypothesis: POST /videos and complete still answer (the outbox keeps the events), the feed keeps its SLO;
-# views fail while Redpanda is down (RecordView produces directly, docs/adr/0009-engagement-feed-stage2b.md) and are
+# views fail while Redpanda is down (RecordView produces directly, without an outbox) and are
 # counted on their own. Once Redpanda is back the outbox drains, every video is READY exactly once, the DLQ does not grow
 # and every consumer group's lag returns to 0.
 #

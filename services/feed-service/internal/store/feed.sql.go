@@ -287,9 +287,8 @@ SELECT pg_advisory_xact_lock(hashtextextended('feed-author:' || $1::uuid::text, 
 
 // Serializes every change to the follow edges and fan-out of one author until the transaction
 // ends, so a follower added during a fan-out still gets the new video and one removed does not
-// keep it (docs/adr/0009-engagement-feed-stage2b.md, section 7). It must be the transaction's first
-// statement: under READ COMMITTED each later statement then sees all that the previous holder
-// committed.
+// keep it. It must be the transaction's first statement: under READ COMMITTED each later
+// statement then sees all that the previous holder committed.
 func (q *Queries) LockAuthor(ctx context.Context, authorID uuid.UUID) error {
 	_, err := q.db.Exec(ctx, lockAuthor, authorID)
 	return err

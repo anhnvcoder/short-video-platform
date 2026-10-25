@@ -1,6 +1,6 @@
 {{- /*
-What Grafana of kube-prometheus-stack loads from ConfigMaps (its sidecars watch svp-obs for these labels; ADR-0014
-section 11). Grafana keeps no state of its own (no volume), so this is all of its configuration besides grafana.ini.
+What Grafana of kube-prometheus-stack loads from ConfigMaps (its sidecars watch svp-obs for these labels).
+Grafana keeps no state of its own (no volume), so this is all of its configuration besides grafana.ini.
 */}}
 {{- $dashboards := .Files.Glob "files/dashboards/*.json" }}
 {{- if not $dashboards }}

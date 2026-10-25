@@ -1,4 +1,4 @@
-# Where Velero writes backups on the cloud cluster (docs/adr/0020-reliability-stage6.md, section 6): the S3 bucket the
+# Where Velero writes backups on the cloud cluster: the S3 bucket the
 # stage 7 Terraform makes for it, with public access blocked and encryption by its own KMS key (SSE-KMS). Velero reaches
 # it as ServiceAccount velero/velero-server through EKS Pod Identity, so there is no credential field and no Secret.
 #

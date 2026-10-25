@@ -1,8 +1,6 @@
 // Package projector builds feed-service's read model (follows, videos, timeline) from the events
-// of user.follows.v1 and video.lifecycle.v1, and prunes timeline rows past 30 days
-// (docs/adr/0009-engagement-feed-stage2b.md, sections 6 and 7). It reports feed freshness, from a
-// video.ready to its fan-out commit, as svp.feed.freshness (docs/adr/0011-observability-stage3.md,
-// section 5).
+// of user.follows.v1 and video.lifecycle.v1, and prunes timeline rows past 30 days. It reports
+// feed freshness, from a video.ready to its fan-out commit, as svp.feed.freshness.
 package projector
 
 import (
@@ -33,7 +31,7 @@ import (
 )
 
 // Topics and consumer group of the feed read model. One group reads both topics; their three
-// partitions let up to three replicas share the work (ADR-0009 section 11).
+// partitions let up to three replicas share the work.
 const (
 	TopicUserFollows    = "user.follows.v1"
 	TopicVideoLifecycle = "video.lifecycle.v1"
@@ -56,8 +54,8 @@ const (
 	// retrying. An outage longer than this gets the member dropped from the group, and its
 	// partitions move to another member while it still retries.
 	rebalanceTimeout = 5 * time.Minute
-	// handlerTimeout bounds one attempt at an event, author lock, fan-out and commit included
-	// (ADR-0011, section 11). A fan-out to 200k followers takes about a second.
+	// handlerTimeout bounds one attempt at an event, author lock, fan-out and commit included. A
+	// fan-out to 200k followers takes about a second.
 	handlerTimeout = 30 * time.Second
 	// rollbackTimeout bounds the rollback of a failed transaction, which runs on a context of its
 	// own: the attempt's may have run out.
@@ -65,7 +63,7 @@ const (
 )
 
 // freshnessBuckets are the bucket bounds of svp.feed.freshness, in seconds, with a bound at 10 s,
-// the p95 freshness target (ADR-0011, section 5).
+// the p95 freshness target.
 var freshnessBuckets = []float64{0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60}
 
 // Projector applies events to the read model.
@@ -148,7 +146,7 @@ func (p *Projector) handleFollow(ctx context.Context, r *kgo.Record) error {
 		return p.unfollow(edgeContext(ctx, &ev, follower, followee), follower, followee)
 	}
 	// An unknown or empty branch decodes as nil: skip it, as v1 may gain branches this consumer
-	// does not know yet (ADR-0006).
+	// does not know yet.
 	return nil
 }
 
@@ -218,7 +216,7 @@ func (p *Projector) handleVideo(ctx context.Context, r *kgo.Record) error {
 	ready := ev.GetVideoReady()
 	if ready == nil {
 		// video.uploaded is media-worker's; an unknown or empty branch is skipped, as v1 may gain
-		// branches this consumer does not know yet (ADR-0006).
+		// branches this consumer does not know yet.
 		return nil
 	}
 	v, err := checkVideoReady(ready)
@@ -349,7 +347,7 @@ func (p *Projector) inAuthorTx(ctx context.Context, author uuid.UUID, fn func(q 
 // PruneTimeline deletes timeline rows older than 30 days, a batch at a time until none is left,
 // and returns how many it deleted. It calls onBatch after every batch deleted, the last one
 // included, even when it deleted nothing, so a run cut short by its deadline still reports the
-// batches it got through (docs/adr/0011-observability-stage3.md, section 5). Reads filter those
+// batches it got through. Reads filter those
 // rows out anyway, so running late, twice or on several replicas at once is harmless.
 func (p *Projector) PruneTimeline(ctx context.Context, onBatch func()) (int64, error) {
 	return p.pruneTimeline(ctx, pruneBatch, onBatch)

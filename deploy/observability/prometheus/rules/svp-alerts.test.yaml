@@ -1,5 +1,5 @@
-# promtool tests of svp-alerts.yaml and the Sloth recording rules (docs/adr/0011-observability-stage3.md,
-# section 8). Run with `make slo-check`. Samples are 15 s apart, like the services' metric export.
+# promtool tests of svp-alerts.yaml and the Sloth recording rules. Run with `make slo-check`. Samples are 15 s
+# apart, like the services' metric export.
 # Loop gauges hold the Unix time of the last success; promtool time starts at 0, so a success is
 # never recorded as 0 here (0 means "never succeeded"). A series that stops is written with `_`
 # (no sample), never `stale`: OTLP-pushed series get no staleness marker.
@@ -731,7 +731,7 @@ tests:
         alertname: BackgroundLoopStalled
         exp_alerts: []
 
-  # RateLimitFallbackActive pages on the share of fallback decisions per instance (docs/adr/0021, section 11),
+  # RateLimitFallbackActive pages on the share of fallback decisions per instance,
   # not on a single one. Samples are cumulative counters, 15 s apart; 300 decisions per sample is 20 a second.
   # An instance at 20 decisions a second moves entirely to the fallback at 135 s (Redis lost): the share over the
   # 2 m window reaches a half at 180 s, the page fires after `for: 1m`, well within 4 minutes of the switch.

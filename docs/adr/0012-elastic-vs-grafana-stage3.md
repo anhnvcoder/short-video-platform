@@ -238,3 +238,9 @@ CPU, so lượng đĩa giữa hai bộ, thử exporter `elasticsearch`, đo over
     giá ngày đó.
   - Cần tìm kiếm full-text log hoặc SIEM, hay tổ chức đã có Elastic: đo lại với license và retention thật.
   - Elastic hỗ trợ chính thức đường exporter thẳng cho Kibana APM, hoặc Kibana đưa service map vào license miễn phí.
+
+## Hiện thực ở
+
+- Profile `obs-elastic` của `deploy/compose/compose.yaml`, chọn bằng `make up OBS=elastic` (`deploy/compose/compose.mk`).
+- Cấu hình ở `deploy/observability/elastic/` (`apm-server.yml`, `kibana.yml`, `otelcol-config.yaml` ghép đè lên
+  `deploy/observability/otelcol/config.yaml`, chỉ đổi exporter).

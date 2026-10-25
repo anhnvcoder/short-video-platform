@@ -1,4 +1,4 @@
-# Image of the web client (docs/adr/0016-web-client.md, sections 1, 7 and 10): Next's standalone server on the
+# Image of the web client: Next's standalone server on the
 # distroless Node runtime. Build context is web/ (its .dockerignore leaves out node_modules, build output and .env*):
 #   env -u DOCKER_DEFAULT_PLATFORM docker build -f deploy/docker/web.Dockerfile -t svp/web:dev web
 # No secret and no runtime setting goes into the build: GATEWAY_URL, REDIS_URL, APP_ORIGIN, MEDIA_ORIGIN, UPLOAD_ORIGIN,
@@ -13,7 +13,7 @@
 
 # Build stage. Every base image is pinned by the digest of its multi-arch index (linux/amd64 and linux/arm64), so the
 # same commit builds from the same base on the machine and in CI, and Renovate proposes each new digest as a reviewed
-# change (docs/adr/0015-cicd-devsecops-stage5.md, sections 4 and 10). The Node major (26, also in the runtime image's
+# change. The Node major (26, also in the runtime image's
 # name below) moves with web/.nvmrc and engines of web/package.json in one Renovate pull request.
 FROM node:26-trixie@sha256:31ea2a1880e8393df2445e7654ec74992d7fa450fd659ba5b66b0bec909a55b1 AS build
 WORKDIR /src
@@ -33,7 +33,7 @@ COPY pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN --mount=type=cache,target=/pnpm-store pnpm install --frozen-lockfile --store-dir /pnpm-store
 
 COPY . .
-# The build's id (docs/adr/0019-web-k3d-supply-chain-observability.md, section 1): the first 12 hex digits of the commit
+# The build's id: the first 12 hex digits of the commit
 # in CI (deploy/ci/build-image.sh), dev- and a hash of this build context on the dev path of k3d (web_build_id of
 # deploy/k8s/lib.sh), empty for compose. next.config.ts makes it Next's deploymentId. Declared here, after the install,
 # so a new id rebuilds from this step on and keeps the install layer.

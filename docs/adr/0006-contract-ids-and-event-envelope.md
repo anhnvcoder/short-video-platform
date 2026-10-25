@@ -259,3 +259,11 @@ lưu và không đi vào event.
   - Các service tin `x-user-id` cho tới khi có mTLS (giai đoạn 6).
 - Xem lại khi: có producer hoặc consumer ngoài monorepo (cân nhắc schema registry); một topic có consumer chỉ cần một phần
   nhỏ loại event mà đọc thừa thành đáng kể; có service bên ngoài cluster gọi thẳng vào service nội bộ.
+
+## Hiện thực ở
+
+- Bố cục proto, envelope event, versioning (§1, §3, §4): `proto/svp/<domain>/v1/`, `buf.yaml`; consumer bỏ qua có chủ ý nhánh
+  `oneof` chưa biết: `services/feed-service/internal/projector/projector.go`, `services/video-service/internal/server/transcode.go`,
+  `services/media-worker/internal/worker/worker.go` (và test `services/video-service/internal/server/transcode_test.go`).
+- ID UUIDv7 (§2): `internal/ids/`.
+- Danh tính người gọi `x-user-id` (§5): `internal/callerid/`.

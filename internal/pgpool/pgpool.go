@@ -1,9 +1,7 @@
 // Package pgpool opens the Postgres pool every service uses: traced with otelpgx, pool statistics
 // as metrics, and checked at startup within a bounded time, retrying while the database is not
 // reachable over the network. One constructor keeps the tracing, the leaving out of query
-// parameters and the startup deadline the same in every service
-// (docs/adr/0011-observability-stage3.md, sections 2, 5 and 11; docs/adr/0020-reliability-stage6.md,
-// section 11).
+// parameters and the startup deadline the same in every service.
 package pgpool
 
 import (

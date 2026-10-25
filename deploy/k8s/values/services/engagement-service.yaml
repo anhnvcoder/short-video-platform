@@ -1,4 +1,4 @@
-# Release engagement-service of chart deploy/helm/svp-service (docs/adr/0014-kubernetes-local-stage4.md, section 10).
+# Release engagement-service of chart deploy/helm/svp-service.
 # Secret engagement-service-env holds DATABASE_URL (app role) and the Kafka login; engagement-service-migrate-env the
 # migrator role's DATABASE_URL.
 image:
@@ -16,7 +16,7 @@ resources:
   limits: {cpu: 500m, memory: 256Mi}
 env:
   LISTEN_ADDR: ":9103"
-  # Produces and consumes engagement.views.v1: views are counted in batches (ADR-0009 sections 3, 4 and 11).
+  # Produces and consumes engagement.views.v1: views are counted in batches.
   KAFKA_BROKERS: redpanda.svp-data.svc.cluster.local:9092
   PYROSCOPE_SERVER_ADDRESS: http://pyroscope.svp-obs:4040
   SENTRY_ENVIRONMENT: k3d

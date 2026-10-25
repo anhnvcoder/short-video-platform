@@ -29,7 +29,7 @@ func TestNoPprofOnDefaultMux(t *testing.T) {
 
 // TestHealthcheckStartsNoTelemetry: the healthcheck subcommand, which a container runtime runs
 // every few seconds, installs no OTel provider and starts no error reporting even with the
-// endpoints and SENTRY_DSN set (docs/adr/0011-observability-stage3.md, section 10).
+// endpoints and SENTRY_DSN set.
 func TestHealthcheckStartsNoTelemetry(t *testing.T) {
 	var lc net.ListenConfig
 	lis, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
@@ -78,8 +78,7 @@ func (p *reportingProbe) WithAttrs([]slog.Attr) slog.Handler { return p }
 func (p *reportingProbe) WithGroup(string) slog.Handler      { return p }
 
 // TestServeFailureReachesErrorTracker: a failure that stops serve is logged before the error
-// tracker is flushed and closed, so the tracker receives it (docs/adr/0011-observability-stage3.md,
-// section 7).
+// tracker is flushed and closed, so the tracker receives it.
 func TestServeFailureReachesErrorTracker(t *testing.T) {
 	var mu sync.Mutex
 	var events []string

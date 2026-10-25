@@ -6,12 +6,12 @@ import type { BffServices } from "./runtime";
 import { sessionCookieName } from "./session";
 
 // /api/* for client components: the browser calls the web server with its session cookie, and the web server calls
-// the gateway with the session's access token (docs/adr/0016-web-client.md, section 5). It is not an open proxy: only
+// the gateway with the session's access token. It is not an open proxy: only
 // the routes below pass, the gateway URL is built from GATEWAY_URL and the checked path, never from a string of the
 // client (WEB-7), and only the headers listed here go either way.
 
 const id = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-// A handle as user-service stores it (docs/adr/0018-web-profiles-public-video-upload.md, section 1): the client sends
+// A handle as user-service stores it: the client sends
 // the lowercase form, so upper case, an escape or any other character matches nothing.
 const handle = "[a-z][a-z0-9_]{2,29}";
 

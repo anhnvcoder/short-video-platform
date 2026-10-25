@@ -409,3 +409,15 @@ Chọn **B**:
   - Diff code sinh chiếm phần lớn review của các PR, hoặc CI bắt lệch `make generate` quá một lần mỗi tháng.
   - Một công cụ ghim ở `Makefile` chậm hơn bản mới nhất quá hai minor mà chưa có Renovate.
   - Cần cấu hình lồng nhau hoặc nhiều hơn khoảng 15 biến cho một service (cân nhắc file cấu hình).
+
+## Hiện thực ở
+
+- Một Go module và sinh code (§1, §2): `go.mod`, `buf.gen.yaml`, `services/*/sqlc.yaml`, target `generate`, `generate-check` của
+  `Makefile`.
+- Dependency và công cụ ghim (§3): target `tools` và các dòng ghim version của `Makefile`, `renovate.json`; `services/*/sqlc.yaml`
+  ánh xạ cột `uuid` sang kiểu của dự án thay vì thêm module uuid bên thứ ba.
+- Cấu hình bằng biến môi trường (§4): `internal/envcfg/`, `services/*/cmd/*/main.go`.
+- Compose nối Postgres native và role database (§6): `deploy/compose/compose.yaml`, `deploy/postgres/bootstrap.sql`.
+- Docker và binary (§7): `deploy/docker/service.Dockerfile`, lệnh con `migrate`/`serve` của `services/*/cmd/*/main.go`.
+- Phạm vi giai đoạn 1 (§8): `services/gateway/openapi.yaml` viết tay, `services/gateway/internal/httpx/middleware.go` (span HTTP
+  mới không nhận trace context của client), giới hạn upload 500 MiB ở `services/video-service/internal/server/server.go`.

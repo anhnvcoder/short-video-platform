@@ -1,4 +1,4 @@
-// Checks of a file and a title before anything is sent (docs/adr/0018-web-profiles-public-video-upload.md, section 8).
+// Checks of a file and a title before anything is sent.
 // They spare the user a doomed upload; they are not the guard: the signed form limits the size and the type, and the
 // media worker's ffprobe decides what a video is.
 

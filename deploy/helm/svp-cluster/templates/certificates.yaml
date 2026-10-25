@@ -1,5 +1,5 @@
 {{- /*
-TLS of the entry point from a local CA run by cert-manager (ADR-0014 section 9): a self-signed issuer signs the CA, the
+TLS of the entry point from a local CA run by cert-manager: a self-signed issuer signs the CA, the
 CA issuer signs the two certificates Envoy serves (the wildcard one, and svp-apex for svp.localhost alone,
 templates/gateway.yaml says why two). Clients trust the CA alone (`make k8s-ca` writes it to
 .k8s/ca.crt), nothing is installed into the machine's trust store, and cert-manager renews both certificates as it

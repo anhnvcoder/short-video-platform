@@ -4,7 +4,7 @@ import { routes } from "./lib/config.js";
 import { send } from "./lib/http.js";
 import { webHeaders } from "./lib/setup.js";
 
-// Scenarios of the web client's server-side rendering (ADR-0020, section 2): the explore feed logged in, the public
+// Scenarios of the web client's server-side rendering: the explore feed logged in, the public
 // share page as a guest, and the login page. Redirects are not followed, so a lost session shows as a failed check
 // (a redirect to /login) rather than as the login page's 200.
 

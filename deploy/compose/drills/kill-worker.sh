@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Drill: kill media-worker in the middle of a transcode and check the video is not lost
-# (ADR-0008 section 8: manual commit after the handler, so the uncommitted video.uploaded is
+# (the consumer commits by hand after the handler, so the uncommitted video.uploaded is
 # delivered again). Uploads a 60 s 1080p video, completes it, waits until ffmpeg runs for it in
 # the worker, SIGKILLs the container, starts it again and waits for READY. Checks: the video is
 # READY and every playlist and segment downloads; the outbox of svp_video holds exactly two rows

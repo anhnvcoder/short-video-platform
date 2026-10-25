@@ -1,8 +1,7 @@
 -- +goose Up
 -- View counters, added in batches by the view.recorded consumer. consumer_offsets holds, per
 -- partition, the next offset not yet counted; it changes in the same transaction as
--- view_counts, so a redelivered record is counted once
--- (docs/adr/0009-engagement-feed-stage2b.md, section 4).
+-- view_counts, so a redelivered record is counted once.
 CREATE TABLE view_counts (
     video_id   uuid        PRIMARY KEY,
     view_count bigint      NOT NULL,

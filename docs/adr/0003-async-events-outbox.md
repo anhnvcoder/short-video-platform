@@ -75,3 +75,11 @@ cân nhắc khi số bước và nhánh lỗi tăng tới mức khó theo dõi l
   - trễ thêm một chu kỳ poll ở mỗi bước có outbox;
   - luồng nghiệp vụ nằm rải rác ở nhiều consumer, phải dựa vào tracing để nhìn được toàn cảnh.
 - Xem lại khi: poll outbox thành tải đáng kể cho Postgres, hoặc cần độ trễ thấp hơn chu kỳ poll. Lúc đó cân nhắc CDC.
+
+## Hiện thực ở
+
+- Outbox và relay: `internal/outbox/`; bảng outbox ở `services/user-service/migrations/00003_create_outbox.sql`,
+  `services/video-service/migrations/00002_create_outbox.sql`.
+- Consumer at-least-once, commit tay, DLQ: `internal/kafkax/`; consumer idempotent ở `services/feed-service/internal/projector/`,
+  `services/video-service/internal/server/transcode.go`, `services/engagement-service/internal/server/views.go`.
+- Kiểm gửi trùng: `deploy/compose/drills/duplicate-events.sh`, `deploy/compose/drills/duplicate-feed-events.sh`.

@@ -20,7 +20,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return page === null || page.kind === "not-found" ? { title: t("notFound.title") } : {};
 }
 
-// The public share page /v/{id} (docs/adr/0018-web-profiles-public-video-upload.md, section 7). It is outside the
+// The public share page /v/{id}. It is outside the
 // (main) group: no login needed, no navigation bars. The id must be a canonical UUID, checked before anything is
 // called; every video nobody may watch here gets the same 404.
 export default async function VideoPage({ params }: Props) {

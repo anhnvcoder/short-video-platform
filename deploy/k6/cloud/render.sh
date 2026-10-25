@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prints the manifests of the k6 Job of the cloud cluster (docs/adr/0020-reliability-stage6.md, section 2) on stdout:
+# Prints the manifests of the k6 Job of the cloud cluster on stdout:
 # namespace svp-load, ConfigMap svp-k6-scripts with the scripts of deploy/k6/ as they are in this working tree, and the
 # Indexed Job of job.yaml.in. Reaches no cluster and reads no .env; needs jq. run.sh applies its output, and
 # `make cloud-check` checks it (run with no argument).

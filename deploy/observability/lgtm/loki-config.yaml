@@ -1,5 +1,5 @@
 # Loki configuration of grafana/otel-lgtm 0.36.0 (/otel-lgtm/loki-config.yaml in the image),
-# mounted read-only over the image's own (docs/adr/0011-observability-stage3.md, sections 4 and 9).
+# mounted read-only over the image's own.
 # Copied from the image unchanged except for limits_config at the end: re-check it against the
 # image's file when the image is upgraded.
 

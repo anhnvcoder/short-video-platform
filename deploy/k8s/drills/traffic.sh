@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Drill traffic for the canaries on cluster svp (docs/adr/0014-kubernetes-local-stage4.md, section 13;
-# docs/adr/0019-web-k3d-supply-chain-observability.md, section 3), from this machine through Envoy:
+# Drill traffic for the canaries on cluster svp, from this machine through Envoy:
 # - the gateway's: about 10 requests/s (https://api.svp.localhost:8443) to GET /feed/explore and GET /feed/following,
 #   the routes whose 5xx and latency AnalysisTemplate gateway-canary judges;
 # - the web client's: about 4 requests/s (https://svp.localhost:8443), GET /login three times a second (a page that

@@ -1,7 +1,7 @@
 import "server-only";
 import { z } from "zod";
 
-// Server configuration of the web client (docs/adr/0016-web-client.md, section 5). Read from process.env when a
+// Server configuration of the web client. Read from process.env when a
 // request needs it, never at `next build`: the image is built once and configured where it runs. Nothing here may
 // reach the browser bundle, so no variable carries the prefix Next inlines into it, and next.config has no `env` key.
 

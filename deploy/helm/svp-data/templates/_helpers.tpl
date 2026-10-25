@@ -1,5 +1,5 @@
 {{- /*
-Security context of every container this chart runs (Pod Security "restricted", ADR-0014 section 3): no privilege
+Security context of every container this chart runs (Pod Security "restricted"): no privilege
 escalation, no capability, a read-only root filesystem (whatever a process writes goes to a declared volume).
 */}}
 {{- define "svp-data.containerSecurityContext" -}}

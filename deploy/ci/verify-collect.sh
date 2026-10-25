@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the public artifact of a verification run (docs/adr/0021-deferred-verification-stage6b.md, section 4): copies
+# Builds the public artifact of a verification run: copies
 # the files of an allow list into $SVP_VERIFY_ARTIFACT (default verify-artifact in ci_temp_dir of
 # deploy/ci/platform.sh: $RUNNER_TEMP on GitHub), each only after a scan, and prints to the job's log a summary taken
 # from the copies alone. Anyone can read the artifact and the log of a public repository, so it fails closed: a file

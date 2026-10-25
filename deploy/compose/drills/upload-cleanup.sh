@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Drill: the job that cleans up abandoned uploads in video-service (ADR-0010, sections 5 and 7).
+# Drill: the job that cleans up abandoned uploads in video-service.
 # video-service is recreated alone with drill-only settings, an upload abandoned after
 # abandon_after and a sweep every sweep_interval (defaults 1h and 5m), then with a fresh user A:
 #   1. A creates video "abandoned" and uploads its file but never completes it; the object is in

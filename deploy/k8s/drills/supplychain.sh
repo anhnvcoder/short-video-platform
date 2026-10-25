@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Drill: the image policy of namespace svp (Kyverno ImageValidatingPolicy svp-images, chart deploy/helm/svp-policy;
-# docs/adr/0015-cicd-devsecops-stage5.md, sections 7 and 8) on cluster svp. Every case prints one PASS, FAIL or SKIP
+# Drill: the image policy of namespace svp (Kyverno ImageValidatingPolicy svp-images, chart deploy/helm/svp-policy)
+# on cluster svp. Every case prints one PASS, FAIL or SKIP
 # line with Kyverno's message; a refusal passes only with the message of the rule that should refuse it, not any
 # refusal. The pods are sent as server-side dry runs (admission runs, Kyverno verifies, nothing is created), but for
 # case b, which is a real Deployment:

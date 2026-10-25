@@ -1,5 +1,5 @@
 {{- /*
-Canary of a release with canary set, the gateway and the web client (ADR-0014 section 13, ADR-0019 section 3): the
+Canary of a release with canary set, the gateway and the web client: the
 Rollout's strategy, Service <release>-canary, and AnalysisTemplates <release>-canary (background) and
 <release>-canary-gate (the step before 100%) that decide from Envoy's metrics whether the canary is promoted or aborted.
 The release's HTTPRoute (api for the gateway, web for the web client) splits the traffic between the two Services

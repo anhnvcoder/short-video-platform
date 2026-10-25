@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# scan-gate.sh [--allow-critical] LABEL REPORT: the gate between scanning an image and pushing or attesting it
-# (docs/adr/0015-cicd-devsecops-stage5.md, section 6). REPORT is the JSON of `trivy image --scanners vuln,secret` run
+# scan-gate.sh [--allow-critical] LABEL REPORT: the gate between scanning an image and pushing or attesting it.
+# REPORT is the JSON of `trivy image --scanners vuln,secret` run
 # with every severity and .trivyignore.yaml; LABEL names the image in the output (for example gateway linux/arm64).
 # scan-gate.sh --fs LABEL REPORT: the same rules for the JSON of `trivy fs` on a lockfile (make web-lockfile-scan): the
 # web image shows trivy only the few npm packages left in its node_modules, since the bundler folds the server's
 # dependencies into its chunks, so the lockfile is where every npm package and its version can still be seen. A
 # blocked lockfile fails the check that ran it; there is no push to stop.
 # scan-gate.sh --check-ignorefile: checks only the rules of .trivyignore.yaml (below), with no image and no report, and
-# those of deploy/ci/trivy-config-ignore.yaml, the misconfigurations make trivy-config leaves out
-# (docs/adr/0021-deferred-verification-stage6b.md, section 9). Job config of ci.yml runs it on every pull request and
+# those of deploy/ci/trivy-config-ignore.yaml, the misconfigurations make trivy-config leaves out.
+# Job config of ci.yml runs it on every pull request and
 # push: a pull request that changes nothing but .trivyignore.yaml builds no image, so without it a broken entry would
 # reach main unchecked, then stop the daily rescan from attesting any service, and 72 hours later Kyverno would refuse
 # new pods. The image gate reads only .trivyignore.yaml: trivy-config-ignore.yaml never reaches it.

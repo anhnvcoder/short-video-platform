@@ -6,9 +6,9 @@ COMPOSE_ARGS := --env-file .env -f deploy/compose/compose.yaml
 COMPOSE   := env -u DOCKER_DEFAULT_PLATFORM docker compose $(COMPOSE_ARGS) --profile core
 # Every profile, so down, ps and logs never miss a container of the observability stacks.
 COMPOSE_ALL := $(COMPOSE) --profile obs --profile obs-elastic
-# `make up OBS=...` (docs/adr/0011-observability-stage3.md, sections 9 and 10). Unset: core only,
+# `make up OBS=...`. Unset: core only,
 # telemetry SDKs on with no backend to reach. lgtm: core and the obs profile. elastic: core and
-# the obs-elastic profile, the comparison of docs/adr/0012-elastic-vs-grafana-stage3.md. off: core
+# the obs-elastic profile, the Elastic stack kept only to compare with LGTM. off: core
 # with telemetry off in every service, the baseline for measuring its overhead; the compose file
 # reads these three variables, which are set nowhere else.
 OBS ?=
@@ -17,14 +17,14 @@ TELEMETRY_OFF := SVP_OTEL_SDK_DISABLED=true SVP_PYROSCOPE_SERVER_ADDRESS= SENTRY
 COMPOSE_UP_ := $(COMPOSE)
 # The Telegram bot token reaches Alertmanager as a compose secret, and compose refuses to create a
 # secret from a variable that is not set at all. A .env made before stage 3 lacks the line, so an
-# absent variable is passed as empty; a value in .env is never overridden (ADR-0011, section 8).
+# absent variable is passed as empty; a value in .env is never overridden.
 TELEGRAM_TOKEN_ABSENT = $(shell grep -q '^SVP_ALERT_TELEGRAM_BOT_TOKEN=' .env 2>/dev/null || echo SVP_ALERT_TELEGRAM_BOT_TOKEN=)
 COMPOSE_UP_lgtm = env -u DOCKER_DEFAULT_PLATFORM $(TELEGRAM_TOKEN_ABSENT) docker compose $(COMPOSE_ARGS) --profile core --profile obs
 COMPOSE_UP_elastic := env -u DOCKER_DEFAULT_PLATFORM docker compose $(COMPOSE_ARGS) --profile core --profile obs-elastic
 COMPOSE_UP_off := env -u DOCKER_DEFAULT_PLATFORM $(TELEMETRY_OFF) docker compose $(COMPOSE_ARGS) --profile core
-# The two observability stacks never run together (16 GB machine, ADR-0011, section 9), and a
-# stack measured as core only or with telemetry off has neither (the overhead states of section
-# 10): the long-running services of the profiles `make up OBS=<value>` does not choose, which it
+# The two observability stacks never run together (16 GB machine), and a
+# stack measured as core only or with telemetry off has neither (the baselines of the telemetry
+# overhead measurement): the long-running services of the profiles `make up OBS=<value>` does not choose, which it
 # refuses to start beside.
 OBS_OTHER_lgtm := elasticsearch kibana apm-server otelcol-elastic
 OBS_OTHER_elastic := otelcol lgtm alertmanager glitchtip
@@ -39,16 +39,16 @@ DB_PASSWORD_VARS := SVP_USER_MIGRATOR_DB_PASSWORD SVP_USER_APP_DB_PASSWORD SVP_V
 # 40 characters, hence 20 random bytes in hex.
 S3_SECRET_VARS := SVP_MINIO_ROOT_PASSWORD SVP_VIDEO_S3_SECRET_KEY SVP_MEDIA_WORKER_S3_SECRET_KEY
 # GlitchTip's Django secret key and its admin password: random per clone like the S3 secrets above, so no fixed
-# credential is committed (ADR-0011, section 7).
+# credential is committed.
 GLITCHTIP_SECRET_VARS := GLITCHTIP_SECRET_KEY GLITCHTIP_ADMIN_PASSWORD
 # Login of GlitchTip's admin user: a fixed local address, not anyone's real mailbox.
 GLITCHTIP_ADMIN_EMAIL := admin@svp.local
 # Written together by tools/jwtkey: one key pair, so they are generated all or none.
 JWT_VARS := JWT_SIGNING_KID JWT_SIGNING_KEY JWT_VERIFY_KEYS
-# Used by the k3d cluster only (deploy/k8s/secrets.sh, docs/adr/0014-kubernetes-local-stage4.md section 8): the
+# Used by the k3d cluster only (deploy/k8s/secrets.sh): the
 # superuser of the in-cluster Postgres, Redpanda's superuser svp-admin, the Kafka user of KEDA and of each service with
 # Kafka (compose runs Redpanda without SASL), Grafana's admin login, and the secret key of MinIO user svp-pg-backup,
-# which the backups of the in-cluster Postgres log in with (docs/adr/0020-reliability-stage6.md, section 5). The
+# which the backups of the in-cluster Postgres log in with. The
 # *_S3_SECRET_KEY ones get 20 random bytes in hex like S3_SECRET_VARS (MinIO's 40-character cap), the others 24.
 K8S_SECRET_VARS := SVP_PG_SUPERUSER_PASSWORD SVP_KAFKA_ADMIN_PASSWORD SVP_KAFKA_KEDA_PASSWORD \
 	SVP_KAFKA_USER_SERVICE_PASSWORD SVP_KAFKA_VIDEO_SERVICE_PASSWORD SVP_KAFKA_ENGAGEMENT_SERVICE_PASSWORD \
@@ -113,8 +113,8 @@ obs-exclusive: env-required
 	@running=$$($(COMPOSE_ALL) ps -q $(OBS_OTHER_$(OBS))); \
 	  if [ -n "$$running" ]; then echo "make up$(if $(OBS), OBS=$(OBS)): a container of an observability profile it does not start is running (one of: $(OBS_OTHER_$(OBS))); run 'make down' first" >&2; exit 1; fi
 
-# Compose and the k3d cluster svp never run together on the 16 GB machine (CLAUDE.md,
-# docs/adr/0014-kubernetes-local-stage4.md section 2): no node of the cluster (label k3d.cluster=svp) and not its
+# Compose and the k3d cluster svp never run together on the 16 GB machine (CLAUDE.md): together
+# they do not fit in its RAM. No node of the cluster (label k3d.cluster=svp) and not its
 # registry may be running. `make k8s-up` refuses the other way round (deploy/k8s/k8s.mk).
 k3d-exclusive:
 	@running=$$(env -u DOCKER_DEFAULT_PLATFORM docker ps -q --filter label=k3d.cluster=svp; \
@@ -197,14 +197,14 @@ smoke: ## Through the gateway at SMOKE_URL: register, log in, follow, upload to 
 # them with unfollow events when it ends. drill-rate-limit and drill-upload-cleanup recreate the
 # gateway or video-service with drill-only settings and put the defaults back when they end.
 # Every script (smoke too) deletes the per-IP register rate limit keys in Redis db 10 first: lab
-# only, since every run registers from the one Docker bridge address (ADR-0010, section 7).
+# only, since every run registers from the one Docker bridge address.
 # N defaults to 5, but to 100 for measure-explore-cache.
 N ?= 5
 FOLLOWERS ?= 10000
 # A drill recreates services (the drill-only settings, and the restore when it ends), so it runs
 # compose with the telemetry state the stack was started with: on a stack from `make up OBS=off`
 # (its Go services run with OTEL_SDK_DISABLED=true) telemetry stays off, instead of coming back on
-# halfway through an overhead measurement (ADR-0011, section 10). The inspect template prints
+# halfway through an overhead measurement. The inspect template prints
 # `off` or nothing, never another setting of the containers.
 TELEMETRY_OFF_RUNNING = $(shell ids=`$(COMPOSE) ps -q`; test -z "$$ids" || env -u DOCKER_DEFAULT_PLATFORM docker inspect \
 	--format '{{range .Config.Env}}{{if eq . "OTEL_SDK_DISABLED=true"}}off{{end}}{{end}}' $$ids | grep -m 1 -x off)
@@ -233,15 +233,14 @@ drill-upload-cleanup: env-required ## Abandon an upload with a 20 s limit; check
 
 # The two observability drills need the stack of `make up OBS=lgtm`. They read Prometheus, Tempo and
 # Loki through Grafana's datasource proxy, Alertmanager's API and GlitchTip's API, with the
-# read-only token SENTRY_AUTH_TOKEN read from .env and never printed (docs/adr/0011-observability-stage3.md,
-# sections 7 to 9).
+# read-only token SENTRY_AUTH_TOKEN read from .env and never printed.
 drill-alert-to-sentry: env-required ## OBS=lgtm: stop feed-service; time the page alert, then find its trace (Tempo), log line (Loki) and GlitchTip event; T4 - T1 under 5 min
 	COMPOSE='$(DRILL_COMPOSE)' deploy/compose/drills/alert-to-sentry.sh $(SMOKE_URL)
 
 drill-obs-threats: env-required ## OBS=lgtm: JWT-8 (no email, password, token in traces, logs, GlitchTip), UP-8 (log ids), OPS-1 (no pprof, /metrics, loopback ports only), RL-2 (fallback metric and alert), WEB-9 (no email, token, sid, ?next= or presigned signature from the web client's forms, /rum and /monitoring in GlitchTip, Tempo, Loki or Prometheus)
 	COMPOSE='$(DRILL_COMPOSE)' deploy/compose/drills/obs-threats.sh $(SMOKE_URL)
 
-# Game day (docs/adr/0020-reliability-stage6.md, section 13), on the stack of `make up OBS=lgtm` with a READY video:
+# Game day, on the stack of `make up OBS=lgtm` with a READY video:
 # engagement-service stopped under the background load of k6 profile local (K6_IMAGE, held SVP_K6_HOLD, default 60m),
 # T0 and T1 (the CircuitBreakerOpen page in Alertmanager) timed, the on-call's marks from another terminal; the stack is
 # put back and the timeline, report and k6 summary written to .k6/gameday-<time>/ when it ends. LOCAL LAB ONLY: resets

@@ -1,15 +1,15 @@
 # Pyroscope 2.4.0 (chart https://grafana.github.io/helm-charts pyroscope 2.4.0; compose runs 2.3.1 inside
-# grafana/otel-lgtm), release pyroscope in namespace svp-obs, wave 3 of deploy/argocd/apps/components.json
-# (docs/adr/0014-kubernetes-local-stage4.md, sections 2, 3 and 11). One single-binary pod (-target=all) on a local
+# grafana/otel-lgtm), release pyroscope in namespace svp-obs, wave 3 of deploy/argocd/apps/components.json.
+# One single-binary pod (-target=all) on a local
 # volume. The five services but media-worker push profiles to http://pyroscope.svp-obs:4040, as in compose; Grafana
 # reads there too.
 
 pyroscope:
   # By digest (multi-arch index: linux/amd64 and linux/arm64), the chart's appVersion beside it for the reader: a tag
-  # can be pushed again to other content, a digest cannot (docs/adr/0015-cicd-devsecops-stage5.md, section 8). The chart
+  # can be pushed again to other content, a digest cannot. The chart
   # renders repository:tag (Docker Hub implied), so tag holds version@digest; deploy/k8s/check-image-digests.sh fails
   # on an image without one. repository is the chart's default written out: Renovate's helm-values manager finds a pin
-  # only as repository and tag under a key ending in "image" (ADR-0015 section 10), and updates both parts of tag.
+  # only as repository and tag under a key ending in "image", and updates both parts of tag.
   image:
     repository: grafana/pyroscope
     tag: 2.4.0@sha256:b7e62699a27463aa3533efe3f88c320da594da495731fd6eabca6f44f92cdd7b
@@ -33,7 +33,7 @@ pyroscope:
     enabled: true
     storageClassName: local-path
     size: 5Gi
-  # Pod Security "restricted" (ADR-0014 section 3; the namespace rejects pods that do not meet it): the chart sets
+  # Pod Security "restricted" (the namespace rejects pods that do not meet it): the chart sets
   # neither seccomp nor a container securityContext. The image's user is 10001.
   podSecurityContext:
     runAsUser: 10001

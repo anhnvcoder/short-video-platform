@@ -1,7 +1,7 @@
 {
   "uid": "svp-pipeline",
   "title": "SVP — Kafka and pipeline",
-  "description": "Consumer lag, DLQ, background loops, video and feed timings, rate limit and breaker (ADR-0011 §5, §8).",
+  "description": "Consumer lag, DLQ, background loops, video and feed timings, rate limit and breaker.",
   "tags": [
     "svp"
   ],

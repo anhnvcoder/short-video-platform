@@ -50,8 +50,8 @@ const webkit = {
 const publishes = /@publishes/;
 
 // End-to-end tests of the web client on the compose stack of `make up` (`make web-e2e`, `make measure-web`): the
-// browser opens the `web` container at http://localhost:3001, the origin its CSRF check and cookie form expect
-// (docs/adr/0016-web-client.md, sections 5 and 7). With SVP_STACK=k3d (`make k8s-web-e2e`) the same tests, on both
+// browser opens the `web` container at http://localhost:3001, the origin its CSRF check and cookie form expect.
+// With SVP_STACK=k3d (`make k8s-web-e2e`) the same tests, on both
 // browsers, open the web of cluster svp at https://svp.localhost:8443 instead (e2e/stack.ts). e2e/global-setup.ts
 // seeds the videos through the gateway first.
 export default defineConfig({

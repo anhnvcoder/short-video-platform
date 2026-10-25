@@ -1,5 +1,5 @@
 {{- /*
-Flows into and out of svp-data (ADR-0014 section 3, "flows opened"; threat model IN-2, IN-4, IN-9). Chart svp-cluster
+Flows into and out of svp-data (threat model IN-2, IN-4, IN-9). Chart svp-cluster
 already denies every pod of the namespace in both directions and opens DNS, and opens the API server for pods
 labelled svp-kube-api=allow (the Postgres instance, Redpanda's sidecar). Each policy below opens one server port to
 the pods that use it, chosen by label, so a pod elsewhere in the cluster (or a client added later without its label)

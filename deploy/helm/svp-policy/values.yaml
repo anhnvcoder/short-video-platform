@@ -1,4 +1,4 @@
-# ImageValidatingPolicy svp-images (docs/adr/0015-cicd-devsecops-stage5.md, section 8). Installed after Kyverno (wave
+# ImageValidatingPolicy svp-images. Installed after Kyverno (wave
 # 3 of deploy/argocd/apps/components.json), whose chart brings the CRD, and before any pod of namespace svp (wave 7).
 
 imageVerification:

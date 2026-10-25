@@ -1933,3 +1933,33 @@ thái các dòng "Chưa kiểm" của đường GitOps:
   - Thêm người hay repo vào GitOps: tách AppProject platform (được `kube-system`) khỏi AppProject ứng dụng.
   - Lên cloud (giai đoạn 7): database ra ngoài cluster (RDS, ElastiCache), External Secrets thay `secrets.sh`, load balancer có
     proxy protocol hay L7 để giữ địa chỉ client (RL-1 hai hop), CI ghi tag thay `k8s-release` (giai đoạn 5).
+
+## Hiện thực ở
+
+- Công cụ, topology, cổng (§1, §2, §14): `deploy/k8s/k3d.yaml`, `deploy/k8s/k8s.mk`, `deploy/k8s/lib.sh`, `deploy/k8s/install.sh`,
+  `Makefile`; compose và cluster không chạy cùng nhau ở `deploy/compose/compose.mk`. Ngân sách RAM §2 đo trên runner bằng
+  `deploy/ci/verify-sample.sh`, `deploy/ci/verify-run.sh`.
+- Namespace, Pod Security, NetworkPolicy (§3): `deploy/k8s/pod-security-admission.yaml`, `deploy/helm/svp-cluster/`
+  (`templates/namespaces.yaml`, `templates/networkpolicies.yaml`, `values.yaml`), NetworkPolicy của từng chart
+  (`deploy/helm/svp-data/templates/networkpolicies.yaml`, `deploy/helm/svp-observability/templates/networkpolicies.yaml`,
+  `deploy/helm/svp-service/templates/networkpolicy.yaml`), security context ở `deploy/helm/svp-data/templates/_helpers.tpl`.
+- Dữ liệu trong cluster, Redpanda SASL và ACL (§4, §5): `deploy/helm/svp-data/` (Postgres CloudNativePG, Valkey, MinIO, Job init của
+  Redpanda, `files/kafka-users.sh`, scaler KEDA, `values.yaml`), `deploy/k8s/values/cloudnative-pg.yaml`,
+  `deploy/k8s/values/redpanda.yaml`.
+- Image và chart (§6, §7): image dev và registry k3d ở `deploy/k8s/lib.sh`; năm chart dưới `deploy/helm/`; thứ tự cài
+  `deploy/argocd/apps/components.json` dùng chung cho `deploy/k8s/install.sh` và `deploy/argocd/apps/` (`templates/applications.yaml`,
+  `values.yaml`); values bên thứ ba ở `deploy/k8s/values/`.
+- Secret (§8): `deploy/k8s/secrets.sh`, `deploy/k8s/glitchtip-init.sh`, biến chỉ cho k3d ở `deploy/compose/compose.mk`.
+- Biên vào (§9): `deploy/helm/svp-cluster/templates/gateway.yaml`, `deploy/helm/svp-cluster/templates/certificates.yaml`,
+  `deploy/k8s/values/envoy-gateway.yaml`, `deploy/k8s/values/cert-manager.yaml`, `deploy/helm/svp-service/templates/httproute.yaml`.
+- Workload (§10): `deploy/helm/svp-service/` (`templates/deployment.yaml`, `service.yaml`, `migrate.yaml`, `autoscaling.yaml`,
+  `values.yaml`), `deploy/k8s/values/services/`, `deploy/k8s/values/keda.yaml`; diễn tập `deploy/k8s/drills/keda.sh`,
+  `deploy/k8s/drills/pdb.sh`.
+- Observability trong cluster (§11): `deploy/helm/svp-observability/` (`templates/glitchtip.yaml`, `grafana.yaml`,
+  `prometheusrules.yaml`, `values.yaml`), `deploy/k8s/values/kube-prometheus-stack.yaml`, `loki.yaml`, `tempo.yaml`,
+  `pyroscope.yaml`, `otel-collector.yaml`, `deploy/observability/otelcol/k8s-config.yaml`.
+- GitOps (§12): `deploy/k8s/gitops.sh`, `deploy/argocd/project.yaml`, `deploy/k8s/values/argo-cd.yaml`, `deploy/k8s/drills/gitops.sh`;
+  ngoại lệ RBAC của operator CloudNativePG ở `deploy/ci/trivy-config-ignore.yaml`.
+- Canary (§13): `deploy/helm/svp-service/templates/canary.yaml`, `deploy/k8s/values/argo-rollouts.yaml`,
+  `deploy/helm/svp-observability/templates/envoy.yaml`, `deploy/k8s/drills/canary.sh`, `deploy/k8s/drills/traffic.sh`.
+- Threat model giai đoạn 4: `deploy/k8s/drills/threats.sh`.

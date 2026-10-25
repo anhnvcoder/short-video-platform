@@ -1,4 +1,4 @@
-# Collector of the local Kubernetes cluster svp (docs/adr/0014-kubernetes-local-stage4.md, section 11):
+# Collector of the local Kubernetes cluster svp:
 # release otel-collector in namespace svp-obs, Service otel-collector.svp-obs:4317. Chart
 # svp-observability puts this file in ConfigMap otel-collector-config (key relay) through a symlink,
 # so the file is the config itself, with no Helm templating.
@@ -25,7 +25,7 @@ receivers:
       grpc:
         endpoint: 0.0.0.0:4317
   # Consumer group lag and broker metrics, as in compose. /public_metrics of Redpanda's Admin API needs
-  # no login even though the Admin API requires one (ADR-0014, section 5), so this Collector holds no
+  # no login even though the Admin API requires one, so this Collector holds no
   # Redpanda credential. enable_consumer_group_metrics is set by the redpanda-init Job of chart
   # svp-data (deploy/redpanda/create-topics.sh).
   prometheus:
@@ -75,7 +75,7 @@ processors:
     timeout: 1s
     send_batch_size: 1024
 
-# Bounded in-memory queue on every exporter (no disk queue, ADR-0011 section 1): when a backend is
+# Bounded in-memory queue on every exporter (no disk queue): when a backend is
 # down or slow, its telemetry is dropped once its queue is full or a batch has been retried for a
 # minute. A full queue drops what the batch processor hands it rather than blocking, so the other
 # exporters keep sending; but every queued batch, retried ones included, stays on the heap that the

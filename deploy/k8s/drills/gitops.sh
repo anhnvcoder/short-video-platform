@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Measures, after the fact, how long a commit took from the push to the pods that run it on the GitOps path
-# (docs/adr/0014-kubernetes-local-stage4.md, section 12): `make measure-gitops REV=<commit>` on a cluster made by
+# Measures, after the fact, how long a commit took from the push to the pods that run it on the GitOps path:
+# `make measure-gitops REV=<commit>` on a cluster made by
 # `make k8s-gitops-up`. Read only: git, GitHub's events and the cluster are read, nothing is changed. A release commit
-# is the merge of a promote pull request, which changes image.digest in deploy/k8s/values/services/
-# (docs/adr/0015-cicd-devsecops-stage5.md, section 9).
+# is the merge of a promote pull request, which changes image.digest in deploy/k8s/values/services/.
 #
 #   push           the reflog entry "update by push" of refs/remotes/origin/main that moved it to REV (a push from
 #                  this machine); else the PushEvent of GitHub's events API whose head is REV (ci_push_time of

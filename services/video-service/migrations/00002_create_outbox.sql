@@ -1,7 +1,6 @@
 -- +goose Up
 -- Events waiting for the relay, written in the transaction that changes the video, so an event
--- exists exactly when its change commits (docs/adr/0008-async-upload-pipeline-stage2a.md, section 7;
--- internal/outbox).
+-- exists exactly when its change commits (internal/outbox).
 CREATE TABLE outbox (
     id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     event_id     uuid        NOT NULL UNIQUE,

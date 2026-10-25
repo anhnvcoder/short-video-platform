@@ -1,4 +1,4 @@
-# Release media-worker of chart deploy/helm/svp-service (docs/adr/0014-kubernetes-local-stage4.md, section 10): no
+# Release media-worker of chart deploy/helm/svp-service: no
 # port, no probe (the process exits when its consumer fails and the kubelet starts it again), no profiler, no error
 # tracker, as in compose. Secret media-worker-env holds the Kafka login and MinIO user svp-media-worker's secret key.
 image:
@@ -18,8 +18,8 @@ env:
   S3_ENDPOINT: http://minio.svp-data:9000
   S3_ACCESS_KEY_ID: svp-media-worker
   WORK_DIR: /work
-# The root filesystem is read-only. /work is each pod's own job scratch space on disk (a job needs under 1 GB,
-# ADR-0008 section 9), so the compose rule of exactly one replica, which shares one volume, does not apply here; ffmpeg
+# The root filesystem is read-only. /work is each pod's own job scratch space on disk (a job needs under 1 GB),
+# so the compose rule of exactly one replica, which shares one volume, does not apply here; ffmpeg
 # needs a small /tmp.
 scratch:
   work:
@@ -41,7 +41,7 @@ egressTo: [redpanda, minio, collector]
 # waiting for a job is idle while jobs pile up). Each worker handles one job at a time (one record per poll), so
 # lagThreshold 1 asks for one replica per record waiting or in hand, up to 2. Not 3, the topic's partition count: with
 # 3 workers transcoding at once (2 CPUs each) the 8-vCPU Docker VM ran 99 % busy with 1.06 GiB available and swapping,
-# k3s's kine compaction hit its 20 s limit and the k3s server exited, twice in the GitOps cluster (ADR-0017). Both
+# k3s's kine compaction hit its 20 s limit and the k3s server exited, twice in the GitOps cluster. Both
 # paths read this file. The topic keeps 3 partitions, so one of the 2 workers owns two; a consumer beyond the partition
 # count would get none. The HPA KEDA makes reads the lag every 15 s.
 keda:

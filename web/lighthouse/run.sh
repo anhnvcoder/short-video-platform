@@ -7,7 +7,7 @@
 # - /v/{id} of a READY video, logged out: the newest video of explore, or, when explore is empty, a 4 s test clip the
 #   user publishes first.
 # Then a table of LCP, CLS, TBT and the LCP element of each page, the page's console errors, and `lhci assert` against
-# the thresholds of lighthouse/lighthouserc.json (docs/adr/0018-web-profiles-public-video-upload.md, section 10): LCP
+# the thresholds of lighthouse/lighthouserc.json: LCP
 # 2500 ms, CLS 0.1, TBT 200 ms. The reports, HTML and JSON per page and manifest.json, go to test-results/lighthouse/
 # (gitignored); nothing is uploaded anywhere. One run has noise (Lighthouse advises the median of several): compare
 # runs on the same machine, do not read one as a commitment. Exits with the status of lhci assert.

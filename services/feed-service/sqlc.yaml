@@ -12,7 +12,7 @@ sql:
         emit_pointers_for_null_types: true
         overrides:
           # Ids use the standard library uuid package, as internal/ids does: Go has one, so no uuid
-          # module is added (ADR-0007, section 3).
+          # module is added.
           - db_type: uuid
             go_type:
               import: uuid

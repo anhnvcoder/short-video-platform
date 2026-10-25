@@ -1,6 +1,6 @@
 # Chaos Mesh 2.8.5 (chart https://charts.chaos-mesh.org chaos-mesh 2.8.5, deploy/k8s/cloud/charts.json), release
-# chaos-mesh in namespace chaos-mesh, on the cloud cluster only (docs/adr/0020-reliability-stage6.md, section 7). Never on
-# k3d: the 16 GB machine has no room for it (docs/adr/0017-gitops-capacity-media-worker-max2.md). 2.8.6 was less than 3
+# chaos-mesh in namespace chaos-mesh, on the cloud cluster only. Never on k3d:
+# the 16 GB machine has no room for it. 2.8.6 was less than 3
 # days old when this was pinned and only fixes IOChaos, PhysicalMachineChaos and the dashboard.
 #
 # Installed by hand with helm for one cloud session, not through Argo CD: the chart generates new certificates and a

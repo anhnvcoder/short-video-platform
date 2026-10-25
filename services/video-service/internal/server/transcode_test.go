@@ -249,7 +249,7 @@ func TestTranscodeFailedAfterReadyIsIgnored(t *testing.T) {
 }
 
 // A newer media-worker may send an event type this service does not know: skip it, since adding
-// a oneof branch is a compatible change within v1 (ADR-0006).
+// a oneof branch is a compatible change within v1.
 func TestTranscodeUnknownEventIsSkipped(t *testing.T) {
 	needDB(t)
 	s, storage, _ := newServerWithStorage()
@@ -711,7 +711,7 @@ func TestReadyDurationFromCompleteUploadToReady(t *testing.T) {
 
 // The sample ends when the video is READY for everyone, after the commit: a transcode.completed
 // whose UPDATE waits for a lock on the row counts the wait, which the transaction's now() in
-// published_at leaves out (ADR-0011 section 5, "tới READY thật").
+// published_at leaves out.
 func TestReadyDurationIncludesLockWait(t *testing.T) {
 	needDB(t)
 	_, reader := testTelemetry(t)

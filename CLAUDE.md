@@ -36,8 +36,10 @@ Người học ưu tiên học DevOps + SA.
   [ADR-0016](docs/adr/0016-web-client.md)), chỉ dùng gói trong danh sách của ADR-0016 §10. Thêm dependency phải có lý do.
 - **Ngôn ngữ viết:** file `.md` viết tiếng Việt; mọi thứ trong code (comment, log, tên test, error
   message, `.env.example`) viết tiếng Anh.
-- **Comment trong code** tự đủ nghĩa: nói lý do ngay tại chỗ, người đọc không cần mở ADR mới hiểu. Tham chiếu ADR chỉ là phần
-  phụ để đọc sâu hơn (comment vẫn viết tiếng Anh).
+- **Comment trong code** tự đủ nghĩa: nói lý do ngay tại chỗ, người đọc không cần mở tài liệu nào mới hiểu. **Trong code không nhắc
+  ADR** (Go, TypeScript, shell, YAML, Dockerfile, Makefile, workflow, `.proto`, `.env.example`, file cấu hình): số mục của ADR đổi hay
+  ADR bị thay thì tham chiếu thành sai. Tìm ngược từ quyết định tới code qua mục "Hiện thực ở" của mỗi ADR. File `.md` vẫn link ADR
+  như cũ. Comment viết tiếng Anh.
 - **Monorepo:** `services/<tên>/`, `proto/`, `deploy/`, `docs/`. Thư mục nào tạo khi tới giai đoạn cần nó.
 - **ADR** ở `docs/adr/NNNN-<slug>.md`, theo mẫu trong [`docs/adr/README.md`](docs/adr/README.md). Đảo một quyết
   định cũ thì viết ADR mới và đánh dấu ADR cũ là "Bị thay bởi".

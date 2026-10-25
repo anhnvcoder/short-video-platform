@@ -1,4 +1,4 @@
-# pnpm settings only: web/ is a single package, not a workspace (docs/adr/0016-web-client.md, section 10).
+# pnpm settings only: web/ is a single package, not a workspace.
 
 # A version must be 3 days old before pnpm installs it (4320 minutes), the same wait as Renovate's minimumReleaseAge:
 # most hijacked npm releases are found and pulled within that time.

@@ -16,7 +16,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return { title: isHandle(handle) ? `@${handle}` : (await getTranslations("profile"))("notFound.title") };
 }
 
-// Another user's profile (docs/adr/0018-web-profiles-public-video-upload.md, section 7). Handles are stored lower-case:
+// Another user's profile. Handles are stored lower-case:
 // A-Z in the path is lowered by a redirect, and anything that still cannot be a handle is the profile's 404 without a
 // call to the gateway. The viewer's own handle goes to /me.
 export default async function ProfilePage({ params }: Props) {

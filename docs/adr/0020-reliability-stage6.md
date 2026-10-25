@@ -1108,3 +1108,20 @@ trước mục tiêu) ([40145677985](https://github.com/anhnvcoder/short-video-p
   - Một pod k6 không giữ được tốc độ đặt (`dropped_iterations` > 0): thêm pod hay xét k6-operator.
   - 20 lượt `stack` liên tiếp xanh: đưa vào `ci-ok`.
   - Giai đoạn 7 giữ Redpanda trong cluster: độ bền event bằng replication hay Kafka managed, không bằng Velero.
+
+## Hiện thực ở
+
+- k6 (§2): `deploy/k6/` (`main.js`, `api.js`, `web.js`, `lib/`, `load.sh`, `k6.mk`); Job k6 của cluster cloud ở `deploy/k6/cloud/`
+  (`render.sh`, `job.yaml.in`, `run.sh`).
+- SLO web và cảnh báo (§3): `deploy/observability/slo/svp-slos.yaml`, `deploy/observability/prometheus/rules/svp-alerts.yaml`.
+- Backup và phục hồi Postgres (§5): `deploy/helm/svp-data/templates/backup.yaml`, `deploy/helm/svp-data/values.yaml`,
+  `deploy/k8s/values/plugin-barman-cloud.yaml`, metric ở `deploy/helm/svp-observability/templates/postgres.yaml`, user MinIO
+  `svp-pg-backup` ở `deploy/minio/init.sh` và `deploy/k8s/secrets.sh` (biến của `deploy/compose/compose.mk`), giữ thế hệ lưu trữ ở
+  `deploy/k8s/install.sh`, `deploy/k8s/lib.sh`; diễn tập `deploy/k8s/drills/backup.sh`; BAK-1 ở `deploy/k8s/drills/threats.sh`;
+  ngoại lệ RBAC của plugin ở `deploy/ci/trivy-config-ignore.yaml`.
+- Velero, Chaos Mesh, kiểm tĩnh bằng kubeconform (§6–§8): `deploy/k8s/cloud/` (`chaos/`, `velero/`, `values/`, `check.sh`,
+  `charts.json`), target `cloud-check` của `deploy/k8s/k8s.mk`, nhóm chart cloud của `renovate.json`.
+- Probe của chart `svp-service` (§10): `deploy/helm/svp-service/templates/deployment.yaml`.
+- Thử lại kết nối Postgres (§11): `internal/pgretry/`, `internal/pgpool/`, `internal/dbmigrate/`.
+- Game day (§13): `deploy/compose/drills/gameday.sh`, `deploy/compose/compose.mk`.
+- Job `stack` của CI (§15): `.github/workflows/ci.yml`, target `ci-bridge-check` của `Makefile`.

@@ -1,5 +1,5 @@
 {{- /*
-Scaling and disruption of the service (ADR-0014 section 10).
+Scaling and disruption of the service.
 
 hpa: a HorizontalPodAutoscaler on CPU, read from the metrics-server k3s ships. Utilization is a percentage of the
 container's CPU request, which every release sets, so a gateway asking 100m scales out once its pods average 70m.

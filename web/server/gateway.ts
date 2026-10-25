@@ -8,8 +8,8 @@ import type { TokenSet } from "./session";
 // the one gateway origin of GATEWAY_URL; no caller can pass another host.
 //
 // X-Forwarded-For is passed on exactly as the web server received it, without adding a hop: in the cluster Envoy
-// writes it and the gateway trusts one hop from the pod range the web pods share, so it reads the element Envoy wrote
-// (docs/adr/0016-web-client.md, section 4). Without the header none is sent.
+// writes it and the gateway trusts one hop from the pod range the web pods share, so it reads the element Envoy wrote.
+// Without the header none is sent.
 
 export type GatewayClient = ReturnType<typeof createClient<paths>>;
 

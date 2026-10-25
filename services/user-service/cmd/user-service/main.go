@@ -1,10 +1,8 @@
 // Command user-service runs the user service (serve, the default), applies its database
 // migrations (migrate) or checks a running instance's health (healthcheck). Configuration comes
-// from environment variables (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 4);
-// serve also needs KAFKA_BROKERS for the outbox relay (docs/adr/0009-engagement-feed-stage2b.md,
-// section 1), exports telemetry when OTEL_EXPORTER_OTLP_ENDPOINT is set, profiles when
-// PYROSCOPE_SERVER_ADDRESS is, and reports errors when SENTRY_DSN is
-// (docs/adr/0011-observability-stage3.md).
+// from environment variables; serve also needs KAFKA_BROKERS for the outbox relay, exports
+// telemetry when OTEL_EXPORTER_OTLP_ENDPOINT is set, profiles when PYROSCOPE_SERVER_ADDRESS is,
+// and reports errors when SENTRY_DSN is.
 package main
 
 import (
@@ -78,13 +76,13 @@ func main() {
 }
 
 // logFailure logs that a subcommand failed with err, under a constant message so the error
-// tracker groups it (ADR-0011, section 7).
+// tracker groups it.
 func logFailure(logger *slog.Logger, err error) {
 	logger.Error("user-service failed", slog.Any("error", err))
 }
 
 // loggedError is a serve failure that serve has already logged, while the error tracker and the
-// telemetry providers were still running, so that it reaches both (ADR-0011, sections 4 and 7).
+// telemetry providers were still running, so that it reaches both.
 type loggedError struct{ error }
 
 func (e loggedError) Unwrap() error { return e.error }

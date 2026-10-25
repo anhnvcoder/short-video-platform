@@ -4,7 +4,7 @@ import { problem } from "../problem";
 import { browserReportSchema, type BrowserReport } from "./browser-report";
 import { WindowBudget } from "./limiter";
 
-// POST /monitoring: a browser's error report (docs/adr/0019-web-k3d-supply-chain-observability.md, section 8). proxy.ts
+// POST /monitoring: a browser's error report. proxy.ts
 // has already checked it comes from the app's own pages (CSRF); this checks the report and hands it to the SDK.
 
 export const maxReportBytes = 32 * 1024;

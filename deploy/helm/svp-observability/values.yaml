@@ -1,4 +1,4 @@
-# Observability of the project in namespace svp-obs (docs/adr/0014-kubernetes-local-stage4.md, sections 3, 7 and 11).
+# Observability of the project in namespace svp-obs.
 # Installed by deploy/k8s/install.sh as wave 5 of deploy/argocd/apps/components.json: after kube-prometheus-stack
 # (wave 2, whose CRDs the PrometheusRules need, and whose Grafana sidecars load the ConfigMaps below) and Loki, Tempo,
 # Pyroscope (wave 3), before the Collector (wave 6), which mounts the ConfigMap made here.
@@ -31,7 +31,7 @@ services:
 # probes) on 10250.
 nodeSubnet: 10.200.0.0/24
 
-# GlitchTip, the error tracker of stage 3 in the cluster (ADR-0014 sections 3, 8 and 11; ADR-0011 section 7): the image
+# GlitchTip, the error tracker of stage 3 in the cluster: the image
 # of compose (same digest), one pod running web and task worker, its database svp_glitchtip on Postgres svp-pg (roles
 # made by the pg-bootstrap Job of chart svp-data). Its Secrets glitchtip-env and glitchtip-admin come from .env
 # (deploy/k8s/secrets.sh); the DSN and the drills' API token go into Secrets by deploy/k8s/glitchtip-init.sh.
@@ -71,7 +71,7 @@ glitchtip:
     VTASKS_CONCURRENCY: "2"
     DATABASE_POOL_MAX_SIZE: "4"
 
-# The canaries of the gateway and web (ADR-0014 section 13): Prometheus scrapes the Envoy proxy of Gateway svp
+# The canaries of the gateway and web: Prometheus scrapes the Envoy proxy of Gateway svp
 # (PodMonitor envoy-svp, on its metrics port), and the Argo Rollouts controller queries Prometheus for each AnalysisRun.
 # Labels of the pods Envoy Gateway and the argo-rollouts chart make (checked on the cluster).
 envoy:

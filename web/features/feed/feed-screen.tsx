@@ -76,7 +76,7 @@ function itemPart(feed: HTMLElement | null, index: number, part: "video-host" | 
   return feed?.children.item(index)?.querySelector<HTMLElement>(`[data-part="${part}"]`) ?? null;
 }
 
-// The vertical feed (docs/adr/0016-web-client.md, section 8): items snap one per screen, an IntersectionObserver picks
+// The vertical feed: items snap one per screen, an IntersectionObserver picks
 // the current one, and a pool of three players plays it and preloads its neighbours. Explore and Following share it.
 export function FeedScreen({
   kind,

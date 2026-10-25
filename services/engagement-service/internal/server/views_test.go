@@ -168,8 +168,7 @@ func TestRedeliveredBatchCountsOnce(t *testing.T) {
 }
 
 // A redelivery can be shorter than the batch counted before (a batch closes after 1 s): it must
-// not lower next_offset, or the records between would be counted again (ADR-0009, section 4,
-// step 6).
+// not lower next_offset, or the records between would be counted again.
 func TestShorterRedeliveryKeepsNextOffset(t *testing.T) {
 	e := newViewsEnv(t, "shorter")
 	id := ids.New()
@@ -188,7 +187,7 @@ func TestShorterRedeliveryKeepsNextOffset(t *testing.T) {
 // A consumer whose batch kept failing past RebalanceTimeout retries it after another member took
 // the partition over and counted further. Its batch, fetched when the partition ended at offset 8,
 // lies below the stored next_offset; the end offset asked after locking does not, so this is not a
-// recreated topic and nothing is counted again (ADR-0009, section 4, step 3).
+// recreated topic and nothing is counted again.
 func TestStaleRetryAfterAnotherConsumerCountedFurther(t *testing.T) {
 	e := newViewsEnv(t, "stale_retry")
 	id := ids.New()
@@ -670,7 +669,7 @@ func TestPostgresErrorRetriesTheBatch(t *testing.T) {
 }
 
 // Each batch attempt has a deadline of its own, so a stuck lock or a slow broker fails it and the
-// batch is retried (ADR-0011, section 11).
+// batch is retried.
 func TestViewsConsumerConfigBoundsEachAttempt(t *testing.T) {
 	s, _ := newServerWithoutDB(nil)
 	if cfg := s.ViewsConsumerConfig("127.0.0.1:19092"); cfg.HandlerTimeout != 30*time.Second {

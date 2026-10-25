@@ -751,3 +751,18 @@ Chọn **B**. Sang phần C:
   - Lag của `engagement-service` vượt 1 phút ở tải thật (NFR "Nhất quán"): tăng kích thước lô, thêm instance (tối đa
     3 partition), hoặc so lại các cách ở lab `hot-counter`.
   - Feed p99 vượt 150 ms ở k6 vì phần ghép số đếm: xem lại timeout 100 ms và cache số đếm (phần C).
+
+## Hiện thực ở
+
+- Event follow qua outbox (§1): `services/user-service/internal/server/server.go`, `services/user-service/cmd/user-service/main.go`,
+  `services/user-service/migrations/00003_create_outbox.sql`.
+- Like, lượt xem gom theo lô, `GetStats` (§2–§5): `services/engagement-service/` (`internal/server/server.go`,
+  `internal/server/views.go`, `migrations/`, `cmd/engagement-service/main.go`), gom lô ở `internal/kafkax/batch.go`.
+- Feed-service (§6–§8, §11): `services/feed-service/` (`migrations/00001_create_feed.sql`, `queries/feed.sql`,
+  `internal/projector/`, `internal/server/`, `cmd/feed-service/main.go`), page token ở `internal/pagetoken/`.
+- Gateway ghép số đếm trong 100 ms (§9): `services/gateway/internal/api/api.go`.
+- Đo độ tươi (§10): `tools/fakefollows/`, `deploy/compose/drills/measure-freshness.sh`.
+- Topic, cổng, RAM (§11, §12): `deploy/redpanda/create-topics.sh`, `deploy/compose/compose.yaml`; trên k3d
+  `deploy/k8s/values/services/user-service.yaml`, `engagement-service.yaml`, `feed-service.yaml` cùng thư mục.
+- Diễn tập: `deploy/compose/smoke.sh`, `deploy/compose/drills/duplicate-feed-events.sh`, `deploy/compose/drills/engagement-down.sh`;
+  thí nghiệm cloud `deploy/k8s/cloud/chaos/c-redpanda-failure.yaml`.

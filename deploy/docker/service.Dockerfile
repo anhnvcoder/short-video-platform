@@ -1,6 +1,5 @@
 # One Dockerfile for every Go service, so the toolchain pin, static build and distroless runtime are defined once; pick
-# the service with --build-arg SERVICE=<directory under services/>
-# (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 7). No secret goes into the
+# the service with --build-arg SERVICE=<directory under services/>. No secret goes into the
 # build: configuration and keys are environment variables given at run time.
 # No `# syntax=` line: BuildKit's built-in frontend already runs RUN --mount, and a syntax image would be pulled
 # from Docker Hub by a tag that can be pushed again, the one unpinned image of the build.
@@ -8,7 +7,7 @@
 # Build stage: Go toolchain pinned to the version the repo is developed with. Every base image is pinned by the digest
 # of its multi-arch index (linux/amd64 and linux/arm64): a tag can be pushed again with other content, a digest cannot,
 # so the same commit builds from the same base on the machine and in CI, and Renovate proposes each new digest as a
-# reviewed change (docs/adr/0015-cicd-devsecops-stage5.md, section 4).
+# reviewed change.
 FROM golang:1.27.2-trixie@sha256:47667934874913a449b96faa7ef4777fa285d9ec29126ee80ed61c45b7cccf0e AS build
 ARG SERVICE
 WORKDIR /src

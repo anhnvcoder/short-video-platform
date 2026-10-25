@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Game day on the compose stack (docs/adr/0020-reliability-stage6.md, section 13): a real outage under the background
+# Game day on the compose stack: a real outage under the background
 # load of k6, handled by the on-call with the runbook of the page alert alone, timed for the postmortem. The outage is
 # engagement-service stopped, which opens the gateway's circuit breaker to it and fires CircuitBreakerOpen (page).
 #

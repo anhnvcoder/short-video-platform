@@ -15,9 +15,9 @@ import { seed } from "./seed";
 import { stack } from "./stack";
 
 // The web rows of the threat model checked in a browser (docs/threat-model.md, section 4.9): WEB-1, WEB-2, WEB-4,
-// WEB-6, WEB-10, and the CSP of docs/adr/0016-web-client.md, section 6.
+// WEB-6, WEB-10, and the Content-Security-Policy (a script nonce new on every response, connect-src of /upload).
 
-// Compose serves plain http on localhost: the session cookie has no prefix and no Secure (ADR-0016, section 5). On k3d,
+// Compose serves plain http on localhost: the session cookie has no prefix and no Secure. On k3d,
 // over https, it is __Host-Http-svp_sid with Secure (e2e/stack.ts).
 const sessionCookie = stack.sessionCookie;
 
@@ -179,7 +179,7 @@ test("CSP: the share page has a nonce on every script for a guest too", async ({
   expect(cspOf(await request.get(path)).nonce).not.toBe(nonce);
 });
 
-// The upload form posts to the storage from the page (docs/adr/0018-web-profiles-public-video-upload.md, section 8):
+// The upload form posts to the storage from the page:
 // UPLOAD_ORIGIN must be in connect-src, or the browser blocks the request.
 authedTest("CSP: connect-src of /upload allows the upload origin", async ({ page }) => {
   const { csp } = cspOf(await page.request.get("/upload"));
@@ -191,7 +191,7 @@ authedTest("CSP: connect-src of /upload allows the upload origin", async ({ page
   expect(connectSrc).toContain(uploadOrigin);
 });
 
-// MinIO's CORS allows only the web's origins (ADR-0018, section 9): the upload's preflight from any other site gets no
+// MinIO's CORS allows only the web's origins: the upload's preflight from any other site gets no
 // Access-Control-Allow-Origin, so the browser does not send the file there.
 test("WEB-10: the storage answers a preflight from the web's origin only", async ({ request }) => {
   const preflight = (origin: string) =>

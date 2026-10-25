@@ -10,7 +10,7 @@ sql:
         sql_package: pgx/v5
         overrides:
           # Ids use the standard library uuid package, as internal/ids does, rather than adding a
-          # third-party uuid module as a dependency (ADR-0007, section 3).
+          # third-party uuid module as a dependency.
           - db_type: uuid
             go_type:
               import: uuid

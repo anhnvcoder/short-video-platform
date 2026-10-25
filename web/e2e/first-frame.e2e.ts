@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { authedTest, expect, feedItem, playingVideo } from "./fixtures";
 
-// Time to first frame (docs/adr/0016-web-client.md, section 11): from the scroll that brings the next item on screen
+// Time to first frame: from the scroll that brings the next item on screen
 // to its <video> playing (data-state="playing"), on 20 moves in a row, each to a video not played before in the run.
 // The scroll is instant (scrollIntoView), so the number is the app's and the network's, not a scroll animation's. The
 // samples and their p50/p95 go to test-results/first-frame-<project>.json for e2e/measure-web.sh.
