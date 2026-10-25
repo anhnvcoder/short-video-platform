@@ -19,11 +19,10 @@ import (
 )
 
 // The broker takes the produce request of a batch from three traces and holds its ack past the
-// relay's produce deadline (docs/adr/0011-observability-stage3.md, section 11): the batch fails,
-// the transaction rolls back and frees the relay lock at once, no row is marked sent, and every
-// producer span ends with the error in its row's trace. Once the broker answers, the late ack
-// included, the relay sends the rows again under the same event IDs; the broker may then hold a
-// copy of each from the late write, which consumers absorb.
+// relay's produce deadline: the batch fails, the transaction rolls back and frees the relay lock
+// at once, no row is marked sent, and every producer span ends with the error in its row's trace.
+// Once the broker answers, the late ack included, the relay sends the rows again under the same
+// event IDs; the broker may then hold a copy of each from the late write, which consumers absorb.
 func TestRelayBrokerHoldingAckReleasesLockAndLeavesRowsUnsent(t *testing.T) {
 	recorder, _ := traceTelemetry(t)
 	pool := newDB(t, "held_ack")

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Entry point of the alertmanager container (docs/adr/0011-observability-stage3.md, section 8).
+# Entry point of the alertmanager container.
 # Alertmanager does not expand environment variables in its YAML, so this script writes the
 # config before starting it:
 # - with a Telegram bot token (compose secret, /run/secrets/telegram_bot_token) and an integer

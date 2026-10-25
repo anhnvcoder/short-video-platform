@@ -1,9 +1,9 @@
-# Collector of the `obs` profile (docs/adr/0011-observability-stage3.md, sections 1, 5 and 9).
+# Collector of the `obs` profile.
 # Services send OTLP/gRPC to otelcol:4317; this Collector scrubs sensitive attributes and
 # forwards everything to the Collector inside grafana/otel-lgtm (lgtm:4317), which splits it into
 # Tempo, Loki and Prometheus. Nothing here is published on the host.
 # The `obs-elastic` profile runs this same file with ../elastic/otelcol-config.yaml merged over it,
-# which swaps the exporters only (docs/adr/0012-elastic-vs-grafana-stage3.md, section 1): the
+# which swaps the exporters only: the
 # receivers and the scrubbing processors live here alone.
 
 extensions:
@@ -65,7 +65,7 @@ exporters:
     endpoint: lgtm:4317
     tls:
       insecure: true
-    # Bounded in-memory queue (no disk queue, ADR-0011 section 1): when LGTM is down or slow,
+    # Bounded in-memory queue (no disk queue): when LGTM is down or slow,
     # telemetry is dropped once the queue is full or a batch has been retried for a minute.
     sending_queue:
       enabled: true

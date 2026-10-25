@@ -47,7 +47,7 @@ func TestServeRequiresItsVariables(t *testing.T) {
 }
 
 // A failure after the error tracker has started is logged while the tracker still runs, so that
-// it reaches the tracker, and only once: main does not log it again (ADR-0011, section 7).
+// it reaches the tracker, and only once: main does not log it again.
 func TestServeReportsAFailureBeforeTheErrorTrackerStops(t *testing.T) {
 	var mu sync.Mutex
 	var envelopes []string
@@ -297,7 +297,7 @@ func TestRunPruneBoundsEachRun(t *testing.T) {
 
 // A run that works through a backlog past its timeout is still cut short and logged at WARN, and
 // each batch it finished before that refreshes the loop's last success, so the loop does not look
-// stalled while it keeps deleting (docs/adr/0011-observability-stage3.md, section 5).
+// stalled while it keeps deleting.
 func TestRunPruneReportsBatchesOfATimedOutRun(t *testing.T) {
 	loop, lastSuccess := pruneLoop(t)
 	ctx, cancel := context.WithCancel(context.Background())

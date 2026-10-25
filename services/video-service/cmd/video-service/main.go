@@ -2,8 +2,7 @@
 // results of media.transcodes.v1.
 //
 // Subcommands keep migrations and the health check in the service binary, since the distroless
-// image has no shell, curl or migration tool
-// (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 7):
+// image has no shell, curl or migration tool:
 //
 //	serve        run the service (default when no subcommand is given)
 //	migrate      apply the database migrations, then exit
@@ -11,11 +10,12 @@
 //
 // Configuration comes from the environment: LISTEN_ADDR (default 127.0.0.1:9102) and
 // DATABASE_URL (required for serve and migrate); serve also needs KAFKA_BROKERS and the S3_*
-// variables of docs/adr/0008-async-upload-pipeline-stage2a.md, section 11. UPLOAD_ABANDON_AFTER
-// (default 1h) and UPLOAD_SWEEP_INTERVAL (default 5m) set when an upload counts as abandoned and
-// how often they are swept (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 5).
-// serve also reads the OTEL_*, PYROSCOPE_SERVER_ADDRESS and SENTRY_* variables of
-// docs/adr/0011-observability-stage3.md; telemetry and error reporting stay off without them.
+// variables read by storageConfig (S3_ENDPOINT, S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY
+// required; S3_PUBLIC_ENDPOINT, S3_REGION, S3_UPLOADS_BUCKET, S3_MEDIA_BUCKET optional).
+// UPLOAD_ABANDON_AFTER (default 1h) and UPLOAD_SWEEP_INTERVAL (default 5m) set when an upload
+// counts as abandoned and how often they are swept. serve also reads the OTEL_*,
+// PYROSCOPE_SERVER_ADDRESS and SENTRY_* variables; telemetry and error reporting stay off
+// without them.
 package main
 
 import (
@@ -126,10 +126,9 @@ func serve(ctx context.Context, logger *slog.Logger) (err error) {
 	flushErrors := func() {}
 	var pool *pgxpool.Pool
 	// Deferred first, so it runs last: once the server, the consumer and the relay have stopped,
-	// a failure is logged while the error tracker and the providers still take it
-	// (docs/adr/0011-observability-stage3.md, section 7), the providers export what they
-	// recorded, the error reports flush, then the pool closes (its statistics are read up to the
-	// last export).
+	// a failure is logged while the error tracker and the providers still take it, the providers
+	// export what they recorded, the error reports flush, then the pool closes (its statistics are
+	// read up to the last export).
 	defer func() {
 		if err != nil {
 			logger.Error("video-service failed", slog.Any("error", err))

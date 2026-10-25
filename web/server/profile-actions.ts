@@ -10,7 +10,7 @@ import { gatewayClient, retryAfterSeconds } from "./gateway";
 import { bffServices } from "./runtime";
 import { sessionCookieName } from "./session";
 
-// Server Action of the display name form on /me (docs/adr/0018-web-profiles-public-video-upload.md, section 7), for
+// Server Action of the display name form on /me, for
 // useActionState; a form posted without JavaScript works the same. It is a public endpoint like every action: it checks
 // its own input and the session itself, and proxy.ts has already checked the request's origin. The session's token
 // stays here; expected failures come back as state.

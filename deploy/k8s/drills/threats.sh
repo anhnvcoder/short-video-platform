@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Drill: the stage 4 rows of the threat model (docs/threat-model.md, section 5) on cluster svp
-# (docs/adr/0014-kubernetes-local-stage4.md, sections 3 to 5 and 8 to 10), the web client's rows of stage 5b part C
-# (section 4.9; docs/adr/0019-web-k3d-supply-chain-observability.md) and the stage 6 row of the backups of Postgres
-# (BAK-1, section 4.10; docs/adr/0020-reliability-stage6.md, section 5). Every item prints ok and FAIL lines, and
+# Drill: the stage 4 rows of the threat model (docs/threat-model.md, section 5) on cluster svp, the web client's rows
+# of stage 5b part C (section 4.9) and the stage 6 row of the backups of Postgres (BAK-1, section 4.10). Every item
+# prints ok and FAIL lines, and
 # "ok    control:" lines: a target a check finds closed answers a client the policy lets in, so "closed" means the
 # policy, not a service that is down. An item that fails does not stop the next ones; a table of PASS/FAIL per item
 # ends the run, which exits non-zero when any failed:
@@ -39,7 +38,7 @@
 #              a container in each of those ways, while a container with an ordinary Secret as a volume and in envFrom
 #              passes; a server-side dry run of a root pod in svp is Forbidden while a restricted one is admitted;
 #   IN-9       the pg_hba rules of the primary have no trust, every TCP rule is scram-sha-256 or cert, the last rule is
-#              host all all all scram-sha-256 (CloudNativePG's default, ADR-0014 section 4); from GlitchTip's pod (allowed
+#              host all all all scram-sha-256 (CloudNativePG's default); from GlitchTip's pod (allowed
 #              to 5432) a connection without a password, as postgres and as svp_user_app, with and without TLS, is
 #              refused with "no password supplied", a wrong password with "password authentication failed"; inside
 #              the primary, TCP to 127.0.0.1 without a password is refused too (the stage 1 hole of the host's
@@ -51,8 +50,8 @@
 #              second the decisions spread over (the bucket refills one per second; the spread is read from the
 #              login-email keys, which hold the time of each decision), and the rest get 429 RATE_LIMITED, at least
 #              one; the login-email key of every email that passed exists and of none that got 429 (so the 429 came
-#              from login-ip, which is checked first); the login-ip keys added are at most 2 (k3d: one per node, ADR-0014
-#              section 9), on the pod network 10.42.0.0/16, none for a forged address. These are judged on an
+#              from login-ip, which is checked first); the login-ip keys added are at most 2 (k3d: one per node),
+#              on the pod network 10.42.0.0/16, none for a forged address. These are judged on an
 #              attempt in which no login decision fell back to a gateway pod's in-memory limiter (a Valkey call over
 #              the gateway's 50 ms takes that path, with its own burst per pod): on every gateway pod, the fallback
 #              login decisions of svp_ratelimit_decisions_total are the same in a sample after the burst as in its
@@ -587,7 +586,7 @@ socket.create_connection(("svp-pg-rw.svp-data.svc.cluster.local", 5432), 5).clos
 # control_valkey: a login with a new email leaves its login-email key (svp:gw:rl:login-email:<ip>:<hash>, alive for an
 # hour's sixth) in db 10, so the gateway reached Valkey. Costs one request of the login-ip bucket (refilled in 1 s).
 # The email is new on every call: the key names the client address too, and two calls can reach the gateway through
-# two nodes (ADR-0014 section 9), which would leave one key each.
+# two nodes, which would leave one key each.
 control_valkey() {
   local email status keys
   email="drill-threats-$run_id-control-$(openssl rand -hex 4)@example.test"
@@ -1125,7 +1124,7 @@ rbac() {
     control "the Argo Rollouts controller may list pods in svp: can-i yes, its rules review $r" ||
     miss "control: the Argo Rollouts controller may list pods in svp: can-i yes and its rules review has pods with list (can-i '$out', review: $r)"
 
-  # Operators outside svp (docs/adr/0014-kubernetes-local-stage4.md): the rights narrowed in their values, and the
+  # Operators outside svp: the rights narrowed in their values, and the
   # exceptions that stay.
   local cnpg="cnpg-system svp-data" eg="envoy-gateway-system svp svp-data svp-edge"
   operator_scope cnpg-system/cloudnative-pg "$cnpg" "get secrets" get secrets
@@ -1142,7 +1141,7 @@ rbac() {
   operator_scope envoy-gateway-system/envoy-gateway "$eg" "get secrets" get secrets
   operator_scope envoy-gateway-system/envoy-gateway "$eg" "list secrets" list secrets
   operator_scope envoy-gateway-system/envoy-gateway "" "patch pods" patch pods
-  # Kyverno (docs/adr/0015-cicd-devsecops-stage5.md, section 8): its own TLS Secrets and its lease, nothing else.
+  # Kyverno: its own TLS Secrets and its lease, nothing else.
   for sa in kyverno-admission-controller kyverno-reports-controller; do
     operator_scope "kyverno/$sa" kyverno "get secrets" get secrets
     operator_scope "kyverno/$sa" kyverno "list secrets" list secrets
@@ -1183,7 +1182,7 @@ rbac() {
     miss "control: as $cnpg_as, can-i says yes to create secrets in cnpg-system (got '$out')"
   info "RBAC exception: Envoy Gateway reads the Secrets of svp and svp-data, which it watches for routes api and s3 (its Secret cache covers every watched namespace; deploy/k8s/values/envoy-gateway.yaml)"
   info "RBAC exception: cert-manager's controller and cainjector read Secrets in every namespace, cainjector patches every webhook configuration, the controller creates pods in every namespace (Certificates in cert-manager, svp-edge, keda and cnpg-system, ClusterIssuers svp-selfsigned and svp-ca; deploy/k8s/values/cert-manager.yaml); its pods are held to PSA restricted everywhere but kube-system (PSA-platform)"
-  info "RBAC exception: Argo CD's application controller and server (GitOps path) hold rights on every resource of the cluster, Secrets included: they apply every chart (ADR-0014 section 12)"
+  info "RBAC exception: Argo CD's application controller and server (GitOps path) hold rights on every resource of the cluster, Secrets included: they apply every chart"
   info "RBAC exception: the Barman Cloud plugin (cnpg-system/plugin-barman-cloud, backups of Postgres svp-pg) reads, creates and deletes the Secrets of every namespace, the JWT signing key of svp included, and creates Roles and RoleBindings everywhere: its manager caches the whole cluster with no flag to narrow it, so a Role per namespace as for CloudNativePG would leave it failing on permissions (threat model BAK-1, accepted for the lab; deploy/k8s/values/plugin-barman-cloud.yaml); the CloudNativePG operator beside it in cnpg-system may neither run code as its ServiceAccount nor get it a token (checked above)"
   info "RBAC exception: Kyverno's admission controller creates, patches and deletes every webhook configuration and validating admission policy of the cluster: it registers the webhooks of its policies itself (a taken-over controller could send itself any request, or drop the image policy's webhook); its reports controller reads the pods of every namespace (what the policy matches; the chart's view binding is off, deploy/k8s/values/kyverno.yaml)"
 }
@@ -1699,7 +1698,9 @@ web7_redirect() {
 
 # web7: the BFF is no open proxy and no token reaches the browser (threat model WEB-7).
 web7() {
-  local p status code i ct handle id what f n=0
+  # i=0, not a bare local: bash 5 leaves a local declared without a value unset, and $((i + 1)) of an unset name
+  # stops the item under set -u (bash 3.2 of macOS sets it to "", so it ran there).
+  local p status code i=0 ct handle id what f n=0
   web_user
   handle=$(jq -r .handle "$work/web.cred")
   id=$(rand_uuid)
@@ -2108,6 +2109,10 @@ run_item() {
   if ((rc == 0)); then
     echo "$1 PASS" >>"$work/results"
   else
+    # Said even after the item's own FAIL lines: a command that stops the item under set -e (an unset name under
+    # set -u, a command not found) prints none, and where only the verdict lines of this output are kept (the CI
+    # runner's artifact), this line is all that tells how the item ended.
+    echo "FAIL  $1: the item ended with exit status $rc" >&2
     echo "$1 FAIL" >>"$work/results"
     failed+=" $1"
   fi

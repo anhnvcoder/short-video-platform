@@ -1,5 +1,5 @@
 {{- /*
-Traffic of the service's pods (ADR-0014 section 3; threat model IN-2, FF-5). Chart svp-cluster denies every pod of
+Traffic of the service's pods (threat model IN-2, FF-5). Chart svp-cluster denies every pod of
 svp in both directions and opens DNS; this policy opens the rest, by pod labels: ingress on the service's own port
 from the peers in ingressFrom only (Envoy for the gateway, the gateway for a gRPC service), egress to the peers in
 egressTo only, so a compromised pod reaches only what its service really talks to, never the internet. A service

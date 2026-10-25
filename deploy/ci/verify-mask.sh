@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Masks the secret values of a verification run in the log of its GitHub Actions job and keeps them, in a private
-# directory, for deploy/ci/verify-collect.sh to search the artifact with
-# (docs/adr/0021-deferred-verification-stage6b.md, section 4). The repository is public, so the job's log is too, red
-# or not: masking is the second layer, after the rule that no script prints a secret.
+# directory, for deploy/ci/verify-collect.sh to search the artifact with. The repository is public, so the job's log
+# is too, red or not: masking is the second layer, after the rule that no script prints a secret.
 #
 #   verify-mask.sh env       the values of .env whose name ends in PASSWORD, SECRET, SECRET_KEY, TOKEN, _KEY or _KEYS,
 #                            and SENTRY_DSN, read by the rule of deploy/observability/glitchtip/dotenv.sh (never

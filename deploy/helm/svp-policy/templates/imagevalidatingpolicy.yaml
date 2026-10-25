@@ -1,5 +1,5 @@
 {{- /*
-Kyverno v1.19.1 ImageValidatingPolicy (docs/adr/0015-cicd-devsecops-stage5.md, sections 7 and 8). The checks run in
+Kyverno v1.19.1 ImageValidatingPolicy. The checks run in
 order and stop at the first that fails, each with its own message naming the images it refused:
   1. every image of the pod is <imagePrefix><name>@sha256:<64 hex>. Kyverno verifies only the images that
      matchImageReferences selects and lets every other one through, so this check alone refuses an image of the local

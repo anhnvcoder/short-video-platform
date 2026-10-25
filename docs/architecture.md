@@ -213,7 +213,11 @@ CDN (client đọc thẳng MinIO). Redpanda và MinIO chạy trong compose profi
 - **MinIO:** hai bucket `uploads` (riêng tư) và `media` (ẩn danh chỉ đọc từng object, không liệt kê được); video-service và
   media-worker mỗi bên một user với policy theo tiền tố key. Client upload và đọc HLS qua `127.0.0.1:9000`. CORS chỉ nhận
   origin của web (`http://localhost:3001`, `web-dev` `http://localhost:3002`; `MINIO_API_CORS_ALLOW_ORIGIN`, toàn cục mọi
-  bucket, threat model WEB-10); web đặt `MEDIA_ORIGIN` và `UPLOAD_ORIGIN` là `http://127.0.0.1:9000`.
+  bucket, threat model WEB-10); web đặt `MEDIA_ORIGIN` và `UPLOAD_ORIGIN` là `http://127.0.0.1:9000`. MinIO community đã
+  ngừng phát hành (repo archive 2026-04-25, CVE 2026 chỉ vá ở bản thương mại): [ADR-0022](adr/0022-local-object-store-minio-replacement.md)
+  đề xuất đổi object store của compose và k3d sang RustFS, CORS theo bucket, tên trung tính `s3`, giữ MinIO image Chainguard làm
+  đường quay lại; đang ở trạng thái Đề xuất, chưa hiện thực (phần 2 của giai đoạn 6b), nên mọi chỗ trong tài liệu này vẫn là
+  MinIO.
 - **Redpanda:** một broker; topic và `.dlq` do container init tạo, broker tắt tự tạo topic. Trong compose là
   `redpanda:9092`, từ máy host là `127.0.0.1:19092`.
 - **engagement-service và feed-service** ([ADR-0009](adr/0009-engagement-feed-stage2b.md) mục 12): gRPC ở `:9103` và
@@ -406,8 +410,12 @@ flowchart LR
 ```
 
 - **Hai workflow** (ADR-0015 §1, §2): `ci.yml` chạy đủ mục Kiểm tra (Go test trên Postgres và Redis là service
-  container, lệch code sinh, `buf breaking`, cấu hình, chart, digest bên thứ ba, gitleaks toàn lịch sử); `images.yml`
-  build image. Mỗi file một check tổng (`ci-ok`, `images-ok`), là hai check bắt buộc của ruleset `main`. Mọi action ghim
+  container, lệch code sinh, `buf breaking`, cấu hình, chart, digest bên thứ ba, gitleaks toàn lịch sử; từ giai đoạn 6b thêm cổng
+  CRITICAL cho `web/pnpm-lock.yaml` ở job `web`); `images.yml`
+  build image. Mỗi file một check tổng (`ci-ok`, `images-ok`), là hai check bắt buộc của ruleset `main`. Từ giai đoạn 6b có
+  workflow thứ ba `verify.yml` ngoài check bắt buộc (§5.4, [ADR-0021](adr/0021-deferred-verification-stage6b.md)); logic của cả
+  ba nằm ở `Makefile` và `deploy/ci/`, mọi chỗ chạm nền tảng CI qua adapter `deploy/ci/platform.sh`
+  ([ADR-0023](adr/0023-ci-platform-neutral.md)). Luồng và job của từng workflow cho người mới: [`ci-cd.md`](ci-cd.md). Mọi action ghim
   SHA commit và chỉ là action của GitHub hay của chính nhà cung cấp công cụ; trivy, syft chạy bằng image ghim digest.
   Mọi job của lượt PR, kể cả PR từ fork, chỉ có `contents: read` và không secret; quyền ghi (`packages`, `id-token`,
   `contents`, `pull-requests`, `security-events`) chỉ ở job chạy trên `main` với code đã qua PR.
@@ -508,7 +516,9 @@ giai đoạn 6b (runner CI 16 GB hay VM thuê theo giờ, không dịch vụ AWS
   user MinIO riêng chỉ có quyền bucket đó. Mỗi lần phục hồi ghi vào một thế hệ lưu trữ mới (`serverName`), vì Job phục hồi
   từ chối lưu WAL vào nơi đã có WAL. PodMonitor đưa `cnpg_*`, `barman_cloud_*` vào Prometheus; cảnh báo
   `PostgresWALArchivingFailing` (page) và `PostgresBackupTooOld` (ticket). Diễn tập `make drill-k8s-backup` xoá Cluster và ổ
-  rồi dựng lại cùng tên từ backup: RTO đo được 151 s (`MODE=latest`) và 85 s (`MODE=pitr`), một lần mỗi chế độ; lượt
+  rồi dựng lại cùng tên từ backup: RTO đo trên máy 151 s (`MODE=latest`, một lượt) và 85, 126 s (`MODE=pitr`, hai lượt; ADR-0020
+  "Restore RTO/RPO"); trên runner CI (giai đoạn 6b, số của runner 4 vCPU, không so với máy) `latest` 95,2 và 92,8 s, `pitr` 80,8
+  và 84,3 s ([ADR-0021](adr/0021-deferred-verification-stage6b.md) D20); lượt
   `latest` không dòng nào ghi trong phút cuối trở lại (RPO ≥ 60 s), vì Postgres chỉ lưu segment WAL đã đóng: RPO tới
   `archive_timeout` (5 phút) cộng thời gian lưu, cả khi tắt êm. Backup cùng cluster, cùng ổ với dữ liệu, không mã hoá lúc nghỉ:
   chỉ đúng cho lab. Compose dùng Postgres native chung nên không backup. Cloud dùng backup tự động và PITR của RDS, diễn tập ở
@@ -521,12 +531,23 @@ giai đoạn 6b (runner CI 16 GB hay VM thuê theo giờ, không dịch vụ AWS
   runbook cho các sự cố đã gặp; `docs/postmortems/` theo mẫu không đổ lỗi. Game day trên compose (`make gameday`: tắt
   engagement-service dưới tải k6, người trực chỉ theo runbook) lần đầu ngày 2026-10-24: cảnh báo sau 75 s, hồi phục sau 184 s,
   postmortem ở `docs/postmortems/261024-gameday-engagement-down.md`. RFC một trang cho người không làm kỹ thuật ở `docs/rfc/`.
-- **CI:** job `stack` dựng compose trên runner và chạy smoke, e2e web, k6 `ci`, Lighthouse ở mọi PR, chỉ báo, ngoài `ci-ok`.
-- **Dời:** giai đoạn 6b: k6 tải lớn, ba thí nghiệm Chaos Mesh (kill pod, chậm mạng, tắt Redpanda), Velero với đích MinIO, hai
-  media-worker cùng transcode và RAM nghỉ, ngưỡng canary và HPA của web theo số đo, thay MinIO. Giai đoạn 7: k6 1 000 req/s, diễn
+- **CI:** job `stack` dựng compose trên runner và chạy smoke, e2e web, k6 `ci`, Lighthouse ở mọi PR, chỉ báo, ngoài `ci-ok`
+  (chạy đủ bước và xanh lần đầu ngày 2026-10-24).
+- **Kiểm chứng trên runner** (giai đoạn 6b, [ADR-0021](adr/0021-deferred-verification-stage6b.md)): những gì máy 16 GB không
+  chạy nổi (k3d nặng, stack có observability dưới tải, diễn tập đầy đủ) chạy trên runner GitHub `ubuntu-24.04` (4 vCPU, 16 GB,
+  amd64, VM mới mỗi job) bằng workflow `verify.yml`: dispatch tay một kịch bản (`compose-obs`, `dev-k3d`) và lịch hằng tuần trên
+  `main` chạy cả hai, mỗi kịch bản dựng bằng đúng target `make` của máy. Không secret; mỗi lượt có tiêu chí "runner đủ" đo được
+  (đĩa, `MemAvailable`, OOM, restart của k3s server) để tách lỗi code với giới hạn runner, VM thuê theo giờ chỉ khi runner trượt
+  hai lượt liền vì tài nguyên; artifact chỉ theo danh sách cho phép, quét giá trị bí mật. Số của runner (amd64, không VM) chỉ so
+  với ngân sách và ngưỡng, không thay số của máy. Phần 1 (2026-10-24 đến 2026-10-25): diễn tập threat model compose và k3d, canary
+  gateway, backup hai chế độ, KEDA hai worker, RAM nghỉ (b) của đường dev đạt; RAM đỉnh (a) của đường dev vượt ngân sách của
+  laptop, chấp nhận; LCP `/` chưa đạt.
+- **Dời:** phần sau của giai đoạn 6b: đường GitOps trên runner (image web đã ký, Kyverno, source map của image CI, hai worker và
+  RAM nghỉ), canary web dưới traffic, k6 thu nhỏ, ba thí nghiệm Chaos Mesh (kill pod, chậm mạng, tắt Redpanda), Velero với đích
+  object store trong cluster, ngưỡng canary và HPA của web theo số đo, thay MinIO (ADR-0022). Giai đoạn 7: k6 1 000 req/s, diễn
   tập phục hồi RDS, Velero với S3 và snapshot EBS, hạn 50 ms của Redis trên ElastiCache. Manifest của phần đo thật kiểm schema
-  bằng `make cloud-check`; LCP mobile mô phỏng của `/` và `/v/{id}` chưa đạt 2,5 s (ADR-0020, Kết quả "LCP"), xem lại ở giai
-  đoạn 6b.
+  bằng `make cloud-check`; LCP mobile mô phỏng: `/v/{id}` đạt 2,5 s trên runner, `/` chưa đạt cả sau khi trang đầu của feed nằm
+  trong HTML (ADR-0020, Kết quả "LCP").
 
 ## 6. Sở hữu dữ liệu và event
 

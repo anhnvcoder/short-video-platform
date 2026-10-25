@@ -7,7 +7,10 @@
   số replica cố định) và §13 (canary của web, ngưỡng theo release) chỉnh bởi [0019](0019-web-k3d-supply-chain-observability.md);
   §10 (`timeoutSeconds` của probe) và §12 (`WATCH_NAMESPACE` của CloudNativePG thêm `cnpg-system`; Role của operator ở
   `cnpg-system` thu hẹp còn đọc, ghi Secret, event, Lease; ValidatingAdmissionPolicy `svp-cnpg-operator-secrets` chỉ cho operator
-  tạo, sửa Secret PKI của nó ở đó) chỉnh bởi [0020](0020-reliability-stage6.md)
+  tạo, sửa Secret PKI của nó ở đó) chỉnh bởi [0020](0020-reliability-stage6.md); §3 (uid/gid Valkey `10999`), §4 (Redpanda
+  `--reserve-memory=128M`) và §13 (đường dev chọn asset plugin theo kiến trúc node) chỉnh bởi
+  [0021](0021-deferred-verification-stage6b.md); §12 (Argo CD đọc repo qua HTTPS ẩn danh thay deploy key SSH) sẽ chỉnh bởi
+  0021 khi hiện thực phần 3 của giai đoạn 6b
 - Ngày: 2026-10-18
 
 ## Bối cảnh
@@ -297,7 +300,7 @@ so từng pod (cả init container, sidecar, hook Job) với bảng tiêu chuẩ
 | --- | --- | --- | --- |
 | `svp-data` | CloudNativePG instance | Đạt theo mặc định của operator (drop ALL, non-root, root fs chỉ đọc, seccomp `RuntimeDefault`; `pkg/specs/containers.go`, `pods.go`, `docs/src/security.md@v1.30.1`); không render được khi chưa có cluster | — |
 | `svp-data` | Redpanda | Mặc định chỉ đạt `baseline` (thiếu drop ALL, seccomp); `tune_aio_events: true` (mặc định) thêm init container privileged chạy root | `tuning.tune_aio_events: false`; `podTemplate.spec.securityContext` `runAsNonRoot: true`, `runAsUser`/`runAsGroup`/`fsGroup: 101`, seccomp `RuntimeDefault`; `capabilities.drop: [ALL]` cho `redpanda`, `sidecar`, `redpanda-configurator`, `bootstrap-yaml-envsubst` qua `statefulset.podTemplate.spec`; `post_install_job.enabled: false` (mục 7) |
-| `svp-data` | Valkey, MinIO, Job init | Project tự viết | Valkey `runAsUser: 999`, `runAsGroup: 1000` (`valkey-container` `9.1/alpine/Dockerfile`; entrypoint chỉ `setpriv` khi chạy root); MinIO `65532` (user của image); `/data` là volume |
+| `svp-data` | Valkey, MinIO, Job init | Project tự viết | Valkey `runAsUser: 999`, `runAsGroup: 1000` (`valkey-container` `9.1/alpine/Dockerfile`; entrypoint chỉ `setpriv` khi chạy root); sửa ngày 2026-10-24 thành `10999:10999` (trivy KSV-0020/0021: uid, gid dưới 10000 có thể trùng tài khoản của node; Valkey không cần tài khoản riêng, `/data` là emptyDir nên đổi tại chỗ không có gì phải giữ; [ADR-0021](0021-deferred-verification-stage6b.md) §9); MinIO `65532` (user của image); `/data` là volume |
 | `svp-obs` | kube-prometheus-stack | Đạt khi tắt node-exporter (hostNetwork, hostPID, hostPath) | `nodeExporter.enabled: false`; Grafana không persistence (init `chown` chỉ có khi bật persistence) |
 | `svp-obs` | Loki | Đạt theo mặc định | — |
 | `svp-obs` | Tempo | Cần chỉnh | pod `runAsUser`/`runAsGroup`/`fsGroup: 10001`, `runAsNonRoot`, seccomp `RuntimeDefault`; `tempo.securityContext` drop ALL, không leo quyền |
@@ -528,7 +531,10 @@ Chọn **B**. Test (`make test`) vẫn dùng Postgres/Redis native như cũ.
   feed-service `redis://valkey.svp-data:6379/14` (`svp:feed:`).
 - **Redpanda:** chart chính thức (mục 1), release `redpanda` ở `svp-data`, 1 broker, `resources.cpu.cores: 1` +
   `overprovisioned: true` + `memory.container.max: 1280Mi` (chart sinh `--smp=1 --memory=1024M --reserve-memory=202M`, như
-  compose `--smp 1 --memory 1G`), PVC 2 Gi, `console.enabled: false`, `tuning.tune_aio_events: false`, **SASL
+  compose `--smp 1 --memory 1G`; sửa ngày 2026-10-24: values đặt `resources.memory.redpanda.memory: 1Gi`, `reserveMemory: 128Mi`, cờ
+  thành `--reserve-memory=128M`, limit giữ 1 280 MiB, vì phép kiểm bộ nhớ lúc khởi động của Seastar trừ `vm.min_free_kbytes`
+  của kernel máy, lớn hơn trên host Linux x86_64 nên broker không khởi động trên runner CI; [ADR-0021](0021-deferred-verification-stage6b.md),
+  Kết quả `dev-k3d` lượt 2), PVC 2 Gi, `console.enabled: false`, `tuning.tune_aio_events: false`, **SASL
   SCRAM-SHA-256, không TLS** (`tls.enabled: false`; mã hoá đường truyền nội bộ là IN-3, giai đoạn 6), listener Kafka nội bộ
   **9092** (`listeners.kafka.port: 9092`, mặc định của chart là 9093; đặt như compose), mọi listener external tắt bằng
   `listeners.{admin,kafka,http,schemaRegistry}.external.default.enabled: false`: `external.enabled: false` chỉ bỏ Service,
@@ -1489,8 +1495,8 @@ giá: không phát hiện được Valkey treo mà cổng vẫn mở, lab chấp
 
   | Asset | URL | sha256 |
   | --- | --- | --- |
-  | `gatewayapi-plugin-linux-arm64` (node arm64, dùng) | `https://github.com/argoproj-labs/rollouts-plugin-trafficrouter-gatewayapi/releases/download/v0.17.0/gatewayapi-plugin-linux-arm64` | `5221279f7bf2c9b2c0ff6ed7ff12718ecce1d4892f1ff5e5224bb723cfd0fd92` |
-  | `gatewayapi-plugin-linux-amd64` | `.../v0.17.0/gatewayapi-plugin-linux-amd64` | `1904ca787d33107c140521899d61fff030ee75d99908bd175fca5a4647759061` |
+  | `gatewayapi-plugin-linux-arm64` (node arm64, dùng; ghim ở `deploy/k8s/values/argo-rollouts.yaml`) | `https://github.com/argoproj-labs/rollouts-plugin-trafficrouter-gatewayapi/releases/download/v0.17.0/gatewayapi-plugin-linux-arm64` | `5221279f7bf2c9b2c0ff6ed7ff12718ecce1d4892f1ff5e5224bb723cfd0fd92` |
+  | `gatewayapi-plugin-linux-amd64` (node amd64, dùng từ 2026-10-24: `rollouts_plugin_sets` của `deploy/k8s/install.sh` đọc kiến trúc node, truyền `--set-json controller.trafficRouterPlugins` ở đường dev; [ADR-0021](0021-deferred-verification-stage6b.md), Kết quả `dev-k3d` lượt 3) | `.../v0.17.0/gatewayapi-plugin-linux-amd64` | `1904ca787d33107c140521899d61fff030ee75d99908bd175fca5a4647759061` |
 
   Release không có file checksum; sha256 tính bằng `shasum -a 256` trên file tải về, khớp digest asset của GitHub. Controller
   tải plugin từ GitHub lúc khởi động (namespace `argo-rollouts` không chặn egress). Plugin build với Gateway API v1.4.0, dùng
@@ -1927,3 +1933,33 @@ thái các dòng "Chưa kiểm" của đường GitOps:
   - Thêm người hay repo vào GitOps: tách AppProject platform (được `kube-system`) khỏi AppProject ứng dụng.
   - Lên cloud (giai đoạn 7): database ra ngoài cluster (RDS, ElastiCache), External Secrets thay `secrets.sh`, load balancer có
     proxy protocol hay L7 để giữ địa chỉ client (RL-1 hai hop), CI ghi tag thay `k8s-release` (giai đoạn 5).
+
+## Hiện thực ở
+
+- Công cụ, topology, cổng (§1, §2, §14): `deploy/k8s/k3d.yaml`, `deploy/k8s/k8s.mk`, `deploy/k8s/lib.sh`, `deploy/k8s/install.sh`,
+  `Makefile`; compose và cluster không chạy cùng nhau ở `deploy/compose/compose.mk`. Ngân sách RAM §2 đo trên runner bằng
+  `deploy/ci/verify-sample.sh`, `deploy/ci/verify-run.sh`.
+- Namespace, Pod Security, NetworkPolicy (§3): `deploy/k8s/pod-security-admission.yaml`, `deploy/helm/svp-cluster/`
+  (`templates/namespaces.yaml`, `templates/networkpolicies.yaml`, `values.yaml`), NetworkPolicy của từng chart
+  (`deploy/helm/svp-data/templates/networkpolicies.yaml`, `deploy/helm/svp-observability/templates/networkpolicies.yaml`,
+  `deploy/helm/svp-service/templates/networkpolicy.yaml`), security context ở `deploy/helm/svp-data/templates/_helpers.tpl`.
+- Dữ liệu trong cluster, Redpanda SASL và ACL (§4, §5): `deploy/helm/svp-data/` (Postgres CloudNativePG, Valkey, MinIO, Job init của
+  Redpanda, `files/kafka-users.sh`, scaler KEDA, `values.yaml`), `deploy/k8s/values/cloudnative-pg.yaml`,
+  `deploy/k8s/values/redpanda.yaml`.
+- Image và chart (§6, §7): image dev và registry k3d ở `deploy/k8s/lib.sh`; năm chart dưới `deploy/helm/`; thứ tự cài
+  `deploy/argocd/apps/components.json` dùng chung cho `deploy/k8s/install.sh` và `deploy/argocd/apps/` (`templates/applications.yaml`,
+  `values.yaml`); values bên thứ ba ở `deploy/k8s/values/`.
+- Secret (§8): `deploy/k8s/secrets.sh`, `deploy/k8s/glitchtip-init.sh`, biến chỉ cho k3d ở `deploy/compose/compose.mk`.
+- Biên vào (§9): `deploy/helm/svp-cluster/templates/gateway.yaml`, `deploy/helm/svp-cluster/templates/certificates.yaml`,
+  `deploy/k8s/values/envoy-gateway.yaml`, `deploy/k8s/values/cert-manager.yaml`, `deploy/helm/svp-service/templates/httproute.yaml`.
+- Workload (§10): `deploy/helm/svp-service/` (`templates/deployment.yaml`, `service.yaml`, `migrate.yaml`, `autoscaling.yaml`,
+  `values.yaml`), `deploy/k8s/values/services/`, `deploy/k8s/values/keda.yaml`; diễn tập `deploy/k8s/drills/keda.sh`,
+  `deploy/k8s/drills/pdb.sh`.
+- Observability trong cluster (§11): `deploy/helm/svp-observability/` (`templates/glitchtip.yaml`, `grafana.yaml`,
+  `prometheusrules.yaml`, `values.yaml`), `deploy/k8s/values/kube-prometheus-stack.yaml`, `loki.yaml`, `tempo.yaml`,
+  `pyroscope.yaml`, `otel-collector.yaml`, `deploy/observability/otelcol/k8s-config.yaml`.
+- GitOps (§12): `deploy/k8s/gitops.sh`, `deploy/argocd/project.yaml`, `deploy/k8s/values/argo-cd.yaml`, `deploy/k8s/drills/gitops.sh`;
+  ngoại lệ RBAC của operator CloudNativePG ở `deploy/ci/trivy-config-ignore.yaml`.
+- Canary (§13): `deploy/helm/svp-service/templates/canary.yaml`, `deploy/k8s/values/argo-rollouts.yaml`,
+  `deploy/helm/svp-observability/templates/envoy.yaml`, `deploy/k8s/drills/canary.sh`, `deploy/k8s/drills/traffic.sh`.
+- Threat model giai đoạn 4: `deploy/k8s/drills/threats.sh`.

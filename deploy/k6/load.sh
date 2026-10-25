@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The load test of deploy/k6/main.js against the running compose stack (`make up`), run by `make load-local` (profile
-# local) and `make load-ci` (profile ci, the CI job `stack`); docs/adr/0020-reliability-stage6.md, section 2.
+# local) and `make load-ci` (profile ci, the CI job `stack`).
 #
 #   1. Refuses unless the gateway and web containers of compose project svp run and no node or registry of the k3d
 #      cluster svp does; it never starts anything.

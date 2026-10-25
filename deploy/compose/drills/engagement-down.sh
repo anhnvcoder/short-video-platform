@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Drill: engagement-service is down, the gateway's circuit breaker opens, and the feed still serves
-# (ADR-0009 section 9, ADR-0010 sections 4 and 7, architecture section 7.2). With fresh users A and
+# (architecture section 7.2). With fresh users A and
 # B, B following A and A's video READY in B's feed with stats:
 #   1. stop engagement-service;
 #   2. send likes in parallel until the gateway logs the engagement-service breaker as open (one
@@ -25,7 +25,7 @@ source "$(dirname "$0")/common.sh"
 # GetStats 100 ms).
 max_feed_seconds=${max_feed_seconds:-1}
 # With the breaker open a like must be refused within this many seconds: it fails fast from the breaker instead of
-# waiting out the 3 s call timeout (ADR-0010, section 4).
+# waiting out the 3 s call timeout.
 max_open_seconds=0.1
 # Seconds after engagement-service is healthy again within which a like must succeed.
 close_timeout=30

@@ -1,5 +1,5 @@
 # Argo CD v3.5.5 (chart https://argoproj.github.io/argo-helm argo-cd 10.10.5), release argocd in namespace argocd: the
-# GitOps path (docs/adr/0014-kubernetes-local-stage4.md, section 12). Installed by deploy/k8s/gitops.sh before
+# GitOps path. Installed by deploy/k8s/gitops.sh before
 # everything else; it is not in components.json, it builds the rest of the cluster from GitHub.
 #
 # Minimal: the application controller, repo-server, server and Redis only. Logins are the local admin user (password
@@ -42,8 +42,8 @@ configs:
     timeout.reconciliation.jitter: 0s
     # resource.exclusions is left to the chart's default, which already keeps Argo CD from watching Kyverno's report
     # kinds, the four Kyverno v1.19.1 writes among them (PolicyReport and ClusterPolicyReport of wgpolicyk8s.io,
-    # EphemeralReport and ClusterEphemeralReport of reports.kyverno.io; docs/adr/0015-cicd-devsecops-stage5.md, section
-    # 8): the reports controller makes one per pod and policy, which no chart renders, and tracking them would only cost
+    # EphemeralReport and ClusterEphemeralReport of reports.kyverno.io):
+    # the reports controller makes one per pod and policy, which no chart renders, and tracking them would only cost
     # the application controller RAM. A resource.exclusions set here would replace that whole list; an exclusion of the
     # project's own goes into resourceExclusionsAdditional, which the chart appends to it.
     # Since 1.8 Argo CD no longer assesses the health of an Application, so an app-of-apps would start each sync wave
@@ -185,10 +185,10 @@ configs:
       return hs
 
 # Images by digest (multi-arch index: linux/amd64 and linux/arm64), the chart's tags beside them for the reader: a tag
-# can be pushed again to other content, a digest cannot (docs/adr/0015-cicd-devsecops-stage5.md, section 8). The chart
+# can be pushed again to other content, a digest cannot. The chart
 # renders repository:tag, so tag holds version@digest; deploy/k8s/check-image-digests.sh fails on an image without one.
 # repository is the chart's default written out: Renovate's helm-values manager finds a pin only as repository and tag
-# under a key ending in "image" (ADR-0015 section 10), and updates both parts of tag.
+# under a key ending in "image", and updates both parts of tag.
 # global.image.tag is every Argo CD component's image (controller, repo-server, server, the ApplicationSet controller
 # left at zero replicas, the Job that writes the Redis password); the chart's version label turns it into
 # v3.5.5-sha256-<first hex digits>, a valid label value.

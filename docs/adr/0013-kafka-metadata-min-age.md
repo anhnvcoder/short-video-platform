@@ -68,3 +68,7 @@ làm mới metadata.
   client), không đáng kể.
 - Xem lại khi: số client tăng tới hàng trăm (pod nhân bản trên k8s) và metric request metadata của broker tăng rõ khi
   broker lỗi; hoặc một hạn produce được rút xuống dưới ~2 s, khi đó 1 s trễ trở thành phần lớn của hạn.
+
+## Hiện thực ở
+
+- `internal/kafkax/kafkax.go`: `MetadataMinAge` 1 s cho mọi client franz-go do `kafkax` dựng.

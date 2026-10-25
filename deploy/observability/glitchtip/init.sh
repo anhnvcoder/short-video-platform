@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Runs the glitchtip-init job (migrations, cache table, partitions, bootstrap.py) once with a
 # private output directory mounted, then puts the DSN and API tokens it wrote there into the env
-# file (docs/adr/0011-observability-stage3.md, section 7):
+# file:
 #   SENTRY_DSN         the project DSN with host glitchtip:8000, for the Go services in compose
 #   SENTRY_AUTH_TOKEN  read-only API token (event:read, project:read) for the drills
 #   SENTRY_SOURCEMAPS_TOKEN  API token svp-sourcemaps (project:releases) of make web-sourcemaps
-#                      (docs/adr/0019-web-k3d-supply-chain-observability.md, section 9)
 #   SENTRY_ORG, SENTRY_PROJECT, SENTRY_API_URL  svp, svp, http://127.0.0.1:8000
 # The env file is read with the strict rule of dotenv.sh, the same as `make env`: a line it refuses
 # stops the script, naming the variable, with the env file untouched. A variable that already has

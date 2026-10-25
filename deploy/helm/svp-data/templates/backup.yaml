@@ -1,5 +1,5 @@
 {{- /*
-Backups of Postgres svp-pg (docs/adr/0020-reliability-stage6.md, section 5; threat model BAK-1): the Barman Cloud plugin
+Backups of Postgres svp-pg (threat model BAK-1): the Barman Cloud plugin
 (release plugin-barman-cloud in cnpg-system, wave 3) archives every WAL segment and takes base backups, from a sidecar
 in the Postgres pod, to bucket pg-backups of the cluster's MinIO, as MinIO user svp-pg-backup, whose policy allows that
 bucket only (deploy/minio/pg-backup-policy.json, made by the minio-init Job; no service has this user). Its secret key

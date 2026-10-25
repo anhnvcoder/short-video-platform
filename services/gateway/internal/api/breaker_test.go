@@ -18,9 +18,9 @@ import (
 )
 
 // TestEngagementBreakerOpen: once engagement-service's breaker opens, likes fail at once with
-// 503 and the feed answers at once without stats, neither reaching engagement-service
-// (ADR-0010 section 4). It checks no wall-clock bound tighter than a call's own deadline: a
-// loaded -race run can spend more than half of statsTimeout on a feed request alone.
+// 503 and the feed answers at once without stats, neither reaching engagement-service. It
+// checks no wall-clock bound tighter than a call's own deadline: a loaded -race run can spend
+// more than half of statsTimeout on a feed request alone.
 func TestEngagementBreakerOpen(t *testing.T) {
 	logs := captureLog(t)
 	e := newEnvWithLimits(t, downLimits(t),
@@ -83,12 +83,12 @@ func TestEngagementBreakerOpen(t *testing.T) {
 }
 
 // TestUserBreakerOpen: once user-service's breaker opens, follows fail at once with 503 and the
-// feed answers without authors, keeping its stats, without GetProfiles reaching user-service
-// (ADR-0018 section 5).
+// feed answers without authors, keeping its stats, without GetProfiles reaching user-service.
 func TestUserBreakerOpen(t *testing.T) {
 	logs := captureLog(t)
 	e := newEnvDialed(t, httpx.ClientAddr{}, downLimits(t),
-		[]grpc.DialOption{grpc.WithUnaryInterceptor(breaker.New("user-service", userv1.UserService_GetProfiles_FullMethodName))}, nil)
+		[]grpc.DialOption{grpc.WithUnaryInterceptor(breaker.New("user-service", userv1.UserService_GetProfiles_FullMethodName))},
+		[]grpc.DialOption{patientExtras()})
 	e.users.fail(status.Error(codes.Unavailable, "user-service is down"))
 	token := e.token(t, userA)
 

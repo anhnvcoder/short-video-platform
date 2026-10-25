@@ -223,8 +223,7 @@ func TestNilReturnedAtStopCommits(t *testing.T) {
 }
 
 // The consumer span of a failed attempt holds the error's type and safe code, never its text,
-// which can wrap a Postgres message quoting a parameter (docs/adr/0011-observability-stage3.md,
-// section 7).
+// which can wrap a Postgres message quoting a parameter.
 func TestConsumerSpanOmitsErrorText(t *testing.T) {
 	const secret = "alice@example.com"
 	tests := []struct {

@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Helpers shared by the image pipeline scripts under deploy/ci/ (docs/adr/0015-cicd-devsecops-stage5.md, sections 3-7).
+# Helpers shared by the image pipeline scripts under deploy/ci/.
 # Sourcing it only defines things. It sources deploy/k8s/lib.sh for the list of services, the Dockerfile of each and
 # the paths each image is built from, so CI and `make k8s-up` never disagree on them. Written for bash 3.2 too (the
 # scripts are tried on macOS before they run on the Ubuntu runners).
@@ -15,8 +15,8 @@ ci_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=deploy/ci/platform.sh
 . "$ci_dir/platform.sh"
 
-# Every image of the project lives under ghcr_prefix (deploy/k8s/lib.sh, ADR-0015 section 5).
-# The images built only to drill admission (ADR-0015 section 7): never run by any chart.
+# Every image of the project lives under ghcr_prefix (deploy/k8s/lib.sh).
+# The images built only to drill admission: never run by any chart.
 # shellcheck disable=SC2034 # read by the scripts that source this file
 drill_images=(drill-vulnerable drill-unsigned)
 # sign_identity: sets sign_issuer and sign_subject, the keyless identity every signature and attestation must carry
@@ -78,7 +78,7 @@ trivy_() {
     ${trivy_mounts[@]+"${trivy_mounts[@]}"} "$image" "$@" --cache-dir /cache
 }
 
-# trivy_scan_args: the scan flags of ADR-0015 section 6, the same for the build gate and the rescan: vulnerabilities
+# trivy_scan_args: the scan flags, the same for the build gate and the rescan: vulnerabilities
 # and secrets, every severity, JSON. The ignore file is passed only when it exists (trivy fails on a missing one); it is
 # mounted at /ignore.yaml by the caller.
 trivy_scan_args() {
@@ -94,7 +94,7 @@ trivy_db_updated_at() {
     fail "read the trivy DB version"
 }
 
-# oci_labels: prints the OCI labels of the commit at HEAD as key=value lines (ADR-0015 section 5): the source
+# oci_labels: prints the OCI labels of the commit at HEAD as key=value lines: the source
 # repository, the commit, and the commit time in UTC, so the same commit always gets the same labels whatever the build time.
 oci_labels() {
   local rev created
@@ -156,7 +156,7 @@ check_index() {
 }
 
 # attest_max_age: the oldest vuln attestation a release may carry when it enters main, in seconds: 48 hours, which
-# leaves at least 24 hours before Kyverno's 72-hour limit for the merge and the sync (ADR-0015 section 7). Only drills
+# leaves at least 24 hours before Kyverno's 72-hour limit for the merge and the sync. Only drills
 # lower it, through SVP_ATTEST_MAX_AGE (<number>s, m or h; never set in .env).
 attest_max_age() {
   local age=${SVP_ATTEST_MAX_AGE:-48h}

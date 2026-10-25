@@ -1,7 +1,7 @@
 // Package outbox writes events to a service's outbox table in the transaction that changes the
 // data, and relays them to Kafka in id order. Writing the event in the same transaction makes the
 // data change and the event happen together or not at all, which a produce after the commit
-// cannot promise (ADR-0003 option B, ADR-0008 section 7).
+// cannot promise.
 //
 // # Table
 //

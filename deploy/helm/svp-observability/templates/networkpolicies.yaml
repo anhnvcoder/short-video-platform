@@ -1,5 +1,5 @@
 {{- /*
-Flows into and out of svp-obs (ADR-0014 section 3, "flows opened"; threat model IN-2, FF-5, OPS-2). Chart svp-cluster
+Flows into and out of svp-obs (threat model IN-2, FF-5, OPS-2). Chart svp-cluster
 already denies every pod of the namespace in both directions, opens DNS, and opens the API server for pods labelled
 svp-kube-api=allow (Prometheus, its operator, kube-state-metrics, Grafana's sidecars, Pyroscope). Each pod below gets
 one policy listing every port it serves and every peer it calls, so the policy of a pod is the whole of its traffic;
@@ -35,7 +35,7 @@ podSelector:
     {{- toYaml (index .root.Values.pods .name) | nindent 4 }}
 {{- end }}
 # The Collector: OTLP from the seven releases of svp (services.otlp), out to the three backends, and Redpanda's
-# /public_metrics (no login is needed or held, so no credential has to be given to the Collector; ADR-0014 section 5).
+# /public_metrics (no login is needed or held, so no credential has to be given to the Collector).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -290,8 +290,8 @@ spec:
         - {protocol: TCP, port: 4040}
   egress: []
 ---
-# Alertmanager to Telegram (api.telegram.org:443), for alerts of severity=page when .env has a bot (ADR-0014 section 3,
-# "egress of Alertmanager to Telegram"). A NetworkPolicy cannot name a host, only pods and IP blocks, so this opens TCP
+# Alertmanager to Telegram (api.telegram.org:443), for alerts of severity=page when .env has a bot.
+# A NetworkPolicy cannot name a host, only pods and IP blocks, so this opens TCP
 # 443 to every public IPv4 address: 0.0.0.0/0 except the private, link-local and shared ranges, which hold the pods
 # (10.42.0.0/16), the Services (10.43.0.0/16), the nodes (10.200.0.0/24) and the machine's own networks, so nothing
 # inside the cluster or on the host is opened. Telegram's published ranges would be narrower, but they change without

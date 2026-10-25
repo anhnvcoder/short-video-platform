@@ -10,7 +10,7 @@ sql:
         sql_package: pgx/v5
         overrides:
           # Ids use the standard library uuid package, as internal/ids does: Go has one, so no uuid
-          # module is added (ADR-0007, section 3).
+          # module is added.
           - db_type: uuid
             go_type:
               import: uuid

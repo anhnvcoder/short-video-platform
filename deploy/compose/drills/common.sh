@@ -237,7 +237,7 @@ timed_request() {
 }
 
 # Observability drills (alert-to-sentry.sh, obs-threats.sh): read-only access to the stack of
-# `make up OBS=lgtm` (docs/adr/0011-observability-stage3.md, sections 7 to 9). Prometheus, Tempo and
+# `make up OBS=lgtm`. Prometheus, Tempo and
 # Loki are reached through Grafana's datasource proxy, since their own ports are not published;
 # Alertmanager and GlitchTip through their loopback ports. The GlitchTip API token (read-only:
 # event:read, project:read) is read from .env into a shell variable that is never exported,
@@ -374,7 +374,7 @@ recent_5xx_expr() {
 
 # wait_quiet_5xx SELECTOR SECONDS TIMEOUT: waits until Prometheus has shown no new 5xx in SELECTOR
 # for SECONDS in a row (polling every 5 s), so that the error tracker's limit of one event per
-# fingerprint per 30 s (ADR-0011, section 7) cannot hold back the event of the next error; fails
+# fingerprint per 30 s cannot hold back the event of the next error; fails
 # after TIMEOUT seconds. A 5xx not yet exported (at most 15 s old) cannot be seen this way.
 wait_quiet_5xx() {
   local start=$SECONDS quiet_since=

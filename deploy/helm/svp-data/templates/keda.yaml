@@ -1,5 +1,5 @@
 {{- /*
-Login of KEDA's Kafka scaler (ADR-0014 sections 5, 8 and 10), which reads the lag of group media-worker for the
+Login of KEDA's Kafka scaler, which reads the lag of group media-worker for the
 ScaledObject of chart svp-service: Redpanda user svp-keda, SCRAM-SHA-256 without TLS as the services (TLS inside the
 cluster is IN-3, stage 6), from Secret keda-kafka of namespace keda (deploy/k8s/secrets.sh). svp-keda may only DESCRIBE
 topic video.lifecycle.v1 and group media-worker (files/kafka-users.sh), which is what reading committed and end offsets

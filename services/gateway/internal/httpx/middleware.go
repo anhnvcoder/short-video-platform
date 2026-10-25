@@ -22,9 +22,9 @@ import (
 )
 
 // Trace returns the otelhttp handler around next: every request gets a server span and the
-// http.server.request.duration metric (docs/adr/0011-observability-stage3.md, sections 2 and 3).
+// http.server.request.duration metric.
 // Trace itself never reads a traceparent, tracestate or baggage the client sent: its propagator
-// is empty, so the span is a new root trace without links (ADR-0007 section 8) unless
+// is empty, so the span is a new root trace without links unless
 // TrustTraceContext, in front of it, has put a trusted parent into the request's context. logx writes the
 // span's trace_id and span_id into every record logged with the request's context, and the
 // stats handler of ClientTelemetry continues the trace in the services. The span is named after
@@ -35,7 +35,7 @@ import (
 // server is the gateway's host:port, with a numeric port; it gives the server.address and
 // server.port of spans and metrics. Without it otelhttp takes both from the Host header, which
 // the client sets: every new value would be a new metric series, until the SDK's limit on series
-// folds real routes into its overflow series (ADR-0011 section 5).
+// folds real routes into its overflow series.
 //
 // The probes /healthz and /readyz, which run every few seconds, get neither span nor metric;
 // they are matched by their exact path.
@@ -64,11 +64,11 @@ func isProbe(r *http.Request) bool {
 
 // TrustTraceContext, in front of Trace, makes the gateway's server span a child of the W3C
 // traceparent and tracestate of the request, so a trace started by the web server continues
-// through the gateway into the services (docs/adr/0019-web-k3d-supply-chain-observability.md,
-// section 7). Baggage is never read. A traceparent that does not parse (version ff or not hex,
-// all-zero trace or span id) leaves the context as it is, and Trace starts a new root as without
-// this middleware. Versions 01 to fe are read as W3C TraceContext asks of a future version, so
-// they continue the sender's trace like 00. The probes get no parent, the same as they get no span.
+// through the gateway into the services. Baggage is never read. A traceparent that does not parse
+// (version ff or not hex, all-zero trace or span id) leaves the context as it is, and Trace starts
+// a new root as without this middleware. Versions 01 to fe are read as W3C TraceContext asks of a
+// future version, so they continue the sender's trace like 00. The probes get no parent, the same
+// as they get no span.
 //
 // The sender's sampled flag is dropped: the parent is marked sampled, so the default sampler
 // (parentbased_always_on) records the gateway's span as it records a root span. Otherwise a

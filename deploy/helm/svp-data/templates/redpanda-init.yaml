@@ -1,5 +1,5 @@
 {{- /*
-Topics, Kafka users and ACLs of the Redpanda release (wave 3) (ADR-0014 section 5; threat model IN-4, FF-6). One Job
+Topics, Kafka users and ACLs of the Redpanda release (wave 3) (threat model IN-4, FF-6). One Job
 as the superuser svp-admin: deploy/redpanda/create-topics.sh, the file compose's redpanda-init runs, then
 kafka-users.sh. It lives in this chart rather than Redpanda's because the NetworkPolicies that let it reach the
 broker are here too.

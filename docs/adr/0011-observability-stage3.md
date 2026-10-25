@@ -3,7 +3,8 @@
 - Trạng thái: Chấp nhận; §1 chỉnh bởi [0012](0012-elastic-vs-grafana-stage3.md), §11 chỉnh bởi [0013](0013-kafka-metadata-min-age.md);
   §3 (gateway nhận `traceparent`/`tracestate` của request đến khi bật `TRUST_TRACE_CONTEXT`) chỉnh bởi
   [0019](0019-web-k3d-supply-chain-observability.md); §11 (ngân sách kết nối Postgres lúc khởi động 5 s thành cửa sổ thử lại 30 s)
-  chỉnh bởi [0020](0020-reliability-stage6.md)
+  chỉnh bởi [0020](0020-reliability-stage6.md); §8 (`RateLimitFallbackActive` theo tỷ lệ quyết định dự phòng của từng instance, có
+  sàn số lượng và `for: 1m`; thêm ticket `RateLimitFallbackElevated`) chỉnh bởi [0021](0021-deferred-verification-stage6b.md)
 - Ngày: 2026-10-16
 
 ## Bối cảnh
@@ -980,3 +981,29 @@ repo hay diễn tập ứng dụng vì thay đổi này chỉ là ADR; các test
   - Lên k8s/cloud: tách backend dev image, bật xác thực UI, quản lý secret, TLS/NetworkPolicy và retention/chi phí thật.
   - Nâng OTel/LGTM/GlitchTip: kiểm lại tên metric, unit/bucket/route, datasource/provisioning, startup/cachetable và API
     tag query; không chỉ đổi tag image. Nâng AWS SDK thì kiểm lại phương án thay otelaws.
+
+## Hiện thực ở
+
+- SDK và Collector (§1, §2): `internal/telemetry/`, `deploy/observability/otelcol/config.yaml` (compose), `k8s-config.yaml` (k3d).
+- Lan truyền trace (§3): `services/gateway/internal/httpx/`, `internal/kafkax/tracing.go`.
+- Log có cấu trúc và Loki (§4): `internal/logx/`, `deploy/observability/lgtm/loki-config.yaml`.
+- Metric, tên series, bucket (§5): metric của `services/feed-service/internal/projector/`, `services/video-service/internal/server/`,
+  `services/media-worker/internal/worker/`, `services/gateway/internal/breaker/`, `services/gateway/internal/ratelimit/`,
+  `services/gateway/internal/httpx/`; dashboard ở `deploy/observability/grafana/` (`dashboards/`, `provisioning/`),
+  `deploy/observability/prometheus/prometheus.yaml`.
+- Theo dõi lỗi bằng GlitchTip và ranh giới dữ liệu (§7): `internal/sentryx/`, `internal/kafkax/tracing.go`, `internal/redisx/`,
+  `internal/objstore/`, `deploy/observability/glitchtip/` (`init.sh`, `bootstrap.py`), database `svp_glitchtip` ở
+  `deploy/postgres/bootstrap.sh`; phần `main.go` của từng service (`services/*/cmd/*/main.go`) báo lỗi khởi động và tắt êm.
+- SLO và cảnh báo (§8): `deploy/observability/slo/svp-slos.yaml`, `deploy/observability/prometheus/rules/` (`svp-alerts.yaml`,
+  `svp-alerts.test.yaml`), `deploy/observability/alertmanager/entrypoint.sh`.
+- Stack local và phép đo overhead (§9, §10): profile `obs` của `deploy/compose/compose.yaml`, `deploy/compose/compose.mk`
+  (`OBS=lgtm|elastic|off`), `Makefile`; test telemetry `services/gateway/cmd/gateway/telemetry_test.go`,
+  `services/gateway/internal/api/telemetry_test.go`.
+- Hạn của pool và vòng nền (§11): `internal/pgpool/`, `internal/kafkax/consumer.go`, `internal/outbox/`,
+  `services/engagement-service/internal/server/`, `services/feed-service/`, `services/video-service/internal/server/`,
+  `services/video-service/migrations/00004_add_processing_at.sql`, `deploy/redpanda/create-topics.sh`.
+- Diễn tập giai đoạn 3: `deploy/compose/drills/alert-to-sentry.sh`, `deploy/compose/drills/obs-threats.sh`,
+  `deploy/compose/drills/common.sh`.
+- Trong cluster k3d: `deploy/helm/svp-observability/` (`templates/glitchtip.yaml`, `values.yaml`), `deploy/helm/svp-service/values.yaml`,
+  `deploy/k8s/values/kube-prometheus-stack.yaml`, `deploy/k8s/secrets.sh`.
+- Kibana của bài so sánh (§12): `deploy/observability/elastic/kibana.yml`.

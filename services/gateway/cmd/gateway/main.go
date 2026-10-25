@@ -1,7 +1,6 @@
 // Command gateway runs the REST gateway (serve, the default) or checks a running instance's
 // health (healthcheck). Configuration comes from environment variables only, so the same image
-// runs in compose, in Kubernetes (k3d) and in the cloud with just the variables changed
-// (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 4).
+// runs in compose, in Kubernetes (k3d) and in the cloud with just the variables changed.
 package main
 
 import (
@@ -50,7 +49,7 @@ const (
 	// defaultRedisURL is the gateway's Redis db (CLAUDE.md); it holds the rate limits.
 	defaultRedisURL = "redis://127.0.0.1:6379/10"
 	// redisKeyPrefix starts every key the gateway writes, so its keys are told apart from other
-	// services' and an ACL by prefix can be added on the cloud (ADR-0010 section 1).
+	// services' and an ACL by prefix can be added on the cloud.
 	redisKeyPrefix = "svp:gw:"
 	// shutdownTimeout bounds the wait for in-flight requests after SIGINT or SIGTERM.
 	shutdownTimeout = 10 * time.Second
@@ -65,7 +64,7 @@ type backend struct {
 	addrVar, addr string
 	// retry are the full names of the idempotent methods retried on UNAVAILABLE; no other method
 	// is retried, as a second try would repeat its effect (a new video from InitUpload, one more
-	// view from RecordView) or cost a password hash again (ADR-0010 section 4).
+	// view from RecordView) or cost a password hash again.
 	retry []string
 	// ignoreDeadline are the methods whose DEADLINE_EXCEEDED the breaker does not count.
 	ignoreDeadline []string
@@ -75,10 +74,9 @@ var (
 	userBackend = backend{
 		name: "user-service", addrVar: "USER_SERVICE_ADDR", addr: defaultUserServiceAddr,
 		// Logout revokes a family that stays revoked, so a second try changes nothing; Refresh is
-		// not retried: a second try reuses the token and revokes its whole family (ADR-0016).
+		// not retried: a second try reuses the token and revokes its whole family.
 		// UpdateDisplayName sets a value, so setting it twice is setting it once. GetProfiles is
-		// not retried: it adds authors within a 100 ms budget that holds no second try
-		// (ADR-0018 section 5).
+		// not retried: it adds authors within a 100 ms budget that holds no second try.
 		retry: []string{
 			userv1.UserService_Follow_FullMethodName, userv1.UserService_Unfollow_FullMethodName,
 			userv1.UserService_Logout_FullMethodName,
@@ -103,15 +101,14 @@ var (
 		name: "engagement-service", addrVar: "ENGAGEMENT_SERVICE_ADDR", addr: defaultEngagementAddr,
 		retry: []string{engagementv1.EngagementService_Like_FullMethodName, engagementv1.EngagementService_Unlike_FullMethodName},
 		// GetStats has a 100 ms budget: a slow but live engagement-service must not open the
-		// breaker and fail every like and view (ADR-0010 section 4).
+		// breaker and fail every like and view.
 		ignoreDeadline: []string{engagementv1.EngagementService_GetStats_FullMethodName},
 	}
 )
 
 // retryConfig is the service config of every connection, with %s the methods it retries. Every
 // attempt runs within the call's one deadline. The retry throttling makes retries stop after a
-// few failed calls to a service that is down, instead of tripling the load on it (ADR-0010
-// section 4).
+// few failed calls to a service that is down, instead of tripling the load on it.
 const retryConfig = `{
   "methodConfig": [{
     "name": %s,
@@ -177,11 +174,10 @@ func main() {
 
 // run runs the subcommand cmd and logs its error. Error reporting, telemetry and profiling start
 // for serve only, never for healthcheck, which a container runtime runs every few seconds and
-// which would otherwise add thousands of metric instances and probe error events a day
-// (docs/adr/0011-observability-stage3.md, section 10). They stop after the error is logged, so a
-// failure that stops the gateway still reaches the error tracker and the log pipeline (section
-// 7). On shutdown the HTTP server stops first (in serve), then the connections, then telemetry
-// is flushed, and the error tracker last.
+// which would otherwise add thousands of metric instances and probe error events a day. They
+// stop after the error is logged, so a failure that stops the gateway still reaches the error
+// tracker and the log pipeline. On shutdown the HTTP server stops first (in serve), then the
+// connections, then telemetry is flushed, and the error tracker last.
 func run(ctx context.Context, logger *slog.Logger, cmd string) error {
 	var err error
 	stopTelemetry := func() {}
@@ -197,7 +193,7 @@ func run(ctx context.Context, logger *slog.Logger, cmd string) error {
 		err = fmt.Errorf("unknown subcommand %q, want serve or healthcheck", cmd)
 	}
 	if err != nil {
-		// A constant message, so the error tracker groups it (ADR-0011, section 7).
+		// A constant message, so the error tracker groups it.
 		logger.Error("gateway failed", slog.Any("error", err))
 	}
 	stopTelemetry()
@@ -256,7 +252,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	}
 
 	// Like engagement-service's below, this connection is opened at start and never left idle:
-	// GetProfiles adds the authors of every feed page within 100 ms (ADR-0018 section 5).
+	// GetProfiles adds the authors of every feed page within 100 ms.
 	userConn, err := dial(userBackend, grpc.WithIdleTimeout(0))
 	if err != nil {
 		return err
@@ -287,7 +283,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	engagementConn.Connect()
 
 	// The client does not connect until the first command, so the gateway starts while Redis is
-	// down; rate limits then use their fallback (ADR-0010 section 2).
+	// down; rate limits then use their fallback.
 	redisClient, err := redisx.New(envcfg.String("REDIS_URL", defaultRedisURL))
 	if err != nil {
 		return fmt.Errorf("REDIS_URL: %w", err)

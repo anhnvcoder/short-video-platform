@@ -193,7 +193,7 @@ func TestConsumerConfigRetriesWithoutLimit(t *testing.T) {
 	}
 }
 
-// Each attempt has a deadline of its own (ADR-0011, section 11): long enough for a fan-out to
+// Each attempt has a deadline of its own: long enough for a fan-out to
 // 200k followers, about a second, and short enough that a stuck lock does not hold the consumer.
 func TestConsumerConfigBoundsEachAttempt(t *testing.T) {
 	cfg := New(nil, slog.New(slog.DiscardHandler)).ConsumerConfig("127.0.0.1:19092")
@@ -902,8 +902,7 @@ func TestPruneTimelineDeletesOnlyExpired(t *testing.T) {
 }
 
 // A run whose deadline passes between two batches fails, and the batch it finished before that
-// was reported, so a run working through a backlog does not look stalled
-// (docs/adr/0011-observability-stage3.md, section 5).
+// was reported, so a run working through a backlog does not look stalled.
 func TestPruneTimelineReportsBatchesOfARunCutShort(t *testing.T) {
 	needDB(t)
 	p := newProjector()

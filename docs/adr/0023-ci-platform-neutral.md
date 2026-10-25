@@ -37,15 +37,17 @@ dự án công ty chạy GitLab), không phải lúc chỉ có một nền tản
 1. **Nguyên tắc.** YAML của nền tảng (`.github/workflows/*.yml`, sau này `.gitlab-ci.yml`) chỉ nối bước: trigger, quyền, runner,
    service container, cache, artifact, gọi target `make` hay script. Logic ở `Makefile` và `deploy/ci/`. Script nào đọc ngữ cảnh CI
    (biến của nền tảng) hay gọi API của nền tảng (PR, sự kiện, dispatch) thì đi qua hàm `ci_*` của `deploy/ci/platform.sh`.
-   Phép kiểm: `deploy/ci/platform-guard.sh`, chạy trong job `config` của `ci.yml` (cùng `platform-test.sh`) và trên máy: grep
+   Phép kiểm: `deploy/ci/platform-guard.sh`, chạy trong job `config` của `ci.yml` (cùng `platform-test.sh` và
+   `verify-collect-test.sh`) và trên máy: grep
    `GITHUB_[A-Z_]+|\bgh (api|pr|run|workflow)\b` trên file đã track và file chưa track không bị ignore của `deploy/` và `Makefile`,
    bỏ symlink (hai cái trỏ tới thư mục, grep đọc thư mục thì exit 2 và mã thoát hết tin được) và file đã xoá khỏi working tree,
    loại `platform.sh`, hai test giả lập job GitHub (`platform-test.sh`, `verify-collect-test.sh`) và chính nó; có dòng khớp thì in
    `file:dòng:` và exit 1. Script mới đọc `$GITHUB_OUTPUT` làm job `config` đỏ ngay ở PR, trước cả commit đầu của nó.
 2. **Ngoại lệ có chủ ý, giữ trong YAML:** job `last-success` của `images.yml` gọi `gh api` ngay trong YAML vì job đó giữ
    `actions: read` và không checkout, không chạy code của repo (ADR-0015 §3); các bước `docker login ghcr.io` bằng `GITHUB_TOKEN`;
-   `$GITHUB_OUTPUT`, `$GITHUB_ENV`, `$GITHUB_PATH`, `::error::` của chính YAML. Các dòng này thuộc file của nền tảng, khi chuyển thì
-   viết lại cùng file đó.
+   `$GITHUB_OUTPUT`, `$GITHUB_ENV`, `$GITHUB_PATH`, `::error::` của chính YAML; `$GITHUB_STEP_SUMMARY` do YAML của `ci.yml` ghi
+   thẳng: bảng SARIF (anchor `sarif-summary`: golangci-lint, lockfile web, gitleaks, trivy-config) và dòng bỏ qua của `buf`. Các
+   dòng này thuộc file của nền tảng, khi chuyển thì viết lại cùng file đó.
 3. **`platform.sh`** (source từ `common.sh`; script không source `common.sh` thì source thẳng). Chỉ định nghĩa hàm; mỗi hàm trả 1
    và in `FAIL  ...` khi lỗi, để script gọi tự dừng. Hai nền tảng được hiện thực:
    - `github`: `GITHUB_ACTIONS=true`;
@@ -83,7 +85,7 @@ dự án công ty chạy GitLab), không phải lúc chỉ có một nền tản
    `verify_signature`, `verify-release.sh`) và `drills/supplychain.sh` đọc hai dòng đó. Bản render của chart không đổi.
 5. **`changed-services.sh`:** `platform.sh` nằm trong pipeline image (được `common.sh` source) nên đổi nó build lại cả bảy như đổi
    `common.sh`; `platform-test.sh` và `platform-guard.sh` (test và phép kiểm, chạy ở job `config` và trên máy, không job image nào
-   đọc) được loại như `verify-collect-test.sh`; ADR
+   đọc) được loại như `verify-collect-test.sh` (test của bộ lọc artifact, cũng chạy ở job `config`); ADR
    (`docs/`) và values của `svp-policy` không thuộc đường dẫn image nào nên không build gì.
 6. **Hành vi:** trên GitHub không đổi (so từng script cũ và mới với cùng biến giả: output, summary, log, lệnh `gh`, predicate `vuln`
    giống từng byte). Trên máy khác có chủ ý: `promote.sh` không mở PR thật mà in lệnh và không push lên origin mạng (mục 3), link
@@ -177,6 +179,8 @@ Từng bước, theo thứ tự; đổi nào cũng đi qua review như mọi tha
 9. **Chỗ khác nhắc GitHub nhưng không phải CI:** `runbook_url` của rule cảnh báo trỏ `github.com/.../blob/main/docs/runbooks/`,
    ca k của `drills/supplychain.sh` (image CloudNativePG do workflow GitHub của nhà cung cấp ký: giữ nguyên), job `sarif` (chỉ có ý
    nghĩa ở Ultimate), `make ci-bridge-check` in `::error::` (ở nền tảng khác là dòng chữ thường).
+10. **Summary viết trong YAML:** bảng SARIF (anchor `sarif-summary` của `ci.yml`) và dòng bỏ qua của `buf` ghi
+    `$GITHUB_STEP_SUMMARY` từ YAML, không qua `ci_summary`: khi viết `.gitlab-ci.yml` cho in ra log (hay ghi file artifact).
 
 **Không mang được 1-1:**
 

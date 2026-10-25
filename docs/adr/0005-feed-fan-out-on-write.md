@@ -68,3 +68,10 @@ vẫn trong SLO 10 s. C chỉ đáng khi có tài khoản cỡ triệu follower.
   - ghi nhân theo số follower;
   - read model hỏng thì phải dựng lại được: cần cách nạp lại từ service nguồn hoặc phát lại event, thiết kế ở giai đoạn 2.
 - Xem lại khi: có tài khoản trên ~1 triệu follower, hoặc đo thấy fan-out p95 vượt 10 s. Lúc đó chuyển sang C.
+
+## Hiện thực ở
+
+- Fan-out khi ghi: `services/feed-service/internal/projector/` (mỗi `video.ready` thành một dòng timeline cho từng follower,
+  follow mới thì nạp video gần đây của tác giả); bảng `timeline` ở `services/feed-service/migrations/00001_create_feed.sql`,
+  truy vấn ở `services/feed-service/queries/feed.sql`.
+- Đọc feed và cache key nóng (trang đầu feed khám phá ở Redis): `services/feed-service/internal/server/`.

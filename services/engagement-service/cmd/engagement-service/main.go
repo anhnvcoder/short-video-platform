@@ -1,21 +1,19 @@
 // Command engagement-service serves svp.engagement.v1.EngagementService over gRPC: likes, view
-// events and the counters of each video (docs/adr/0009-engagement-feed-stage2b.md).
+// events and the counters of each video.
 //
 // Subcommands, in the service binary because its distroless image has no shell, curl or migration
-// tool (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 7):
+// tool:
 //
 //	serve        run the service (default when no subcommand is given)
 //	migrate      apply the database migrations, then exit
 //	healthcheck  ask the running service for its health; exit 0 when SERVING, 1 otherwise
 //
-// serve also runs the consumer that adds view.recorded events to the view counters in batches
-// (docs/adr/0009-engagement-feed-stage2b.md, section 4).
+// serve also runs the consumer that adds view.recorded events to the view counters in batches.
 //
 // Configuration comes from the environment: LISTEN_ADDR (default 127.0.0.1:9103) and
-// DATABASE_URL (required for serve and migrate); serve also needs KAFKA_BROKERS
-// (docs/adr/0009-engagement-feed-stage2b.md, section 12). serve exports telemetry when
-// OTEL_EXPORTER_OTLP_ENDPOINT is set, profiles when PYROSCOPE_SERVER_ADDRESS is, and reports
-// errors when SENTRY_DSN is (docs/adr/0011-observability-stage3.md).
+// DATABASE_URL (required for serve and migrate); serve also needs KAFKA_BROKERS. serve exports
+// telemetry when OTEL_EXPORTER_OTLP_ENDPOINT is set, profiles when PYROSCOPE_SERVER_ADDRESS is,
+// and reports errors when SENTRY_DSN is.
 package main
 
 import (
@@ -70,7 +68,7 @@ func main() {
 }
 
 // loggedError is a serve failure that serve has already logged, while the error tracker and the
-// telemetry providers were still running, so that it reaches both (ADR-0011, sections 4 and 7).
+// telemetry providers were still running, so that it reaches both.
 type loggedError struct{ error }
 
 func (e loggedError) Unwrap() error { return e.error }

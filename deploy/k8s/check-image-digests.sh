@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Static check that every third-party image the cluster's charts render is pinned by digest
-# (docs/adr/0015-cicd-devsecops-stage5.md, section 8). A tag can be pushed again to other content; a digest cannot, and
+# Static check that every third-party image the cluster's charts render is pinned by digest.
+# A tag can be pushed again to other content; a digest cannot, and
 # Kyverno checks only the seven service images at admission, so the images of the platform namespaces are held to their
 # digests here, before a merge, instead.
 #

@@ -1,7 +1,7 @@
 {
   "uid": "svp-red",
   "title": "SVP — RED (HTTP, gRPC)",
-  "description": "Rate, errors and duration of the gateway's HTTP routes and the gRPC services (ADR-0011 §5).",
+  "description": "Rate, errors and duration of the gateway's HTTP routes and the gRPC services.",
   "tags": [
     "svp"
   ],

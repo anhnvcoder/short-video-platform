@@ -28,8 +28,7 @@ const (
 )
 
 // UploadSweeper moves videos left UPLOADING for too long to FAILED and deletes their upload:
-// without it, an upload never completed would keep its object in the uploads bucket for good
-// (ADR-0004 rule 4, docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 5).
+// without it, an upload never completed would keep its object in the uploads bucket for good.
 type UploadSweeper struct {
 	pool    *pgxpool.Pool
 	queries *store.Queries
@@ -80,7 +79,7 @@ func (w *UploadSweeper) Run(ctx context.Context) {
 // next round instead of being selected again and again. Every batch that moves every video it
 // selected, one that found nothing or found the lock taken included, refreshes the loop gauge; a
 // batch error or a delete error does not, so storage that keeps refusing deletes shows as a
-// stalled loop (docs/adr/0011-observability-stage3.md, section 5).
+// stalled loop.
 func (w *UploadSweeper) sweep(ctx context.Context) int {
 	total := 0
 	for {

@@ -1,6 +1,6 @@
 // Package worker consumes video.uploaded from video.lifecycle.v1, transcodes the source to HLS
-// and publishes transcode.completed or transcode.failed to media.transcodes.v1 (ADR-0008
-// sections 8 to 10, architecture §7.1).
+// and publishes transcode.completed or transcode.failed to media.transcodes.v1 (architecture
+// §7.1).
 //
 // Error classes (A-1-review, M-1-review): a bad event goes to the dead-letter topic; a file that
 // is not a usable video (whitelist refusal, corrupt data, limits, ffprobe or ffmpeg failing,
@@ -42,7 +42,7 @@ import (
 )
 
 // Topics and consumer group. The topics must be ones redpanda-init creates, since the broker does
-// not create topics on first use (ADR-0008 section 5).
+// not create topics on first use.
 const (
 	InputTopic  = "video.lifecycle.v1"
 	OutputTopic = "media.transcodes.v1"
@@ -67,7 +67,7 @@ const (
 )
 
 const (
-	// maxSourceBytes caps a download whatever the event says (ADR-0004: at most 500 MiB).
+	// maxSourceBytes caps a download whatever the event says, at the 500 MiB upload limit.
 	maxSourceBytes = 500 << 20
 	// produceTimeout bounds publishing the result; past it the try fails and is retried.
 	produceTimeout = 30 * time.Second
@@ -81,9 +81,8 @@ const (
 // instrumentationName names the tracer and meter of the worker.
 const instrumentationName = "github.com/anhnvcoder/short-video-platform/services/media-worker/internal/worker"
 
-// transcodeBuckets are the V buckets of docs/adr/0011-observability-stage3.md, section 5, in
-// seconds, the same as svp.video.ready.duration of video-service; this histogram feeds dashboards
-// only, no SLO.
+// transcodeBuckets are the bucket bounds in seconds, the same as svp.video.ready.duration of
+// video-service; this histogram feeds dashboards only, no SLO.
 var transcodeBuckets = []float64{10, 20, 30, 45, 60, 90, 120, 180, 300, 600}
 
 // Storage is the part of objstore.Store the worker uses. Errors follow objstore: ErrNotFound,
@@ -125,9 +124,9 @@ func New(store Storage, producer *kgo.Client, workDir string, logger *slog.Logge
 
 // ConsumerConfig returns the consumer of InputTopic in Group with the worker's retry budget:
 // one record per poll, and rebalances wait for the record in hand. HandlerTimeout stays unset:
-// Handle bounds each try with tryTimeout and the publish of its result with produceTimeout
-// (docs/adr/0011-observability-stage3.md, section 11, keeps these instead of the 10 s or 30 s of
-// the other consumers).
+// Handle bounds each try with tryTimeout and the publish of its result with produceTimeout,
+// instead of the 10 s or 30 s of the other consumers, which would cut short a transcode that
+// ffmpeg may run for up to 10 minutes.
 func (w *Worker) ConsumerConfig(brokers string) kafkax.ConsumerConfig {
 	return kafkax.ConsumerConfig{
 		Brokers:          brokers,
@@ -206,7 +205,7 @@ func (w *Worker) Handle(ctx context.Context, r *kgo.Record, a kafkax.Attempt) er
 }
 
 // decode returns the video.uploaded carried by r, nil for any other event (the topic carries the
-// whole video lifecycle; skipped and committed, ADR-0006), or a permanent error for a record that
+// whole video lifecycle; skipped and committed), or a permanent error for a record that
 // breaks the contract.
 func decode(r *kgo.Record) (*videov1.VideoUploaded, error) {
 	var ev videov1.VideoEvent

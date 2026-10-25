@@ -24,7 +24,7 @@ import (
 // The integration tests run against the MinIO of `make up`, through `make test-stack`, as the
 // two service users created by minio-init, so they run under the same per-service policies as the
 // services. A test skips when the variable it needs is unset, which keeps `make check` working
-// without the stack (ADR-0008 sections 6 and 11).
+// without the stack.
 const (
 	envS3Endpoint     = "SVP_TEST_S3_ENDPOINT"
 	envVideoAccessKey = "SVP_TEST_S3_VIDEO_ACCESS_KEY"

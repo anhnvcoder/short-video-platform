@@ -5,7 +5,7 @@ import { serverEnv } from "@/server/env";
 import { problem } from "@/server/problem";
 import { pathHeader } from "@/server/request-headers";
 
-// Runs before every route but static files (docs/adr/0016-web-client.md, sections 5 and 6): the CSRF check of every
+// Runs before every route but static files: the CSRF check of every
 // request that may change state, then a fresh CSP nonce, put on the request for Next's renderer (it reads the nonce
 // from the request's Content-Security-Policy header and stamps it on every script it emits) and on the response
 // together with the other security headers.

@@ -1,7 +1,7 @@
 import "server-only";
 import type { Histogram, Meter } from "@opentelemetry/api";
 
-// Web vitals the browser measures (docs/adr/0019-web-k3d-supply-chain-observability.md, section 11), recorded as one
+// Web vitals the browser measures, recorded as one
 // OTel histogram each. Bucket bounds hold web.dev's "good" and "poor" thresholds of every metric (LCP 2.5/4 s, FCP
 // 1.8/3 s, TTFB 0.8/1.8 s, INP 200/500 ms, CLS 0.1/0.25), so the share of each rating reads from the buckets without a
 // rating label that would triple the series.

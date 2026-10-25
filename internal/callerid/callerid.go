@@ -1,6 +1,5 @@
 // Package callerid reads the caller's user id from the x-user-id gRPC metadata the gateway sets
-// after verifying the JWT (docs/adr/0006-contract-ids-and-event-envelope.md, section 5; threat
-// model IN-1, IN-2).
+// after verifying the JWT (threat model IN-1, IN-2).
 //
 // There is deliberately no helper that copies incoming metadata onward: the gateway builds
 // outgoing metadata from scratch with only the values it sets.

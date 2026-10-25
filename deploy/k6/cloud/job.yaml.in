@@ -1,4 +1,4 @@
-# Template of the k6 Job of the cloud cluster (docs/adr/0020-reliability-stage6.md, section 2), filled in by render.sh:
+# Template of the k6 Job of the cloud cluster, filled in by render.sh:
 # @K6_IMAGE@ (K6_IMAGE of the Makefile), @DOMAIN@, @ENVOY_IP@, @FORWARDED_FOR@ and @SCRIPT_ITEMS@. Not a manifest on its
 # own (hence .yaml.in, which make cloud-check does not read; it checks the output of render.sh).
 #

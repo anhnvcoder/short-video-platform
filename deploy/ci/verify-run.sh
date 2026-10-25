@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs one verification scenario: its make targets in order, each under a time limit of its own, with its whole output
-# in a file (docs/adr/0021-deferred-verification-stage6b.md, sections 2, 3 and 5). Same on the GitHub runner
+# in a file. Same on the GitHub runner
 # (.github/workflows/verify.yml) and on the rented Linux VM that stands in for it.
 #
 #   verify-run.sh compose-obs|dev-k3d
@@ -12,6 +12,20 @@
 # its LCP budget): the next target still runs, and $SVP_VERIFY_OUT/results.tsv gets one line per target (id, name,
 # ok|fail|timeout|skipped|cancelled, exit status, start and end in seconds since the epoch, seconds, note). Exits 1
 # when any target was not ok.
+#
+# The first target builds what the others use (up for compose-obs, k8s-up for dev-k3d). When it is not ok, every
+# later target is skipped at once with the note "infrastructure step failed": none of them can pass, and waiting for
+# each to fail (the RAM steps wait 15 min for pods that never get Ready) only spends the job's time. The collect and
+# upload steps of the job still run.
+#
+# SVP_VERIFY_TARGETS (the dispatch's input targets; empty: every target) names the targets to run, separated by
+# spaces, each a name of the scenario's list (results.tsv shows them); the build target always runs. The others are
+# skipped with the note "not in targets", which does not make the run fail, and keep their id, so a log is named the
+# same in every run. A name that is not one of the scenario's, or a character other than a-z, 0-9, - and space, stops
+# the script before any target starts (exit 2). A target that reads another's result still needs it: ram-peak
+# without drill-k8s-keda is skipped, and fails the run; the others fail on their own, so name what they read with them:
+# the READY video of smoke (k8s-smoke) for load-local and drill-k8s-threats, the reports of web-lighthouse-<n> for
+# lcp, the run of k8s-web-e2e for drill-k8s-web-obs.
 #
 # Deadline: no target starts, and none runs, past the earlier of
 #   - the job's start ($SVP_VERIFY_OUT/job-start, written by the job's first step) + SVP_VERIFY_JOB_MINUTES - 25 min,
@@ -45,16 +59,17 @@
 #   web-lighthouse-<n>         make web-lighthouse, its manifest.json kept as manifest-<n>.json
 #   lcp                        median LCP of / and /v/{id} over the three runs, with Lighthouse's benchmarkIndex;
 #                              lcp.json; fails when a median is over 2500 ms
-#   ram-rest-<label> (k3d)     the cluster at rest as ADR-0014 section 2 measures it: every pod Ready (or ended:
+#   ram-rest-<label> (k3d)     the cluster at rest: every pod Ready (or ended:
 #                              Succeeded, Failed), 60 s, then the median of the next 6 samples of verify-sample.sh
 #                              (10 s apart) of docker stats MEM USAGE of the k3d containers; anon, active_file and
 #                              kernel of memory.stat of each node; kubectl top pods --containers, each container and
 #                              summed by namespace, and kubectl top node; the window of those samples, to read
 #                              samples/pods.tsv at rest by; ram-rest-<label>.json and .txt, the .txt with free -m of
 #                              the runner at that point
-#   ram-peak (k3d)             over the samples taken while drill-k8s-keda ran: the highest median of 6 samples in a row
-#                              that each saw 2 Running media-worker pods, and the highest sample; ram-peak.json, .txt.
-#                              Skipped when drill-k8s-keda did not run
+#   ram-peak (k3d)             deploy/ci/verify-sample.sh peak over the samples taken while drill-k8s-keda ran: the
+#                              highest median of 6 samples in a row that each saw 2 media-worker pods transcoding (an
+#                              ffmpeg process in the pod), with MEM USAGE minus active_file over the same samples, and
+#                              the highest sample; ram-peak.json, .txt. Skipped when drill-k8s-keda did not run
 #
 # Linux only: GNU timeout and date -d.
 set -uo pipefail
@@ -71,16 +86,22 @@ export SVP_VERIFY_OUT=$out repo here
 
 scenario=${1:-}
 case $scenario in
-  compose-obs) job_minutes_default=120 ;;
-  dev-k3d) job_minutes_default=330 ;;
+  compose-obs) job_minutes_default=120 build=up ;;
+  dev-k3d) job_minutes_default=330 build=k8s-up ;;
   *)
     echo "FAIL  verify-run: unknown scenario '$scenario' (compose-obs, dev-k3d); nothing started" >&2
     exit 2
     ;;
 esac
-mkdir -p "$out/logs" || exit 1
+targets=${SVP_VERIFY_TARGETS:-}
+case $targets in
+  *[!a-z0-9\ -]*)
+    # Not printed back: the job's log reads a line that starts with :: as a command.
+    echo "FAIL  verify-run: SVP_VERIFY_TARGETS holds a character other than a-z, 0-9, - and space; nothing started" >&2
+    exit 2
+    ;;
+esac
 results=$out/results.tsv
-printf 'id\tname\tstatus\texit\tstart\tend\tseconds\tnote\n' >"$results"
 
 now() { date +%s; }
 utc() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
@@ -105,11 +126,23 @@ last_log=
 last_status=
 last_start=0
 last_end=0
+# listing: set while the scenario's targets are only listed into names, before any runs (see the scenarios below).
+listing=
+names=
+infra_failed=
+unchosen_note="not in targets"
+
+# chosen NAME: whether NAME runs in this run (see SVP_VERIFY_TARGETS in the header).
+chosen() {
+  [ -z "$targets" ] || [ "$1" = "$build" ] && return 0
+  case " $targets " in *" $1 "*) return 0 ;; esac
+  return 1
+}
 
 # record ID NAME STATUS EXIT START END NOTE
 record() {
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" "$(($6 - $5))" "$7" >>"$results"
-  [ "$3" = ok ] || not_ok=$((not_ok + 1))
+  [ "$3" = ok ] || [ "$7" = "$unchosen_note" ] || not_ok=$((not_ok + 1))
   echo "[$1] $2: $3${4:+ (exit $4)}, $(($6 - $5)) s${7:+; $7}"
 }
 
@@ -148,19 +181,33 @@ on_signal() {
 }
 trap on_signal INT TERM
 
-# skip NAME NOTE: records NAME as the next target, skipped for NOTE.
+# skip NAME NOTE: records NAME as the next target, skipped for NOTE; for "not in targets" instead when NAME is not
+# chosen, and for "infrastructure step failed" once the build target was not ok (see the header).
 skip() {
-  local t
+  local t note=$2
+  if [ -n "$listing" ]; then
+    names="$names $1"
+    return
+  fi
   t=$(now)
   n=$((n + 1))
   last_status=skipped
-  record "$(printf '%02d' "$n")" "$1" skipped "" "$t" "$t" "$2"
+  if ! chosen "$1"; then
+    note=$unchosen_note
+  elif [ -n "$infra_failed" ]; then
+    note="infrastructure step failed"
+  fi
+  record "$(printf '%02d' "$n")" "$1" skipped "" "$t" "$t" "$note"
 }
 
 # step NAME LIMIT_MINUTES COMMAND...: runs COMMAND as the next target (see the header).
 step() {
   local name=$1 limit=$(($2 * 60)) id start end rc status note= log left
   shift 2
+  if [ -n "$listing" ] || ! chosen "$name" || [ -n "$infra_failed" ]; then
+    skip "$name" ""
+    return
+  fi
   if [ -e "$out/disk-low" ]; then
     skip "$name" "disk: free space under 15% + 1 GiB"
     return
@@ -195,6 +242,7 @@ step() {
   current=
   last_start=$start last_end=$end last_status=$status
   record "$id" "$name" "$status" "$rc" "$start" "$end" "$note"
+  [ "$name" = "$build" ] && [ "$status" != ok ] && infra_failed=1
   after "$log"
 }
 
@@ -411,63 +459,63 @@ ram_rest() {
   } | tee "$file.txt"
 }
 
-# ram_peak START END: see ram-peak in the header.
-ram_peak() {
-  local file=$SVP_VERIFY_OUT/ram-peak
-  awk -F '\t' -v a="$1" -v b="$2" '$1 >= a && $1 <= b' "$SVP_VERIFY_OUT/samples/docker.tsv" |
-    jq -R -s --argjson start "$1" --argjson end "$2" '
-    def median: sort | if length % 2 == 1 then .[length / 2 | floor] else (.[length / 2 - 1] + .[length / 2]) / 2 end;
-    split("\n") | map(select(length > 0) | split("\t") | {t: (.[0] | tonumber), mib: (.[1] | tonumber), workers: .[5]}) as $r |
-    [range(0; ($r | length) - 5) | $r[.:. + 6] | select(all(.workers == "2")) | {from: (.[0].t | todate), median: (map(.mib) | median)}] as $w |
-    {
-      window: {start: ($start | todate), end: ($end | todate)}, samples: ($r | length),
-      samples_with_2_workers: ($r | map(select(.workers == "2")) | length),
-      windows_of_6_with_2_workers: ($w | length),
-      peak_median_of_6_mib: ($w | map(.median) | max), peak_window_from: ($w | max_by(.median) | .from),
-      highest_sample_mib: ($r | map(.mib) | max),
-      peak_within_8_7_gib: ($w | map(.median) | max | if . == null then null else . < 8.7 * 1024 end),
-      note: "workers counts the Running media-worker pods of each sample, taken as both transcoding while drill-k8s-keda runs"
-    }' >"$file.json" || return 1
-  jq -r '"RAM peak during drill-k8s-keda: median of 6 with 2 workers \(.peak_median_of_6_mib) MiB (\(.windows_of_6_with_2_workers) window(s)), highest sample \(.highest_sample_mib) MiB, within 8.7 GiB: \(.peak_within_8_7_gib)"' \
-    "$file.json" | tee "$file.txt"
-}
-export -f load_local_watch fallback_alert_check lighthouse_run lcp_median kc not_ready ram_rest ram_peak
+export -f load_local_watch fallback_alert_check lighthouse_run lcp_median kc not_ready ram_rest
 
-# --- The scenarios (docs/adr/0021-deferred-verification-stage6b.md, section 5).
-case $scenario in
-  compose-obs)
-    step up 40 make up OBS=lgtm
-    step smoke 15 make smoke
-    step drill-obs-threats 30 make drill-obs-threats
-    step load-local 25 bash -c load_local_watch
-    step fallback-alert-under-load 1 bash -c fallback_alert_check
-    for i in 1 2 3; do step "web-lighthouse-$i" 10 bash -c 'lighthouse_run "$1"' _ "$i"; done
-    step lcp 1 bash -c lcp_median
-    # Last: not in the ADR's list for this scenario, and the longest wait (an alert of an earlier run must resolve
-    # first), so the deadline cuts it before anything else.
-    step drill-alert-to-sentry 40 make drill-alert-to-sentry
-    ;;
-  dev-k3d)
-    step k8s-up 60 make k8s-up
-    step k8s-smoke 15 make k8s-smoke
-    step ram-rest-start 15 bash -c 'ram_rest start'
-    step drill-k8s-threats 30 make drill-k8s-threats
-    step drill-k8s-pdb 20 make drill-k8s-pdb
-    step drill-k8s-canary 30 make drill-k8s-canary
-    step k8s-web-sourcemaps 20 make k8s-web-sourcemaps
-    step k8s-web-e2e 40 env SVP_E2E_GLITCHTIP=1 make k8s-web-e2e
-    step drill-k8s-web-obs 15 make drill-k8s-web-obs
-    step drill-k8s-keda 40 make drill-k8s-keda N=9
-    if [ "$last_status" = skipped ]; then
-      skip ram-peak "drill-k8s-keda did not run"
-    else
-      step ram-peak 2 bash -c 'ram_peak "$1" "$2"' _ "$last_start" "$last_end"
-    fi
-    step drill-k8s-backup 40 make drill-k8s-backup MODE=latest
-    step drill-k8s-backup-pitr 40 make drill-k8s-backup MODE=pitr
-    step ram-rest-end 15 bash -c 'ram_rest end'
-    ;;
-esac
+# --- The scenarios. Called twice: with listing set, step
+# and skip only add each name to names, which SVP_VERIFY_TARGETS is checked against; then for the run.
+scenario_targets() {
+  case $scenario in
+    compose-obs)
+      step up 40 make up OBS=lgtm
+      step smoke 15 make smoke
+      step drill-obs-threats 30 make drill-obs-threats
+      step load-local 25 bash -c load_local_watch
+      step fallback-alert-under-load 1 bash -c fallback_alert_check
+      for i in 1 2 3; do step "web-lighthouse-$i" 10 bash -c 'lighthouse_run "$1"' _ "$i"; done
+      step lcp 1 bash -c lcp_median
+      # Last: an extra on top of the scenario's main sequence, and the longest wait (an alert of an earlier run must resolve
+      # first), so the deadline cuts it before anything else.
+      step drill-alert-to-sentry 40 make drill-alert-to-sentry
+      ;;
+    dev-k3d)
+      step k8s-up 60 make k8s-up
+      step k8s-smoke 15 make k8s-smoke
+      step ram-rest-start 15 bash -c 'ram_rest start'
+      step drill-k8s-threats 30 make drill-k8s-threats
+      step drill-k8s-pdb 20 make drill-k8s-pdb
+      step drill-k8s-canary 30 make drill-k8s-canary
+      step k8s-web-sourcemaps 20 make k8s-web-sourcemaps
+      step k8s-web-e2e 40 env SVP_E2E_GLITCHTIP=1 make k8s-web-e2e
+      step drill-k8s-web-obs 15 make drill-k8s-web-obs
+      step drill-k8s-keda 40 make drill-k8s-keda N=9
+      if [ "$last_status" = skipped ]; then
+        skip ram-peak "drill-k8s-keda did not run"
+      else
+        step ram-peak 2 "$here/verify-sample.sh" peak "$last_start" "$last_end"
+      fi
+      step drill-k8s-backup 40 make drill-k8s-backup MODE=latest
+      step drill-k8s-backup-pitr 40 make drill-k8s-backup MODE=pitr
+      step ram-rest-end 15 bash -c 'ram_rest end'
+      ;;
+  esac
+}
+
+listing=1
+scenario_targets
+listing=
+unknown=
+# shellcheck disable=SC2086 # targets holds only a-z, 0-9, - and spaces (checked above): split on spaces, no glob
+for t in $targets; do
+  case "$names " in *" $t "*) ;; *) unknown="$unknown $t" ;; esac
+done
+if [ -n "$unknown" ]; then
+  echo "FAIL  verify-run: not a target of $scenario:$unknown (its targets:$names); nothing started" >&2
+  exit 2
+fi
+mkdir -p "$out/logs" || exit 1
+printf 'id\tname\tstatus\texit\tstart\tend\tseconds\tnote\n' >"$results"
+[ -n "$targets" ] && echo "verify-run $scenario: targets $build $targets; the others are skipped"
+scenario_targets
 
 echo "verify-run $scenario: $n target(s), $not_ok not ok (results.tsv; the outputs reach the artifact after verify-collect.sh)"
 [ "$not_ok" = 0 ]

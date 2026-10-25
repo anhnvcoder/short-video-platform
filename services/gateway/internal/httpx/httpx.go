@@ -72,8 +72,7 @@ func OutgoingContext(ctx context.Context) context.Context {
 // ClientTelemetry is the dial option of every connection to a service: the otelgrpc stats
 // handler gives each RPC a client span, child of the request's span, and the
 // rpc.client.call.duration metric, and sends the span's traceparent in the metadata through the
-// global propagator (docs/adr/0011-observability-stage3.md, section 3). The health checks of
-// /readyz are left out, as /readyz itself is.
+// global propagator. The health checks of /readyz are left out, as /readyz itself is.
 func ClientTelemetry() grpc.DialOption {
 	return grpc.WithStatsHandler(otelgrpc.NewClientHandler(
 		otelgrpc.WithFilter(filters.Not(filters.FullMethodName(healthpb.Health_Check_FullMethodName))),

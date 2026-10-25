@@ -1,9 +1,8 @@
 # Checks of every pull request and of every push to main: the whole check list of CLAUDE.md (make check-go, the web
 # client, generated code, buf breaking, compose, Collector, Prometheus rules, charts) plus the secret scan of the whole
-# git history and the misconfiguration scan (docs/adr/0015-cicd-devsecops-stage5.md, sections 1, 2 and 11). Job ci-ok is
-# the only check the ruleset of main requires from this workflow, so the other jobs can be renamed or added without
-# touching it. Job stack runs the whole compose stack end to end as a report outside ci-ok
-# (docs/adr/0020-reliability-stage6.md, section 15).
+# git history and the misconfiguration scan. Job ci-ok is the only check the ruleset of main requires from this
+# workflow, so the other jobs can be renamed or added without touching it. Job stack runs the whole compose stack end to
+# end as a report outside ci-ok, so a flaky run on a shared runner never blocks a merge.
 #
 # The repository is public and a pull request from a fork runs this workflow with the fork's code, so:
 # - no pull_request_target and no workflow_run: a pull request never runs with a write token or with secrets;
@@ -120,7 +119,7 @@ jobs:
           path: ${{ runner.temp }}/golangci-lint.sarif
           if-no-files-found: ignore
 
-  # The web client in web/ (docs/adr/0016-web-client.md, section 10): install exactly as web/pnpm-lock.yaml pins it,
+  # The web client in web/: install exactly as web/pnpm-lock.yaml pins it,
   # make web-check (lint, format, typecheck, unit tests, production build), web/gen/api.d.ts as committed, and the
   # vulnerability gate of every npm package the lockfile pins (make web-lockfile-scan).
   web:
@@ -272,9 +271,9 @@ jobs:
         with:
           persist-credentials: false
       # Here and not only in the image gate: a pull request that changes nothing but .trivyignore.yaml builds no image,
-      # and a broken entry merged into main would stop the daily rescan from attesting every service (ADR-0015, section 6).
+      # and a broken entry merged into main would stop the daily rescan from attesting every service.
       # The same step holds the misconfigurations job trivy-config leaves out to their rules: paths, reason, at most 90
-      # days (docs/adr/0021-deferred-verification-stage6b.md, section 9). Needs no image, no tool and no token.
+      # days. Needs no image, no tool and no token.
       - run: deploy/ci/scan-gate.sh --check-ignorefile
       # Only deploy/ci/platform.sh may read GitHub's variables or call gh: a script that does it itself works here and
       # silently loses its output on another CI. The guard greps deploy/ and the Makefile for that; the test runs the
@@ -282,6 +281,10 @@ jobs:
       # need only bash, git and jq: no network, no token.
       - run: deploy/ci/platform-guard.sh
       - run: deploy/ci/platform-test.sh
+      # The filter of the public artifact of verify.yml and the masks of its job's log, which only the weekly run on main
+      # would use otherwise: a pull request that breaks one of their rules fails here. Fake secrets, kubectl, docker and
+      # make in a temporary directory; bash, git, jq and openssl, no network.
+      - run: deploy/ci/verify-collect-test.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: 1.27.3
@@ -307,11 +310,10 @@ jobs:
       - run: make helm-check
       - run: deploy/k8s/check-image-digests.sh
       # k6 inspect of every profile in the pinned k6 image, with no network: a script that no longer loads or a profile
-      # whose scenarios are malformed is caught here, without the compose stack the load runs need
-      # (docs/adr/0020-reliability-stage6.md, section 2).
+      # whose scenarios are malformed is caught here, without the compose stack the load runs need.
       - run: make k6-check
       # kubeconform -strict of the cloud cluster's manifests and rendered charts: a wrong field or kind in a Chaos Mesh,
-      # Velero or snapshot manifest is caught here, without a cluster that has those CRDs (ADR-0020, section 8); helm
+      # Velero or snapshot manifest is caught here, without a cluster that has those CRDs; helm
       # from the PATH set above. Needs network: chart repositories and GitHub.
       - run: make cloud-check
 
@@ -386,7 +388,7 @@ jobs:
 
   # The whole compose stack of make up on the runner, driven as on a dev machine: make smoke, the web client's
   # end-to-end tests, the k6 profile ci (error thresholds only: a shared runner says nothing about latency) and
-  # Lighthouse (docs/adr/0020-reliability-stage6.md, section 15). A report, not a check: ci-ok does not need it, so a red
+  # Lighthouse. A report, not a check: ci-ok does not need it, so a red
   # stack (a flaky end-to-end test on a shared runner) never blocks a merge; whoever reads the pull request sees its
   # result under this name. It builds and runs the pull request's code like the other jobs, with contents: read and no
   # secret: make env writes a .env of fresh random secrets that lives on this runner until the job ends, never printed
@@ -472,6 +474,17 @@ jobs:
       - run: make web-e2e
       - id: k6
         run: make load-ci
+      # make web-lighthouse launches Playwright's Chromium with Chrome's sandbox, which needs unprivileged user
+      # namespaces. Ubuntu 24.04 restricts those through AppArmor for every binary without a profile of its own, and
+      # Playwright's download has none, so Chrome stops with "No usable sandbox". The restriction is lifted on this
+      # throwaway runner (as deploy/ci/verify-host.sh does), so the sandbox stays on; the e2e tests turn it off themselves.
+      - name: Let Chrome's sandbox use user namespaces
+        run: |
+          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)" = 1 ]; then
+            sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          echo "apparmor: kernel.apparmor_restrict_unprivileged_userns" \
+            "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
       # Report only: one Lighthouse run per page on a shared runner is noise, so its thresholds never turn the job red.
       - id: lighthouse
         run: make web-lighthouse

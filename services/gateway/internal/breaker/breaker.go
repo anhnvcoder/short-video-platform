@@ -1,6 +1,5 @@
 // Package breaker puts a circuit breaker in front of the gRPC calls to one service, so the
-// gateway fails at once while that service is down instead of waiting out every call's deadline
-// (ADR-0010 section 4).
+// gateway fails at once while that service is down instead of waiting out every call's deadline.
 package breaker
 
 import (
@@ -37,10 +36,10 @@ type thresholds struct {
 	openFor time.Duration
 }
 
-// adr are the thresholds of ADR-0010 section 4: a streak of five failures, or a failure ratio of
-// half over at least 20 calls in the 10 s window, opens the breaker for 5 s; then one trial call
-// decides whether it closes.
-var adr = thresholds{
+// production are the thresholds the gateway runs with: a streak of five failures, or a failure
+// ratio of half over at least 20 calls in the 10 s window, opens the breaker for 5 s; then one
+// trial call decides whether it closes.
+var production = thresholds{
 	consecutive: 5,
 	minCalls:    20,
 	ratio:       0.5,
@@ -69,10 +68,10 @@ var (
 // breaker, so readiness sees the service as it is. Every state change is logged as a warning.
 //
 // The gauge svp.breaker.state, labelled target=service, reports the state the breaker last
-// changed to (0 closed, 1 half-open, 2 open; docs/adr/0011-observability-stage3.md, section 5)
-// to the global OTel meter provider, 0 until the first change.
+// changed to (0 closed, 1 half-open, 2 open) to the global OTel meter provider, 0 until the
+// first change.
 func New(service string, ignoreDeadline ...string) grpc.UnaryClientInterceptor {
-	return newInterceptor(adr, service, ignoreDeadline)
+	return newInterceptor(production, service, ignoreDeadline)
 }
 
 func newInterceptor(th thresholds, service string, ignoreDeadline []string) grpc.UnaryClientInterceptor {

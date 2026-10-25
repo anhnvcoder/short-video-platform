@@ -1,4 +1,4 @@
-# Release web of chart deploy/helm/svp-service (docs/adr/0019-web-k3d-supply-chain-observability.md): the web client,
+# Release web of chart deploy/helm/svp-service: the web client,
 # Next's standalone server built from web/ by deploy/docker/web.Dockerfile.
 image:
   # Releases on GHCR, built, scanned and signed by CI (.github/workflows/images.yml). The promote pull request
@@ -11,15 +11,20 @@ protocol: http
 # The image's port (PORT of deploy/docker/web.Dockerfile), as in compose.
 port: 3001
 resources:
-  # Compose measured 53 MiB at rest and 96 MiB after the end-to-end tests, before the OTel SDK and Sentry's server SDK;
-  # the limit leaves room for both until the cluster's memory is measured again.
+  # Measured with kubectl top on the dev path of the CI verification runner (amd64, two runs on 2026-10-25, both SDKs
+  # on): a web pod's working set 85-90 MiB 60 s after every pod was Ready, 136-139 MiB at rest after the drills and the
+  # end-to-end tests, 144 MiB at most during those tests in both runs; CPU 155m at most under the smoke and end-to-end
+  # tests, 2-3m at rest. Memory limit: 1.5 times the
+  # highest working set rounded up to 64 Mi (256 Mi), but never under 384 Mi, the limit set before any measurement: the
+  # end-to-end tests are a light load, and the load tests set it again, only ever higher. Memory request: the median at
+  # rest (112.5 MiB) rounded up to 32 Mi, at least 128 Mi. CPU stays at 100m and 1 until a load test shows throttling.
   requests: {cpu: 100m, memory: 128Mi}
   limits: {cpu: "1", memory: 384Mi}
 env:
   # Kubernetes sets HOSTNAME to the pod's name, which overrides the image's HOSTNAME=0.0.0.0: Next's standalone server
   # would then listen on the pod's address only, not on loopback, where kubectl port-forward connects.
   HOSTNAME: 0.0.0.0
-  # The only host the BFF calls: the gateway's Service, inside the cluster (docs/adr/0016-web-client.md, section 5).
+  # The only host the BFF calls: the gateway's Service, inside the cluster.
   GATEWAY_URL: http://gateway:8080
   # Sessions and refresh locks in Valkey db 9 (keys svp:web:), beside the gateway's db 10 and feed-service's db 14.
   REDIS_URL: redis://valkey.svp-data:6379/9
@@ -43,7 +48,7 @@ egressTo: [gateway, valkey, collector, glitchtip]
 httpRoute:
   host: svp.localhost
   sectionName: https-apex
-# A Rollout with an analysed canary, the steps of the gateway's (ADR-0019 section 3). `make k8s-up` runs drill traffic
+# A Rollout with an analysed canary, the steps of the gateway's. `make k8s-up` runs drill traffic
 # while a canary is in progress (deploy/k8s/install.sh); it requests /login and one static asset through Envoy.
 canary: true
 # 5xx below 1%, as for the gateway. p99 below 500 ms rather than the gateway's 150: a page is rendered on the server

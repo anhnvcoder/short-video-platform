@@ -1,7 +1,7 @@
 // Package dbmigrate applies a service's SQL migrations with goose, used as a library so the
 // service binary carries its migrations (embed) and runs them as its `migrate` subcommand. It
 // retries the first connection while the database is not reachable over the network, for a
-// bounded time (docs/adr/0020-reliability-stage6.md, section 11).
+// bounded time.
 package dbmigrate
 
 import (

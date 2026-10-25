@@ -1,5 +1,5 @@
 {{- /*
-MinIO in place of compose's (ADR-0014 section 4; threat model UP-4, UP-5, UP-6): same image, same buckets, users and
+MinIO in place of compose's (threat model UP-4, UP-5, UP-6): same image, same buckets, users and
 policies, created by the same deploy/minio/init.sh. Services reach it at minio.svp-data:9000; the host reaches it at
 https://s3.svp.localhost:8443 through Gateway svp (presigned POST uploads, HLS playback). The console (9001) has no
 route and no policy: it is reached with kubectl port-forward only.

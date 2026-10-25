@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The k6 load test of the cloud cluster of stage 7 (docs/adr/0020-reliability-stage6.md, section 2): 20 pods of profile
+# The k6 load test of the cloud cluster of stage 7: 20 pods of profile
 # cloud, 1 000 feed requests a second (1 250 req/s in all) held at least 10 minutes. The learner runs it, with the cloud
 # cluster's kubectl context; never on k3d (refused before any kubectl call) and never from make. Needs kubectl and jq.
 #
@@ -19,7 +19,7 @@
 # Watch: kubectl --context <ctx> -n svp-load get pods -w; Grafana's SLO dashboard; the gateway's 429s
 # (svp_rate_limited in each pod's summary must stay 0).
 # Pass: in every pod, every threshold passed and dropped_iterations 0; server-side p95/p99 read from Prometheus over
-# the hold window go into the Results of docs/adr/0020-reliability-stage6.md with the pods' numbers.
+# the hold window are recorded with the pods' numbers as the run's result.
 # Stop early: deploy/k6/cloud/run.sh --context <ctx> --domain <domain> delete.
 set -euo pipefail
 

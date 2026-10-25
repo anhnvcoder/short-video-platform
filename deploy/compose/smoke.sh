@@ -5,12 +5,12 @@
 # asynchronous transcode to make it READY, play its HLS anonymously, and check that the storage
 # refuses a file larger than declared (UP-1); then find the video in B's following feed and in
 # explore, like and unlike it, count views (a repeated view within 60 s is accepted but not
-# counted, RL-3), and check that unfollowing removes it from B's following feed (ADR-0009,
-# ADR-0010); last, rotate refresh tokens, check that replaying a used one revokes its whole
-# family, and that logout revokes a login's tokens (ADR-0016). Along the way it checks profiles
+# counted, RL-3), and check that unfollowing removes it from B's following feed; last, rotate
+# refresh tokens, check that replaying a used one revokes its whole family, and that logout
+# revokes a login's tokens. Along the way it checks profiles
 # (a picked handle, a taken one, a generated one, the display name, followed_by_me), the lists of
-# an author's videos, the authors added to feed items, and the public video read without a token
-# (ADR-0018). Prints one ok/FAIL line per step
+# an author's videos, the authors added to feed items, and the public video read without a token.
+# Prints one ok/FAIL line per step
 # and exits non-zero on the first failure. Needs curl, jq, openssl, ffmpeg and redis-cli on the host, and the native Redis on
 # 127.0.0.1:6379 (lib.sh resets the register rate limit there).
 #
@@ -58,7 +58,7 @@ status=$(request GET "/videos/$video_id" "$work/b.auth")
   fail "other user reads unpublished video is 404 VIDEO_NOT_FOUND (status $status, $(problem_summary))"
 ok "other user reads unpublished video: 404 VIDEO_NOT_FOUND"
 
-# 4b. Profiles (ADR-0018). User C registers with a picked handle written in upper case, which
+# 4b. Profiles. User C registers with a picked handle written in upper case, which
 # user-service lowers; a second account cannot take the same handle.
 c_handle="smoke_$(openssl rand -hex 6)"
 c_email="smoke-$(date +%s)-$(openssl rand -hex 4)@example.test"
@@ -204,7 +204,7 @@ status=$(request GET "/users/$a_id/videos?page_size=50" "$work/b.auth")
   fail "B's GET /users/{A}/videos holds the READY video (status $status, $(problem_summary))"
 ok "GET /users/{A}/videos for B: the READY video listed"
 
-# 9c. The public video needs no token (ADR-0018 section 6): 200 for the READY video, with the
+# 9c. The public video needs no token: 200 for the READY video, with the
 # author and counters without liked_by_me, which come within 100 ms on a healthy stack, so the
 # check polls; one 404 for a video that is not READY and for a random id.
 public_start=$SECONDS
@@ -301,7 +301,7 @@ status=$(feed_item explore "$work/b.auth" "$clip_id")
   fail "video still in explore after unfollow (status $status, $(item_summary))"
 ok "video still in explore after unfollow"
 
-# 16. Refresh tokens (ADR-0016, sections 2 and 4). Tokens stay in private files of $work, never on
+# 16. Refresh tokens. Tokens stay in private files of $work, never on
 # a command line: jq reads them from the response and writes the next request body.
 
 # refresh_login NAME: logs user A in again and writes {refresh_token} of the answer to

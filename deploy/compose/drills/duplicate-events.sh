@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Drill: deliver events twice and check the consumers are idempotent: delivery is at least once, so a replay is
-# normal (ADR-0003 rule 1, ADR-0008 section 8). With a fresh READY video:
+# normal. With a fresh READY video:
 #   1. stop video-service, move group video-service on media.transcodes.v1 back to the video's
 #      transcode.completed (rpk group seek), start it, wait for lag 0: status, published_at and the
 #      outbox rows of the video do not change;

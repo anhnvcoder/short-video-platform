@@ -26,14 +26,13 @@ import (
 const ViewsGroup = "engagement-service"
 
 // viewsHandlerTimeout bounds one attempt at a batch: the end offset lookup and the transaction,
-// commit included, so a stuck lock or a slow broker fails the attempt and kafkax retries it
-// (docs/adr/0011-observability-stage3.md, section 11).
+// commit included, so a stuck lock or a slow broker fails the attempt and kafkax retries it.
 const viewsHandlerTimeout = 30 * time.Second
 
 // ViewsConsumerConfig returns the batch consumer of TopicViews in ViewsGroup, with the batch
 // size and retry settings of kafkax: up to 5,000 records or 1 s a batch, few transactions at
 // 10,000 views a second, and retries without limit, since a batch sent to the dead-letter topic
-// for a database outage would lose its views (ADR-0009, section 4). A batch attempt past
+// for a database outage would lose its views. A batch attempt past
 // viewsHandlerTimeout is retried like any other failure.
 func (s *Server) ViewsConsumerConfig(brokers string) kafkax.BatchConsumerConfig {
 	return kafkax.BatchConsumerConfig{
@@ -56,7 +55,7 @@ type view struct {
 	videoID uuid.UUID
 }
 
-// HandleViews is the kafkax.BatchHandler of TopicViews (ADR-0009, section 4). It adds the views
+// HandleViews is the kafkax.BatchHandler of TopicViews. It adds the views
 // of the batch to view_counts in one transaction that also moves each partition's next_offset in
 // consumer_offsets, and skips records below the stored next_offset: those were counted by an
 // earlier delivery. A redelivered record is therefore counted once, however Kafka's own commit

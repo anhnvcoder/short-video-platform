@@ -1,4 +1,4 @@
-# Standalone APM Server of the `obs-elastic` profile (docs/adr/0012-elastic-vs-grafana-stage3.md).
+# Standalone APM Server of the `obs-elastic` profile, the Elastic stack kept only to compare with LGTM.
 # It takes OTLP from the Collector and writes the traces-apm*, metrics-apm* and logs-apm* data
 # streams, whose index templates Elasticsearch installs itself (its apm-data plugin): no Fleet,
 # no integration to set up in Kibana. No auth (no secret token, no API key) because Elasticsearch

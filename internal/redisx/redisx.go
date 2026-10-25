@@ -1,5 +1,5 @@
-// Package redisx builds the Redis client every service uses, with the short timeouts of
-// docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 1.
+// Package redisx builds the Redis client every service uses, with short timeouts: 100 ms to
+// dial, 50 ms to read, write or wait for a pooled connection.
 //
 // Every use of Redis has a fallback, so a call must fail fast rather than wait: New neither
 // pings nor retries, and a service starts while Redis is down.
@@ -16,7 +16,7 @@ import (
 )
 
 // Timeouts short enough that a slow Redis costs a request a few tens of milliseconds before the
-// caller's fallback takes over, instead of holding it (ADR-0010, section 1).
+// caller's fallback takes over, instead of holding it.
 const (
 	DialTimeout  = 100 * time.Millisecond
 	ReadTimeout  = 50 * time.Millisecond
@@ -33,7 +33,7 @@ var ErrInvalidURL = errors.New("redisx: invalid Redis URL; want redis://[user:pa
 //
 // Every command and pipeline gets a span from the global tracer provider (a root span when the
 // context has none) named after the command only: spans never carry the command's keys or
-// arguments, which hold hashed emails and IPs (docs/adr/0011-observability-stage3.md, section 2).
+// arguments, which hold hashed emails and IPs.
 // Pool statistics and connection times (db.client.connections.*) go to the global meter provider.
 func New(rawURL string) (*redis.Client, error) {
 	opts, err := Options(rawURL)

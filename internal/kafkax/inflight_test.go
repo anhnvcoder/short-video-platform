@@ -1,8 +1,8 @@
 package kafkax
 
-// Records already in flight when the broker stops answering (docs/adr/0011-observability-stage3.md,
-// section 11): every produce returns at its deadline, its callbacks done, and a dead-letter
-// produce that does not get its ack leaves the source record uncommitted.
+// Records already in flight when the broker stops answering: every produce returns at its
+// deadline, its callbacks done, and a dead-letter produce that does not get its ack leaves the
+// source record uncommitted.
 
 import (
 	"context"

@@ -1,4 +1,4 @@
-# Experiment (a), first run: kill one gateway pod under load (docs/adr/0020-reliability-stage6.md, section 7). Cloud
+# Experiment (a), first run: kill one gateway pod under load. Cloud
 # cluster only, Chaos Mesh installed with targetNamespace svp (deploy/k8s/cloud/values/chaos-mesh.yaml). Apply this one
 # file, never the folder: each file is its own experiment.
 #

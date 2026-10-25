@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Installs or upgrades every component of deploy/argocd/apps/components.json into the running cluster svp, in
-# ascending wave order (files order within a wave), with `helm upgrade --install --wait`: the dev path of
-# docs/adr/0014-kubernetes-local-stage4.md, section 7. The GitOps path builds Argo CD Applications from the same file,
-# so both install the same charts, versions and values.
+# ascending wave order (files order within a wave), with `helm upgrade --install --wait`: the dev path.
+# The GitOps path builds Argo CD Applications from the same file, so both install the same charts, versions and values.
 #
 # A component is an upstream chart (repo + chart + version; a Helm OCI repository is written oci://...) or a chart in
 # this repository (path), with an optional values file relative to the repository root. Run by `make k8s-up` after the
@@ -25,7 +24,7 @@ fi
 # The services' images first, so a build that fails stops the run before anything is installed. Each release of
 # chart svp-service then gets its image with --set (never written to a file): the local registry, the service's dev
 # tag and an empty digest (image_sets). The repository, tag and digest in deploy/k8s/values/services/ name releases on
-# GHCR for the GitOps path (docs/adr/0015-cicd-devsecops-stage5.md, section 9); this path neither reads nor pulls them.
+# GHCR for the GitOps path; this path neither reads nor pulls them.
 service_chart=deploy/helm/svp-service
 build_dev_images
 
@@ -72,8 +71,7 @@ watch_migrate() {
   done
 }
 
-# The gateway and the web client are Argo Rollouts Rollouts (docs/adr/0014-kubernetes-local-stage4.md, section 13;
-# docs/adr/0019-web-k3d-supply-chain-observability.md, section 3): an upgrade that changes the pod template (new code,
+# The gateway and the web client are Argo Rollouts Rollouts: an upgrade that changes the pod template (new code,
 # or a value a drill left in the release) is a new revision, which goes out as a canary only when Envoy has measured
 # enough responses of it, and helm --wait does not know Rollouts. So when the Rollout already exists and a canary is
 # ahead (canary_ahead), drill traffic (deploy/k8s/drills/traffic.sh, which requests both) runs before the release's
@@ -124,7 +122,7 @@ rollout_doc() {
 
 # way_out NAMESPACE NAME ABORTED: how to leave a canary wait_rollout gave up on, printed before it fails. A canary not
 # aborted (ABORTED false) keeps its weight, and its pods their share of the requests, until it is. The lab pins no
-# kubectl-argo-rollouts plugin (docs/adr/0014-kubernetes-local-stage4.md, section 1): its abort and retry are these
+# kubectl-argo-rollouts plugin: its abort and retry are these
 # patches of the Rollout's status subresource, which kubectl makes as well.
 way_out() {
   local patch="kubectl --context k3d-svp -n $1 patch rollout $2 --subresource status --type merge -p"
@@ -189,7 +187,7 @@ wait_rollout() {
 }
 
 # pg_backup_sets: sets the array pg_sets to the flag that keeps the archive generation of the running Cluster svp-pg,
-# for the upgrade of chart svp-data (docs/adr/0020-reliability-stage6.md, section 5). Each restore of make
+# for the upgrade of chart svp-data. Each restore of make
 # drill-k8s-backup creates svp-pg again archiving into a new generation (value postgres.backup.serverName), and the
 # chart's default is the first generation's: an upgrade without the flag would point the restored Cluster's WAL
 # archiving back at the generation it was restored from, whose archive is not empty, and archiving would fail. As on
@@ -230,8 +228,36 @@ pg_backup_sets() {
     fail "Cluster svp-data/svp-pg is missing while Backups of it remain (${backups% }): it was deleted after it had data, a restore drill stopped half way? Installing svp-data would create an empty database in its place. Finish the restore as docs/runbooks/postgres-restore.md says (make drill-k8s-backup printed its commands), or start over with no data: make k8s-down && make k8s-up"
 }
 
+# rollouts_plugin_sets: sets the array rollouts_sets to the flag that gives Argo Rollouts its Gateway API traffic router
+# plugin built for the nodes' architecture. The plugin is a native binary: the controller downloads it when it starts
+# and executes it at the first reconcile of a Rollout with a canary. deploy/k8s/values/argo-rollouts.yaml pins the
+# linux-arm64 asset, for the nodes of a Mac, and the GitOps path installs that file as it is. On amd64 nodes (a Linux
+# x86_64 host, such as a CI runner) that binary cannot run: the controller fails to start the plugin on every reconcile,
+# before it scales the Rollout's ReplicaSet, so the gateway never gets a pod. There the asset of the same release built
+# for amd64 is passed with --set-json, pinned here by its sha256 (computed on the downloaded file, equal to the digest
+# GitHub shows for the asset). The values file must name the same release, so a new release cannot update one pin and
+# leave the other behind. arm64 nodes get no flag: the release is upgraded exactly as before.
+rollouts_plugin_release=https://github.com/argoproj-labs/rollouts-plugin-trafficrouter-gatewayapi/releases/download/v0.17.0
+rollouts_plugin_sets() {
+  local archs
+  rollouts_sets=()
+  grep -qxF "      location: $rollouts_plugin_release/gatewayapi-plugin-linux-arm64" \
+    "$repo_root/deploy/k8s/values/argo-rollouts.yaml" ||
+    fail "deploy/k8s/values/argo-rollouts.yaml does not pin $rollouts_plugin_release/gatewayapi-plugin-linux-arm64: when the plugin's release changes, change the amd64 pin of rollouts_plugin_sets in deploy/k8s/install.sh with it"
+  archs=$(kc get nodes -o jsonpath='{range .items[*]}{.metadata.labels.kubernetes\.io/arch}{"\n"}{end}' | sort -u) ||
+    fail "read the architecture of the nodes of svp"
+  case $archs in
+    arm64) ;;
+    amd64)
+      rollouts_sets=(--set-json "controller.trafficRouterPlugins=[{\"name\":\"argoproj-labs/gatewayAPI\",\"location\":\"$rollouts_plugin_release/gatewayapi-plugin-linux-amd64\",\"sha256\":\"1904ca787d33107c140521899d61fff030ee75d99908bd175fca5a4647759061\"}]")
+      ok "Argo Rollouts gets the Gateway API plugin built for amd64 nodes"
+      ;;
+    *) fail "nodes of svp run '$archs': no Gateway API plugin of Argo Rollouts is pinned for that architecture" ;;
+  esac
+}
+
 # pg_base_backup: after chart svp-data, that Postgres svp-pg archives its WAL and that its archive generation has a base
-# backup to restore from (docs/adr/0020-reliability-stage6.md, section 5). On a new cluster ScheduledBackup svp-pg-daily
+# backup to restore from. On a new cluster ScheduledBackup svp-pg-daily
 # takes the first one at once (immediate; a hook of the chart, made once the minio-init Job has made bucket pg-backups
 # and its login). On the upgrade that adds the plugin to a Cluster made before it, though, CloudNativePG starts that
 # Backup on whichever primary pod is Ready, which may still be the old one, without the plugin's sidecar: the Backup
@@ -343,7 +369,7 @@ after_install() {
       ;;
     svp-policy)
       # The policy counts only once Kyverno has compiled it and registered its webhook, which takes the requests of
-      # namespace svp only; the services (wave 7) start after that (docs/adr/0015-cicd-devsecops-stage5.md, section 8).
+      # namespace svp only; the services (wave 7) start after that.
       wait_until 120 "ImageValidatingPolicy svp-images ready, its webhook registered for namespace svp" \
         image_policy_ready svp-images
       ok "ImageValidatingPolicy svp-images ready (Audit: violations go to PolicyReports), its webhook takes namespace svp only"
@@ -452,6 +478,10 @@ while IFS=$sep read -r name namespace wave path repo chart version values canary
     pg_backup_sets
     args+=(${pg_sets[@]+"${pg_sets[@]}"})
   fi
+  if [ "$name" = argo-rollouts ]; then
+    rollouts_plugin_sets
+    args+=(${rollouts_sets[@]+"${rollouts_sets[@]}"})
+  fi
   watcher=
   # The Collector mounts ConfigMap otel-collector-config of chart svp-observability, which its own chart cannot
   # checksum, and reads it only when it starts: the checksum of the file that ConfigMap holds goes into the pod
@@ -505,7 +535,7 @@ while IFS=$sep read -r name namespace wave path repo chart version values canary
   if [ "$name" = svp-cluster ]; then args+=(--take-ownership); fi
   # The dev path runs unsigned images of the local registry: the image policy only reports what it would refuse, in
   # PolicyReports of namespace svp, and lets every pod through when Kyverno is down (failurePolicy Ignore). The GitOps
-  # path keeps the values file's Enforce (docs/adr/0015-cicd-devsecops-stage5.md, section 8).
+  # path keeps the values file's Enforce.
   if [ "$name" = svp-policy ]; then args+=(--set imageVerification.mode=Audit); fi
   echo "helm upgrade --install $name (wave $wave, namespace $namespace)"
   rc=0
@@ -518,8 +548,11 @@ while IFS=$sep read -r name namespace wave path repo chart version values canary
     if [ -s "$migrate_log" ] && [ "$(kc -n "$namespace" get job "$name-migrate" \
       -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null)" = True ]; then
       echo "Job $namespace/$name-migrate failed; log of its last failed attempt, copied before its pod was deleted:" >&2
-      cat "$migrate_log" >&2
+      # Marked as unready_report marks a log line (deploy/k8s/lib.sh): the log of a service is shown on the machine
+      # that runs this, and the public artifact of a verification run leaves out every log line of namespace svp.
+      sed "s/^/    [$namespace] /" "$migrate_log" >&2
     fi
+    unready_report "$namespace" || true
     fail "install $name"
   fi
   ok "$name"

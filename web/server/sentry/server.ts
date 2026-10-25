@@ -5,7 +5,7 @@ import { browserEvent, type BrowserReport } from "./browser-report";
 import { EventLimiter } from "./limiter";
 import { scrubBreadcrumb, scrubEvent } from "./scrub";
 
-// Error reporting of the web server to GlitchTip (docs/adr/0019-web-k3d-supply-chain-observability.md, section 8):
+// Error reporting of the web server to GlitchTip:
 // errors only, no tracing, sessions or replay. The SDK is set up by hand, without withSentryConfig: no build plugin, no
 // source map upload, no tunnel route of Sentry's own.
 

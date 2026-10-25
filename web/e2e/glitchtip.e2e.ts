@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { authedTest, expect, feedItem, testResultsDir } from "./fixtures";
 import { stack } from "./stack";
 
-// A browser error of the real bundle reaches GlitchTip with its stack mapped to the source
-// (docs/adr/0019-web-k3d-supply-chain-observability.md, sections 8 and 9). Only with SVP_E2E_GLITCHTIP=1
+// A browser error of the real bundle reaches GlitchTip with its stack mapped to the source.
+// Only with SVP_E2E_GLITCHTIP=1
 // (playwright.config.ts), on a stack whose GlitchTip holds the source maps of the build the web serves: compose `make
 // up OBS=lgtm` then `make web-sourcemaps`, or k3d `make k8s-web-sourcemaps` then `make k8s-web-e2e`.
 //

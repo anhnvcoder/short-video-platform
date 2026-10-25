@@ -15,7 +15,7 @@ import { pathHeader } from "./request-headers";
 import { bffServices } from "./runtime";
 import { sessionCookieName, type Session } from "./session";
 
-// Data of the profile pages for the server render (docs/adr/0018-web-profiles-public-video-upload.md, section 7): the
+// Data of the profile pages for the server render: the
 // first page of "My videos" (/me) and another user's profile with the first page of their videos (/u/<handle>), called
 // with the session's access token. The token stays in this module: only checked data is returned.
 
@@ -125,7 +125,7 @@ export async function loadMyVideosFirstPage(options: { timeoutMs?: number } = {}
 }
 
 // The profile of `handle` (already lowered and checked by the page; checked again here), and the first page of the
-// user's READY videos. Profiles need a login (ADR-0018, section 7), so a missing session redirects to log in.
+// user's READY videos. Profiles need a login, so a missing session redirects to log in.
 export async function loadProfilePage(handle: string, options: { timeoutMs?: number } = {}): Promise<ProfilePage> {
   if (!isHandle(handle)) {
     return { kind: "not-found" };

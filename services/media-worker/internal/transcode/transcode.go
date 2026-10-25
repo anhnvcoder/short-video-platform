@@ -1,12 +1,12 @@
 // Package transcode turns one local video file into HLS (up to three renditions) and a
 // thumbnail with ffprobe and ffmpeg found in PATH, under the limits of docs/threat-model.md
-// §4.3 (FF-1 to FF-3, FF-7) and ADR-0008 section 10. It knows nothing about Kafka or storage.
+// §4.3 (FF-1 to FF-3, FF-7). It knows nothing about Kafka or storage.
 //
 // Errors are ErrInvalidInput or ErrDurationExceeded (wrapped with a detail) when the probe shows
 // the file is the problem. Other errors are returned as they are, and the caller classifies them:
 // a timeout wraps context.DeadlineExceeded, and a tool that exited non-zero or was killed by a
 // signal surfaces as *exec.ExitError. media-worker treats all three as permanent INVALID_INPUT,
-// because retrying would run a crafted file again (ADR-0008 section 9, worker.permanentReason).
+// because retrying would run a crafted file again (worker.permanentReason).
 package transcode
 
 import (
@@ -39,7 +39,7 @@ var (
 )
 
 // Output layout and content types. The names are fixed, so transcoding the same video again
-// overwrites the same objects (ADR-0008 section 10).
+// overwrites the same objects.
 const (
 	MasterPlaylist = "master.m3u8"
 	Thumbnail      = "thumbnail.jpg"
@@ -53,7 +53,7 @@ const (
 
 // Encoding settings: 4 s segments make half the objects and requests of 2 s ones while a short
 // video still starts quickly; a keyframe every 2 s, whatever the fps, so every segment starts on
-// one (ADR-0008 section 10).
+// one.
 const (
 	segmentSeconds  = 4
 	keyframeSeconds = 2

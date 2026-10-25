@@ -1,4 +1,4 @@
-# media-worker image (docs/adr/0008-async-upload-pipeline-stage2a.md, section 9): the Go build of
+# media-worker image: the Go build of
 # service.Dockerfile, on an Alpine runtime that carries ffmpeg and ffprobe. Distroless has no
 # ffmpeg, so this image has a shell and apk; compose makes up for it (read-only root, no
 # capabilities, non-root user, no internet). No secret goes into the build: credentials are

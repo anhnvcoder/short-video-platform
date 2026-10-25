@@ -1,4 +1,4 @@
-# Local Kubernetes targets (k3d cluster svp, docs/adr/0014-kubernetes-local-stage4.md), included by the root Makefile.
+# Local Kubernetes targets (k3d cluster svp), included by the root Makefile.
 # docker and k3d run without DOCKER_DEFAULT_PLATFORM and kubectl/helm always name --context k3d-svp; the shell helpers
 # behind these targets are in deploy/k8s/lib.sh.
 
@@ -20,10 +20,10 @@ k8s-up: k8s-exclusive env-required ## Create (or start) the registry 127.0.0.1:5
 	@bash -c '$(K8S_LIB) && ensure_registry && ensure_cluster'
 	deploy/k8s/install.sh
 
-# The GitOps path (docs/adr/0014-kubernetes-local-stage4.md, section 12; its images:
-# docs/adr/0015-cicd-devsecops-stage5.md, section 9). GITOPS_REV is what Argo CD follows: a branch of origin (its
-# values are read from origin/<branch> as last fetched) or a full commit SHA. Releases are built, signed and promoted
-# by CI (.github/workflows/images.yml): no target builds one on this machine.
+# The GitOps path: a new cluster svp that Argo CD builds from GitHub, running the release images of GHCR. GITOPS_REV
+# is what Argo CD follows: a branch of origin (its values are read from origin/<branch> as last fetched) or a full
+# commit SHA. Releases are built, signed and promoted by CI (.github/workflows/images.yml): no target builds one on
+# this machine.
 GITOPS_REV ?= main
 
 k8s-gitops-up: k8s-exclusive env-required ## Create a new cluster svp that Argo CD builds from GitHub: ARGOCD_DEPLOY_KEY=<private key file of a read-only deploy key> (GitHub repo Settings > Deploy keys, "Allow write access" unticked) [GITOPS_REV=main]; first checks that the seven release digests at that revision are on GHCR (anonymous pull), signed, with a clean vuln attestation at most 48 h old; applies the Secrets of .env, installs Argo CD, waits until every Application is Synced and Healthy
@@ -76,10 +76,9 @@ drill-k8s-keda: ## Upload and complete N (default 9, 6-12; more until the record
 	@test -s .k8s/ca.crt || { echo "make drill-k8s-keda: .k8s/ca.crt missing; run make k8s-up (or make k8s-ca)" >&2; exit 1; }
 	$(K8S_DRILL_ENV) N='$(if $(filter file,$(origin N)),9,$(N))' deploy/k8s/drills/keda.sh https://api.svp.localhost:8443
 
-# The canaries of the gateway and the web client (docs/adr/0014-kubernetes-local-stage4.md, section 13;
-# docs/adr/0019-web-k3d-supply-chain-observability.md, section 3). The drill traffic runs in the background until
-# stopped, for hours if need be (through the push of a release on the GitOps cluster); `make k8s-up` starts and stops
-# its own while a canary of either is in progress.
+# The canaries of the gateway and the web client. The drill traffic runs in the background until stopped, for hours
+# if need be (through the push of a release on the GitOps cluster); `make k8s-up` starts and stops its own while a
+# canary of either is in progress.
 k8s-traffic-start: ## Start drill traffic in the background: 4 users, ~10 requests/s to GET /feed/explore and /feed/following through https://api.svp.localhost:8443, and ~4 requests/s to the web client at https://svp.localhost:8443 (GET /login, one /_next/static asset), each request logged in .k8s/drills/traffic-<time>.log (LOCAL LAB ONLY: resets register rate limit keys in the cluster's Valkey db 10)
 	@test -s .k8s/ca.crt || { echo "make k8s-traffic-start: .k8s/ca.crt missing; run make k8s-up (or make k8s-ca)" >&2; exit 1; }
 	@$(K8S_DRILL_ENV) deploy/k8s/drills/traffic.sh start
@@ -105,14 +104,14 @@ drill-k8s-threats: ## Check the stage 4 threat model rows on cluster svp, each w
 	@test -s .k8s/ca.crt || { echo "make drill-k8s-threats: .k8s/ca.crt missing; run make k8s-up (or make k8s-ca)" >&2; exit 1; }
 	$(K8S_DRILL_ENV) deploy/k8s/drills/threats.sh https://api.svp.localhost:8443
 
-# Disaster recovery of Postgres svp-pg in place (docs/adr/0020-reliability-stage6.md, section 5): the steps, the JSON
+# Disaster recovery of Postgres svp-pg in place: the steps, the JSON
 # and what an interrupted run prints are at the top of deploy/k8s/drills/backup.sh. Dev path only. MODE=latest restores
 # to the end of the archive, MODE=pitr to a time between two of its markers; two runs in a row on one cluster both pass.
 drill-k8s-backup: ## Delete Postgres svp-pg and its volume and restore it under the same name from its Barman Cloud backups (new archive generation), after a base backup and 60 s of marker rows in database svp_drill; restart the four services with Postgres and GlitchTip once, run the k8s-smoke flow; RTO, RPO, row counts before and after in .k8s/drills/backup-<time>.json; MODE=latest (default) or MODE=pitr; never deletes a backup (LOCAL LAB ONLY: context k3d-svp on 127.0.0.1:6550; resets register rate limit keys in the cluster's Valkey db 10)
 	@test -s .k8s/ca.crt || { echo "make drill-k8s-backup: .k8s/ca.crt missing; run make k8s-up (or make k8s-ca)" >&2; exit 1; }
 	$(K8S_DRILL_ENV) MODE='$(MODE)' deploy/k8s/drills/backup.sh https://api.svp.localhost:8443
 
-# The image policy of namespace svp (docs/adr/0015-cicd-devsecops-stage5.md, section 8); the cases are listed at the
+# The image policy of namespace svp; the cases are listed at the
 # top of deploy/k8s/drills/supplychain.sh. It talks to the cluster's API, and for the CRITICAL case to GHCR and Sigstore
 # through cosign (anonymous, COSIGN_IMAGE when cosign is not installed), so it needs neither .k8s/ca.crt nor the
 # gateway, and deletes no rate limit key.
@@ -138,7 +137,7 @@ k8s-ui-alertmanager: ## Open Alertmanager of cluster svp on http://127.0.0.1:909
 k8s-ui-glitchtip: ## Open GlitchTip of cluster svp on http://127.0.0.1:8000 (port-forward, loopback only; log in with GLITCHTIP_ADMIN_EMAIL and GLITCHTIP_ADMIN_PASSWORD of .env)
 	$(K8S_PORT_FORWARD) service/glitchtip 8000:8000
 
-# The web image's source maps (docs/adr/0019-web-k3d-supply-chain-observability.md, section 9): built from the working
+# The web image's source maps: built from the working
 # tree with the build id `make k8s-up` gave the image (web_build_id of deploy/k8s/lib.sh), checked against the chunks
 # https://svp.localhost:8443 serves, uploaded through a port-forward of its own on 127.0.0.1:8000, closed at the end.
 # Node and pnpm of web/ as for the web targets of the Makefile (WEB).
@@ -153,7 +152,7 @@ k8s-web-sourcemaps: ## Upload the source maps of the web client's browser bundle
 k8s-web-e2e: ## Playwright end-to-end tests of the web client on Chromium and WebKit against cluster svp at https://svp.localhost:8443 (CA .k8s/ca.crt); SVP_E2E_GLITCHTIP=1 adds the browser error to GlitchTip check (needs make k8s-web-sourcemaps first, port 127.0.0.1:8000 free); SVP_E2E_EVIDENCE=<absolute folder> as for web-e2e (LOCAL LAB ONLY: deletes the register rate limit keys in the cluster's Valkey db 10)
 	@$(WEB) bash e2e/k3d-e2e.sh
 
-# Read only, after make k8s-web-e2e (docs/adr/0019-web-k3d-supply-chain-observability.md, sections 7, 10 and 11): the
+# Read only, after make k8s-web-e2e: the
 # checks and their PASS/FAIL table are at the top of deploy/k8s/drills/web-obs.sh. Tempo, Prometheus and GlitchTip are
 # reached through port-forwards of its own on 127.0.0.1 (13200, 19090, 8000), stopped by pid at the end.
 drill-k8s-web-obs: ## After make k8s-web-e2e on cluster svp: Tempo holds a trace with spans of service web and of the gateway, Prometheus has the RUM histograms of LCP, CLS (and INP when there was interaction) with closed route labels, p75 of each printed, and the GlitchTip event of SVP_E2E_GLITCHTIP=1 make k8s-web-e2e has frames mapped to the web's source; PASS/FAIL per check (read only; ports 127.0.0.1:13200, 19090, 8000 must be free)
@@ -163,8 +162,8 @@ k8s-ui-argocd: ## Open Argo CD of the GitOps cluster on https://127.0.0.1:8081 (
 	@echo "password of admin: kubectl --context k3d-svp -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d"
 	kubectl --context k3d-svp -n argocd port-forward --address 127.0.0.1 service/argocd-server 8081:443
 
-# The manifests written for the cloud cluster of stage 7 (deploy/k8s/cloud/, the k6 Jobs of deploy/k6/;
-# docs/adr/0020-reliability-stage6.md, section 8), checked without a cluster: no kubectl, no .env. The steps are at the top
+# The manifests written for the cloud cluster of stage 7 (deploy/k8s/cloud/, the k6 Jobs of deploy/k6/), checked
+# without a cluster: no kubectl, no .env. The steps are at the top
 # of deploy/k8s/cloud/check.sh: kubeconform -strict of KUBECONFORM_IMAGE against the Kubernetes schemas of
 # CLOUD_K8S_VERSION and against schemas made from the CRDs of the pinned Chaos Mesh, Velero and snapshot controller (no
 # kind is skipped for want of a schema; a missing one fails), then the bounds of the Chaos Mesh experiments and a digest

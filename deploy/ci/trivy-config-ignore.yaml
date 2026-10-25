@@ -1,5 +1,5 @@
-# Findings of make trivy-config that are deliberate choices, ignored for a limited time
-# (docs/adr/0021-deferred-verification-stage6b.md, section 9). A finding that can be fixed without changing behaviour is
+# Findings of make trivy-config that are deliberate choices, ignored for a limited time.
+# A finding that can be fixed without changing behaviour is
 # fixed, not listed here. make trivy-config passes this file to trivy config with --ignorefile; it is never read by the
 # image gate, so nothing here can let a vulnerability or a secret through.
 #
@@ -22,8 +22,7 @@ misconfigurations:
       - deploy/ci/drill/vulnerable.Dockerfile
     statement: health is checked by Kubernetes probes and compose healthchecks per container, not by the image
     expired_at: 2027-01-22
-  # The Role of the CloudNativePG operator in svp-data is the chart's commonRules unchanged
-  # (docs/adr/0020-reliability-stage6.md section 5, docs/adr/0014-kubernetes-local-stage4.md section 12); in cnpg-system
+  # The Role of the CloudNativePG operator in svp-data is the chart's commonRules unchanged; in cnpg-system
   # it reads only, but for its own PKI Secrets, held to two names by ValidatingAdmissionPolicy svp-cnpg-operator-secrets.
   # Each write below is one the operator v1.30.1 makes for Cluster svp-pg (paths in its source tree).
   - id: KSV-0048
@@ -77,5 +76,5 @@ misconfigurations:
       - deploy/helm/svp-data/templates/minio.yaml
     statement: >-
       Chainguard's MinIO image, pinned by digest, and MinIO is being replaced as the local object store
-      (docs/adr/0022-local-object-store-minio-replacement.md); the entry goes with the chart's MinIO
+      (RustFS is the proposed replacement); the entry goes with the chart's MinIO
     expired_at: 2027-01-22

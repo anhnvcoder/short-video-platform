@@ -267,9 +267,8 @@ func TestLoginWithUserServiceDown(t *testing.T) {
 }
 
 // TestReadyzLeavesNoSpans: /readyz, which a container runtime calls every few seconds, gives
-// neither an HTTP span nor client spans for its health checks (docs/adr/0011-observability-stage3.md,
-// sections 3 and 10). The fake services trace every RPC they serve, so their spans show that the
-// checks were made, without a trace from the gateway.
+// neither an HTTP span nor client spans for its health checks. The fake services trace every RPC
+// they serve, so their spans show that the checks were made, without a trace from the gateway.
 func TestReadyzLeavesNoSpans(t *testing.T) {
 	spans := recordSpans(t)
 	e := newEnv(t)

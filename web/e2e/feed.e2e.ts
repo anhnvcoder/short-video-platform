@@ -56,14 +56,25 @@ authedTest(
   },
 );
 
+// hls.js's ES module build carries no inlined transmuxer worker: the player pool gives it the worker file the build
+// serves, so segments are transmuxed off the main thread instead of one long task each (features/feed/player-pool.ts).
+authedTest("the first video plays with hls.js's transmuxer in a worker loaded from its own file", async ({ page }) => {
+  const workers: string[] = [];
+  page.on("worker", (worker) => workers.push(new URL(worker.url()).pathname));
+  await page.goto("/");
+  await expect(playingVideo(feedItem(page, 0))).toHaveCount(1);
+  await expect
+    .poll(() => workers.filter((path) => /^\/_next\/static\/media\/hls\.worker\.[\w-]+\.js$/.test(path)).length)
+    .toBeGreaterThan(0);
+});
+
 // The next item's poster sits inside the browser's lazy-load margin, so it would download beside the current poster,
-// the page's largest paint. The next item gets it two ways, each held back: its <img> renders only after the window's
-// load event, which waits for the current poster; the player's <video> for it, which carries the same poster, waits for
-// the current video to play (features/feed/player-pool.ts). The routes hold every poster and playlist so the test fixes
-// the order of the two, and it reads the page rather than resource timing: an image the <video> fetched first is
-// reused by the <img> without an entry of its own.
+// the page's largest paint. Its <img> renders only after the window's load event, which waits for the current poster;
+// the player's <video> for it waits for the current video to play (features/feed/player-pool.ts) and carries no poster
+// of its own, so it never fetches one either. The routes hold every poster and playlist so the test fixes the order of
+// the two, and it reads the page rather than resource timing.
 authedTest(
-  "the next item's poster waits for the current video to play, its image for the load event",
+  "the next item's video waits for the current video to play, its poster for the load event",
   async ({ page }) => {
     const posters: string[] = [];
     let releasePlaylists = () => {};
@@ -94,6 +105,8 @@ authedTest(
     // Hydrated: the player moved a <video> into the current item. Its playlist is held, so it cannot play, and nothing
     // has asked for another poster.
     await expect(feedItem(page, 0).locator("video")).toHaveCount(1);
+    // The <img> is the poster: a poster on the <video> as well could be reported as the page's largest paint.
+    await expect(feedItem(page, 0).locator("video")).not.toHaveAttribute("poster");
     await expect.poll(() => posters.includes(current), { message: "the current poster's request" }).toBe(true);
     await expect(feedItem(page, 1).locator("video")).toHaveCount(0);
     await expect(feedItem(page, 1).locator("img")).toHaveCount(0);
@@ -106,6 +119,7 @@ authedTest(
     await expect(feedItem(page, 1).locator("video")).toHaveCount(1);
     expect(await page.evaluate(() => document.readyState)).not.toBe("complete");
     await expect(feedItem(page, 1).locator("img")).toHaveCount(0);
+    expect(new Set(posters)).toEqual(new Set([current]));
 
     // The current poster arrives, the page loads, and the next item's <img> follows.
     releasePosters();

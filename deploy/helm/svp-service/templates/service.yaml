@@ -1,6 +1,6 @@
 {{- /*
 Its own ServiceAccount, with no Role or RoleBinding anywhere: the pod has no Kubernetes API rights, and no token is
-mounted (ADR-0014 section 10). A Service for every service with a port; media-worker has none.
+mounted. A Service for every service with a port; media-worker has none.
 */}}
 apiVersion: v1
 kind: ServiceAccount

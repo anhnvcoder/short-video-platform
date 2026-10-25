@@ -82,3 +82,11 @@ Service chỉ ký một URL có hạn dùng; client gửi file thẳng tới sto
   - mỗi video lưu hai bản (gốc + HLS), ~137 MB thay vì 62 MB. Giữ file gốc bao lâu là câu hỏi mở;
   - ffmpeg đọc file do người dùng gửi lên: đây là bề mặt tấn công lớn nhất của hệ thống, threat model phải xét riêng.
 - Xem lại khi: tỉ lệ upload hỏng giữa chừng cao, hoặc nâng giới hạn thời lượng làm file lớn hơn nhiều. Lúc đó chuyển sang C.
+
+## Hiện thực ở
+
+- Upload thẳng bằng presigned POST: `internal/objstore/`; `InitUpload`, `CompleteUpload` và giới hạn 500 MiB ở
+  `services/video-service/internal/server/server.go`; job dọn upload bỏ dở ở `services/video-service/internal/server/sweep.go`.
+- Transcode bất đồng bộ ra HLS: `services/media-worker/` (`internal/worker/` giới hạn kích thước tải về, `internal/transcode/`
+  chạy ffmpeg).
+- Upload từ trình duyệt: `web/features/upload/`.

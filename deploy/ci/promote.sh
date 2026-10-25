@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# promote.sh RELEASES: the job promote of images.yml (docs/adr/0015-cicd-devsecops-stage5.md, section 9). Rebuilds the
+# promote.sh RELEASES: the job promote of images.yml. Rebuilds the
 # branch bot/promote from origin/main with the newest release of every service that main does not run yet, pushes it
 # and opens or updates its pull request. The owner reads it, approves its workflow runs, and merges it; Argo CD then
 # deploys the digests. Nothing is ever written to main.
@@ -8,7 +8,7 @@
 # index. download-artifact puts a single matching artifact straight into RELEASES and several each into a directory of
 # its own, so they are found by their digest file wherever they are; none at all is fine (no release in this run).
 #
-# Each service's value is chosen so that a release never goes back (ADR-0015 section 9). Candidates: main's values; those
+# Each service's value is chosen so that a release never goes back. Candidates: main's values; those
 # of bot/promote, only while its pull request is open (a merged one is in main already; a closed one was given up, and
 # taking it again would bring back what the owner rolled back), and only for the services that pull request changes
 # (any other file there is main's value as of the commit the branch was built on: taking it would undo a rollback

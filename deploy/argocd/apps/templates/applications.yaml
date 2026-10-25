@@ -1,6 +1,6 @@
 {{- /*
 One Application per component of components.json, the single list the dev path (deploy/k8s/install.sh) installs from
-too, so both paths install the same charts, versions and values in the same order (ADR-0014 section 7):
+too, so both paths install the same charts, versions and values in the same order:
 - the release name is the component's name, as on the dev path;
 - argocd.argoproj.io/sync-wave is the component's wave, so a policy or CRD exists before what needs it. The root
   Application moves to the next wave only once every Application of this one has finished its sync, hooks included,
@@ -78,7 +78,7 @@ spec:
       ref: values
     {{- end }}
   {{- if .canaryRoute }}
-  # Argo Rollouts writes into two objects of a release with a canary (ADR-0014 section 13): its Gateway API plugin moves
+  # Argo Rollouts writes into two objects of a release with a canary: its Gateway API plugin moves
   # the weights of the two backendRefs of the release's HTTPRoute during a canary, then puts them back to 100/0, and the
   # controller adds rollouts-pod-template-hash to the selectors of Services <release> and <release>-canary. Ignored
   # here, selfHeal does not set the weights back in the middle of a canary. RespectIgnoreDifferences also keeps the live

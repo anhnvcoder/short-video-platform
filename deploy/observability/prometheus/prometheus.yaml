@@ -1,5 +1,5 @@
 # Prometheus configuration of grafana/otel-lgtm 0.36.0 (/otel-lgtm/prometheus.yaml in the image),
-# mounted read-only over the image's own (docs/adr/0011-observability-stage3.md, sections 8 and 9).
+# mounted read-only over the image's own.
 # Copied from the image unchanged except for evaluation_interval, retention, rule_files and
 # alerting: re-check it against the image's file when the image is upgraded. run-prometheus.sh
 # keeps turning on the OTLP and remote-write receivers and exemplar storage on the command line;
@@ -7,7 +7,7 @@
 
 global:
   scrape_native_histograms: true
-  # Rules run every 15 s, the export interval of the services (ADR-0011, sections 5 and 8).
+  # Rules run every 15 s, the export interval of the services.
   evaluation_interval: 15s
 otlp:
   keep_identifying_resource_attributes: true
@@ -46,7 +46,7 @@ storage:
     out_of_order_time_window: 10m
     # The SLOs are computed over 30 days (slo:sli_error:ratio_rate30d); the binary's default of 15 days
     # would drop errors still inside that window. Blocks are deleted only once they are wholly older
-    # than this, so the full 30 days stay (ADR-0011, sections 8 and 13).
+    # than this, so the full 30 days stay.
     retention:
       time: 30d
 

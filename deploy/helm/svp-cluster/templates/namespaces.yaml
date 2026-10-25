@@ -1,5 +1,5 @@
 {{- /*
-Namespaces by role (ADR-0014 section 3): svp (the six Go services and the web client), svp-data (Postgres, Valkey,
+Namespaces by role: svp (the six Go services and the web client), svp-data (Postgres, Valkey,
 Redpanda, MinIO), svp-obs (observability, GlitchTip), svp-edge (Gateway and wildcard certificate). Pod Security
 Admission enforces "restricted":
 pods must run as non-root, drop every capability, use seccomp RuntimeDefault and forbid privilege escalation; a chart
@@ -25,7 +25,7 @@ metadata:
     pod-security.kubernetes.io/audit-version: {{ $.Values.podSecurityVersion }}
     {{- if .routes }}
     # Gateway svp accepts HTTPRoutes only from namespaces with this label, so a namespace cannot publish a route on the
-    # shared entry point unless this chart marks it (ADR-0014 section 9).
+    # shared entry point unless this chart marks it.
     svp-gateway-routes: "true"
     {{- end }}
 {{- end }}

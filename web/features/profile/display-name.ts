@@ -1,6 +1,6 @@
 import * as z from "zod/mini";
 
-// The display name rules of user-service (docs/adr/0018-web-profiles-public-video-upload.md, section 2) and the state
+// The display name rules of user-service and the state
 // of the form that changes it (useActionState with server/profile-actions.ts). Nothing here is secret: the form checks
 // in the browser with the same schema the action checks on the server. zod/mini keeps it small in the page's bundle.
 

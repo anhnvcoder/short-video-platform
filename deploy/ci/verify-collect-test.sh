@@ -2,8 +2,12 @@
 # Tests for the artifact filter of the verification runs, deploy/ci/verify-collect.sh, and for deploy/ci/verify-mask.sh
 # it calls. Everything is a fixture in a temporary directory: a fake checkout with a fake .env (the repository's .env is
 # never read), a fake results folder, and a fake kubectl first on PATH that lists made-up Secrets or fails. The fake
-# secrets, the JWT and the private key header are made at run time, so no file of the repository holds one. Then the
-# deadline criterion of the summary of deploy/ci/verify-sample.sh, with a fake docker and a fake sudo first on PATH.
+# secrets, the JWT and the private key header are made at run time, so no file of the repository holds one. Before the
+# filter, unready_report of deploy/k8s/lib.sh, with the same fake kubectl listing made-up pods and their logs; its
+# output is one of the fake results. Then the
+# deadline criterion of the summary of deploy/ci/verify-sample.sh, with a fake docker and a fake sudo first on PATH;
+# one sample of its docker.tsv (workers transcoding, memory.stat of the nodes) with a fake docker, kubectl and pgrep and
+# a fixture of /proc; and its peak over a fixture of docker.tsv.
 # Last, that deploy/ci/changed-services.sh builds no image for a change of these scripts, in a throwaway git repository
 # holding a copy of it. Runs on macOS and Linux, no network, no Docker, no cluster.
 #
@@ -64,10 +68,21 @@ JWT_SIGNING_KID=kid-of-the-signing-key
 EOF
 
 # The fake kubectl: kubectl --context k3d-svp --request-timeout=10s -n NS get secrets -o json. FAKE_KUBECTL_FAIL=1
-# makes it fail, as for a cluster that no longer answers.
+# makes it fail, as for a cluster that no longer answers. For unready_report: kubectl --context k3d-svp -n NS get pods
+# -o json prints pods-NS.json; kubectl --context k3d-svp -n NS logs POD -c CONTAINER [--previous] --tail=40 prints
+# logs/NS.POD.CONTAINER[.previous]; both are recorded in calls.
 cat >"$work/bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
 [ "${FAKE_KUBECTL_FAIL:-}" = 1 ] && { echo "The connection to the server was refused" >&2; exit 1; }
+if [ "$1 $2 $3" = "--context k3d-svp -n" ]; then
+  echo "$*" >>"$FAKE_KUBECTL_DIR/calls"
+  if [ "$5 $6 $7 $8" = "get pods -o json" ]; then cat "$FAKE_KUBECTL_DIR/pods-$4.json"; exit; fi
+  [ "$5 $7" = "logs -c" ] || exit 2
+  f=$FAKE_KUBECTL_DIR/logs/$4.$6.$8
+  case " $* " in *" --previous "*) f=$f.previous ;; esac
+  if [ -f "$f" ]; then cat "$f"; else echo "Error from server (NotFound): no log" >&2; exit 1; fi
+  exit
+fi
 [ "$1 $2 $3" = "--context k3d-svp --request-timeout=10s" ] && [ "$4" = -n ] &&
   [ "$6 $7 $8 $9" = "get secrets -o json" ] || exit 2
 f=$FAKE_KUBECTL_DIR/$5.json
@@ -109,6 +124,91 @@ identifiers="svp-pg-backup svp-admin scram_sha256 svp-keda svp-feed-service svp-
 admin-of-grafana kid-of-the-signing-key"
 export FAKE_KUBECTL_DIR=$work/kube
 
+# --- unready_report of deploy/k8s/lib.sh: which containers it reports, and whose log it prints. In svp-data a Redpanda
+# broker in a crash loop (its log, and the attempt before, printed), its ready sidecar (not reported), a Postgres pod
+# of CloudNativePG and a completed Job; in svp-obs GlitchTip; in svp two services. Every log the fake kubectl could
+# print is a marker, so what reaches the output shows.
+# unready_pods ITEMS NAMESPACE: the pods NAMESPACE lists, ITEMS a jq expression of their array.
+unready_pods() {
+  jq -n "{items: $1}" >"$work/kube/pods-$2.json"
+}
+unready_pods '[
+  {metadata: {name: "redpanda-0", labels: {"app.kubernetes.io/name": "redpanda"}},
+   spec: {containers: [{name: "redpanda", terminationMessagePolicy: "FallbackToLogsOnError"}, {name: "sidecar"}]},
+   status: {phase: "Running", containerStatuses: [
+     {name: "redpanda", ready: false, restartCount: 2, state: {waiting: {reason: "CrashLoopBackOff"}},
+      lastState: {terminated: {reason: "Error", exitCode: 1, message: "INFRA-MESSAGE-MARKER"}}},
+     {name: "sidecar", ready: true, restartCount: 0, state: {running: {}}}]}},
+  {metadata: {name: "svp-pg-1", labels: {"cnpg.io/cluster": "svp-pg"}},
+   spec: {containers: [{name: "postgres", terminationMessagePolicy: "FallbackToLogsOnError"}]},
+   status: {phase: "Running", containerStatuses: [
+     {name: "postgres", ready: false, restartCount: 1, state: {running: {}},
+      lastState: {terminated: {reason: "Error", exitCode: 1, message: "PG-MESSAGE-MARKER"}}}]}},
+  {metadata: {name: "redpanda-init-x"}, spec: {containers: [{name: "init"}]},
+   status: {phase: "Succeeded", containerStatuses: [
+     {name: "init", ready: false, restartCount: 0, state: {terminated: {reason: "Completed", exitCode: 0}}}]}}]' \
+  svp-data
+unready_pods '[
+  {metadata: {name: "glitchtip-abc", labels: {"app.kubernetes.io/name": "glitchtip"}},
+   spec: {containers: [{name: "glitchtip"}]},
+   status: {phase: "Running", containerStatuses: [
+     {name: "glitchtip", ready: false, restartCount: 0, state: {waiting: {reason: "CrashLoopBackOff"}}}]}}]' svp-obs
+unready_pods '[
+  {metadata: {name: "gateway-abc"}, spec: {containers: [{name: "gateway"}]},
+   status: {phase: "Running", containerStatuses: [
+     {name: "gateway", ready: false, restartCount: 3, state: {waiting: {reason: "CrashLoopBackOff"}},
+      lastState: {terminated: {reason: "Error", exitCode: 2, message: "TERM-FILE-MARKER"}}}]}},
+  {metadata: {name: "media-worker-abc"},
+   spec: {containers: [{name: "media-worker", terminationMessagePolicy: "FallbackToLogsOnError"}]},
+   status: {phase: "Running", containerStatuses: [
+     {name: "media-worker", ready: false, restartCount: 1, state: {running: {}},
+      lastState: {terminated: {reason: "Error", exitCode: 1, message: "APP-FALLBACK-MARKER"}}}]}}]' svp
+mkdir -p "$work/kube/logs"
+printf '%s\n' "Could not initialize seastar: std::runtime_error (insufficient physical memory: needed 1073741824" \
+  "" INFRA-TAIL-MARKER >"$work/kube/logs/svp-data.redpanda-0.redpanda"
+echo INFRA-PREVIOUS-MARKER >"$work/kube/logs/svp-data.redpanda-0.redpanda.previous"
+echo SIDECAR-MARKER >"$work/kube/logs/svp-data.redpanda-0.sidecar"
+echo 'ERROR: duplicate key, STATEMENT: INSERT ... PG-LOG-MARKER' >"$work/kube/logs/svp-data.svp-pg-1.postgres"
+echo 'GET /api/1/envelope/?sentry_key=GLITCHTIP-MARKER' >"$work/kube/logs/svp-obs.glitchtip-abc.glitchtip"
+for f in svp.gateway-abc.gateway svp.gateway-abc.gateway.previous svp.media-worker-abc.media-worker \
+  svp.media-worker-abc.media-worker.previous; do
+  echo "APP-LOG-MARKER of $f" >"$work/kube/logs/$f"
+done
+: >"$work/kube/calls"
+unready=$work/unready.txt
+(
+  PATH=$work/bin:$PATH
+  . "$here/../k8s/lib.sh"
+  for ns in svp-data svp-obs svp; do unready_report "$ns"; done
+) 2>"$unready" >/dev/null
+has_line() { if grep -qxF -- "$2" "$unready"; then ok "unready: $1"; else fail "unready: $1"; fi; }
+has_line "an infrastructure container's state, how it ended and its message" \
+  "pod svp-data/redpanda-0, container redpanda: waiting CrashLoopBackOff, 2 restart(s); attempt before: terminated Error (exit 1): INFRA-MESSAGE-MARKER"
+has_line "its log, each line marked with its namespace" "    [svp-data] INFRA-TAIL-MARKER"
+has_line "an empty line of its log marked too" "    [svp-data] "
+has_line "the log of its attempt before" "    [svp-data] INFRA-PREVIOUS-MARKER"
+has_line "a service's state, how it ended and its message from the termination log file" \
+  "pod svp/gateway-abc, container gateway: waiting CrashLoopBackOff, 3 restart(s); attempt before: terminated Error (exit 2): TERM-FILE-MARKER"
+has_line "a service whose message falls back to its log: state and exit only" \
+  "pod svp/media-worker-abc, container media-worker: running, 1 restart(s); attempt before: terminated Error (exit 1)"
+has_line "GlitchTip's state" "pod svp-obs/glitchtip-abc, container glitchtip: waiting CrashLoopBackOff, 0 restart(s)"
+has_line "Postgres' state, without its message" \
+  "pod svp-data/svp-pg-1, container postgres: running, 1 restart(s); attempt before: terminated Error (exit 1)"
+for m in APP-LOG-MARKER APP-FALLBACK-MARKER GLITCHTIP-MARKER PG-LOG-MARKER PG-MESSAGE-MARKER SIDECAR-MARKER \
+  redpanda-init-x; do
+  if grep -qF -- "$m" "$unready"; then fail "unready: no $m in its output"; else ok "unready: no $m in its output"; fi
+done
+if grep -E ' logs (gateway|media-worker|glitchtip|svp-pg)-' "$work/kube/calls" | grep -q .; then
+  fail "unready: no log of a service, GlitchTip or Postgres is read"
+else
+  ok "unready: no log of a service, GlitchTip or Postgres is read"
+fi
+shown=$(. "$here/../k8s/lib.sh" && echo " $log_tail_namespaces ")
+case $shown in
+  *" svp "* | *" envoy-gateway-system "* | *" kube-system "* | "  ") fail "unready: log_tail_namespaces has neither svp, Envoy nor kube-system, and is not empty" ;;
+  *) ok "unready: log_tail_namespaces has neither svp, Envoy nor kube-system, and is not empty" ;;
+esac
+
 # --- The fake results of a k3d run.
 out=$work/out
 mkdir -p "$out/logs" "$out/samples"
@@ -118,15 +218,28 @@ printf '01\tk8s-up\tok\t0\t100\t160\t60\t\n02\tk8s-smoke\tfail\t1\t160\t170\t10\
 printf '03\tdrill-k8s-keda\tfail\t1\t170\t180\t10\t\n04\tdrill-k8s-threats\tfail\t1\t180\t190\t10\t\n' >>"$out/results.tsv"
 printf '05\tdrill-alert-to-sentry\tfail\t1\t190\t200\t10\t\n06\tdrill-obs-threats\tok\t0\t200\t210\t10\t\n' \
   >>"$out/results.tsv"
+printf '12\tk8s-up\tfail\t1\t210\t220\t10\t\n13\tk8s-up\tfail\t1\t220\t230\t10\t\n' >>"$out/results.tsv"
 # A target that quotes service logs: the log of a failed migrate Job (JSON records, one with a secret) and the
 # gateway's access log line of a trace, between lines of its own.
 {
   echo "ok    cluster ready"
   echo "Job svp/feed-service-migrate failed; log of its last failed attempt, copied before its pod was deleted:"
-  echo '{"time":"2026-10-25T08:00:00Z","level":"WARN","msg":"database not reachable, retrying","attempt":1}'
-  echo "{\"time\":\"2026-10-25T08:00:01Z\", \"level\": \"ERROR\", \"msg\":\"dsn $quoted_secret\"}"
+  echo '    [svp] {"time":"2026-10-25T08:00:00Z","level":"WARN","msg":"database not reachable, retrying","attempt":1}'
+  echo "    [svp] {\"time\":\"2026-10-25T08:00:01Z\", \"level\": \"ERROR\", \"msg\":\"dsn $quoted_secret\"}"
+  echo "    [svp] panic: MIGRATE-PANIC-MARKER"
   echo "FAIL  install feed-service"
 } >"$out/logs/01-k8s-up.log"
+# A failed make k8s-up with the report of unready_report above, and two log lines of namespaces whose logs never get
+# in, as a mistake of unready_report would print them; another whose broker log holds a cluster secret.
+{
+  echo "helm upgrade --install redpanda (wave 3, namespace svp-data)"
+  cat "$unready"
+  echo "    [svp] APP-FORGED-MARKER"
+  echo "    [envoy-gateway-system] ENVOY-MARKER"
+  echo "FAIL  install redpanda"
+} >"$out/logs/12-k8s-up.log"
+printf '    [svp-data] SECRET-TAIL-MARKER sasl password %s\nFAIL  install redpanda\n' "$kafka_secret" \
+  >"$out/logs/13-k8s-up.log"
 {
   echo "ok    T2 08:00:05Z: earliest error trace after T0 abc"
   echo 'ok    T3 08:00:09Z: gateway access log of trace abc: {"route":"/feed","status":"503","user_id":"USER-ID-MARKER"}'
@@ -151,12 +264,24 @@ printf '05\tdrill-alert-to-sentry\tfail\t1\t190\t200\t10\t\n06\tdrill-obs-threat
   echo "probe answered: PROBE-BODY-MARKER"
   echo "== NP-1"
   echo "FAIL  NP-1: probe reached minio"
+  # An item stopped under set -e: bash's own line is left out, the drill's line after it is kept.
+  echo "deploy/k8s/drills/threats.sh: line 1742: BASH-ERROR-MARKER: unbound variable"
+  echo "FAIL  NP-1: the item ended with exit status 1"
   echo "== PROBE-HEADING-MARKER: body"
   echo "  PROBE-INDENT-MARKER   PASS with more"
+  echo "== WEB-7"
+  echo "ok    user @drill_ab12 registered: 303, session cookie __Host-Http-svp_sid in the drill's cookie jar"
   echo
   echo "drill-k8s-threats (20261025T080000Z-ab12)"
   printf '  %-14s %s\n' ITEM RESULT IN-2/IN-4 PASS NP-1 FAIL
 } >"$out/logs/04-drill-k8s-threats.log"
+# Verdict lines of a threat drill holding the session cookie in a form its value is written in, one file each: a
+# header, a cookie jar line, JSON, and the name ending a line. A plain target output that names the cookie in prose.
+printf 'FAIL  WEB-2: sent Cookie: __Host-Http-svp_sid=SID-MARKER\n' >"$out/logs/07-drill-k8s-threats.log"
+printf 'ok    jar: svp.localhost\tFALSE\t/\tTRUE\t0\t__Host-Http-svp_sid\tSID-MARKER\n' >"$out/logs/08-drill-k8s-threats.log"
+printf 'FAIL  WEB-9: got {"name":"svp_sid","value":"SID-MARKER"}\n' >"$out/logs/09-drill-obs-threats.log"
+printf 'FAIL  WEB-9: the cookie jar holds svp_sid\n' >"$out/logs/10-drill-obs-threats.log"
+printf 'ok    session cookie __Host-Http-svp_sid in the jar\n' >"$out/logs/11-k8s-web-e2e.log"
 printf 'ok    OPS-1: 8 loopback ports\nprobe answered: PROBE-OBS-MARKER\ndrill-obs-threats: all checks passed\n' \
   >"$out/logs/06-drill-obs-threats.log"
 printf '100\t4000000\t0\t12\n' >"$out/samples/host.tsv"
@@ -191,6 +316,7 @@ echo "<html>Set-Cookie: svp=1</html>" >"$l/a.report.html"
 echo '{"audits":{}}' >"$l/b.report.json"
 echo '{}' >"$l/.lighthouseci/lhr-1.json"
 echo 'zip' >"$repo/web/test-results/playwright/trace.zip"
+echo '{"status":"failed","failedTests":["abc-123"]}' >"$repo/web/test-results/playwright/.last-run.json"
 echo '{"header":"Bearer abc"}' >"$repo/web/test-results/glitchtip-chromium.json"
 echo '{"cookie":"svp_sid=abc"}' >"$repo/web/test-results/measure-web-1.json"
 echo "{\"key\":\"$private_key_header\"}" >"$repo/web/test-results/measure-upload-1.json"
@@ -232,6 +358,7 @@ no_leak() {
 }
 has() { if grep -qF -- "$3" "$work/$1.log"; then ok "$1: $2"; else fail "$1: $2"; fi; }
 lacks() { if grep -qF -- "$3" "$work/$1.log"; then fail "$1: $2"; else ok "$1: $2"; fi; }
+same() { if [ "$3" = "$2" ]; then ok "$1"; else fail "$1: want '$2', got '$3'"; fi; }
 
 # --- verify-mask.sh env on its own: what it masks, what it keeps, and the marker only once.
 mask() {
@@ -290,9 +417,18 @@ expect k3d .k6/local-1/machine.json not-allowed
 expect k3d web/test-results/lighthouse/a.report.html set-cookie
 expect k3d web/test-results/lighthouse/.lighthouseci/lhr-1.json hidden
 expect k3d web/test-results/playwright/trace.zip not-allowed
+expect k3d web/test-results/playwright/.last-run.json not-allowed
+lacks k3d "Playwright's .last-run.json is dropped without a warning" '.last-run.json'
+has k3d "another hidden file still gets a warning" 'lighthouse/.lighthouseci/lhr-1.json: hidden'
 expect k3d web/test-results/glitchtip-chromium.json bearer
 expect k3d web/test-results/measure-web-1.json session-cookie
 expect k3d web/test-results/measure-upload-1.json private-key
+for n in 07-drill-k8s-threats 08-drill-k8s-threats 09-drill-obs-threats 10-drill-obs-threats; do
+  expect k3d "\$SVP_VERIFY_OUT/logs/$n.log (verdict lines)" session-cookie
+done
+expect k3d '$SVP_VERIFY_OUT/logs/11-k8s-web-e2e.log' session-cookie
+grep -rqa SID-MARKER "$work/art-k3d" && fail "k3d: no session cookie value in the artifact" ||
+  ok "k3d: no session cookie value in the artifact"
 [ -f "$work/art-k3d/k8s-drills/canary-drill-1.json" ] && [ -f "$work/art-k3d/k6/local-1/summary.json" ] &&
   [ -f "$work/art-k3d/web-test-results/lighthouse/b.report.json" ] && ok "k3d: the checkout's files under visible folders" ||
   fail "k3d: the checkout's files under visible folders"
@@ -307,11 +443,13 @@ grep -q '^ok    IN-4: svp-feed-service .*(svp-admin)' "$work/art-k3d/logs/04-dri
   ok "k3d: a verdict naming Kafka users and svp-admin is kept" || fail "k3d: a verdict naming Kafka users and svp-admin is kept"
 v=$work/art-k3d/logs/04-drill-k8s-threats.verdicts.log
 want=$(printf '%s\n' "== IN-2/IN-4" "ok    IN-4: svp-feed-service may only read its topics (svp-admin)" "== NP-1" \
-  "FAIL  NP-1: probe reached minio" "drill-k8s-threats (20261025T080000Z-ab12)" "$(printf '  %-14s %s' ITEM RESULT)" \
+  "FAIL  NP-1: probe reached minio" "FAIL  NP-1: the item ended with exit status 1" "== WEB-7" \
+  "ok    user @drill_ab12 registered: 303, session cookie __Host-Http-svp_sid in the drill's cookie jar" \
+  "drill-k8s-threats (20261025T080000Z-ab12)" "$(printf '  %-14s %s' ITEM RESULT)" \
   "$(printf '  %-14s %s' IN-2/IN-4 PASS)" "$(printf '  %-14s %s' NP-1 FAIL)")
 [ "$(cat "$v")" = "$want" ] &&
-  ok "k3d: the threat drill keeps its item headings, verdicts and closing table, nothing else" ||
-  fail "k3d: the threat drill keeps its item headings, verdicts and closing table, nothing else"
+  ok "k3d: the threat drill keeps its item headings, verdicts (the session cookie named in prose) and closing table, nothing else" ||
+  fail "k3d: the threat drill keeps its item headings, verdicts (the session cookie named in prose) and closing table, nothing else"
 v=$work/art-k3d/logs/06-drill-obs-threats.verdicts.log
 [ "$(cat "$v")" = "$(printf '%s\n' "ok    OPS-1: 8 loopback ports" "drill-obs-threats: all checks passed")" ] &&
   ok "k3d: the threat drill's closing line is kept, its probe output left out" ||
@@ -333,8 +471,30 @@ else
 fi
 grep -q '^FAIL  install feed-service' "$a/01-k8s-up.log" && grep -q '^FAIL  T4' "$a/05-drill-alert-to-sentry.log" &&
   ok "k3d: the targets' own lines around them are kept" || fail "k3d: the targets' own lines around them are kept"
-grep -qF "$(printf 'kept\t$SVP_VERIFY_OUT/logs/01-k8s-up.log\tlogs/01-k8s-up.log\t2 service log line(s) left out')" \
+grep -qF "$(printf 'kept\t$SVP_VERIFY_OUT/logs/01-k8s-up.log\tlogs/01-k8s-up.log\t3 service log line(s) left out')" \
   "$work/art-k3d/files.txt" && ok "k3d: files.txt counts the lines left out" || fail "k3d: files.txt counts the lines left out"
+grep -q MIGRATE-PANIC-MARKER "$a/01-k8s-up.log" && fail "k3d: a migrate Job's log line that is no JSON is left out" ||
+  ok "k3d: a migrate Job's log line that is no JSON is left out"
+# The log tails of unready_report: an infrastructure container's kept, a line of namespace svp or of Envoy left out,
+# in the artifact and in the end of the failed target printed to the job's log alike.
+expect k3d '$SVP_VERIFY_OUT/logs/12-k8s-up.log' kept
+expect k3d '$SVP_VERIFY_OUT/logs/13-k8s-up.log' secret-value
+grep -qxF "    [svp-data] INFRA-TAIL-MARKER" "$a/12-k8s-up.log" && grep -qF INFRA-MESSAGE-MARKER "$a/12-k8s-up.log" &&
+  grep -q '^pod svp/gateway-abc, container gateway: ' "$a/12-k8s-up.log" &&
+  ok "k3d: the log tail of an infrastructure container and every container's state are kept" ||
+  fail "k3d: the log tail of an infrastructure container and every container's state are kept"
+if grep -qE 'APP-FORGED-MARKER|ENVOY-MARKER' "$a/12-k8s-up.log"; then
+  fail "k3d: a log line of namespace svp or envoy-gateway-system is left out"
+else
+  ok "k3d: a log line of namespace svp or envoy-gateway-system is left out"
+fi
+grep -qF "$(printf 'kept\t$SVP_VERIFY_OUT/logs/12-k8s-up.log\tlogs/12-k8s-up.log\t2 service log line(s) left out')" \
+  "$work/art-k3d/files.txt" && ok "k3d: files.txt counts the log lines of other namespaces" ||
+  fail "k3d: files.txt counts the log lines of other namespaces"
+has k3d "the log tail of an infrastructure container of a failed target is printed" '    [svp-data] INFRA-TAIL-MARKER'
+lacks k3d "a log line of namespace svp of a failed target is not printed" APP-FORGED-MARKER
+lacks k3d "a log line of Envoy of a failed target is not printed" ENVOY-MARKER
+lacks k3d "a log tail with a secret is not printed" SECRET-TAIL-MARKER
 lacks k3d "a failed target's service log lines are not printed" 'USER-ID-MARKER'
 no_leak k3d
 has k3d "the end of a failed target's clean output is printed" KEDA-TAIL-MARKER
@@ -464,6 +624,212 @@ expect_deadline cancelled "false lcp=cancelled" "$(sample cancelled "$(row 01 up
 expect_deadline no-results "false " "$(sample no-results)"
 grep -q '^runner enough: within_deadline=false ' "$work/sample-deadline.log" &&
   ok "sample: the runner enough line names within_deadline" || fail "sample: the runner enough line names within_deadline"
+# Targets verify-run.sh skipped after a failed build target, or left out by SVP_VERIFY_TARGETS, did not run out of time.
+expect_deadline infrastructure "true " "$(sample infrastructure "$(row 01 up fail 2 100 160 60 '')" \
+  "$(row 02 smoke skipped '' 160 160 0 'infrastructure step failed')")"
+expect_deadline unchosen "true " "$(sample unchosen "$(row 01 up ok 0 100 160 60 '')" \
+  "$(row 02 smoke skipped '' 160 160 0 'not in targets')")"
+
+# --- verify-sample.sh sample: one line of docker.tsv. Three media-worker pods Running (A, B, C); ffmpeg runs twice in
+# A (cgroupfs path), once in B (systemd path), once on the runner itself (no pod), once in another pod D, and one pid
+# has gone by the time its cgroup is read: 2 transcoding. memory.stat of both nodes, summed in MiB, exact keys only.
+ss=$work/sample2-out
+sb2=$work/sample2-bin
+sp=$work/sample2-proc
+mkdir -p "$ss" "$sb2"
+uid_a=0a1b2c3d-0000-4000-8000-00000000000a
+uid_b=0a1b2c3d-0000-4000-8000-00000000000b
+uid_c=0a1b2c3d-0000-4000-8000-00000000000c
+uid_d=0a1b2c3d-0000-4000-8000-00000000000d
+cgroup_of() { mkdir -p "$sp/$1" && printf '0::%s\n' "$2" >"$sp/$1/cgroup"; }
+cgroup_of 101 "/system.slice/docker-$(printf 'e%.0s' {1..64}).scope/kubepods/burstable/pod$uid_a/$(printf 'c%.0s' {1..64})"
+cgroup_of 102 "/system.slice/docker-$(printf 'e%.0s' {1..64}).scope/kubepods/burstable/pod$uid_a/$(printf 'd%.0s' {1..64})"
+cgroup_of 103 "/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod${uid_b//-/_}.slice/cri-containerd-abc.scope"
+cgroup_of 104 /user.slice/user-1001.slice/session-1.scope
+cgroup_of 105 "/system.slice/docker-$(printf 'e%.0s' {1..64}).scope/kubepods/besteffort/pod$uid_d/$(printf 'f%.0s' {1..64})"
+cat >"$sb2/pgrep" <<'EOF'
+#!/bin/sh
+[ "$*" = "-x ffmpeg" ] || exit 2
+printf '101\n102\n103\n104\n105\n106\n'
+EOF
+cat >"$sb2/docker" <<'EOF'
+#!/bin/sh
+case $1 in
+  stats) printf 'k3d-svp-server-0\t150.00%%\t3GiB / 15.6GiB\nk3d-svp-agent-0\t120.00%%\t2.5GiB / 15.6GiB\nk3d-svp-registry\t0.00%%\t20MiB / 15.6GiB\n' ;;
+  inspect) echo "running 0 2026-10-25T00:00:00Z" ;;
+  exec)
+    [ "$2" = "${FAKE_EXEC_FAIL:-}" ] && exit 1
+    case $2 in
+      k3d-svp-server-0) printf 'anon 1073741824\nanon_thp 999\nactive_file 524288000\ninactive_file 999\nkernel 104857600\n' ;;
+      k3d-svp-agent-0) printf 'anon 536870912\nactive_file 209715200\nkernel_stack 999\nkernel 52428800\n' ;;
+    esac ;;
+  *) exit 1 ;;
+esac
+EOF
+cat >"$sb2/kubectl" <<'EOF'
+#!/bin/sh
+[ "${FAKE_KUBECTL_FAIL:-}" = 1 ] && exit 1
+case "$*" in
+  *" get pods -l app.kubernetes.io/name=media-worker,app.kubernetes.io/component=server --field-selector=status.phase=Running -o jsonpath="*)
+    printf '%s\n' "$FAKE_UIDS" ;;
+  *" get nodes --no-headers") printf 'k3d-svp-server-0   Ready   control-plane   1h   v1.36.0+k3s1\nk3d-svp-agent-0   Ready,SchedulingDisabled   <none>   1h   v1.36.0+k3s1\n' ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod 755 "$sb2/pgrep" "$sb2/docker" "$sb2/kubectl"
+# take_sample [VAR=VALUE...]: verify-sample.sh sample; prints the new line of docker.tsv without its time.
+take_sample() {
+  rm -rf "$ss/samples"
+  env "${job[@]}" PATH="$sb2:$PATH" SVP_VERIFY_OUT="$ss" SVP_VERIFY_PROC="$sp" \
+    FAKE_UIDS="$(printf '%s\n' "$uid_a" "$uid_b" "$uid_c")" "$@" "$here/verify-sample.sh" sample >"$work/sample2.log" 2>&1 ||
+    fail "sample: verify-sample.sh sample exits 0"
+  cut -f 2- "$ss/samples/docker.tsv"
+}
+row_tail() { local IFS=$'\t'; printf '%s' "$*"; }
+same "sample: 3 Running workers, 2 transcoding (ffmpeg in their pod), memory.stat of both nodes summed" \
+  "$(row_tail 5652 0 150.00 120.00 3 0 running 0 2026-10-25T00:00:00Z 2 1536 700 150)" "$(take_sample)"
+same "sample: no worker Running counts 0 transcoding" \
+  "$(row_tail 5652 0 150.00 120.00 0 0 running 0 2026-10-25T00:00:00Z 0 1536 700 150)" "$(take_sample FAKE_UIDS=)"
+same "sample: the API not answering gives - for the workers; one node's memory.stat unread gives - for all three" \
+  "$(row_tail 5652 0 150.00 120.00 - - running 0 2026-10-25T00:00:00Z - - - -)" \
+  "$(take_sample FAKE_KUBECTL_FAIL=1 FAKE_EXEC_FAIL=k3d-svp-agent-0)"
+
+# --- verify-sample.sh peak START END over a fixture of docker.tsv (time, MEM USAGE k3d, compose, CPU server, agent,
+# Running workers, nodes not Ready, server state, RestartCount, StartedAt, workers transcoding, anon, active_file,
+# kernel). 5 samples with 2 Running workers but 1 transcoding and the highest MEM USAGE (run 5's window) must not count;
+# then 8 with 2 transcoding (3 windows of 6), one the API missed, 5 more (no window), 1 worker; one sample before START
+# and one after END.
+po=$work/peak-out
+mkdir -p "$po/samples"
+peak_row() { local IFS=$'\t'; printf '%s\t%s\t0\t100.00\t100.00\t%s\t0\trunning\t0\t2026-10-25T00:00:00Z\t%s\t3000\t%s\t200\n' "$@"; }
+{
+  peak_row 90 99999 2 2 1000
+  for t in 100 110 120 130 140; do peak_row "$t" $((9100 + t)) 2 1 1000; done
+  peak_row 150 8000 2 2 -
+  i=0
+  for m in 8800 8820 8840 8860 8900 8950 9100; do
+    peak_row $((160 + i * 10)) "$m" 2 2 $((1000 + i * 100))
+    i=$((i + 1))
+  done
+  peak_row 230 8500 2 - 1000
+  for t in 240 250 260 270 280; do peak_row "$t" 8500 2 2 1000; done
+  peak_row 290 7000 1 0 1000
+  peak_row 300 99999 2 2 1000
+} >"$po/samples/docker.tsv"
+env "${job[@]}" SVP_VERIFY_OUT="$po" "$here/verify-sample.sh" peak 100 295 >"$work/peak.log" 2>&1 ||
+  fail "peak: verify-sample.sh peak exits 0"
+same "peak: only samples with 2 workers transcoding count, 6 in a row; the median minus active_file over the same 6" \
+  "20 19 13 8 1970-01-01T00:02:30Z 1970-01-01T00:03:40Z 3 8880 1970-01-01T00:02:50Z 7530 9240 9100 true" \
+  "$(jq -r '[.samples, .samples_with_2_running, .samples_with_2_transcoding, .longest_run_with_2_transcoding.samples,
+    .longest_run_with_2_transcoding.from, .longest_run_with_2_transcoding.to, .windows_of_6_with_2_transcoding,
+    .peak_median_of_6_mib, .peak_window_from, .peak_median_of_6_minus_active_file_mib, .highest_sample_mib,
+    .highest_sample_with_2_transcoding_mib, .peak_within_8_7_gib] | map(tostring) | join(" ")' "$po/ram-peak.json")"
+has peak "ram-peak.txt is printed" "RAM peak during drill-k8s-keda: median of 6 with 2 workers transcoding 8880 MiB (3 window(s), longest run 8 samples)"
+printf '%s\n' "$(peak_row 100 8000 2 1 1000)" >"$po/samples/docker.tsv"
+env "${job[@]}" SVP_VERIFY_OUT="$po" "$here/verify-sample.sh" peak 100 295 >"$work/peak-none.log" 2>&1 ||
+  fail "peak: verify-sample.sh peak exits 0 without a window"
+same "peak: no 6 samples in a row with 2 transcoding gives no peak" "0 null null null" \
+  "$(jq -r '[.windows_of_6_with_2_transcoding, .peak_median_of_6_mib, .peak_window_from, .peak_within_8_7_gib]
+    | map(tostring) | join(" ")' "$po/ram-peak.json")"
+if env "${job[@]}" SVP_VERIFY_OUT="$po" "$here/verify-sample.sh" peak 100 >/dev/null 2>&1; then
+  fail "peak: a missing END is refused"
+else
+  ok "peak: a missing END is refused"
+fi
+
+# --- verify-run.sh: the build target's failure skips the rest at once, SVP_VERIFY_TARGETS picks targets. It runs from
+# a copy in a throwaway tree with a fake .env, a fake make first on PATH (it logs its arguments and fails for the
+# targets FAKE_MAKE_FAIL names) and the fake kubectl above (no cluster answers), so no target, no cluster and no real
+# .env is ever reached. verify-run.sh needs GNU timeout (and GNU date for its time lines: gdate on macOS).
+vr=$work/verify-run
+vb=$work/verify-run-bin
+mkdir -p "$vr/deploy/ci" "$vr/deploy/observability/glitchtip" "$vb"
+cp "$here/verify-run.sh" "$here/verify-mask.sh" "$here/platform.sh" "$vr/deploy/ci/"
+cp "$here/../observability/glitchtip/dotenv.sh" "$vr/deploy/observability/glitchtip/"
+cp "$repo/.env" "$vr/.env"
+cat >"$vb/make" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_MAKE_LOG"
+case " ${FAKE_MAKE_FAIL:-} " in *" $1 "*) exit 2 ;; esac
+EOF
+printf '#!/bin/sh\ncommand -v gdate >/dev/null 2>&1 && exec gdate "$@"\nexec /bin/date "$@"\n' >"$vb/date"
+chmod 755 "$vb/make" "$vb/date"
+# run_verify NAME SCENARIO [VAR=VALUE...]: the copy of verify-run.sh for SCENARIO; its output in $work/run-NAME.log,
+# the make calls in $work/run-NAME.make, its results in $work/run-NAME.out; prints its exit status. It runs as on a
+# machine, without the variables of any CI: a runner sets CI=true, which alone makes platform.sh refuse to run.
+run_verify() {
+  local name=$1 scenario=$2 rc=0
+  shift 2
+  : >"$work/run-$name.make"
+  env -u GITHUB_ACTIONS -u CI -u GITLAB_CI -u JENKINS_URL -u TF_BUILD PATH="$vb:$work/bin:$PATH" \
+    SVP_VERIFY_OUT="$work/run-$name.out" \
+    SVP_VERIFY_SECRETS="$work/run-$name.secrets" FAKE_MAKE_LOG="$work/run-$name.make" SVP_VERIFY_TARGETS= "$@" \
+    "$vr/deploy/ci/verify-run.sh" "$scenario" >"$work/run-$name.log" 2>&1 </dev/null || rc=$?
+  echo "$rc"
+}
+# results NAME: "id name status note" of each target of run NAME, one per line.
+results() { awk -F '\t' 'NR > 1 { print $1, $2, $3, $8 }' "$work/run-$1.out/results.tsv"; }
+compose_names="up smoke drill-obs-threats load-local fallback-alert-under-load web-lighthouse-1 web-lighthouse-2
+web-lighthouse-3 lcp drill-alert-to-sentry"
+k3d_names="k8s-up k8s-smoke ram-rest-start drill-k8s-threats drill-k8s-pdb drill-k8s-canary k8s-web-sourcemaps
+k8s-web-e2e drill-k8s-web-obs drill-k8s-keda ram-peak drill-k8s-backup drill-k8s-backup-pitr ram-rest-end"
+# want_rows NAMES STATUS_OF_FIRST NOTE_OF_REST [ID NAME STATUS NOTE]...: the rows of a run: the first of NAMES with
+# STATUS_OF_FIRST and no note, every other skipped with NOTE_OF_REST, except the rows given whole after it.
+want_rows() {
+  local i=0 name line names=$1 first=$2 rest=$3
+  shift 3
+  for name in $names; do
+    i=$((i + 1))
+    line=$(printf '%02d %s' "$i" "$name")
+    if [ "$i" = 1 ]; then line="$line $first "; else line="$line skipped $rest"; fi
+    for over in "$@"; do [ "${over%% * * *}" = "$(printf '%02d' "$i")" ] && line=$over; done
+    echo "$line"
+  done
+}
+if timeout --version 2>/dev/null | grep -q GNU; then
+  rc=$(run_verify infra compose-obs FAKE_MAKE_FAIL=up)
+  same "verify-run: a failed build target makes the run fail" 1 "$rc"
+  same "verify-run: after a failed build target no other target runs" "up OBS=lgtm" "$(cat "$work/run-infra.make")"
+  same "verify-run: every target after a failed build target is skipped for it" \
+    "$(want_rows "$compose_names" fail 'infrastructure step failed')" "$(results infra)"
+
+  rc=$(run_verify one dev-k3d SVP_VERIFY_TARGETS=drill-k8s-threats)
+  same "verify-run: a run of the chosen targets that pass passes" 0 "$rc"
+  same "verify-run: only the build target and the chosen one run" "$(printf 'k8s-up\ndrill-k8s-threats')" \
+    "$(cat "$work/run-one.make")"
+  same "verify-run: the targets left out keep their ids and are skipped as not in targets" \
+    "$(want_rows "$k3d_names" ok 'not in targets' '04 drill-k8s-threats ok ')" "$(results one)"
+
+  rc=$(run_verify one-fails dev-k3d 'SVP_VERIFY_TARGETS=drill-k8s-pdb  drill-k8s-threats' FAKE_MAKE_FAIL=drill-k8s-pdb)
+  same "verify-run: a chosen target that fails makes the run fail" 1 "$rc"
+  same "verify-run: chosen targets run in the scenario's order, whatever the order given" \
+    "$(printf 'k8s-up\ndrill-k8s-threats\ndrill-k8s-pdb')" "$(cat "$work/run-one-fails.make")"
+
+  rc=$(run_verify peak dev-k3d SVP_VERIFY_TARGETS=ram-peak)
+  same "verify-run: ram-peak without drill-k8s-keda makes the run fail" 1 "$rc"
+  same "verify-run: ram-peak without drill-k8s-keda is skipped for it" \
+    "$(want_rows "$k3d_names" ok 'not in targets' '11 ram-peak skipped drill-k8s-keda did not run')" "$(results peak)"
+
+  rc=$(run_verify unknown dev-k3d 'SVP_VERIFY_TARGETS=drill-k8s-threats drill-k8s-thraets')
+  same "verify-run: a name that is no target of the scenario stops it" 2 "$rc"
+  [ ! -s "$work/run-unknown.make" ] && [ ! -e "$work/run-unknown.out/results.tsv" ] &&
+    ok "verify-run: an unknown name stops it before any target or results.tsv" ||
+    fail "verify-run: an unknown name stops it before any target or results.tsv"
+  # The error names the targets of the scenario: the list that the scenario's own steps make.
+  has run-unknown "an unknown name is named, with the scenario's targets" \
+    "not a target of dev-k3d: drill-k8s-thraets (its targets: $(printf '%s' "$k3d_names" | tr '\n' ' '))"
+  rc=$(run_verify unknown-compose compose-obs SVP_VERIFY_TARGETS=k8s-smoke)
+  same "verify-run: a target of the other scenario is unknown" 2 "$rc"
+  has run-unknown-compose "the compose-obs targets are listed" \
+    "(its targets: $(printf '%s' "$compose_names" | tr '\n' ' '))"
+
+  rc=$(run_verify bad dev-k3d $'SVP_VERIFY_TARGETS=k8s-smoke\n::warning::BAD-TARGET-MARKER')
+  same "verify-run: a target list with another character stops it" 2 "$rc"
+  [ ! -s "$work/run-bad.make" ] && lacks run-bad "the rejected list is not printed back" BAD-TARGET-MARKER ||
+    fail "verify-run: a rejected list starts no target"
+else
+  echo "skip  verify-run: no GNU timeout on PATH (Linux, or coreutils on macOS)"
+fi
 
 # --- changed-services.sh: a change of a verification script builds no image; one of verify-release.sh, which the image
 # jobs run, still builds all seven. GIT_DIR is set for the throwaway repository, so git can never reach another one.

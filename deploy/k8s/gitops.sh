@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# The GitOps path of docs/adr/0014-kubernetes-local-stage4.md, section 12: a new cluster svp on which Argo CD builds
+# The GitOps path: a new cluster svp on which Argo CD builds
 # everything from GitHub. This script installs only what git cannot hold or what must exist before Argo CD:
-#   1. the release images, before anything is created (docs/adr/0015-cicd-devsecops-stage5.md, sections 7 and 9):
+#   1. the release images, before anything is created:
 #      image.repository and image.digest of the seven values files at the revision Argo CD will follow, which the
 #      promote pull request writes; each must be a release of ghcr.io/anhnvcoder/short-video-platform/<service> that
 #      GHCR serves to an anonymous pull (the nodes pull without credentials), signed by images.yml on main, with a
@@ -171,7 +171,7 @@ hc upgrade --install argocd argo-cd --repo https://argoproj.github.io/argo-helm 
   >/dev/null || fail "install Argo CD"
 ok "Argo CD installed"
 
-# The repository Secret (ADR-0014 section 8): the key goes from its file into a shell variable and on stdin to kubectl,
+# The repository Secret: the key goes from its file into a shell variable and on stdin to kubectl,
 # never onto a command line, so it cannot show in a process list or a log. GitHub's host keys are in ConfigMap
 # argocd-ssh-known-hosts-cm, which the chart ships.
 deploy_key=$(<"$key_file")

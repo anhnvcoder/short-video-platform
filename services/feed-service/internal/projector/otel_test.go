@@ -69,8 +69,9 @@ func readyRecordWithMeta(t *testing.T, video, author string, meta *eventv1.Event
 	})}
 }
 
-// A fan-out records one sample, the time from occurred_at to its commit, in the buckets of
-// ADR-0011 (0.1 s to 60 s, so the p95 freshness target is readable); a redelivery and a forged second video.ready of the same video record none.
+// A fan-out records one sample, the time from occurred_at to its commit, in the freshness buckets
+// (0.1 s to 60 s, with a bound at 10 s so the p95 freshness target is readable); a redelivery and
+// a forged second video.ready of the same video record none.
 func TestFreshnessRecordsFirstFanOutOnly(t *testing.T) {
 	needDB(t)
 	p, reader := meteredProjector(t)
@@ -90,7 +91,7 @@ func TestFreshnessRecordsFirstFanOutOnly(t *testing.T) {
 		t.Errorf("freshness = %.3f s, want between %.3f and %.3f", got.Sum, age.Seconds(), (age + took).Seconds())
 	}
 	if !slices.Equal(got.Bounds, []float64{0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60}) {
-		t.Errorf("bucket bounds = %v, want the F buckets of ADR-0011", got.Bounds)
+		t.Errorf("bucket bounds = %v, want the freshness buckets 0.1 s to 60 s", got.Bounds)
 	}
 
 	// The replay of drill-duplicates-feed, then a forged video.ready of the stored video.

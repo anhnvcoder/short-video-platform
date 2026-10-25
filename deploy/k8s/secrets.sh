@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Creates or updates the cluster's Secrets from .env (docs/adr/0014-kubernetes-local-stage4.md, section 8): .env stays
+# Creates or updates the cluster's Secrets from .env: .env stays
 # the one source of local secrets for compose and the cluster, and no Secret is ever in git. Read with the strict rule
 # of deploy/observability/glitchtip/dotenv.sh, the one compose agrees with.
 #
@@ -84,8 +84,8 @@ manifests() {
     SVP_VIDEO_S3_SECRET_KEY="$SVP_VIDEO_S3_SECRET_KEY" \
     SVP_MEDIA_WORKER_S3_SECRET_KEY="$SVP_MEDIA_WORKER_S3_SECRET_KEY" \
     SVP_PG_BACKUP_S3_SECRET_KEY="$SVP_PG_BACKUP_S3_SECRET_KEY"
-  # The login of the backups of Postgres svp-pg to bucket pg-backups (ObjectStore svp-pg-backup of chart svp-data,
-  # docs/adr/0020-reliability-stage6.md section 5; threat model BAK-1), the key names the ObjectStore reads. Only the
+  # The login of the backups of Postgres svp-pg to bucket pg-backups (ObjectStore svp-pg-backup of chart svp-data;
+  # threat model BAK-1), the key names the ObjectStore reads. Only the
   # Barman Cloud plugin's sidecar in the Postgres pods reads it, through the API server; no service gets it.
   secret svp-data pg-backup-s3 Opaque \
     ACCESS_KEY_ID=svp-pg-backup ACCESS_SECRET_KEY="$SVP_PG_BACKUP_S3_SECRET_KEY"
@@ -110,13 +110,13 @@ manifests() {
 # checked (that is IN-3, stage 6). The passwords are hex, so nothing needs URL-encoding.
 pg_url() { printf 'postgres://svp_%s_%s:%s@svp-pg-rw.svp-data:5432/svp_%s?sslmode=require' "$1" "$2" "$3" "$1"; }
 
-# The services' Secrets in svp, one per pod, each with only what that pod uses (ADR-0014 section 8), so one compromised
+# The services' Secrets in svp, one per pod, each with only what that pod uses, so one compromised
 # pod exposes no more than its own credentials. <service>-env goes to the service's container as environment variables;
 # <service>-migrate-env holds the migrator role, for the migrate Job only. The JWT signing key is in user-service-env
 # alone; the gateway gets the public keys (threat model JWT-10). web-env holds the web client's Server Action key alone,
 # set at run time so that the key in use is never in the public image: its other settings are no secret
 # (deploy/k8s/values/services/web.yaml), its DSN comes from Secret sentry, and Valkey, where it keeps sessions, has no
-# password (docs/adr/0019-web-k3d-supply-chain-observability.md, section 5). The Secret must exist in any case: chart
+# password. The Secret must exist in any case: chart
 # svp-service reads <release>-env with envFrom, not optional.
 svp_manifests() {
   secret svp user-service-env Opaque \
@@ -157,7 +157,7 @@ keda_manifests() {
 }
 
 # Alertmanager's routing, the one deploy/observability/alertmanager/entrypoint.sh writes for compose (keep the two in
-# step; ADR-0011 section 8): alerts grouped by name and severity, severity="page" to Telegram when .env has both a bot
+# step): alerts grouped by name and severity, severity="page" to Telegram when .env has both a bot
 # token and an integer chat id, everything else (and every alert, without Telegram) only listed in the UI and API.
 # severity="ticket" always stays in the UI: the 1d/3d SLO windows keep firing for days after a drill. The bot token is
 # never in this config: Alertmanager reads it from the file Secret alertmanager-telegram is mounted as
@@ -200,7 +200,7 @@ EOF
   fi
 }
 
-# The Secrets of svp-obs (ADR-0014 section 8):
+# The Secrets of svp-obs:
 # - grafana-admin, Grafana's admin login (kube-prometheus-stack, grafana.admin.existingSecret): Grafana allows no
 #   anonymous user in the cluster (threat model OPS-2), so this is the only way in. Grafana sets the admin password
 #   from it when its database is created, which is at every start since it keeps no volume.

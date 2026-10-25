@@ -2,7 +2,7 @@ import { useSyncExternalStore } from "react";
 import { completeUpload, initUpload, UploadApiError, type UploadForm, type Video } from "./api";
 import { sendForm } from "./send-form";
 
-// The uploads of this browser tab (docs/adr/0018-web-profiles-public-video-upload.md, section 8). They run here rather
+// The uploads of this browser tab. They run here rather
 // than in the upload page, so an upload goes on while the user moves to another page of the app, and any page can show
 // them (useUploads). Memory only: nothing goes to localStorage, and the upload form never leaves this module.
 

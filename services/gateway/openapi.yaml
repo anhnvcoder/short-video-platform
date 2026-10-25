@@ -1,5 +1,5 @@
 # REST API of the gateway, written by hand: generating it from code would need an annotation
-# library or a framework (docs/adr/0007-go-monorepo-toolchain-and-stage1-scope.md, section 8).
+# library or a framework.
 # Keep it in step with services/gateway/internal/api.
 openapi: 3.1.0
 info:
@@ -18,14 +18,12 @@ info:
     not valid UTF-8.
 
     Every route but `/healthz` and `/readyz` is rate limited, to slow down password guessing, mass
-    sign-ups and junk writes (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md,
-    section 2): `/auth/register` and `/auth/login` by the client's address, `/auth/login` also by
-    the address and email together, `/auth/refresh` and `/auth/logout` by the client's address in
-    one shared bucket of 60 a minute with bursts of 30 (docs/adr/0016-web-client.md, section 4),
-    `/public/videos/{video_id}` by the client's address, 120 a minute with bursts of 60
-    (docs/adr/0018-web-profiles-public-video-upload.md, section 6), the other routes by the
-    authenticated user. Every call counts, successful or not. Over the limit the answer is a 429
-    with code `RATE_LIMITED` and a `Retry-After` header in seconds.
+    sign-ups and junk writes: `/auth/register` and `/auth/login` by the client's address,
+    `/auth/login` also by the address and email together, `/auth/refresh` and `/auth/logout` by
+    the client's address in one shared bucket of 60 a minute with bursts of 30,
+    `/public/videos/{video_id}` by the client's address, 120 a minute with bursts of 60, the other
+    routes by the authenticated user. Every call counts, successful or not. Over the limit the
+    answer is a 429 with code `RATE_LIMITED` and a `Retry-After` header in seconds.
 
     Items of the feeds and of the video lists, and the videos of `GET /videos/{video_id}` and
     `GET /public/videos/{video_id}`, carry an optional `author` and `stats`: the gateway reads

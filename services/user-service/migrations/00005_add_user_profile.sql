@@ -1,8 +1,7 @@
 -- +goose Up
--- Public profile: a handle that never changes and a display name (docs/adr/0018-web-profiles-public-video-upload.md,
--- sections 1 and 2). handle is stored normalized (lower case), so its unique constraint compares case-insensitively, as
--- users_email_key does. The constraints are named because the service maps users_handle_key to HANDLE_ALREADY_TAKEN;
--- the two CHECKs are a second layer under the service's own validation.
+-- Public profile: a handle that never changes and a display name. handle is stored normalized (lower case), so its
+-- unique constraint compares case-insensitively, as users_email_key does. The constraints are named because the service
+-- maps users_handle_key to HANDLE_ALREADY_TAKEN; the two CHECKs are a second layer under the service's own validation.
 --
 -- Existing users get the handle the service generates when a client sends none: 'u_' and the last 12 hex digits of the
 -- id, which are random bits of the UUIDv7, not its timestamp. Their display name defaults to that handle. goose runs this

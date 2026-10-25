@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Static check of the manifests written for the cloud cluster (docs/adr/0020-reliability-stage6.md, section 8), run by
+# Static check of the manifests written for the cloud cluster, run by
 # `make cloud-check`. Nothing here reaches a cluster or reads .env; it needs helm, jq, git, docker and network access
 # (chart repositories, GitHub).
 #
@@ -35,7 +35,7 @@ k8s_schemas_commit=f7d855e49c34b039c9ef2196444910275e31e09e
 # The snapshot CRDs: v8.7.0 was the newest release at least 3 days old when this was written. Stage 7 aligns it with the
 # EKS snapshot controller add-on.
 snapshotter_tag=v8.7.0
-# Namespaces an experiment may target: those of the experiments in docs/adr/0020-reliability-stage6.md, section 7.
+# Namespaces an experiment may target: svp (experiments a and b) and svp-data (experiment c, Redpanda).
 chaos_namespaces='["svp","svp-data"]'
 
 fail() {

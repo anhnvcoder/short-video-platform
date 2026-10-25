@@ -2,14 +2,13 @@
 # Creates the buckets, the anonymous read policy of `media` and one user per service on the
 # compose MinIO. Each service gets its own user and policy limited to the prefixes it needs, and never the root
 # credential, so a compromised service cannot read or write the other's objects, and `media` allows anonymous
-# GetObject only, never listing (docs/adr/0008-async-upload-pipeline-stage2a.md, section 6; threat model UP-4,
-# UP-5, UP-6, FF-4). Run by the one-shot minio-init container with the root password and the two
-# service secret keys in its environment. Idempotent: running it again keeps the buckets and their
-# objects, and resets the users' secret keys and policies to what this script and the .env say.
+# GetObject only, never listing (threat model UP-4, UP-5, UP-6, FF-4). Run by the one-shot minio-init container
+# with the root password and the two service secret keys in its environment. Idempotent: running it again keeps the
+# buckets and their objects, and resets the users' secret keys and policies to what this script and the .env say.
 #
 # The k3d cluster's minio-init Job also has SVP_PG_BACKUP_S3_SECRET_KEY: then the bucket pg-backups
 # and its user svp-pg-backup are made too, for the backups of Postgres svp-pg
-# (docs/adr/0020-reliability-stage6.md, section 5; threat model BAK-1). Compose never sets it, so its
+# (threat model BAK-1). Compose never sets it, so its
 # MinIO gets neither.
 set -eu
 

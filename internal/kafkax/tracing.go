@@ -59,7 +59,7 @@ func attemptContext(ctx context.Context, timeout time.Duration) (context.Context
 // Permanent error returned after the attempt's deadline still goes to the dead-letter topic at
 // once, and nil returned as the consumer stops still commits. The span gets the error's type and
 // safe code only, as the error tracker does: a handler's error can wrap a Postgres message quoting
-// a parameter, or a value of the record (docs/adr/0011-observability-stage3.md, section 7).
+// a parameter, or a value of the record.
 func endAttempt(span trace.Span, err error) error {
 	if err != nil {
 		kind, code := sentryx.DescribeError(err)

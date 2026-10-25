@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Measures feed freshness (architecture §2: p95 under 10 s from video.ready to the last timeline
-# row) the way ADR-0009 section 10 decides:
+# row):
 #   1. registers a new author (no older videos, so the fake follows backfill nothing) and has
 #      tools/fakefollows produce FOLLOWERS user.followed events for it, impersonating user-service;
 #      waits until svp_feed holds all FOLLOWERS follows of the author (load time and follows/s);
@@ -17,10 +17,10 @@
 #      the feed-service group has no lag (every follow and unfollow produced so far is applied),
 #      then checks that the author has no follow and its videos no timeline row in svp_feed. When
 #      that cleanup fails, the ids file is kept and the command to finish it is printed.
-# A p95 over 10 s is reported, not failed: at 200,000 followers it is a data point (ADR-0009
-# section 7, "Xem lại khi"). The script fails when a measurement cannot be taken. N is at most 10:
-# every video has the one followed author, whose upload limit is a burst of 10 POST /videos
-# (ADR-0010, section 2).
+# A p95 over 10 s is reported, not failed: at 200,000 followers it is a data point, and a p95 over
+# 10 s there is the signal to split the fan-out into several transactions or to fan out large
+# accounts on read. The script fails when a measurement cannot be taken. N is at most 10:
+# every video has the one followed author, whose upload limit is a burst of 10 POST /videos.
 #
 # Reads svp_feed and svp_video with SELECT only; produces only to the stack's Redpanda.
 #
@@ -284,7 +284,7 @@ echo "      FOLLOWERS=$followers N=$runs  p50 ${p50} s  p95 ${p95} s  max ${max}
 if awk -v p="$p95" -v s="$nfr_seconds" 'BEGIN { exit !(p < s) }'; then
   ok "p95 ${p95} s under the freshness NFR of ${nfr_seconds} s"
 else
-  echo "NOTE  p95 ${p95} s over the freshness NFR of ${nfr_seconds} s (ADR-0009 section 7: revisit when this holds at 200,000)"
+  echo "NOTE  p95 ${p95} s over the freshness NFR of ${nfr_seconds} s (at 200,000 followers: split the fan-out into several transactions or fan out large accounts on read)"
 fi
 peak_usage "$work/stats-runs" "during the runs"
 

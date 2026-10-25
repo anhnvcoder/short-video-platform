@@ -69,3 +69,11 @@ kinh doanh, nên chọn B.
   - nhiều thứ phải deploy và theo dõi; debug một request cần tracing (giai đoạn 3).
 - Xem lại khi: hai service luôn phải sửa cùng nhau, hoặc gọi nhau đồng bộ ở hầu hết mọi request. Đó là dấu hiệu ranh giới
   đặt sai, nên gộp lại.
+
+## Hiện thực ở
+
+- Mỗi service một thư mục `services/<tên>/` (gateway, user-service, video-service, engagement-service, feed-service,
+  media-worker); database và role riêng của từng service tạo ở `deploy/postgres/bootstrap.sql`, `deploy/postgres/bootstrap.sh`
+  (cluster k3d dùng cùng file qua liên kết `deploy/helm/svp-data/files/bootstrap.sql`).
+- Không khoá ngoại xuyên service: `services/video-service/migrations/00001_create_videos.sql` (`author_id`),
+  `services/feed-service/migrations/00001_create_feed.sql` (bản sao follow và video dựng từ event).

@@ -9,13 +9,12 @@
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 
-# k3d's own helper images, pinned by digest (multi-arch index): k3d otherwise picks them by its version tag
-# (docs/adr/0014-kubernetes-local-stage4.md, section 1).
+# k3d's own helper images, pinned by digest (multi-arch index): k3d otherwise picks them by its version tag.
 # renovate: datasource=docker depName=ghcr.io/k3d-io/k3d-proxy
 export K3D_IMAGE_LOADBALANCER=ghcr.io/k3d-io/k3d-proxy:5.9.0@sha256:7be40abfeb6ac9a81d0d4157a7cbf3aacc68a64a1780ca2efb160f1aea915177
 # renovate: datasource=docker depName=ghcr.io/k3d-io/k3d-tools
 export K3D_IMAGE_TOOLS=ghcr.io/k3d-io/k3d-tools:5.9.0@sha256:c57abce697e66feeb826922718738fe186b47779312d49d4e51e6fb9b8a6f34d
-# The local registry (ADR-0014 section 6): k3d prefixes the name, so the container is k3d-svp-registry; inside it listens on
+# The local registry: k3d prefixes the name, so the container is k3d-svp-registry; inside it listens on
 # 5000, published on 127.0.0.1:5111 only.
 # renovate: datasource=docker depName=docker.io/library/registry
 registry_image=docker.io/library/registry:3.1.2@sha256:ddf754342cfc8acc51a56d5d0ab6af06826461864460636d8bd5c546dab2a7b8
@@ -53,8 +52,8 @@ wait_until() {
   done
 }
 
-# port_free PORT: true when nothing accepts connections on 127.0.0.1:PORT. The lab's ports are fixed (ADR-0014 sections 2
-# and 6), so a taken port is an error to report, never a reason to pick another.
+# port_free PORT: true when nothing accepts connections on 127.0.0.1:PORT. The lab's ports are fixed, so a taken port is
+# an error to report, never a reason to pick another.
 port_free() { ! nc -z -w 1 127.0.0.1 "$1" >/dev/null 2>&1; }
 
 # ensure_registry: creates the registry k3d-svp-registry on 127.0.0.1:5111, starts it when it exists but is stopped,
@@ -102,7 +101,7 @@ ensure_cluster() {
   [ -n "$want" ] && [ "$psa_versions" = "$want $want $want " ] ||
     fail "enforce-, audit- and warn-version of deploy/k8s/pod-security-admission.yaml (${psa_versions% }) must all equal podSecurityVersion of deploy/helm/svp-cluster/values.yaml ('$want')$recreate"
   if [ -n "$exists" ]; then
-    # Pod Security "restricted" by default (ADR-0014 section 3) exists only in a cluster created with it: the argument and
+    # Pod Security "restricted" by default exists only in a cluster created with it: the argument and
     # mount k3d.yaml gives the server node at creation. A cluster made before them enforces nothing in namespaces
     # without PSA labels (default, kube-public, kube-node-lease) and is not changed in place.
     node=$(docker_ inspect --format '{{join .Config.Cmd " "}}' k3d-svp-server-0) &&
@@ -276,7 +275,7 @@ argocd_root_app() {
 # carries the policy's match on namespace svp (Kyverno ANDs it with the selector of its own ConfigMap). A policy with
 # its own webhookConfiguration.timeoutSeconds (svp-images and every temporary policy of the drills) gets a webhook of
 # its own, ivpol.validate.kyverno.svc-fail-finegrained-<policy> (-ignore- in Audit); the webhook is still found by what
-# it selects, not by that name, which is Kyverno's to change (docs/adr/0015-cicd-devsecops-stage5.md, section 8).
+# it selects, not by that name, which is Kyverno's to change.
 image_policy_ready() {
   local name=$1 want=${2:-} pol
   pol=$(kc get imagevalidatingpolicies.policies.kyverno.io "$name" -o json 2>/dev/null) || return 1
@@ -291,7 +290,7 @@ image_policy_ready() {
 }
 
 # workload_kind NAMESPACE NAME: rollout when NAME is an Argo Rollouts Rollout (the gateway, which chart svp-service
-# renders as one: docs/adr/0014-kubernetes-local-stage4.md, section 13), deployment otherwise. Before Argo Rollouts is
+# renders as one for its canary), deployment otherwise. Before Argo Rollouts is
 # installed the kind does not exist and the answer is deployment.
 workload_kind() {
   if kc -n "$1" get rollouts.argoproj.io "$2" >/dev/null 2>&1; then echo rollout; else echo deployment; fi
@@ -327,7 +326,7 @@ test_output() {
 }
 
 # pg_backup NAME: creates Backup svp-data/NAME of Postgres svp-pg, a base backup by the Barman Cloud plugin into the
-# archive generation the Cluster archives to (docs/adr/0020-reliability-stage6.md, section 5), owned by nothing, so
+# archive generation the Cluster archives to, owned by nothing, so
 # that deleting the Cluster leaves it, and waits up to 600 s until it is completed. CloudNativePG never retries a
 # Backup: one that fails is final, so this fails at once with the error it recorded. Prints nothing.
 pg_backup() {
@@ -384,6 +383,61 @@ restart_on_secret_change() {
   fi
   kc -n "$ns" annotate "$kind" "$workload" --overwrite "$key=$secret" >/dev/null ||
     fail "record on $kind $ns/$workload the version of Secret $name its pods read"
+}
+
+# The namespaces whose containers' logs unready_report prints, and the only ones whose log lines
+# deploy/ci/verify-collect.sh keeps in the public artifact (and job log) of a verification run: third-party servers,
+# operators and controllers, whose logs speak of their own start, configuration and peers (Redpanda's startup checks and
+# the memory error that stops it, an operator's reconcile errors). Left out: svp (the project's services, whose logs may
+# hold user data), envoy-gateway-system (the Envoy proxies' access log holds request paths and query strings, the
+# signatures of presigned uploads among them), kube-system and argocd. Within these, unready_report also skips
+# GlitchTip (its access log holds the DSN's public key, its errors the events it received) and every Postgres pod of
+# CloudNativePG (an error line quotes the statement that failed, values included).
+log_tail_namespaces="argo-rollouts cert-manager cnpg-system keda kyverno svp-data svp-obs"
+
+# unready_report NAMESPACE: after a release that did not get ready, prints to stderr each container of NAMESPACE that
+# is not ready, and each init container that has not exited 0: its state, how its last attempt ended, and, for a
+# container whose log may be shown (log_tail_namespaces), the last lines of its log, and of the attempt before when it
+# restarted. Helm says no more than "1 pods have failed", and the kubelet keeps the log of the current and the previous
+# attempt only, so a container that crashes at every start is gone with its reason once the cluster is: a verification
+# run on a machine that is thrown away right after has nothing else to show. Pods that completed (Jobs) are left out.
+# Each log line is printed as "    [NAMESPACE] LINE", the form verify-collect.sh keeps only for these namespaces. The
+# message of the last attempt is a log tail too when the container's terminationMessagePolicy is
+# FallbackToLogsOnError, so it is printed only where the log may be.
+unready_report() {
+  local ns=$1 sep=$'\x1f' pod container restarts state last show
+  kc -n "$ns" get pods -o json 2>/dev/null | jq -r --arg ns "$ns" --arg shown " $log_tail_namespaces " '
+    def st: to_entries[0] // {key: "unknown", value: {}}
+      | "\(.key)\(if .value.reason then " " + .value.reason else "" end)\(if .value.exitCode != null then " (exit \(.value.exitCode))" else "" end)";
+    .items[] | select(.status.phase != "Succeeded") | .metadata.name as $pod
+    | (($shown | contains(" " + $ns + " ")) and ((.metadata.labels // {})
+        | (has("cnpg.io/cluster") or .["app.kubernetes.io/name"] == "glitchtip") | not)) as $show
+    | ([.spec.initContainers[]?, .spec.containers[]?] | map({(.name): (.terminationMessagePolicy // "File")}) | add // {})
+      as $policy
+    | ((.status.initContainerStatuses // []) | map(select(.state.terminated.exitCode != 0)))
+      + ((.status.containerStatuses // []) | map(select(.ready | not)))
+    | .[]
+    | ($show or $policy[.name] != "FallbackToLogsOnError") as $message
+    | [$pod, .name, (.restartCount | tostring), (.state | st),
+       (if .lastState.terminated then (.lastState | st)
+          + (if $message then .lastState.terminated.message // "" | if . != "" then ": " + . else "" end else "" end)
+        else "" end),
+       (if $show then "yes" else "" end)]
+    | map(gsub("[[:cntrl:]]"; " ")) | join("\u001f")' 2>/dev/null |
+    while IFS=$sep read -r pod container restarts state last show; do
+      echo "pod $ns/$pod, container $container: $state, $restarts restart(s)${last:+; attempt before: $last}" >&2
+      if [ -z "$show" ]; then
+        echo "  its log is not printed (see log_tail_namespaces of deploy/k8s/lib.sh)" >&2
+        continue
+      fi
+      echo "  last lines of its log:" >&2
+      { kc -n "$ns" logs "$pod" -c "$container" --tail=40 </dev/null 2>&1 || true; } | sed "s/^/    [$ns] /" >&2
+      if [ "$restarts" != 0 ]; then
+        echo "  last lines of the attempt before:" >&2
+        { kc -n "$ns" logs "$pod" -c "$container" --previous --tail=40 </dev/null 2>&1 || true; } |
+          sed "s/^/    [$ns] /" >&2
+      fi
+    done
 }
 
 # The seven services whose images the cluster runs, in the order they are built: web last, since the six Go images
@@ -492,7 +546,7 @@ build_image() {
 
 # build_dev_images: builds the seven images from the working tree, pushes each to the registry as
 # 127.0.0.1:5111/svp/<service>:dev-<first 12 hex digits of its image ID>, and sets dev_tag_<service with _ for -> to
-# that tag (ADR-0014 section 6). The build cache gives the same image ID for the same inputs, so a run with no code
+# that tag. The build cache gives the same image ID for the same inputs, so a run with no code
 # change yields the same tags, the pod templates do not change, and no new ReplicaSet (later: no canary) starts. Run
 # after ensure_registry.
 build_dev_images() {
@@ -523,7 +577,7 @@ image_paths() {
   fi
 }
 
-# Release images (docs/adr/0015-cicd-devsecops-stage5.md, sections 5 and 9): built, scanned and signed by CI only,
+# Release images: built, scanned and signed by CI only,
 # under this prefix on GHCR, one image per service; nothing else may be pushed there. The promote pull request writes
 # a release's repository, tag (first 12 hex digits of its commit, for people) and digest (what pods run) into
 # deploy/k8s/values/services/<service>.yaml; the GitOps cluster pulls them anonymously by digest. The dev path never

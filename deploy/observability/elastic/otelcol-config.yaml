@@ -1,5 +1,5 @@
-# Collector of the `obs-elastic` profile, the Elastic comparison of
-# docs/adr/0012-elastic-vs-grafana-stage3.md. Not a config of its own: compose passes
+# Collector of the `obs-elastic` profile, the Elastic stack kept only to compare with LGTM.
+# Not a config of its own: compose passes
 # ../otelcol/config.yaml first and this file second, and the Collector merges the second over the
 # first (maps key by key, a list replaced whole). The receivers and processors, the scrubbing of
 # sensitive attributes among them (JWT-8), therefore come from that file alone, and the two stacks

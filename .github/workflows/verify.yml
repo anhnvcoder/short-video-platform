@@ -1,16 +1,18 @@
-# Deferred verification of stage 6b (docs/adr/0021-deferred-verification-stage6b.md): one scenario per run, dispatched
-# by hand, on a fresh GitHub-hosted runner of the public repository. It builds the compose stack or the k3d cluster
-# with the same make targets as a dev machine and runs the drills and measurements that machine cannot hold (16 GB).
-# Not a check of pull requests: no ruleset requires it and nothing else triggers it.
+# Deferred verification of stage 6b, on a fresh GitHub-hosted runner
+# of the public repository: one scenario per run dispatched by hand, and once a week both scenarios of part 1 side by
+# side on main, every target. It builds the compose stack or the k3d cluster with the same make targets as a dev
+# machine and runs the drills and measurements that machine cannot hold (16 GB). Not a check of pull requests: no
+# ruleset requires it, and nothing but the dispatch and the weekly schedule triggers it.
 #
-#   gh workflow run verify.yml --ref <main or feat/stage6b-...> -f scenario=<compose-obs|dev-k3d>
+#   gh workflow run verify.yml --ref <main or feat/stage6b-...> -f scenario=<compose-obs|dev-k3d> [-f targets='<name> ...']
 #
 # The repository is public, so the log and the artifact of every run are too, red or not:
-# - only workflow_dispatch (write access to the repository needed), never pull_request_target or workflow_run; no
-#   secret, no environment; every job has contents: read and nothing else;
+# - only workflow_dispatch (write access to the repository needed) and schedule (the code of main, no input), never
+#   pull_request_target or workflow_run; no secret, no environment; every job has contents: read and nothing else;
 # - every action is GitHub's own and pinned to a full commit SHA; checkout never leaves the token in .git/config;
-# - the input reaches the scripts only through env (SCENARIO) and deploy/ci/verify-run.sh checks it again with a case;
-#   if: compares it as an expression, never in a shell;
+# - the inputs reach the scripts only through env (SCENARIO, SVP_VERIFY_TARGETS) and deploy/ci/verify-run.sh checks
+#   them again with a case; if: compares the scenario as an expression, never in a shell. A scheduled run has no
+#   inputs: each job's SCENARIO falls back to its own scenario, and the targets are empty (every one);
 # - make env writes a .env of fresh random secrets that lives on this runner until the job ends; the cluster makes more
 #   (GlitchTip's tokens, its CA). deploy/ci/verify-mask.sh masks them in the log as soon as they exist, every target's
 #   output goes to a file on the runner instead of the log, and deploy/ci/verify-collect.sh copies into the artifact
@@ -25,19 +27,31 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: Scenario (docs/adr/0021-deferred-verification-stage6b.md, section 5)
+        description: Scenario (compose-obs is the compose stack with OBS=lgtm, dev-k3d the k3d cluster of the dev path)
         type: choice
         required: true
         options:
           - compose-obs
           - dev-k3d
+      targets:
+        description: Targets to run, separated by spaces; empty runs every one, the build target always runs (deploy/ci/verify-run.sh)
+        type: string
+        required: false
+        default: ""
+  # Saturday 00:37 UTC, 07:37 in Vietnam (UTC+7), off the top of the hour (busy for GitHub's scheduler, which may delay
+  # or drop a run then). GitHub runs it on the latest commit of main only, and turns it off after 60 days without any
+  # activity in a public repository.
+  schedule:
+    - cron: "37 0 * * 6"
 
 permissions: {}
 
-# One run at a time: a problem common to the scenarios (a script that does not run on Linux yet) is fixed before the
-# next run. A third dispatch while one runs and one waits replaces the waiting one.
+# One run of each scenario at a time, the two scenarios side by side: each has a runner of its own, and both run on
+# Linux by now, so a fix rarely waits on the other's run. A third dispatch of a scenario while one runs and one waits
+# replaces the waiting one. The scheduled run (both jobs) is a group of its own, verify-schedule: a dispatch during
+# it runs beside it, on its own runner.
 concurrency:
-  group: verify
+  group: verify-${{ inputs.scenario || github.event_name }}
   cancel-in-progress: false
 
 jobs:
@@ -47,14 +61,15 @@ jobs:
   # of smoke, the drills, k6 and Lighthouse (they delete the gateway's register rate limit keys in Redis db 10) touch
   # only the Redis service container below, which belongs to this run.
   compose:
-    if: inputs.scenario == 'compose-obs'
+    if: github.event_name == 'schedule' || inputs.scenario == 'compose-obs'
     runs-on: ubuntu-24.04
-    # Setup about 20 minutes, the scenario step 75, then 25 for the steps after it (ADR-0021, section 2).
+    # Setup about 20 minutes, the scenario step 75, then 25 for the steps after it.
     timeout-minutes: 120
     permissions:
       contents: read
     env:
-      SCENARIO: ${{ inputs.scenario }}
+      SCENARIO: ${{ inputs.scenario || 'compose-obs' }}
+      SVP_VERIFY_TARGETS: ${{ inputs.targets }}
       SVP_VERIFY_JOB_MINUTES: 120
       SVP_VERIFY_STEP_MINUTES: 75
     services:
@@ -84,14 +99,15 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     steps:
-      # Before anything else: a dispatch of another branch (an old one without the fixes of this stage) stops here. An
-      # accident guard, not a security boundary: whoever can dispatch can also push a branch of that name.
+      # Before anything else: a dispatch of another branch (an old one without the fixes of this stage) stops here, and
+      # so does a scheduled run anywhere but main (GitHub runs it on the default branch, which is main). An accident
+      # guard, not a security boundary: whoever can dispatch can also push a branch of that name.
       - name: Check the ref and note the job's start
         id: ref
         run: |
-          case $GITHUB_REF in
-            refs/heads/main | refs/heads/feat/stage6b-*) ;;
-            *) echo "::error::verify runs on main or a feat/stage6b-* branch only, not $GITHUB_REF"; exit 1 ;;
+          case $GITHUB_EVENT_NAME:$GITHUB_REF in
+            schedule:refs/heads/main | workflow_dispatch:refs/heads/main | workflow_dispatch:refs/heads/feat/stage6b-*) ;;
+            *) echo "::error::verify runs on main, or dispatched on a feat/stage6b-* branch, not $GITHUB_EVENT_NAME on $GITHUB_REF"; exit 1 ;;
           esac
           echo "SVP_VERIFY_OUT=$RUNNER_TEMP/verify" >>"$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/verify"
@@ -157,23 +173,25 @@ jobs:
   # rest again. The LOCAL LAB ONLY resets of the drills delete the register rate limit keys in the cluster's Valkey, on
   # this runner.
   k3d:
-    if: inputs.scenario == 'dev-k3d'
+    if: github.event_name == 'schedule' || inputs.scenario == 'dev-k3d'
     runs-on: ubuntu-24.04
     # Setup about 20 minutes, the scenario step 285, then 25 for the steps after it; 30 minutes under GitHub's 6 hours.
     timeout-minutes: 330
     permissions:
       contents: read
     env:
-      SCENARIO: ${{ inputs.scenario }}
+      SCENARIO: ${{ inputs.scenario || 'dev-k3d' }}
+      SVP_VERIFY_TARGETS: ${{ inputs.targets }}
       SVP_VERIFY_JOB_MINUTES: 330
       SVP_VERIFY_STEP_MINUTES: 285
     steps:
+      # As in job compose.
       - name: Check the ref and note the job's start
         id: ref
         run: |
-          case $GITHUB_REF in
-            refs/heads/main | refs/heads/feat/stage6b-*) ;;
-            *) echo "::error::verify runs on main or a feat/stage6b-* branch only, not $GITHUB_REF"; exit 1 ;;
+          case $GITHUB_EVENT_NAME:$GITHUB_REF in
+            schedule:refs/heads/main | workflow_dispatch:refs/heads/main | workflow_dispatch:refs/heads/feat/stage6b-*) ;;
+            *) echo "::error::verify runs on main, or dispatched on a feat/stage6b-* branch, not $GITHUB_EVENT_NAME on $GITHUB_REF"; exit 1 ;;
           esac
           echo "SVP_VERIFY_OUT=$RUNNER_TEMP/verify" >>"$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/verify"

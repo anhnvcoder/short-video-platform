@@ -1,11 +1,11 @@
-# Images of the seven services (docs/adr/0015-cicd-devsecops-stage5.md, sections 3-7 and 9): build only what changed,
+# Images of the seven services: build only what changed,
 # on native amd64 and arm64 runners; scan the local image with trivy and block secrets and CRITICAL vulnerabilities
 # BEFORE anything is pushed; push exactly what was scanned; join a multi-arch index; sign it keyless with cosign and
 # attest the SBOM (syft) and the scan result; promote the signed digests through a pull request; rescan released
 # digests daily. The logic lives in deploy/ci/*.sh, which also run on a machine; this file wires jobs, permissions and
 # artifacts.
 #
-# Security rules of this file (section 1):
+# Security rules of this file:
 #   - permissions: {} here, and each job declares only what it needs. Every job that runs on a pull request has only
 #     contents: read: a pull request runs its own scripts before anyone has read them. Jobs that can write (packages,
 #     id-token, security-events, contents and pull-requests for promote) or read the Actions API run only on main,
@@ -58,7 +58,7 @@ concurrency:
 
 jobs:
   last-success:
-    # The base of a push build (section 3): head_sha of the newest successful push run of this workflow on main. A job
+    # The base of a push build: head_sha of the newest successful push run of this workflow on main. A job
     # of its own because only it reads the Actions API; it checks out nothing and runs no code of the repository. When
     # the API fails the output stays empty and the job green: plan then builds all seven (too much, never too little).
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -121,8 +121,8 @@ jobs:
         run: deploy/ci/plan.sh
 
   build-nopush:
-    # Pull requests and refs other than main: build, scan and gate exactly like main (steps 1-3 of section 4), push
-    # nothing. Findings go to the job summary only (no Security tab upload from a pull request).
+    # Pull requests and refs other than main: build, scan and gate exactly like main, push nothing.
+    # Findings go to the job summary only (no Security tab upload from a pull request).
     needs: plan
     if: >-
       ${{ !cancelled() && needs.plan.result == 'success'
@@ -161,7 +161,7 @@ jobs:
 
   values-check:
     # A pull request that changes deploy/k8s/values/services/ may only point at releases signed by this workflow on
-    # main whose vuln attestation is clean and at most 48 hours old (section 7, deploy/ci/values-check.sh). Anonymous
+    # main whose vuln attestation is clean and at most 48 hours old (deploy/ci/values-check.sh). Anonymous
     # reads only, no token.
     needs: plan
     if: >-
@@ -241,7 +241,7 @@ jobs:
           retention-days: 7
 
   merge:
-    # One index per image from its two scanned manifests (section 4). Runs per image even when another image failed;
+    # One index per image from its two scanned manifests. Runs per image even when another image failed;
     # an image with a failed leg has no two artifacts and fails here: no index, no signature, no release.
     needs: [plan, build]
     if: >-
@@ -287,7 +287,7 @@ jobs:
 
   sign:
     # Keyless signature on the index digest, SBOM attestation on each manifest, vuln attestation (both scans) on the
-    # index (section 7). The only build-path job with id-token: write; it uses no cache. Its artifact release-<image>
+    # index. The only build-path job with id-token: write; it uses no cache. Its artifact release-<image>
     # (repository, tag, digest of the signed index) is what promotion to deploy/k8s/values/services/ reads.
     needs: [plan, merge]
     if: >-
@@ -333,7 +333,7 @@ jobs:
           retention-days: 7
 
   promote:
-    # The release pull request (section 9, deploy/ci/promote.sh): rebuilds branch bot/promote from main with the newest
+    # The release pull request (deploy/ci/promote.sh): rebuilds branch bot/promote from main with the newest
     # signed release of every service main does not run yet, never an older one, and opens or updates its pull request;
     # the owner approves its workflow runs and merges it. Runs when signing an image failed too: every image signed in
     # this run is promoted, the failed one is red in sign. The only job that writes to the repository: it pushes
@@ -354,7 +354,7 @@ jobs:
         with:
           # The whole history: a release's commit is compared by ancestry with main's.
           fetch-depth: 0
-          # The one exception to persist-credentials: false (section 1): this job pushes bot/promote.
+          # The one exception to persist-credentials: false, since this job pushes bot/promote.
           persist-credentials: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -416,7 +416,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Admission drill images (sections 7, 8): drill-vulnerable (an old base with CRITICAL on both architectures, signed
+  # Admission drill images: drill-vulnerable (an old base with CRITICAL on both architectures, signed
   # and attested like a release) and drill-unsigned (a clean build pushed with no signature). They exist only so the
   # cluster can be shown refusing them; no chart points to them and they never run. They go through the very same
   # steps as a release (YAML aliases of the build and merge jobs), so CRITICAL and the signature are the only
@@ -501,7 +501,7 @@ jobs:
 
   images-ok:
     # The required check of this workflow. Green only when every job succeeded or was skipped for a reason this job
-    # recomputes from the event, the ref and plan's outputs (section 4): a skip from a wrong if: is red, and so are
+    # recomputes from the event, the ref and plan's outputs: a skip from a wrong if: is red, and so are
     # failure and cancelled. Never skipped itself (GitHub counts a skipped required check as passed). Needs no
     # permission and runs no code of the repository.
     needs:

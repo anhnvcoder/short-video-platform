@@ -1,17 +1,25 @@
 import { act, fireEvent, render, renderHook, screen, within } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
+import Link, { useLinkStatus } from "next/link";
 import { usePathname } from "next/navigation";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { handleClientError } from "@/features/monitoring/reporter";
 import type { Locale } from "@/i18n/config";
 import { messagesFor } from "@/i18n/messages";
 import { BottomNav } from "./bottom-nav";
 import { ErrorsIntlProvider, useBrowserLocale } from "./errors-intl";
+import { LinkPending } from "./link-pending";
+import { linkPendingMessages } from "./link-pending-messages";
 import { RouteError, rateLimitWait } from "./route-error";
-import { SidebarDesktop, type ShellAccount } from "./sidebar-desktop";
+import { SidebarAccount, SidebarDesktop, type ShellAccount } from "./sidebar-desktop";
 import { useCountdown } from "./use-countdown";
 
 vi.mock("next/navigation", () => ({ usePathname: vi.fn(() => "/") }));
+// Whether the navigation a link started still waits for its page; only the App Router knows, so a test says.
+vi.mock("next/link", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/link")>()),
+  useLinkStatus: vi.fn(() => ({ pending: false })),
+}));
 // What the error screen does with its error is the reporter's business (reload once on a build skew, else report),
 // tested on its own; the real one would send the report to POST /monitoring.
 vi.mock("@/features/monitoring/reporter", () => ({ handleClientError: vi.fn() }));
@@ -21,11 +29,15 @@ const userId = "0192f0c1-7a3e-7c4b-9d2e-5f6a7b8c9d0e";
 const account = { displayName: "Lan Phương", handle: "lanphuong" };
 
 // Real messages, with the namespace the main layout passes down: a missing key fails here.
+// The messages the (main) layout gives the bars' providers: no other namespace reaches them.
 function renderShell(locale: Locale, pathname = "/", shellAccount: ShellAccount | null = account) {
   vi.mocked(usePathname).mockReturnValue(pathname);
   return render(
-    <NextIntlClientProvider locale={locale} messages={{ shell: messagesFor(locale).shell }}>
-      <SidebarDesktop userId={userId} account={shellAccount} appName="SVP" />
+    <NextIntlClientProvider
+      locale={locale}
+      messages={{ shell: messagesFor(locale).shell, ...linkPendingMessages(messagesFor(locale)) }}
+    >
+      <SidebarDesktop account={<SidebarAccount userId={userId} account={shellAccount} />} appName="SVP" />
       <BottomNav />
     </NextIntlClientProvider>,
   );
@@ -138,6 +150,57 @@ describe("navigation", () => {
   it.each(["/upload", "/me"])("lists no shortcuts on %s", (pathname) => {
     renderShell("en", pathname);
     expect(screen.queryByRole("heading", { name: "Keyboard shortcuts" })).toBeNull();
+  });
+
+  it.each<Locale>(["vi", "en"])(
+    "%s: Home shows a spinner in place of its icon while the feed's page loads, only after a short delay",
+    async (locale) => {
+      vi.useFakeTimers();
+      onTestFinished(() => {
+        vi.useRealTimers();
+        vi.mocked(useLinkStatus).mockReturnValue({ pending: false });
+      });
+      vi.mocked(useLinkStatus).mockReturnValue({ pending: true });
+      renderShell(locale, "/upload");
+      const homes = () => [within(sidebar()).getAllByRole("link")[1]!, within(bottomBar()).getAllByRole("link")[0]!];
+      // A quick navigation shows nothing new: the icon stays.
+      for (const home of homes()) {
+        expect(within(home).queryByRole("status")).toBeNull();
+        expect(home.querySelector("svg.lucide-house")).toBeTruthy();
+      }
+      await act(() => vi.advanceTimersByTimeAsync(150));
+      for (const home of homes()) {
+        expect(within(home).getByRole("status").textContent).toBe(messagesFor(locale).common.loading);
+        expect(home.querySelector("svg.lucide-house")).toBeNull();
+      }
+    },
+  );
+
+  it("a text link gets the spinner after its text; once the page is there it goes, and the next wait starts over", async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.useRealTimers();
+      vi.mocked(useLinkStatus).mockReturnValue({ pending: false });
+    });
+    const tree = () => (
+      <NextIntlClientProvider locale="vi" messages={linkPendingMessages(messagesFor("vi"))}>
+        <Link href="/">
+          SVP
+          <LinkPending size={16} />
+        </Link>
+      </NextIntlClientProvider>
+    );
+    vi.mocked(useLinkStatus).mockReturnValue({ pending: true });
+    const view = render(tree());
+    await act(() => vi.advanceTimersByTimeAsync(150));
+    expect(screen.getByRole("link").textContent).toBe(`SVP${messagesFor("vi").common.loading}`);
+    vi.mocked(useLinkStatus).mockReturnValue({ pending: false });
+    view.rerender(tree());
+    expect(screen.getByRole("link").textContent).toBe("SVP");
+    vi.mocked(useLinkStatus).mockReturnValue({ pending: true });
+    view.rerender(tree());
+    await act(() => vi.advanceTimersByTimeAsync(100));
+    expect(screen.queryByRole("status")).toBeNull();
   });
 });
 

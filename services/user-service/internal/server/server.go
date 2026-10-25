@@ -1,7 +1,6 @@
 // Package server implements svp.user.v1.UserService: accounts, login, refresh tokens, the follow
 // graph and public profiles. A change to the follow graph writes user.followed or user.unfollowed to the outbox
-// in the same transaction, so the event is published exactly when the change commits
-// (docs/adr/0009-engagement-feed-stage2b.md, section 1).
+// in the same transaction, so the event is published exactly when the change commits.
 package server
 
 import (

@@ -1,4 +1,4 @@
-# pnpm settings only: web/ is a single package, not a workspace (docs/adr/0016-web-client.md, section 10).
+# pnpm settings only: web/ is a single package, not a workspace.
 
 # A version must be 3 days old before pnpm installs it (4320 minutes), the same wait as Renovate's minimumReleaseAge:
 # most hijacked npm releases are found and pulled within that time.
@@ -33,3 +33,22 @@ allowBuilds:
 # standalone server of the image.
 ignoredOptionalDependencies:
   - sharp
+# Patched versions of packages that only @lhci/cli (make web-lighthouse) pulls in; none of them reaches the web image.
+# @lhci/cli 0.15.1 is its latest release and pins lighthouse 12.6.1, so a newer parent cannot bring these in. Each is
+# scoped to the parent that asks for it, so no other dependent moves with it. A key names the parent without a version:
+# pnpm silently skips an override whose parent version no longer matches, so "parent@1.2.3>child" would lose the fix,
+# with a green frozen install, on the next bump of that parent. The child carries the range of requests that no fixed
+# release satisfies (pnpm applies the override when it overlaps what the parent asks for), so a later parent that asks
+# for a line that has a fix resolves on its own and is never forced onto these versions.
+overrides:
+  # CVE-2022-25883 (ReDoS in new Range). lighthouse lists semver but never imports it, so the major does not matter:
+  # this is the 7.x already in the tree (the 5.7.2 backport has no provenance after 7.5.4 had it, which trustPolicy
+  # refuses, and an exception for a package nobody loads is not worth one). 6.3.1 and 7.5.2 fix the lines above 5.
+  "lighthouse>semver@<6.0.0": 7.8.5
+  # CVE-2026-44705, CVE-2025-54798 (path traversal, symlink write): fixed only on the 0.2 line. Both callers use only
+  # fileSync({ postfix }) (lhci open) and tmpNameSync(options) (external-editor, behind lhci wizard), which 0.2 keeps.
+  "@lhci/cli>tmp@<0.2.0": 0.2.7
+  "external-editor>tmp@<0.2.0": 0.2.7
+  # CVE-2026-41907 (out-of-range writes of v3, v5, v6 into a caller's buffer): no fix below 11; 11.1.1 is the fixed line
+  # that still ships CommonJS for lhci's require('uuid'), and lhci calls only uuid.v4() (the flags file of collect).
+  "@lhci/cli>uuid@<11.0.0": 11.1.1

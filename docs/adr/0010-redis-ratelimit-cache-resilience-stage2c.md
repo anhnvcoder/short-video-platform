@@ -651,3 +651,21 @@ Diễn tập mới chạy qua `Makefile` trên stack compose, script ở `deploy
   - Còn video `UPLOADING` tạo hơn 2 giờ trước (quá hạn 1 giờ, tức 12 chu kỳ mà chưa dọn được; metric ở giai đoạn 3): xem
     lỗi xoá S3, và nếu là lỗi riêng từng object thì bỏ qua video lỗi trong lượt thay vì kết thúc lượt.
   - Lượt xem dùng để xếp hạng (feed gợi ý, xu hướng): RL-3 dài hơn 60 s và chống tài khoản giả (threat model §6).
+
+## Hiện thực ở
+
+- Redis không bắt buộc (§1): `internal/redisx/`, `internal/redistest/`; Redis native qua `host.docker.internal`, mỗi service một db
+  và các biến Redis, hạn dọn upload, cache của từng service ở `deploy/compose/compose.yaml`; Valkey của k3d với `noeviction` như
+  Redis native ở `deploy/helm/svp-data/templates/valkey.yaml`.
+- Rate limit (§2): `services/gateway/internal/ratelimit/`, problem `RATE_LIMITED` ở `services/gateway/internal/httpx/problem.go`,
+  `services/gateway/cmd/gateway/main.go`, `services/gateway/openapi.yaml`, `deploy/k8s/values/services/gateway.yaml`.
+- Cache feed khám phá (§3): `services/feed-service/internal/server/`, `services/feed-service/cmd/feed-service/main.go`,
+  `deploy/k8s/values/services/feed-service.yaml`.
+- Timeout, retry, circuit breaker, bulkhead (§4): `services/gateway/internal/breaker/`, `services/gateway/internal/api/`,
+  `services/gateway/cmd/gateway/main.go`.
+- Job dọn upload bỏ dở và UP-7 (§5): `services/video-service/internal/server/sweep.go`, `services/video-service/internal/server/server.go`,
+  `services/video-service/migrations/00003_index_uploading_videos.sql`, `services/video-service/cmd/video-service/main.go`.
+- Diễn tập và số đo (§7): `deploy/compose/drills/` (`rate-limit.sh`, `measure-explore-cache.sh`, `upload-cleanup.sh`,
+  `engagement-down.sh`, `measure-freshness.sh`, `measure-ready.sh`, `alert-to-sentry.sh`), `deploy/compose/smoke.sh`,
+  `deploy/compose/lib.sh` (xoá khoá rate limit đăng ký), `deploy/compose/compose.mk`, `Makefile`; cảnh báo của breaker và rate limit
+  ở `deploy/observability/prometheus/rules/svp-alerts.yaml`; thí nghiệm cloud `deploy/k8s/cloud/chaos/b-network-delay-engagement.yaml`.

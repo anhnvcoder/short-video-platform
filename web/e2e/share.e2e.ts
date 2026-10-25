@@ -12,7 +12,7 @@ import {
 import { seed } from "./seed";
 import { stack } from "./stack";
 
-// The public share page /v/{id} (docs/adr/0018-web-profiles-public-video-upload.md, section 7), seen by someone who is
+// The public share page /v/{id}, seen by someone who is
 // not logged in: Playwright's `request` and a new browser context start without any cookie. Every guest page load
 // goes through the web container to the gateway's public rate limit bucket (120 a minute, burst 60, shared by all the
 // browsers of the run), so these tests load few pages.

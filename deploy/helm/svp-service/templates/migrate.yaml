@@ -1,5 +1,5 @@
 {{- /*
-Schema migration of a service with a database (ADR-0014 section 10): a Job runs `migrate` with the service's migrator
+Schema migration of a service with a database: a Job runs `migrate` with the service's migrator
 role before every install and upgrade, once, not in each replica; the long-running pods hold the app role only. goose
 applies only what is missing, so a run with nothing new does nothing. A failed migration fails the release: Helm (and
 Argo CD, which reads pre-install/pre-upgrade as PreSync) stops before the new pods replace the old ones, so no service

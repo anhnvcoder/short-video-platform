@@ -1,6 +1,6 @@
 import { reloadOnceOnSkew } from "./skew-reload";
 
-// Error reports of the browser (docs/adr/0019-web-k3d-supply-chain-observability.md, section 8). No Sentry SDK in the
+// Error reports of the browser. No Sentry SDK in the
 // browser bundle: a small report goes to the app's own POST /monitoring, and the server builds the event, scrubs it
 // and sends it to GlitchTip. The browser knows no DSN and sends no cookie.
 

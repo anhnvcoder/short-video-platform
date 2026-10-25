@@ -1,4 +1,4 @@
-# The VolumeSnapshotClass Velero picks for EBS volumes (docs/adr/0020-reliability-stage6.md, section 6): Velero's CSI
+# The VolumeSnapshotClass Velero picks for EBS volumes: Velero's CSI
 # support takes the class of the volume's driver that carries the label below. Retain keeps the EBS snapshot when the
 # VolumeSnapshotContent goes away, so a backup survives the deletion of its namespace, which is the point of the
 # restore drill. Velero deletes the snapshots of a backup it deletes (expired after the Schedule's ttl, or

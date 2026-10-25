@@ -20,7 +20,7 @@ export class UploadApiError extends Error {
   }
 }
 
-// A presigned POST to the storage (docs/adr/0018-web-profiles-public-video-upload.md, section 8). `uploadUrl` and
+// A presigned POST to the storage. `uploadUrl` and
 // `fields` are a 15-minute credential: they stay in memory and never reach a log, a message or storage of the browser.
 export interface UploadForm {
   videoId: string;

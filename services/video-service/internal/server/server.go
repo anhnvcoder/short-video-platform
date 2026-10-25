@@ -1,8 +1,7 @@
 // Package server implements svp.video.v1.VideoService: InitUpload records a new video and signs
 // its upload form, CompleteUpload checks the uploaded object and emits video.uploaded through the
-// outbox, GetVideo reads a video back (ADR-0004, docs/adr/0008-async-upload-pipeline-stage2a.md).
-// GetPublicVideo serves a READY video to anyone and ListAuthorVideos lists the videos of an author
-// (docs/adr/0018-web-profiles-public-video-upload.md, sections 4 and 6). HandleTranscode consumes
+// outbox, GetVideo reads a video back. GetPublicVideo serves a READY video to anyone and
+// ListAuthorVideos lists the videos of an author. HandleTranscode consumes
 // the transcode results that move the video to READY or FAILED.
 package server
 
@@ -42,23 +41,23 @@ import (
 const (
 	// MaxTitleRunes is the longest title accepted, counted in characters after trimming (OPS-3).
 	MaxTitleRunes = 200
-	// MaxSizeBytes is the "500 MB" upload limit of ADR-0004, read as 500 MiB (ADR-0007, section 8).
+	// MaxSizeBytes is the "500 MB" upload limit, read as 500 MiB (524,288,000 bytes).
 	MaxSizeBytes = 500 << 20
 
 	maxMediaTypeLen = len("video/") + 127
 
 	// uploadFormTTL is how long a presigned upload form is accepted: long enough for a slow mobile
 	// upload, short because anyone holding a leaked form can write to its key until then
-	// (ADR-0004, UP-2).
+	// (UP-2).
 	uploadFormTTL = 15 * time.Minute
 	// MaxOpenUploads is how many videos one author may have UPLOADING with a form still valid, so
 	// one account holds at most 1.5 GB of open upload forms
-	// (UP-7, docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 5).
+	// (UP-7).
 	MaxOpenUploads = 3
 	// TopicVideoLifecycle carries svp.video.v1.VideoEvent, keyed by video_id.
 	TopicVideoLifecycle = "video.lifecycle.v1"
 	// rollbackTimeout bounds the rollback of a transcode or sweep transaction, which runs after
-	// the step's own deadline may have passed (docs/adr/0011-observability-stage3.md, section 11).
+	// the step's own deadline may have passed.
 	rollbackTimeout = 5 * time.Second
 )
 
@@ -68,7 +67,8 @@ const (
 	MaxPageSize     = 50
 )
 
-// readyBuckets are the V buckets of docs/adr/0011-observability-stage3.md, section 5, in seconds.
+// readyBuckets are the bucket bounds of svp.video.ready.duration, in seconds, the same as
+// media-worker's svp.transcode.duration.
 // 120 is a boundary because the video-ready SLO counts a sample at or under 120 s as good.
 var readyBuckets = []float64{10, 20, 30, 45, 60, 90, 120, 180, 300, 600}
 

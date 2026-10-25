@@ -1,4 +1,4 @@
-# Admission configuration of the API server of cluster svp (docs/adr/0014-kubernetes-local-stage4.md, section 3):
+# Admission configuration of the API server of cluster svp:
 # Pod Security "restricted" on every namespace without its own pod-security.kubernetes.io labels. The namespaces of the
 # lab carry the labels already; this default covers the rest (default, kube-public, kube-node-lease, any namespace made
 # later), where a controller allowed to create pods everywhere (cert-manager's ACME solver role) could otherwise start

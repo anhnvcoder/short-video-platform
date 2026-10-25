@@ -1,8 +1,7 @@
 // Package server implements svp.feed.v1.FeedService: the caller's following feed from their own
 // timeline and the explore feed of every READY video, both newest first with keyset pagination
-// (docs/adr/0009-engagement-feed-stage2b.md, section 8; docs/architecture.md §8.3). The first
-// explore page, which every new user reads, is cached in Redis
-// (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 3).
+// (docs/architecture.md §8.3). The first explore page, which every new user reads, is cached in
+// Redis.
 package server
 
 import (
@@ -40,7 +39,7 @@ const (
 )
 
 // Explore cache. Every new user reads the same first explore page, a hot key that would otherwise
-// cost a Postgres query per request (ADR-0010, section 3).
+// cost a Postgres query per request.
 const (
 	// ExploreCacheTTL is how long a cached first explore page is served; nothing deletes it
 	// earlier, so a new video reaches the explore feed at most this late.
@@ -86,8 +85,8 @@ type Server struct {
 // Option changes a Server built by New.
 type Option func(*Server)
 
-// WithCacheTimeout bounds every Redis command of the explore cache by d instead of 50 ms
-// (ADR-0010, section 3). Tests that count Postgres reads use a longer bound, so a slow test run
+// WithCacheTimeout bounds every Redis command of the explore cache by d instead of 50 ms. Tests
+// that count Postgres reads use a longer bound, so a slow test run
 // does not take the Postgres path.
 func WithCacheTimeout(d time.Duration) Option {
 	return func(s *Server) { s.cacheTimeout = d }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# push-image.sh IMAGE ARCH OUT: step 4 of one leg (docs/adr/0015-cicd-devsecops-stage5.md, section 4), only in the
+# push-image.sh IMAGE ARCH OUT: step 4 of one leg, only in the
 # main job and only after build-image.sh passed the gate on the same OUT. Pushes the local image that was scanned as
 # ghcr.io/anhnvcoder/short-video-platform/IMAGE:<12 hex of the commit>-ARCH, reads the pushed manifest back from GHCR
 # and compares its config digest with the scanned one (Metadata.ImageID of OUT/trivy.json): Docker compresses the

@@ -636,3 +636,23 @@ của web (trang báo lỗi, không gửi byte nào), không có e2e; `make up O
     (phương án B mục 5) hay cache hồ sơ.
   - Cần resume upload (clip dài hơn, mạng di động): multipart (phương án C mục 8).
   - Giai đoạn 6: Lighthouse vào CI cùng e2e. Giai đoạn 7: CDN trước route công khai, CORS theo bucket.
+
+## Hiện thực ở
+
+- Handle và tên hiển thị (§1, §2): `services/user-service/migrations/00005_add_user_profile.sql`, `services/user-service/internal/server/`;
+  phía web `web/features/profile/` (`display-name.ts`, `api.ts`), `web/server/profile-actions.ts`.
+- Danh sách video theo tác giả (§4): `services/video-service/internal/server/server.go`,
+  `services/video-service/migrations/00005_index_author_videos.sql`, `internal/pagetoken/`.
+- Tác giả trong response (§5): `services/gateway/internal/api/api.go`, `services/gateway/cmd/gateway/main.go` (retry của
+  `GetProfiles`, đổi tên hiển thị).
+- Route công khai (§6): `services/gateway/internal/api/api.go` (`getPublicVideo`), lớp `public` của
+  `services/gateway/internal/ratelimit/ratelimit.go`, `services/gateway/openapi.yaml`, `GetStats` không cần caller ở
+  `services/engagement-service/internal/server/server.go`; trang `web/app/v/[id]/page.tsx`, `web/server/video-page.ts`,
+  `web/features/feed/share-screen.tsx`.
+- Route web (§7): `web/app/(main)/u/[handle]/page.tsx`, `web/server/profile-page.ts`, `web/server/auth-state.ts`,
+  `web/server/api-proxy.ts`, `web/features/feed/api.ts`.
+- Upload từ trình duyệt và CORS của MinIO (§8, §9): `web/features/upload/`, `UPLOAD_ORIGIN` và `MINIO_API_CORS_ALLOW_ORIGIN` ở
+  `deploy/compose/compose.yaml`.
+- Lighthouse và ngân sách bundle (§10, §11): `web/lighthouse/run.sh`, target `web-lighthouse`, `web-check` của `Makefile`.
+- Kiểm: `deploy/compose/smoke.sh`, `web/e2e/` (`profile.e2e.ts`, `share.e2e.ts`, `upload.e2e.ts`, `measure-upload.e2e.ts`,
+  `security.e2e.ts`, `fixtures.ts`), `web/server/auth.test.ts`, `web/features/profile/display-name.test.ts`.

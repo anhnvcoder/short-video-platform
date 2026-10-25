@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# sign-image.sh [--allow-critical] INDEX DIR DIR: signs and attests one released image (docs/adr/0015-cicd-devsecops-
-# stage5.md, section 7), keyless: cosign gets a short-lived certificate from Fulcio for the OIDC identity of this
+# sign-image.sh [--allow-critical] INDEX DIR DIR: signs and attests one released image,
+# keyless: cosign gets a short-lived certificate from Fulcio for the OIDC identity of this
 # workflow run (images.yml on refs/heads/main) and records the signature in Rekor; there is no key to leak or rotate.
 # INDEX is the directory merge-index.sh wrote (repository, tag, digest); each DIR is one platform leg (platform,
 # digest, config-digest, trivy.json, scan times, sbom.spdx.json).

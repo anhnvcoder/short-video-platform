@@ -1,8 +1,7 @@
 // Package pagetoken encodes and decodes an opaque page_token: the keyset position (time,
 // video_id) of the last item of a page, for lists ordered newest first by a timestamp and the
 // video id. The time is the list's sort key: published_at for the feeds, created_at for the videos
-// of an author (docs/architecture.md §8.3; docs/adr/0009-engagement-feed-stage2b.md, section 8;
-// docs/adr/0018-web-profiles-public-video-upload.md, section 4).
+// of an author (docs/architecture.md §8.3).
 //
 // The token is the unpadded base64url form of the protobuf bytes of a message with no .proto
 // file, encoded by hand with protowire:

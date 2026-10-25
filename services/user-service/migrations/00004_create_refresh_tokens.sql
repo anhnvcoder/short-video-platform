@@ -1,5 +1,5 @@
 -- +goose Up
--- One row per refresh token (docs/adr/0016-web-client.md, section 2). Only the SHA-256 of the
+-- One row per refresh token. Only the SHA-256 of the
 -- token is stored, so a leaked table yields no usable token. A login starts a family (family_id is
 -- the id of its first token); every rotation adds a row to the same family and marks the old one
 -- used, and a used token presented again, or a logout, revokes the whole family. Used rows stay

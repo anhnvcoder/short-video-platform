@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { focusRing } from "@/components/ui/styles";
 import { cn } from "@/lib/cn";
+import { LinkPending } from "./link-pending";
 import { currentNavItem } from "./nav";
 
 const item = cn(
@@ -33,7 +34,9 @@ export function BottomNav() {
         aria-current={current === "home" ? "page" : undefined}
         className={cn(item, itemState(current === "home"))}
       >
-        <House aria-hidden="true" size={24} />
+        <LinkPending size={24}>
+          <House aria-hidden="true" size={24} />
+        </LinkPending>
         <span>{t("home")}</span>
       </Link>
       <Link

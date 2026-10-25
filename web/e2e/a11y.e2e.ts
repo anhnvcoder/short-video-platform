@@ -3,8 +3,8 @@ import type { Page } from "@playwright/test";
 import { authedTest, expect, feedItem, generatedHandle, playingVideo, test } from "./fixtures";
 import { seed } from "./seed";
 
-// axe on the screens of the web client: no violation of impact serious or critical (docs/adr/0016-web-client.md,
-// section 11). The cspViolations fixture fails each test on any CSP violation as well, so these pages are also the
+// axe on the screens of the web client: no violation of impact serious or critical.
+// The cspViolations fixture fails each test on any CSP violation as well, so these pages are also the
 // "no CSP violation" check of login, register, the feed while a video plays, upload, the profiles and the share page.
 
 async function expectNoSeriousViolations(page: Page): Promise<void> {

@@ -1,7 +1,7 @@
 import { unstable_isUnrecognizedActionError } from "next/navigation";
 
 // A page of one build talking to a server of another (a canary, a tab opened before a release) gets two errors Next
-// does not recover from by itself (docs/adr/0019-web-k3d-supply-chain-observability.md, section 3): a chunk only the
+// does not recover from by itself: a chunk only the
 // other build has (404), and a Server Action id the other build does not know (409, UnrecognizedActionError). Loading
 // the page again fetches the current build's HTML and chunks; the action had not run, so sending it again is safe.
 

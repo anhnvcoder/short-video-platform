@@ -3,7 +3,11 @@
 - Trạng thái: Chấp nhận; hiện thực và đã kiểm trên máy ngày 2026-10-24 (compose và cluster k3d đường dev, mục "Kết quả
   phần C"); cluster GitOps với image web đã ký, canary web dưới traffic, diễn tập đầy đủ, đo RAM và cổng CI quét lockfile npm
   dời giai đoạn 6b "Kiểm chứng dồn" (mục 12). Ghi chú 2026-10-24: trước ghi giai đoạn 7; giai đoạn 6b chạy trên runner CI 16 GB
-  hay VM thuê theo giờ, không cần dịch vụ AWS/GCP; quyết định không đổi
+  hay VM thuê theo giờ, không cần dịch vụ AWS/GCP; quyết định không đổi. Ghi chú 2026-10-25: phần 1 của giai đoạn 6b đã chạy
+  trên runner ([0021](0021-deferred-verification-stage6b.md), mục Kết quả): `drill-obs-threats` (WEB-9), `drill-k8s-threats`, RAM
+  và `resources` của web trên cluster dev, cổng CI quét lockfile npm đạt; cluster GitOps với image web đã ký, Kyverno từ chối web
+  chưa ký, source map của image CI và canary web ở phần sau của giai đoạn 6b; §9 (source map của image CI kéo từ giai đoạn 7 về
+  giai đoạn 6b) sẽ chỉnh bởi 0021 khi hiện thực phần đó
 - Ngày: 2026-10-22
 
 ## Bối cảnh
@@ -179,7 +183,8 @@ Chọn image thứ bảy, build ID theo commit hay nội dung, khoá đặt lúc
   - Vì sao không đặt khoá cố định không bí mật lúc build để giữ id: nó chỉ bớt số lần lệch, không bỏ được đường tải lại (Next
     vẫn xoay id tối đa 14 ngày một lần kể cả khi code không đổi), mà thêm một khoá nằm trong repo, giống nhau ở mọi bản
     build và thành khoá mã hoá khi biến lúc chạy thiếu (compose với `.env` cũ chưa chạy lại `make env`). Đường tải lại cần
-    cho cả hai cách, nên chọn cách không thêm khoá. Xem lại khi số đo ở giai đoạn 6b cho thấy tải lại vì action là đáng kể.
+    cho cả hai cách, nên chọn cách không thêm khoá. Xem lại khi số đo ở giai đoạn 6b cho thấy tải lại vì action là đáng kể
+    (canary web dưới traffic: phần sau của giai đoạn 6b ([ADR-0021](0021-deferred-verification-stage6b.md) mục 5, kịch bản `web-canary`)).
 
 ## 2. Release Helm `web`
 
@@ -212,7 +217,10 @@ Chọn image thứ bảy, build ID theo commit hay nội dung, khoá đặt lúc
   ServiceAccount, PSA `restricted`. **Không thư mục ghi được**: server không ghi file (mọi trang render theo request, ảnh không
   tối ưu, `.next/cache` rỗng), compose đã chạy `read_only` qua toàn bộ e2e.
 - **Resources:** request 100m / 128Mi, limit 1 CPU / 384Mi. Compose đo 53 MiB lúc nghỉ, 96 MiB sau e2e (chưa có OTel và SDK
-  Sentry server); limit để chỗ cho hai thứ đó, đo lại ở giai đoạn 6b. Compose giữ `mem_limit: 256m`.
+  Sentry server); limit để chỗ cho hai thứ đó, đo lại ở giai đoạn 6b. Compose giữ `mem_limit: 256m`. Đo lại trên runner
+  (2026-10-25, cluster dev, [ADR-0021](0021-deferred-verification-stage6b.md) D9): working set mỗi pod web 85–90 MiB ở điểm nghỉ
+  60 s, 136–139 MiB ở điểm nghỉ cuối, cao nhất 144 MiB trong e2e ([40145677985](https://github.com/anhnvcoder/short-video-platform/actions/runs/40145677985), [40151447243](https://github.com/anhnvcoder/short-video-platform/actions/runs/40151447243)); theo quy tắc
+  của ADR-0021 mục 8 giữ limit 384Mi, request 128Mi; phần 3 áp lại với số k6.
 - **Tắt êm:** `lifecycle.preStop.sleep` **5 s** (value `preStopSleepSeconds`, hành động `sleep` có sẵn của Kubernetes, không cần
   shell trong image distroless), `terminationGracePeriodSeconds` mặc định 30 s. Server standalone thoát ngay khi nhận SIGTERM;
   Envoy Gateway gửi thẳng tới IP pod theo EndpointSlice, nên trong lúc pod bị gỡ khỏi endpoint, request mới vẫn có thể tới. 5 s
@@ -281,7 +289,8 @@ Chọn image thứ bảy, build ID theo commit hay nội dung, khoá đặt lúc
   Next khuyên cho action). Test của phần web phủ hai lỗi và ba nơi gọi: mỗi lỗi một ca tải lại và một ca đã có khoá;
   loader bị từ chối vì lỗi tải chunk thì `player-pool.ts` gọi helper, đã có khoá thì báo lỗi, rồi video vẫn `error` như cũ.
 - 409 của action lệch bản là 4xx nên không vào mẫu số của phân tích canary, không làm abort.
-- Đo dưới traffic thật (số 404 asset, số lần tải lại vì chunk và vì action, abort hay promote) dời giai đoạn 6b (mục 12).
+- Đo dưới traffic thật (số 404 asset, số lần tải lại vì chunk và vì action, abort hay promote) dời giai đoạn 6b (mục 12);
+  phần sau của giai đoạn 6b ([ADR-0021](0021-deferred-verification-stage6b.md) mục 5, kịch bản `web-canary`).
 
 ## 4. NetworkPolicy của web (đóng WEB-13 ở k3d)
 
@@ -633,14 +642,27 @@ Chọn **Valkey chung db 9**, mở rộng phần chấp nhận của IN-7, ở l
 **Dời giai đoạn 6b** (runner CI 16 GB hay VM thuê theo giờ, đủ RAM cho buổi k3d; không chạy trên máy 16 GB ở phần C):
 
 - Cluster GitOps chạy image `web` đã ký từ GHCR (cần push, CI phát hành, PR promote merge) và Kyverno Enforce từ chối image web
-  chưa ký; source map của image CI (artifact theo kiến trúc, mục 9).
-- Canary của web dưới traffic diễn tập: promote bản tốt, abort bản lỗi, số 404 của `web-asset` và số lần client tải lại.
+  chưa ký; source map của image CI (artifact theo kiến trúc, mục 9). Kết quả: phần sau của giai đoạn 6b ([ADR-0021](0021-deferred-verification-stage6b.md) mục 5, kịch bản `gitops`, D3–D5).
+  Trên cluster dev (runner, 2026-10-25): `make k8s-web-sourcemaps` 32 map, 15 chunk `/login` có debug ID thuộc bản build đang
+  chạy; event GlitchTip của e2e có 10/10 (Chromium) và 13/13 (WebKit) frame map về mã nguồn ([40145677985](https://github.com/anhnvcoder/short-video-platform/actions/runs/40145677985),
+  [40151447243](https://github.com/anhnvcoder/short-video-platform/actions/runs/40151447243)).
+- Canary của web dưới traffic diễn tập: promote bản tốt, abort bản lỗi, số 404 của `web-asset` và số lần client tải lại. Kết quả:
+  phần sau của giai đoạn 6b ([ADR-0021](0021-deferred-verification-stage6b.md) mục 5, kịch bản `web-canary`, D6). Canary của gateway dưới probe mới đạt hai lượt trên runner (ADR-0021 D18).
 - `make drill-k8s-threats` và `make drill-obs-threats` chạy đủ, gồm các ca WEB mới. Ghi chú 2026-10-24: `drill-k8s-threats` đã chạy
   đủ trên cluster dev ở buổi k3d giai đoạn 6 (16/16 mục PASS ở hai lượt, gồm WEB-2, WEB-7, WEB-8, WEB-10, WEB-13; ADR-0020); còn
-  `drill-obs-threats` (WEB-9) và cluster GitOps.
-- Đo RAM của cluster có web (lúc nghỉ, đỉnh) và chỉnh `resources` của web.
+  `drill-obs-threats` (WEB-9) và cluster GitOps. Kết quả trên runner (ADR-0021 D7, D8): `drill-obs-threats` đạt mọi mục ở
+  `compose-obs` ([40132157276](https://github.com/anhnvcoder/short-video-platform/actions/runs/40132157276); WEB-9: đối chứng có dữ liệu của web ở GlitchTip, Tempo, Prometheus, không giá trị nào
+  của form, phiên hay chữ ký); `drill-k8s-threats` 16/16 mục PASS trên cluster dev, gồm WEB-7 ([40157833740](https://github.com/anhnvcoder/short-video-platform/actions/runs/40157833740)). Trên
+  cluster GitOps: phần sau của giai đoạn 6b ([ADR-0021](0021-deferred-verification-stage6b.md) mục 5, kịch bản `gitops`).
+- Đo RAM của cluster có web (lúc nghỉ, đỉnh) và chỉnh `resources` của web. Kết quả trên runner, cluster dev (ADR-0021 D2, D9):
+  RAM nghỉ (b) đạt ở điểm 60 s hai lượt (MEM USAGE trừ `active_file` 6 084 và 5 972 MiB), đỉnh (a) 9 994 và 8 878 MiB không đạt
+  ổn định 8,7 GiB, chấp nhận không cắt; `resources` của web giữ limit 384Mi, request 128Mi (mục 2). Cluster GitOps và số k6:
+  phần sau của giai đoạn 6b ([ADR-0021](0021-deferred-verification-stage6b.md) mục 5).
 - Cổng CI quét lỗ hổng của `web/pnpm-lock.yaml` (cùng ngưỡng CRITICAL như cổng image): trivy trong image chỉ thấy 14 gói npm vì
-  Turbopack gộp dependency của server vào chunk (mục 1), nên CVE của các gói đó hiện chỉ có Renovate đỡ.
+  Turbopack gộp dependency của server vào chunk (mục 1), nên CVE của các gói đó hiện chỉ có Renovate đỡ. Kết quả: đạt
+  (2026-10-24, ADR-0021 mục 10, D10): `make web-lockfile-scan` trong job `web` của `ci.yml` đọc 997 gói npm của lockfile pnpm 12
+  (gồm dev dependency), ca âm có CRITICAL (`minimist` 1.2.5) làm target exit 2; HIGH của cây dev `@lhci/cli` xử lý ở
+  [ADR-0016](0016-web-client.md) §10.
 
 **Không làm ở phần C:** Trusted Types report-only (ADR-0016 §6; cần đường nhận báo cáo CSP riêng, `/monitoring` không nhận),
 trace từ trình duyệt (SDK OTel trình duyệt 0.x), log OTLP của web, SLO cho web.
@@ -680,7 +702,8 @@ Số RUM đến từ khoảng 74 lần tải trang của e2e (Playwright headles
 mục làm việc của máy, không commit (repo public, khoảng 300 MB mỗi buổi).
 
 **Chưa kiểm ở phần C:** các việc dời giai đoạn 6b ở mục 12 (cluster GitOps với image web đã ký, canary web dưới traffic, diễn tập
-đầy đủ, đo RAM, cổng CI quét lockfile npm); CI build, ký và promote image `web` kiểm sau push.
+đầy đủ, đo RAM, cổng CI quét lockfile npm); CI build, ký và promote image `web` kiểm sau push. Kết quả của phần 1 giai đoạn 6b
+(diễn tập, RAM, cổng lockfile) ghi ở từng gạch của mục 12; cluster GitOps và canary web ở phần sau của giai đoạn 6b.
 
 ## Hệ quả
 
@@ -705,6 +728,26 @@ mục làm việc của máy, không commit (repo public, khoảng 300 MB mỗi 
     bật `TRUST_TRACE_CONTEXT`; asset ra bucket/CDN giữ nhiều bản (hết 404 khi lệch); map của image CI.
   - GlitchTip nhận được map theo cách khác debug ID, hay `glitchtip-cli` ổn định: xét bỏ polyfill debug ID (đỡ khoảng 1,5 kB).
   - Có tải thật (k6 giai đoạn 6): đặt SLO INP p75, HPA cho web, ngưỡng p99 canary theo số đo.
-  - Số lần tải lại vì action lệch bản (đo ở giai đoạn 6b) là đáng kể, hay cluster có node khác kiến trúc (hai bản của một
+  - Số lần tải lại vì action lệch bản (đo ở phần sau của giai đoạn 6b, kịch bản `web-canary`) là đáng kể, hay cluster có node khác kiến trúc (hai bản của một
     commit cùng `deploymentId` nhưng khác id action và chunk, nên Next không thấy lệch khi điều hướng và đường tải lại chỉ đỡ
     một lần): xét khoá cố định không bí mật lúc build để id action ít đổi (mục 1).
+
+## Hiện thực ở
+
+- Image `web` trong chuỗi cung ứng (§1): `deploy/docker/web.Dockerfile`, `deploy/ci/build-image.sh` (`SVP_BUILD_ID`),
+  `deploy/k8s/k8s.mk`, `deploy/k8s/install.sh`.
+- Release `web`, canary và lệch phiên bản (§2, §3): `deploy/k8s/values/services/web.yaml`, `deploy/helm/svp-service/`
+  (`templates/canary.yaml`, `templates/httproute.yaml`, `values.yaml`), `deploy/k8s/values/argo-rollouts.yaml`,
+  `web/features/monitoring/skew-reload.ts`.
+- NetworkPolicy và session ở Valkey (§4, §5): `deploy/k8s/values/services/web.yaml`, `deploy/helm/svp-data/templates/valkey.yaml`.
+- Trace context từ web tới gateway (§7): `services/gateway/internal/httpx/middleware.go` (`TRUST_TRACE_CONTEXT`),
+  `deploy/helm/svp-service/templates/httproute.yaml` (Envoy bỏ header trace của client), `deploy/k8s/values/services/gateway.yaml`,
+  `deploy/compose/compose.yaml`.
+- Lỗi web tới GlitchTip và source map (§8, §9): `web/server/sentry/`, `web/features/monitoring/reporter.ts`, `web/instrumentation.ts`,
+  `web/instrumentation-client.ts`, `deploy/observability/glitchtip/` (`sourcemaps.sh`, `init.sh`, `bootstrap.py`),
+  `deploy/k8s/glitchtip-init.sh`, `deploy/k8s/secrets.sh`.
+- OTel ở server Next và RUM (§10, §11): `web/server/telemetry/` (`otel.ts`, `rum.ts`, `vitals.ts`), `web/features/rum/beacon.ts`,
+  `deploy/observability/grafana/dashboards/svp-web.json`.
+- Kiểm (§12): `web/e2e/glitchtip.e2e.ts`, `web/e2e/stack.ts`, `deploy/compose/drills/obs-threats.sh` (WEB-9),
+  `deploy/k8s/drills/threats.sh`, `deploy/k8s/drills/traffic.sh`, `deploy/k8s/drills/web-obs.sh`, target `web-sourcemaps`,
+  `k8s-web-*` của `Makefile` và `deploy/k8s/k8s.mk`.

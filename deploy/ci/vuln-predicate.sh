@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # vuln-predicate.sh [--allow-critical] OUT DIR DIR: writes to OUT the predicate of the `vuln` attestation of a
-# multi-arch index (docs/adr/0015-cicd-devsecops-stage5.md, section 7), from the two scans that gated its two
+# multi-arch index, from the two scans that gated its two
 # manifests. Shared by the build (after the gate) and the daily rescan.
 #
 # Each DIR describes one manifest of the index (what build-image.sh and push-image.sh, or the rescan, wrote):

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # changed-services.sh BASE HEAD: prints, on one line in alphabetical order, the services whose image must be built
-# for the changes from commit BASE to commit HEAD; the reason goes to stderr (docs/adr/0015-cicd-devsecops-stage5.md,
-# section 3).
+# for the changes from commit BASE to commit HEAD; the reason goes to stderr.
 #
 # A service is built when a changed path is one of its image paths (`image_paths` of deploy/k8s/lib.sh: go.mod,
 # go.sum, gen/, internal/, services/<svc>/, its Dockerfile, .dockerignore for a Go service; web/ and its Dockerfile for

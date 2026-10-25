@@ -32,7 +32,7 @@ func TestServeKafkaBrokersMissingOrMalformedNamesTheVariable(t *testing.T) {
 }
 
 // A failure after the error tracker has started is logged while the tracker still runs, so that
-// it reaches the tracker, and only once: main does not log it again (ADR-0011, section 7).
+// it reaches the tracker, and only once: main does not log it again.
 func TestServeReportsAFailureBeforeTheErrorTrackerStops(t *testing.T) {
 	var mu sync.Mutex
 	var envelopes []string

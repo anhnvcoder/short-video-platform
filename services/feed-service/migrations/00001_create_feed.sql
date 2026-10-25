@@ -1,7 +1,6 @@
 -- +goose Up
--- The feed read model, built from user.follows.v1 and video.lifecycle.v1
--- (docs/adr/0009-engagement-feed-stage2b.md, section 6). No foreign keys: users and videos live in
--- other services' databases (ADR-0001), and the events of the two topics come in any order.
+-- The feed read model, built from user.follows.v1 and video.lifecycle.v1. No foreign keys: users
+-- and videos live in other services' databases, and the events of the two topics come in any order.
 
 -- Keyed by followee, the reverse of user-service's follows: fan-out looks up an author's followers.
 CREATE TABLE follows (

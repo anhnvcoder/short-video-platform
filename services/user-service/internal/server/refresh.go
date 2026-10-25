@@ -22,7 +22,7 @@ import (
 	"github.com/anhnvcoder/short-video-platform/services/user-service/internal/store"
 )
 
-// Refresh token lifetimes (docs/adr/0016-web-client.md, section 2). Each rotation gives the new
+// Refresh token lifetimes. Each rotation gives the new
 // token RefreshTTL from the rotation, so a user who comes back within two weeks stays logged in,
 // but never beyond RefreshFamilyTTL after the login: a thief who rotates the token first is never
 // caught by reuse detection if the real client does not come back, and the ceiling bounds that.

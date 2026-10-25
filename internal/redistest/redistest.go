@@ -3,8 +3,7 @@
 // prefix afterwards.
 //
 // The local Redis is shared with other projects, so it refuses every URL but db 15 of
-// 127.0.0.1:6379 (or localhost:6379) before it sends a command, and it never flushes a database
-// (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md, section 1).
+// 127.0.0.1:6379 (or localhost:6379) before it sends a command, and it never flushes a database.
 package redistest
 
 import (
@@ -43,7 +42,7 @@ var allowedAddrs = map[string]bool{"127.0.0.1:6379": true, "localhost:6379": tru
 const timeout = 10 * time.Second
 
 // clientTimeout is the dial, read, write and pool timeout of the client New returns. Services use
-// the 50 to 100 ms of redisx (ADR-0010) so a slow Redis never holds a request; a test run is not a
+// the 50 to 100 ms of redisx so a slow Redis never holds a request; a test run is not a
 // request: with every package running at once under -race, a local Redis call can take longer than
 // that and the test fails on timing instead of on behavior. Tests of the fallback when Redis is
 // down build their own client to an address that never answers.

@@ -29,7 +29,7 @@ export const initialAuthState: AuthState = {
   retryAfterSeconds: null,
 };
 
-// The handle rules of user-service (docs/adr/0018-web-profiles-public-video-upload.md, section 1), checked in the
+// The handle rules of user-service, checked in the
 // browser and in the register action alike. Only ASCII A-Z is lowered: a Unicode lowering would turn the Kelvin sign
 // into k, making two different inputs one handle, so any other character is left in place and fails the pattern.
 export function normalizeHandle(value: string): string {

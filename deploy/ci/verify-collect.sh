@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the public artifact of a verification run (docs/adr/0021-deferred-verification-stage6b.md, section 4): copies
+# Builds the public artifact of a verification run: copies
 # the files of an allow list into $SVP_VERIFY_ARTIFACT (default verify-artifact in ci_temp_dir of
 # deploy/ci/platform.sh: $RUNNER_TEMP on GitHub), each only after a scan, and prints to the job's log a summary taken
 # from the copies alone. Anyone can read the artifact and the log of a public repository, so it fails closed: a file
@@ -16,16 +16,21 @@
 #                                 SKIP, WARN, with the item headings, the closing table and the last line around
 #                                 them), ram-*.json, ram-*.txt, rate-limit-load.json, lcp.json, k8s-status.txt,
 #                                 events.txt, compose-ps.txt
-# A target's output may quote a service's own log (install.sh prints the log of a failed migrate Job,
-# drill-alert-to-sentry the gateway's access log line it found in Loki), and no service log may reach the artifact:
-# the copy of a target's output leaves out every line of a JSON log record (a "msg" or "level" key, the form of the
-# services' slog and of most third-party servers) and every line quoting an access log ("access log of trace"), and
-# files.txt says how many lines it left out.
+# A target's output may quote a container's log, and no service log may reach the artifact. make k8s-up prints the log
+# of a failed migrate Job and, after a release that did not get ready, the last lines of each unready container's log
+# (unready_report of deploy/k8s/lib.sh), each line as "    [NAMESPACE] LINE"; drill-alert-to-sentry prints the gateway's
+# access log line it found in Loki. The copy of a target's output leaves out every such line of a namespace not in
+# log_tail_namespaces of deploy/k8s/lib.sh (third-party servers and operators only: never svp, the project's services),
+# every line of a JSON log record (a "msg" or "level" key, the form of the services' slog and of most third-party
+# servers) and every line quoting an access log ("access log of trace"), and files.txt says how many lines it left out.
+# What is kept of a third-party log goes through the scan below like the rest of the file.
 # From the checkout (all read from the stack/cluster): .k8s/drills/*.json and traffic-*.log (each line a time, a user,
 # a route, a status and a duration), .k6/<run>/summary.json, web/test-results/measure-*.json and glitchtip-*.json, the
 # Lighthouse reports web/test-results/lighthouse/*.json and *.html. Everything else under those places is listed in
 # files.txt as not-allowed: .env, kubeconfig, .k8s/ca.*, .k8s/helm/, .k8s/drills/threats-*.log, Playwright traces,
-# videos, screenshots, HAR and HTML report, k6's machine.json, hidden files and every service log never get in.
+# videos, screenshots, HAR and HTML report, k6's machine.json, hidden files and every service log never get in. A
+# hidden file is dropped with its own rule and a warning, except web/test-results/playwright/.last-run.json, which
+# Playwright writes on every run (the ids of the tests that failed): known, so not-allowed without a warning.
 #
 # Each candidate is refused when it is hidden, not a regular file (a link could point at .env), over 5 MiB, or when it
 # matches (grep -a: binary files are read as text):
@@ -34,7 +39,8 @@
 #                  are read again here, the cluster's while it still runs
 #   jwt            eyJ<8+>.eyJ<8+>. (header and payload of a JWT or JWS; eyJ alone also occurs in the base64 of the
 #                  screenshots Lighthouse embeds, which have no dots)
-#   session-cookie svp_sid; bearer "Bearer "; set-cookie "Set-Cookie"; private-key "-----BEGIN ... PRIVATE KEY-----"
+#   session-cookie svp_sid (in the verdict lines of a threat model drill: svp_sid not followed by a space, see rule)
+#   bearer "Bearer "; set-cookie "Set-Cookie"; private-key "-----BEGIN ... PRIVATE KEY-----"
 # A file read from the stack or the cluster is copied only when every list it needs was read: .env's always, the
 # cluster's too unless the scenario is compose-obs. A list that could not be read (an .env that breaks its rule, a
 # cluster that died before its Secrets were read once) leaves only the files written on the runner itself
@@ -62,6 +68,9 @@ export SVP_VERIFY_REPO=$repo SVP_VERIFY_SECRETS=$secrets
 max_bytes=$((5 * 1024 * 1024))
 jwt_re='eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.'
 service_log_re='"(msg|level)"[[:space:]]*:|access log of trace'
+# The namespaces whose container log lines may stay, read from deploy/k8s/lib.sh, which prints them; none (every
+# such line left out) when it cannot be read.
+log_tail_namespaces=$(. "$here/../k8s/lib.sh" >/dev/null 2>&1 && printf '%s' "$log_tail_namespaces") || log_tail_namespaces=
 # The lines of a threat model drill that reach the artifact, each a fixed form with no probe output in it: a verdict;
 # the "== ITEM" heading of drill-k8s-threats each check falls under; its closing table, "  ITEM  PASS|FAIL" under a
 # header "  ITEM  RESULT" and a title "drill-k8s-threats (<time>-<hex>)"; the closing "...: all checks passed".
@@ -107,13 +116,20 @@ drop() {
   [ "$2" = not-allowed ] || ci_warning "$1: $2"
 }
 
-# rule FILE: prints the first scan rule FILE breaks, nothing when it is clean.
+# rule FILE [KIND]: prints the first scan rule FILE breaks, nothing when it is clean. KIND verdicts (the verdict lines
+# of a threat model drill, the drill's own sentences) narrows session-cookie: the web client's items name the session
+# cookie in prose, its name followed by a space ("session cookie __Host-Http-svp_sid in the drill's cookie jar"), and
+# no form a cookie's value is written in puts the value after the name and a space (a header has name=value, a cookie
+# jar name<TAB>value, JSON "name": ..., "value": ...). So there svp_sid followed by any other character, or ending a
+# line, is still refused; in every other file svp_sid at all.
 rule() {
+  local sid_re=svp_sid
+  [ "${2:-}" = verdicts ] && sid_re='svp_sid([^ ]|$)'
   if [ -s "$work/values" ] && grep -qaF -f "$work/values" -- "$1"; then
     echo secret-value
   elif grep -qaE -- "$jwt_re" "$1"; then
     echo jwt
-  elif grep -qaF -- svp_sid "$1"; then
+  elif grep -qaE -- "$sid_re" "$1"; then
     echo session-cookie
   elif grep -qaF -- 'Bearer ' "$1"; then
     echo bearer
@@ -125,7 +141,8 @@ rule() {
 }
 
 # consider FILE SRC DEST KIND [NOTE]: copies FILE (shown as SRC) to $art/DEST when it passes; KIND is runner (written
-# on the runner itself) or stack (read from the stack or the cluster); NOTE goes with it into files.txt.
+# on the runner itself), stack (read from the stack or the cluster) or verdicts (the verdict lines of a threat model
+# drill, read from the stack or the cluster, scanned by rule as such); NOTE goes with it into files.txt.
 consider() {
   local file=$1 src=$2 dest=$3 kind=$4 note=${5:-} r size
   if [ -L "$file" ] || [ ! -f "$file" ]; then
@@ -137,11 +154,11 @@ consider() {
     drop "$src" too-large
     return
   fi
-  if [ "$kind" = stack ] && [ "$lists_ok" != 1 ]; then
+  if [ "$kind" != runner ] && [ "$lists_ok" != 1 ]; then
     drop "$src" no-secret-list
     return
   fi
-  r=$(rule "$file")
+  r=$(rule "$file" "$kind")
   if [ -n "$r" ]; then
     drop "$src" "$r"
     return
@@ -174,9 +191,12 @@ if [ -d "$out" ]; then
       logs/*-drill-k8s-threats.log | logs/*-drill-obs-threats.log)
         grep -aE -e "$verdict_re" -e "$item_re" -e "$table_re" -e "$drill_end_re" "$file" |
           grep -avE -- "$service_log_re" >"$work/verdicts" || :
-        consider "$work/verdicts" "$src (verdict lines)" "${sub%.log}.verdicts.log" stack ;;
+        consider "$work/verdicts" "$src (verdict lines)" "${sub%.log}.verdicts.log" verdicts ;;
       logs/*.log)
-        grep -avE -- "$service_log_re" "$file" >"$work/output" || :
+        # A marked log line is "    [NAMESPACE] ", the namespace starting at character 6.
+        grep -avE -- "$service_log_re" "$file" | LC_ALL=C awk -v shown=" $log_tail_namespaces " '
+          match($0, /^    \[[a-z0-9-]+\] /) && !index(shown, " " substr($0, 6, RLENGTH - 7) " ") { next }
+          { print }' >"$work/output" || :
         # grep -c, not wc -l: a last line without a newline counts too.
         removed=$(($(grep -ac '' "$file") - $(grep -ac '' "$work/output")))
         note=
@@ -198,6 +218,7 @@ for pair in .k8s/drills:k8s-drills .k6:k6 web/test-results:web-test-results; do
   while IFS= read -r -d '' file; do
     sub=${file#"$repo/$base"/}
     src=$base/$sub
+    if [ "$src" = web/test-results/playwright/.last-run.json ]; then drop "$src" not-allowed; continue; fi
     if hidden "$sub"; then drop "$src" hidden; continue; fi
     allowed=0
     case $base:$sub in

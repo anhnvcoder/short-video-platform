@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Drill: the gateway's rate limits on the running stack (ADR-0010, sections 2, 5 and 7). With a
+# Drill: the gateway's rate limits on the running stack. With a
 # fresh user A:
 #   1. A's login left its login-email bucket in Redis db 10 (svp:gw:rl:login-email:<ip>:<hash>):
 #      the limits run on the real Redis;

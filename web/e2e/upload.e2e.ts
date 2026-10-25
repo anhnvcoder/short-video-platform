@@ -13,7 +13,7 @@ import {
 } from "./fixtures";
 import { stack } from "./stack";
 
-// Upload from the browser (docs/adr/0018-web-profiles-public-video-upload.md, section 8): a 60 s 1080p clip goes from
+// Upload from the browser: a 60 s 1080p clip goes from
 // /upload to the storage with a presigned POST, the worker transcodes it to READY, and the video plays on its share
 // page. Each test has a user of its own: a user has at most 3 open uploads in 15 minutes, and the interrupted upload
 // may open more than one. Tagged @publishes: a READY video leads Explore, so these run after the other tests of both

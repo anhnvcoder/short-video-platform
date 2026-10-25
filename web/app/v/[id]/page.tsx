@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { NextIntlClientProvider } from "next-intl";
 import { getMessages, getTranslations } from "next-intl/server";
+import { linkPendingMessages } from "@/components/shell/link-pending-messages";
 import { ShareScreen } from "@/features/feed/share-screen";
 import { rateLimitedError } from "@/server/current-user";
 import { serverEnv } from "@/server/env";
@@ -20,7 +21,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return page === null || page.kind === "not-found" ? { title: t("notFound.title") } : {};
 }
 
-// The public share page /v/{id} (docs/adr/0018-web-profiles-public-video-upload.md, section 7). It is outside the
+// The public share page /v/{id}. It is outside the
 // (main) group: no login needed, no navigation bars. The id must be a canonical UUID, checked before anything is
 // called; every video nobody may watch here gets the same 404.
 export default async function VideoPage({ params }: Props) {
@@ -41,7 +42,7 @@ export default async function VideoPage({ params }: Props) {
   const [messages, common] = await Promise.all([getMessages(), getTranslations("common")]);
   return (
     // Only the namespaces the page's client components translate go to the browser.
-    <NextIntlClientProvider messages={{ feed: messages.feed, share: messages.share }}>
+    <NextIntlClientProvider messages={{ feed: messages.feed, share: messages.share, ...linkPendingMessages(messages) }}>
       <ShareScreen
         video={page.video}
         viewerId={page.viewerId}

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# KEDA drill on cluster svp (docs/adr/0014-kubernetes-local-stage4.md, section 10): media-worker scales on the lag of
+# KEDA drill on cluster svp: media-worker scales on the lag of
 # group media-worker on video.lifecycle.v1 and back, and a scale-down while a job runs loses and repeats no video.
 #
 # Uploads at least N videos (default 9; the same generated 60 s 1080p clip, about 45 s of transcode each) through
 # https://api.svp.localhost:8443, and more while their records would not cover every partition of the topic:
 # video-service keys each record by its video id, and KEDA asks for at most one replica per partition with lag, so the
-# maximum of 2 replicas (docs/adr/0017-gitops-capacity-media-worker-max2.md) needs records on 2 of the 3 partitions;
+# maximum of 2 replicas needs records on 2 of the 3 partitions;
 # on all 3, every member has records waiting, the one owning two partitions too. kafka_partition (lib.sh) predicts
 # each one's partition before it is completed; the drill checks the prediction against the topic at the end. Then
 # completes all of them within a second or two, so they all wait at once. A sampler records, every ~2 s, media-worker's
@@ -19,14 +19,14 @@
 # stops. The pod gets the lowest controller.kubernetes.io/pod-deletion-cost, so the ReplicaSet removes it first, and
 # the ScaledObject is pinned one replica lower with annotation autoscaling.keda.sh/paused-replicas (KEDA's own way to
 # hold a workload at a count): KEDA scales the Deployment down, the path an HPA scale-down takes too, and the pod gets
-# SIGTERM. Its log must show "transcode job interrupted" (the record in hand stays uncommitted, ADR-0008 section 8);
+# SIGTERM. Its log must show "transcode job interrupted" (the record in hand stays uncommitted);
 # the annotation is then removed and KEDA scales on the lag again. Each interrupted video must end READY like the
 # others, done again by another member after the rebalance.
 #
 # Prints:
 #   - the time from the first CompleteUpload to each count of desired and of ready replicas from 2 to the maximum;
 #   - for each pod added, the time from Ready to owning a partition: the member joins the group at once, but
-#     BlockRebalance holds the rebalance until every worker has finished the record in hand (ADR-0008, section 8);
+#     BlockRebalance holds the rebalance until every worker has finished the record in hand;
 #   - the peak lag, how many of the topic's 3 partitions the records landed on, each video's time to READY (from its own
 #     CompleteUpload and from the first one);
 #   - the scale-down while a job ran: when, which pod and video, how long the pod took to stop, which pod did the
@@ -41,10 +41,11 @@
 # media.transcodes.v1 and one video.ready in video.lifecycle.v1 (a scale up or down while a job ran must not transcode a
 # video twice nor lose one), a record landed on another partition than predicted, or media-worker is not back at one
 # replica within 10 minutes of the last READY, or the k3s server restarted while the drill ran. That last one is
-# criterion (c) of ADR-0017: with 3 workers transcoding at once the VM ran out of CPU, kine's compaction hit its 20 s
-# limit and k3s exited, the API server gone for minutes. Container k3d-svp-server-0's RestartCount and State.StartedAt
-# are read with docker inspect at the start and again when the drill ends, failed or not (so a run that failed because
-# kubectl lost the API server still names the restart); docker not answering either time is a failure too.
+# why media-worker stops at 2 replicas: with 3 workers transcoding at once the VM ran out of CPU, kine's compaction
+# hit its 20 s limit and k3s exited, the API server gone for minutes. Container k3d-svp-server-0's RestartCount and
+# State.StartedAt are read with docker inspect at the start and again when the drill ends, failed or not (so a run
+# that failed because kubectl lost the API server still names the restart); docker not answering either time is a
+# failure too.
 #
 # Usage (from the repo root, cluster up): make drill-k8s-keda [N=9], N from 6 to 12: below 6 the scale-down may find
 # no pod with 2 records waiting (2 workers drain the queue slower than 3 did, so 6 still leaves enough when the second
@@ -199,7 +200,7 @@ partitions=$(rpk topic list | awk -v t="$topic" '$1 == t { print $2 }')
 max_replicas=$(kc -n svp get scaledobject media-worker -o jsonpath='{.spec.maxReplicaCount}')
 # KEDA asks for at most one replica per partition with lag (limitToPartitionsWithLag), so a maximum above the partition
 # count is never reached; below it a member owns several partitions. The topic keeps 3 partitions while media-worker
-# stops at 2 (ADR-0017). The scale-down pins one replica below the maximum, so the maximum is at least 2.
+# stops at 2. The scale-down pins one replica below the maximum, so the maximum is at least 2.
 [[ $partitions =~ ^[0-9]+$ && $max_replicas =~ ^[0-9]+$ && $max_replicas -ge 2 && $partitions -ge $max_replicas ]] ||
   fail "topic $topic has at least as many partitions as ScaledObject media-worker's maxReplicaCount, which is at least 2 (got '$partitions' and '$max_replicas')"
 ok "ScaledObject media-worker Ready, up to $max_replicas replicas; its HPA reads external metric $metric"

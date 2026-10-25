@@ -1,4 +1,4 @@
-# drill-vulnerable: an image built ONLY to drill admission (docs/adr/0015-cicd-devsecops-stage5.md, sections 7 and 8).
+# drill-vulnerable: an image built ONLY to drill admission.
 # It must never run: no chart points to it, and Kyverno must refuse it because its signed vuln attestation lists
 # CRITICAL vulnerabilities. Built through the same two-architecture pipeline as the services, so the CRITICAL findings
 # are the only difference with a release.

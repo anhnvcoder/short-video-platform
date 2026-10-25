@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
-# Puts GlitchTip's DSN and the drills' API token into the cluster's Secrets once GlitchTip runs in svp-obs
-# (docs/adr/0014-kubernetes-local-stage4.md, sections 8 and 11), the cluster's side of what
-# deploy/observability/glitchtip/init.sh does for compose:
+# Puts GlitchTip's DSN and the drills' API token into the cluster's Secrets once GlitchTip runs in svp-obs,
+# the cluster's side of what deploy/observability/glitchtip/init.sh does for compose:
 #   Secret svp/sentry            SENTRY_DSN, the DSN of project svp with host glitchtip.svp-obs:8000, read by the five
 #                                services that report errors (optional reference: until it exists they run without)
 #   Secret svp-obs/glitchtip-api SENTRY_AUTH_TOKEN, the read-only API token svp-drill (event:read, project:read)
 #   Secret svp-obs/glitchtip-sourcemaps
 #                                SENTRY_SOURCEMAPS_TOKEN, the API token svp-sourcemaps (project:releases) with which
-#                                `make k8s-web-sourcemaps` uploads the web client's source maps
-#                                (docs/adr/0019-web-k3d-supply-chain-observability.md, section 9); skipped with a
-#                                note while GlitchTip has no such token (a GitOps revision whose bootstrap.py predates
-#                                it), so the DSN still reaches the services
+#                                `make k8s-web-sourcemaps` uploads the web client's source maps;
+#                                skipped with a note while GlitchTip has no such token (a GitOps revision whose
+#                                bootstrap.py predates it), so the DSN still reaches the services
 # All are GlitchTip's own values, made by its init Job (bootstrap.py): they never go to .env, a file or the terminal.
 # They are read inside the running GlitchTip pod through its ORM and come back on stdout into a shell variable only.
 #

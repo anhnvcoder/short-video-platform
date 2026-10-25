@@ -3,7 +3,16 @@
 import { ChevronDown, ChevronUp, Link2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { useEffect, useEffectEvent, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import {
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  useTransition,
+  type ReactNode,
+} from "react";
 import { preload } from "react-dom";
 import type { RailFollow } from "@/components/feed/action-rail";
 import { FeedItem } from "@/components/feed/feed-item";
@@ -67,7 +76,7 @@ function itemPart(feed: HTMLElement | null, index: number, part: "video-host" | 
   return feed?.children.item(index)?.querySelector<HTMLElement>(`[data-part="${part}"]`) ?? null;
 }
 
-// The vertical feed (docs/adr/0016-web-client.md, section 8): items snap one per screen, an IntersectionObserver picks
+// The vertical feed: items snap one per screen, an IntersectionObserver picks
 // the current one, and a pool of three players plays it and preloads its neighbours. Explore and Following share it.
 export function FeedScreen({
   kind,
@@ -134,6 +143,18 @@ export function FeedScreen({
     () => document.readyState === "complete",
     () => false,
   );
+
+  // The server renders a feed page with its first page (feed-route.tsx), so the router keeps this page until the other
+  // tab's has arrived. Meanwhile that tab is shown selected, the skeleton lies over this feed and nothing plays: the
+  // switch answers at once. The feed stays mounted under it, with its scroll position and players, in case the user
+  // comes back before the other tab arrives.
+  const [switching, startSwitch] = useTransition();
+  const [switchTo, setSwitchTo] = useState(kind);
+  const leaving = switching && switchTo !== kind;
+  function selectTab(next: FeedKind) {
+    setSwitchTo(next);
+    startSwitch(() => router.push(next === "explore" ? "/" : "/following"));
+  }
 
   const pool = useRef<PlayerPool | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
@@ -211,11 +232,8 @@ export function FeedScreen({
     };
   }, [mediaOrigin]);
 
-  const sources = useMemo(
-    () => items.map((item, index) => ({ index, playlistUrl: item.playlist_url, posterUrl: item.thumbnail_url })),
-    [items],
-  );
-  const shouldPlay = pausedIndex !== active && !hidden;
+  const sources = useMemo(() => items.map((item, index) => ({ index, playlistUrl: item.playlist_url })), [items]);
+  const shouldPlay = pausedIndex !== active && !hidden && !leaving;
   useEffect(() => {
     pool.current?.sync(active, sources, (index) => itemPart(scroller.current, index, "video-host"), shouldPlay);
   }, [active, sources, shouldPlay]);
@@ -336,7 +354,8 @@ export function FeedScreen({
   }
 
   const onKeyDown = useEffectEvent((event: KeyboardEvent) => {
-    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || ignoresShortcut(event)) {
+    // While leaving for the other tab, this feed is under the skeleton: no shortcut acts on what cannot be seen.
+    if (leaving || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || ignoresShortcut(event)) {
       return;
     }
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -428,11 +447,12 @@ export function FeedScreen({
 
   return (
     <FeedFrame
-      kind={kind}
+      kind={leaving ? switchTo : kind}
+      onSelect={selectTab}
       overlays={
         <>
           {!online && <OfflineBanner />}
-          {items.length > 0 && (
+          {items.length > 0 && !leaving && (
             <div className="absolute top-1/2 right-8 z-20 hidden -translate-y-1/2 flex-col gap-3 md:flex">
               <IconButton
                 label={t("previous")}
@@ -475,7 +495,16 @@ export function FeedScreen({
         </>
       }
     >
-      {body}
+      {/* Under the skeleton while leaving for the other tab: inert keeps the keyboard and screen readers out of a feed
+          that cannot be seen, so Tab and Enter never like or follow a video the user does not see. */}
+      <div inert={leaving} className="h-full">
+        {body}
+      </div>
+      {leaving && (
+        <div className="absolute inset-0 z-10">
+          <FeedSkeleton />
+        </div>
+      )}
     </FeedFrame>
   );
 }

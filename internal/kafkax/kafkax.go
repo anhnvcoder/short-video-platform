@@ -2,7 +2,7 @@
 // request's traceparent, and runs group consumers with manual commits, in-process retries and a
 // dead-letter topic. A record is committed only after its handler returns, and one that keeps
 // failing goes to the dead-letter topic instead of blocking its partition, so none is lost or
-// stuck (ADR-0003, ADR-0008 section 8).
+// stuck.
 package kafkax
 
 import (
@@ -36,7 +36,7 @@ const (
 // refresh, so a produce can return up to this long after its deadline. With the franz-go default
 // of 5 s the outbox relay could hold its lock ~15 s on a 10 s produce deadline and a view write
 // take ~7 s on a 2 s one; 1 s brings those to ~11 s and ~3 s, for at most one extra metadata
-// request per second per client while a broker is failing (ADR-0013).
+// request per second per client while a broker is failing.
 const metadataMinAge = time.Second
 
 // NewClient returns a client for brokers, a comma-separated list of host:port such as the

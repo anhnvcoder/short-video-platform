@@ -83,7 +83,7 @@ export function cleanPage(page: FeedPage): FeedPage {
   return { items: page.items.filter(hasValidIds).map(cleanItem), next_cursor: page.next_cursor };
 }
 
-// The share link of a video, on the origin the page was opened from (ADR-0018, section 7).
+// The share link of a video, on the origin the page was opened from.
 export function shareUrl(origin: string, videoId: string): string {
   return `${origin}/v/${videoId}`;
 }

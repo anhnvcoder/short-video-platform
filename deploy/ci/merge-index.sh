@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # merge-index.sh IMAGE DIR DIR OUT: joins the two manifests pushed by push-image.sh (one DIR per platform, as the
 # leg artifacts hold them) into the multi-arch index ghcr.io/anhnvcoder/short-video-platform/IMAGE:<12 hex of the
-# commit> (docs/adr/0015-cicd-devsecops-stage5.md, section 4), with the OCI annotations of the commit on the index
-# (section 5). Reads the index back and checks it holds exactly those two manifests, linux/amd64 and linux/arm64.
+# commit>, with the OCI annotations of the commit on the index.
+# Reads the index back and checks it holds exactly those two manifests, linux/amd64 and linux/arm64.
 # Writes OUT/repository, OUT/tag and OUT/digest: the index digest is what is signed, attested and promoted.
 # Needs `docker login ghcr.io` done by the caller.
 set -euo pipefail

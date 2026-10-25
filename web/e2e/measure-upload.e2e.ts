@@ -3,7 +3,7 @@ import { statSync, writeFileSync } from "node:fs";
 import { expect, logIn, registerAccount, test } from "./fixtures";
 
 // The upload measurement of e2e/measure-upload.sh (`make measure-upload`), Chromium only: one ~100 MB video through
-// /upload, the way a user sends it (docs/adr/0018-web-profiles-public-video-upload.md, section 8).
+// /upload, the way a user sends it.
 // - Upload time: the Resource Timing entry of the XHR's POST to the storage, startTime to responseEnd. It includes the
 //   CORS preflight, which is part of what the user waits for.
 // - CPU: DevTools Performance.getMetrics before the click and right after the POST ended. TaskDuration is the time the

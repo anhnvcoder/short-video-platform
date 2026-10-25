@@ -14,7 +14,7 @@ import {
 } from "./fixtures";
 import { seed } from "./seed";
 
-// Profiles (docs/adr/0018-web-profiles-public-video-upload.md, section 7): "My videos" at /me with every video of the
+// Profiles: "My videos" at /me with every video of the
 // user and its status, the display name changed there, another user's profile at /u/{handle} with its follow button.
 
 test("/me lists my videos with their status, under my name and @handle", async ({ page }) => {

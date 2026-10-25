@@ -1,15 +1,14 @@
 # Tempo 3.1.0 (chart https://grafana-community.github.io/helm-charts tempo 3.2.0, single binary), release tempo in
-# namespace svp-obs, wave 3 of deploy/argocd/apps/components.json (docs/adr/0014-kubernetes-local-stage4.md, sections 2,
-# 3 and 11). The Collector sends traces over OTLP/gRPC to tempo.svp-obs:4317; Grafana queries tempo.svp-obs:3200.
+# namespace svp-obs, wave 3 of deploy/argocd/apps/components.json. The
+# Collector sends traces over OTLP/gRPC to tempo.svp-obs:4317; Grafana queries tempo.svp-obs:3200.
 
 tempo:
   # By digest (multi-arch index: linux/amd64 and linux/arm64), the chart's appVersion beside it for the reader: a tag
-  # can be pushed again to other content, a digest cannot (docs/adr/0015-cicd-devsecops-stage5.md, section 8). The chart
+  # can be pushed again to other content, a digest cannot. The chart
   # renders registry/repository:tag and strips the digest from its version label, so tag holds version@digest;
   # deploy/k8s/check-image-digests.sh fails on an image without one. The chart keeps the image under tempo, a key that
   # does not end in "image", so Renovate's helm-values manager does not see it: the "# renovate:" line right above tag
-  # names the image (the chart's default registry/repository) for the custom manager that updates it (ADR-0015
-  # section 10).
+  # names the image (the chart's default registry/repository) for the custom manager that updates it.
   # renovate: datasource=docker depName=docker.io/grafana/tempo
   tag: 3.1.0@sha256:3076b8dcdfb32fd6bc5ccef85e7b7313e6199b9cb84366257fc17ecb696db5fd
   # Same metrics-generator as Tempo inside grafana/otel-lgtm (/otel-lgtm/tempo-config.yaml of the image): the service
@@ -38,7 +37,7 @@ tempo:
   resources:
     requests: {cpu: 50m, memory: 128Mi}
     limits: {memory: 768Mi}
-  # Pod Security "restricted" (ADR-0014 section 3; the namespace rejects pods that do not meet it): the chart sets no
+  # Pod Security "restricted" (the namespace rejects pods that do not meet it): the chart sets no
   # container securityContext.
   securityContext:
     allowPrivilegeEscalation: false

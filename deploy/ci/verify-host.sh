@@ -1,22 +1,31 @@
 #!/usr/bin/env bash
-# Checks and prepares the machine of a verification run before any make target (docs/adr/0021-deferred-verification-
-# stage6b.md, sections 2 and 3): the GitHub runner ubuntu-24.04, or the rented Linux VM that stands in for it. Fails
+# Checks and prepares the machine of a verification run before any make target: the GitHub runner
+# ubuntu-24.04, or the rented Linux VM that stands in for it. Fails
 # with the numbers, so a run that would have died hours later for want of disk or a name stops here.
 #
 #   verify-host.sh compose-obs|dev-k3d
 #
 # 1. Disk: free space of the filesystem of Docker's data directory must be at least need + 15% of its size + 2 GiB,
-#    need being what the scenario adds (15 GiB for compose-obs; 30 GiB for a k3d scenario: build cache of seven images,
-#    the images of about 40 third-party containers in the containerd store of two nodes, volumes, Playwright's
-#    browsers). The 15% keeps kubelet below its default image garbage collection threshold (85%). Short of it, the
-#    toolsets of the runner image that this repository never uses are deleted (Android, .NET, GHC, CodeQL; not the Go
-#    or Node of the hosted tool cache that setup-go and setup-node use), then it measures again and fails if still
-#    short. df and docker system df go to $SVP_VERIFY_OUT/df-before.txt and to the log.
+#    need being what the scenario adds (16 GiB for compose-obs: 1.25 times the 12.7 GiB its first run on the runner
+#    used; 30 GiB for a k3d scenario: build cache of seven images, the images of about 40 third-party containers in the
+#    containerd store of two nodes, volumes, Playwright's browsers). The 15% keeps kubelet below its default image
+#    garbage collection threshold (85%). Short of it, the toolsets of the runner image that this repository never uses
+#    are deleted (Android, .NET, GHC, CodeQL; not the Go or Node of the hosted tool cache that setup-go and setup-node
+#    use), then it measures again and fails if still short. df and docker system df go to
+#    $SVP_VERIFY_OUT/df-before.txt and to the log.
 # 2. k3d only: the line "127.0.0.1 svp.localhost api.svp.localhost s3.svp.localhost" in /etc/hosts (the drills and the
 #    browsers reach Envoy by those names, and k3d publishes 127.0.0.1:8443 only, so a name that also resolves to ::1
 #    costs a refused connection or a failure), then getent ahosts of each name must give 127.0.0.1 and nothing else.
 # 3. k3d only: kubectl of the machine within one minor version of the cluster's k3s (K3S_IMAGE_TAG of the Makefile),
 #    as kubectl's version skew policy allows.
+# 4. compose-obs only: make web-lighthouse launches Playwright's Chromium through Lighthouse, with Chrome's sandbox,
+#    which needs unprivileged user namespaces. Ubuntu 23.10 and later restrict those through AppArmor
+#    (kernel.apparmor_restrict_unprivileged_userns=1) for every binary without a profile of its own, and Playwright's
+#    download has none, so Chrome stops with "No usable sandbox". The restriction is lifted on this machine (it is
+#    thrown away after the run, and the job already has root through sudo), so the sandbox stays on; Playwright's own
+#    launches (the e2e tests) turn the sandbox off themselves and need nothing.
+# 5. k3d only: prints vm.min_free_kbytes. Seastar takes it off the broker's cgroup limit before it checks --memory, and
+#    deploy/k8s/values/redpanda.yaml leaves room for it (66 MiB on an x86_64 runner, 44 MiB in Docker Desktop's VM).
 # It writes the scenario's name to $SVP_VERIFY_OUT/scenario for deploy/ci/verify-collect.sh. Linux only (GNU df).
 set -euo pipefail
 
@@ -40,7 +49,7 @@ docker_() { env -u DOCKER_DEFAULT_PLATFORM docker "$@"; }
 
 scenario=${1:-}
 case $scenario in
-  compose-obs) need_gib=15 k3d=0 ;;
+  compose-obs) need_gib=16 k3d=0 ;;
   dev-k3d) need_gib=30 k3d=1 ;;
   *) fail "usage: verify-host.sh compose-obs|dev-k3d (got '$scenario')" ;;
 esac
@@ -69,6 +78,16 @@ fi
 } >"$out/df-before.txt"
 cat "$out/df-before.txt"
 
+if [ "$scenario" = compose-obs ]; then
+  userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)
+  if [ "$userns" = 1 ]; then
+    sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null ||
+      fail "lift kernel.apparmor_restrict_unprivileged_userns for Chrome's sandbox"
+    userns=0
+  fi
+  echo "apparmor: kernel.apparmor_restrict_unprivileged_userns $userns (Chrome's sandbox for make web-lighthouse)"
+fi
+
 [ "$k3d" = 1 ] || exit 0
 
 if ! grep -qxF "$hosts_line" /etc/hosts; then
@@ -89,3 +108,5 @@ client_minor=$(kubectl --context k3d-svp version --client -o json | jq -r '.clie
 skew=$((client_minor - k3s_minor))
 [ "${skew#-}" -le 1 ] || fail "kubectl 1.$client_minor is more than one minor version from k3s 1.$k3s_minor"
 echo "kubectl: 1.$client_minor for k3s 1.$k3s_minor (within one minor version)"
+
+echo "memory: vm.min_free_kbytes $(cat /proc/sys/vm/min_free_kbytes) kB (Seastar takes it off the Redpanda broker's limit)"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # `make drill-k8s-web-obs`: what the web client leaves in the observability stack of cluster svp after
-# `make k8s-web-e2e` (docs/adr/0019-web-k3d-supply-chain-observability.md, sections 7, 8, 10 and 11). Read only.
+# `make k8s-web-e2e`. Read only.
 #   1. trace   Tempo holds a trace of the last hour with spans of service.name=web and of service.name=gateway: the
 #              web's call to the gateway carried its trace context, and the gateway (TRUST_TRACE_CONTEXT=true) went
 #              on in the same trace. The newest such trace is printed with its span count per service.

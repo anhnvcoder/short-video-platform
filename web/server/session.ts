@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import { withTimeout, type Redis } from "./redis";
 
-// Server-side sessions in Redis (docs/adr/0016-web-client.md, section 5). The browser holds only a random session id
+// Server-side sessions in Redis. The browser holds only a random session id
 // (sid) in an HttpOnly cookie; the tokens stay here and never reach a page, a response or a log.
 //
 // Keys: <prefix>sess:<sha256(sid) hex> holds the session JSON, <prefix>lock:<sha256(sid) hex> the refresh lease. Only

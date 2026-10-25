@@ -1,5 +1,5 @@
-// One attempt to send a file to the storage with a presigned POST (docs/adr/0018-web-profiles-public-video-upload.md,
-// section 8). XMLHttpRequest rather than fetch: only it reports upload progress in every browser and can be aborted
+// One attempt to send a file to the storage with a presigned POST.
+// XMLHttpRequest rather than fetch: only it reports upload progress in every browser and can be aborted
 // mid-body. The request carries no cookie (withCredentials stays false) and no header of ours: the signed form is the
 // whole authorization, and the storage's CORS allows only the web origin.
 

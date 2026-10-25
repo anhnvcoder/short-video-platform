@@ -31,7 +31,7 @@ fail() {
 
 # reset_register_limit: LOCAL LAB ONLY. Every request of these scripts reaches the gateway from the
 # one Docker bridge address, and every script registers fresh users, so runs within an hour would
-# use up the per-IP register burst of 20 (ADR-0010, sections 2 and 7). Deletes the register
+# use up the per-IP register burst of 20. Deletes the register
 # buckets (svp:gw:rl:register:*) in the gateway's Redis db 10 on 127.0.0.1:6379 with SCAN + DEL,
 # and no other key; the limit itself is not raised.
 #

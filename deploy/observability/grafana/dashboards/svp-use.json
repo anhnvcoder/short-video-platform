@@ -1,7 +1,7 @@
 {
   "uid": "svp-use",
   "title": "SVP — USE / runtime",
-  "description": "Go runtime, Postgres and Redis pools, and Collector health per service (ADR-0011 §5).",
+  "description": "Go runtime, Postgres and Redis pools, and Collector health per service.",
   "tags": [
     "svp"
   ],
@@ -510,7 +510,7 @@
     {
       "type": "timeseries",
       "title": "Mean acquire wait",
-      "description": "Counter in nanoseconds (ADR-0011 §5) divided by 1e9; no data while there is no acquire.",
+      "description": "Counter in nanoseconds divided by 1e9; no data while there is no acquire.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

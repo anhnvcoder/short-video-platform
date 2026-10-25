@@ -302,7 +302,7 @@ func TestRedisUnreachable(t *testing.T) {
 
 func TestStoreTimeout(t *testing.T) {
 	if got := New(nil, "svp:test:").storeTimeout; got != 50*time.Millisecond {
-		t.Errorf("default store timeout = %v, want 50ms (ADR-0010 section 2)", got)
+		t.Errorf("default store timeout = %v, want 50ms", got)
 	}
 	// A Redis call that cannot finish within the bound counts as Redis failing, even when Redis
 	// is healthy: a soft-closed class takes its fallback.

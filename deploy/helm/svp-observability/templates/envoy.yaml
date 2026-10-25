@@ -1,5 +1,5 @@
 {{- /*
-Envoy's metrics for the canaries of the gateway and web (ADR-0014 section 13): Prometheus scrapes the proxy of
+Envoy's metrics for the canaries of the gateway and web: Prometheus scrapes the proxy of
 Gateway svp on its metrics port, /stats/prometheus, and AnalysisTemplates <release>-canary (chart svp-service) read
 the canary backend's 5xx and latency from them. Envoy exposes a few thousand series; only the three families the
 analyses and the drills read are kept, for the clusters of HTTPRoutes api and web (svp), the routes of the releases

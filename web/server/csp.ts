@@ -1,7 +1,7 @@
 import "server-only";
 import { randomBytes } from "node:crypto";
 
-// Content-Security-Policy and the other security headers of every response (docs/adr/0016-web-client.md, section 6).
+// Content-Security-Policy and the other security headers of every response.
 
 // 16 random bytes per request: a script injected into the page cannot guess it.
 export function newNonce(): string {

@@ -1,4 +1,4 @@
-# Load test targets (k6, docs/adr/0020-reliability-stage6.md, section 2), included by the root Makefile. k6 runs only as
+# Load test targets (k6), included by the root Makefile. k6 runs only as
 # K6_IMAGE (pinned in the Makefile), never a k6 installed on the machine; every docker call drops DOCKER_DEFAULT_PLATFORM
 # (CLAUDE.md).
 

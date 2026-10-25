@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# build-image.sh IMAGE ARCH OUT: steps 1-3 of one leg of the image pipeline (docs/adr/0015-cicd-devsecops-stage5.md,
-# sections 4 and 6), shared by the pull request job (which stops here) and the main job (which then pushes):
+# build-image.sh IMAGE ARCH OUT: steps 1-3 of one leg of the image pipeline, shared by the pull request
+# job (which stops here) and the main job (which then pushes):
 #   1. `docker buildx build --load` from the existing Dockerfile, on this host's own architecture (no emulation, no
 #      cross-compiling: the Dockerfiles stay what `make up` and `make k8s-up` use), OCI labels of the commit, no
 #      BuildKit provenance or SBOM so the image is one plain manifest;
@@ -10,8 +10,8 @@
 # IMAGE is one of the seven services, or drill-vulnerable / drill-unsigned (images built only to drill admission, never
 # run). The web image builds from the context web/ (build_context of deploy/k8s/lib.sh) with SVP_BUILD_ID set to the
 # first 12 hex digits of the commit, the image's tag: both architectures of a commit get the same id, which Next uses
-# as its deploymentId and the server as its release name (docs/adr/0019-web-k3d-supply-chain-observability.md,
-# section 1). trivy then reads the package.json of every package in the image's node_modules, so npm packages go
+# as its deploymentId and the server as its release name.
+# trivy then reads the package.json of every package in the image's node_modules, so npm packages go
 # through the same CRITICAL and secret gate, and syft lists them in the SBOM. ARCH (amd64, arm64) must be this host's
 # architecture. OUT receives:
 #   image.tar, local-tag, platform, config-digest, trivy.json, trivy.sarif, sbom.spdx.json, scan-started,
@@ -72,7 +72,7 @@ now_utc >"$out/scan-finished"
 trivy_db_updated_at >"$out/db-updated-at"
 jq -r .Metadata.ImageID "$out/trivy.json" >"$out/config-digest"
 
-# SBOM of the same tar (ADR-0015 section 7): one SPDX document per platform, attested later on the manifest of that
+# SBOM of the same tar: one SPDX document per platform, attested later on the manifest of that
 # platform. syft runs with no network; its image has no writable /tmp for a non-root user, hence the tmpfs.
 syft_image=$(tool_image SYFT_IMAGE)
 rm -f "$out/sbom.spdx.json"

@@ -1,6 +1,6 @@
-// Package ratelimit is the gateway's rate limiter (docs/adr/0010-redis-ratelimit-cache-resilience-stage2c.md,
-// section 2): GCRA in one Lua script on Redis, shared by every gateway instance, and the same
-// algorithm in memory for the routes that must stay limited while Redis fails.
+// Package ratelimit is the gateway's rate limiter: GCRA in one Lua script on Redis, shared by
+// every gateway instance, and the same algorithm in memory for the routes that must stay limited
+// while Redis fails.
 //
 // Each route class decides what happens when Redis fails or takes longer than storeTimeout
 // (threat model RL-2): a soft-closed class (register, login, refresh, upload, public) falls back to an
@@ -51,7 +51,7 @@ type Class struct {
 	Fallback Limit
 }
 
-// The classes of ADR-0010 section 2, each sized so that a real user never reaches the limit
+// The rate limit classes, each sized so that a real user never reaches the limit
 // while password guessing, mass sign-ups and junk writes slow down. Fallback limits are half of
 // the Redis ones.
 var (
@@ -61,13 +61,13 @@ var (
 	Upload     = Class{Name: "upload", Limit: Limit{30, time.Hour, 10}, Fallback: Limit{15, time.Hour, 5}}
 	Write      = Class{Name: "write", Limit: Limit{120, time.Minute, 60}}
 	Read       = Class{Name: "read", Limit: Limit{600, time.Minute, 200}}
-	// Refresh covers /auth/refresh and /auth/logout by client IP (ADR-0016 section 4). A session
+	// Refresh covers /auth/refresh and /auth/logout by client IP. A session
 	// refreshes about once an hour, so 60 a minute serves a thousand sessions behind one NAT;
 	// guessing a 256-bit token is hopeless anyway, so the limit guards user-service, which runs
 	// one transaction per call, rather than the tokens.
 	Refresh = Class{Name: "refresh", Limit: Limit{60, time.Minute, 30}, Fallback: Limit{30, time.Minute, 15}}
 	// Public covers GET /public/videos/{video_id} by client IP, the one route without a caller
-	// outside /auth (ADR-0018 section 6). Opening a shared link is one call, so 120 a minute serves
+	// outside /auth. Opening a shared link is one call, so 120 a minute serves
 	// many people behind one NAT and a burst of 60 a whole chat group opening the same link with
 	// the link-preview bots; a scraper is held to 2 a second per IP. It is soft-closed: a route
 	// anyone can call is never left unlimited, not even while Redis fails.
@@ -126,9 +126,9 @@ func WithStoreTimeout(d time.Duration) Option {
 //
 // Every Allow answer is counted by the global OTel meter provider in svp.ratelimit.decisions,
 // labelled class, result (allowed or limited) and store (redis, or fallback when Redis failed),
-// so the fallback in use is visible (threat model RL-2; docs/adr/0011-observability-stage3.md,
-// section 5). An answer to a request cancelled before Redis answered is not counted. New adds 0
-// to every series of the classes of ADR-0010, so they exist before the first request.
+// so the fallback in use is visible (threat model RL-2). An answer to a request cancelled before
+// Redis answered is not counted. New adds 0 to every series of the classes above, so they exist
+// before the first request.
 func New(client *redis.Client, prefix string, opts ...Option) *Limiter {
 	l := &Limiter{client: client, prefix: prefix, mem: newMemory(time.Now), storeTimeout: defaultStoreTimeout}
 	for _, opt := range opts {

@@ -1,7 +1,7 @@
 {
   "uid": "svp-slo",
   "title": "SVP — SLO",
-  "description": "Six SLOs over 30 days (feed availability, upload init availability, feed latency, video READY latency, web availability, web INP) from the recording rules Sloth generates: SLI, error budget, burn rate, alerts (ADR-0011 §8).",
+  "description": "Six SLOs over 30 days (feed availability, upload init availability, feed latency, video READY latency, web availability, web INP) from the recording rules Sloth generates: SLI, error budget, burn rate, alerts.",
   "tags": [
     "svp"
   ],

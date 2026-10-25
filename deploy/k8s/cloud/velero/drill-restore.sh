@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Velero restore drill of one namespace on the cloud cluster of stage 7 (docs/adr/0020-reliability-stage6.md, section 6).
+# Velero restore drill of one namespace on the cloud cluster of stage 7.
 # The learner runs it, with the cloud cluster's kubectl context; never on k3d (refused before any kubectl call) and
 # never from make. It needs kubectl, jq and curl on the machine, Velero installed and configured as the top of
 # deploy/k8s/cloud/values/velero.yaml says, and no velero CLI: backups and restores are created as objects from the
@@ -44,8 +44,8 @@
 #
 # Watch: kubectl --context <ctx> -n velero get backups,restores -w; kubectl --context <ctx> -n <ns> get pods -w; the
 # alerts KafkaConsumerLagHigh and KafkaDLQRecords.
-# Pass: every check of step 5 PASS, the smoke passed at T1 and the learner's checks hold; rto_seconds is the number for
-# the Results of docs/adr/0020-reliability-stage6.md (none when the smoke failed).
+# Pass: every check of step 5 PASS, the smoke passed at T1 and the learner's checks hold; rto_seconds is the RTO the
+# drill measured (none when the smoke failed).
 # Stop early: Ctrl-C. Before T0 auto-sync is turned back on by the script; between T0 and the Restore's Completed it is
 # left off on purpose (an Application syncing into the half-restored namespace would make empty volumes) and the
 # commands to turn it back on are printed; from the Restore on it is on again. A backup or restore stuck in progress:
@@ -242,7 +242,7 @@ cmd_check() {
     | select(.metadata.annotations["argocd.argoproj.io/tracking-id"] == null)
     | .metadata.name') || die "list the Secrets of $ns"
   [ -z "$orphans" ] || die "Secrets of $ns that none of External Secrets, cert-manager or Argo CD makes again after a \
-restore: $(echo "$orphans" | tr '\n' ' ')(make them from Secrets Manager, docs/adr/0020-reliability-stage6.md section 6)"
+restore: $(echo "$orphans" | tr '\n' ' ')(make them from Secrets Manager through External Secrets)"
   ok "every Secret of $ns made again by External Secrets, cert-manager or Argo CD"
 }
 

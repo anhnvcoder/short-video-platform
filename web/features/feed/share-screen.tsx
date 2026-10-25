@@ -10,6 +10,7 @@ import type { RailFollow } from "@/components/feed/action-rail";
 import { FeedItem } from "@/components/feed/feed-item";
 import { LoginPrompt } from "@/components/feed/login-prompt";
 import { primaryAction } from "@/components/shell/error-screen";
+import { LinkPending } from "@/components/shell/link-pending";
 import { useCountdown } from "@/components/shell/use-countdown";
 import { Avatar, Button, Toast, ToastRegion } from "@/components/ui";
 import { focusRing } from "@/components/ui/styles";
@@ -44,7 +45,7 @@ const toastMs = 5000;
 const headerLink =
   "inline-flex min-h-11 items-center rounded-md px-3 text-[15px] font-semibold text-foreground hover:bg-surface-hover hover:text-foreground md:px-4.5";
 
-// The share page /v/{id} (docs/adr/0018-web-profiles-public-video-upload.md, section 7; web/design/SVP Mobile.dc.html
+// The share page /v/{id} (web/design/SVP Mobile.dc.html
 // M38, SVP Desktop.dc.html D04): one video played by the feed's player pool, its author, title and counts. A guest's
 // like and follow ask them to log in and come back here, and their watching records no view; a logged-in user likes,
 // follows and records a view after 2 s of playback as in the feed.
@@ -58,7 +59,7 @@ export function ShareScreen({ video, viewerId, mediaOrigin, loadedAt, appName }:
   const pagePath = `/v/${video.video_id}`;
   const login = loginHref(pagePath);
   const register = `/register?next=${encodeURIComponent(pagePath)}`;
-  // Profiles need a login (ADR-0018, section 7): a guest sees the name without a link.
+  // Profiles need a login: a guest sees the name without a link.
   const authorHref = author && !guest ? `/u/${author.handle}` : null;
   const publishedAgo = usePublishedAgo(useNow(loadedAt))(video.published_at);
   const posterUrl = isMediaUrl(video.thumbnail_url, mediaOrigin) ? video.thumbnail_url : null;
@@ -169,11 +170,11 @@ export function ShareScreen({ video, viewerId, mediaOrigin, loadedAt, appName }:
   useEffect(() => {
     pool.current?.sync(
       0,
-      [{ index: 0, playlistUrl: video.playlist_url, posterUrl: video.thumbnail_url }],
+      [{ index: 0, playlistUrl: video.playlist_url }],
       () => stage.current?.querySelector<HTMLElement>('[data-part="video-host"]') ?? null,
       shouldPlay,
     );
-  }, [video.playlist_url, video.thumbnail_url, shouldPlay]);
+  }, [video.playlist_url, shouldPlay]);
 
   // One view per page, only for a logged-in user. recordView rejects only when the session is refused (401).
   useEffect(() => {
@@ -241,6 +242,7 @@ export function ShareScreen({ video, viewerId, mediaOrigin, loadedAt, appName }:
           )}
         >
           {appName}
+          <LinkPending size={16} className="ml-2 inline" />
         </Link>
         {guest && (
           <nav className="flex gap-2">
@@ -360,7 +362,10 @@ export function ShareScreen({ video, viewerId, mediaOrigin, loadedAt, appName }:
           {s("openInApp")}
         </Link>
         {guest && (
-          <p className="text-center text-sm text-muted">
+          // Room for two lines whether the hint takes one or two: a name near the end of a line can wrap in the
+          // fallback font and not in the web font, and a bar that changed height when the font arrives would move
+          // the video above it.
+          <p className="min-h-10 content-center text-center text-sm text-muted">
             {authorName ? s("guestHint", { name: authorName }) : s("guestHintNoName")}
           </p>
         )}

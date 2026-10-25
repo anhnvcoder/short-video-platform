@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Disaster recovery drill of Postgres svp-pg in place, on the dev cluster svp (docs/adr/0020-reliability-stage6.md,
-# section 5): the database is deleted with its volume and created again under the same name from its backups in bucket
+# Disaster recovery drill of Postgres svp-pg in place, on the dev cluster svp: the database is deleted with its volume
+# and created again under the same name from its backups in bucket
 # pg-backups (Barman Cloud plugin), and the drill measures how long the platform is down (RTO) and how much committed
 # work is lost (RPO).
 #

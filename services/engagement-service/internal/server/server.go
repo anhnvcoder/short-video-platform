@@ -1,7 +1,6 @@
 // Package server implements svp.engagement.v1.EngagementService: Like and Unlike keep the likes
 // and their counter, GetStats reads the counters of up to 50 videos, and RecordView produces
-// view.recorded without touching the database (docs/adr/0009-engagement-feed-stage2b.md,
-// sections 2, 3 and 5).
+// view.recorded without touching the database.
 package server
 
 import (
@@ -32,16 +31,16 @@ import (
 
 const (
 	// MaxStatsVideoIDs is the most video ids one GetStats call accepts: a whole feed page, at most
-	// 50 videos, in one call (ADR-0009, section 5).
+	// 50 videos, in one call.
 	MaxStatsVideoIDs = 50
 	// TopicViews carries svp.engagement.v1.ViewEvent, keyed by video_id.
 	TopicViews = "engagement.views.v1"
 
-	// produceTimeout bounds producing one view.recorded (ADR-0009, section 3): enough for
+	// produceTimeout bounds producing one view.recorded: enough for
 	// franz-go to retry through a leader change or a reconnect, short for a side action.
 	produceTimeout = 2 * time.Second
 	// rollbackTimeout bounds the rollback of a failed transaction, which runs on a context of its
-	// own: the caller's may have run out (docs/adr/0011-observability-stage3.md, section 11).
+	// own: the caller's may have run out.
 	rollbackTimeout = 5 * time.Second
 )
 
@@ -78,7 +77,7 @@ func New(pool *pgxpool.Pool, producer *kgo.Client, logger *slog.Logger) *Server 
 // CallerInterceptor requires the caller's x-user-id on every EngagementService RPC but two. The
 // health check is public: the healthcheck subcommand and probes call it without a user. GetStats
 // takes an optional caller: the public share page reads counters without one, while a present
-// x-user-id must still be valid (docs/adr/0018-web-profiles-public-video-upload.md, section 6).
+// x-user-id must still be valid.
 func CallerInterceptor() grpc.UnaryServerInterceptor {
 	return callerid.NewUnaryServerInterceptor(callerid.Methods{
 		Public:         []string{healthpb.Health_Check_FullMethodName},

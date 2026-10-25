@@ -4,9 +4,11 @@ import { House, LogOut, Plus, User } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
+import type { ReactNode } from "react";
 import { Avatar, IconButton } from "@/components/ui";
 import { focusRing } from "@/components/ui/styles";
 import { cn } from "@/lib/cn";
+import { LinkPending } from "./link-pending";
 import { LogoutForm } from "./logout-form";
 import { currentNavItem } from "./nav";
 
@@ -25,16 +27,15 @@ function navLinkState(current: boolean): string {
 export type ShellAccount = { displayName: string; handle: string };
 
 type SidebarDesktopProps = {
-  // Seed of the avatar color.
-  userId: string;
-  // Null when the profile could not be read: the block then shows the avatar and a generic label.
-  account: ShellAccount | null;
+  // The avatar with the user's name and handle (SidebarAccount), beside log out. The layout streams it in once GET /me
+  // answers; the rest of the side bar, log out included, never waits for it.
+  account: ReactNode;
   appName: string;
 };
 
 // Side bar of wide screens (web/design/SidebarDesktop.dc.html): Home and Profile, the Upload button, the feed's
 // shortcuts on Home, the account with log out.
-export function SidebarDesktop({ userId, account, appName }: SidebarDesktopProps) {
+export function SidebarDesktop({ account, appName }: SidebarDesktopProps) {
   const t = useTranslations("shell");
   const item = currentNavItem(usePathname());
   const current = item === "home";
@@ -52,7 +53,9 @@ export function SidebarDesktop({ userId, account, appName }: SidebarDesktopProps
           aria-current={current ? "page" : undefined}
           className={cn(navLink, focusRing, navLinkState(current))}
         >
-          <House aria-hidden="true" size={22} />
+          <LinkPending size={22}>
+            <House aria-hidden="true" size={22} />
+          </LinkPending>
           {t("home")}
         </Link>
         <Link
@@ -108,21 +111,32 @@ export function SidebarDesktop({ userId, account, appName }: SidebarDesktopProps
           </section>
         )}
         <div className="flex items-center gap-2.5 p-1">
-          <Avatar seed={userId} name={account?.displayName} size="sm" />
-          {account ? (
-            // Each line is its own block, so a name in a right-to-left script does not move the handle.
-            <div className="flex min-w-0 flex-1 flex-col">
-              <span className="truncate text-sm font-semibold">{account.displayName}</span>
-              <span className="truncate text-[13px] text-muted">@{account.handle}</span>
-            </div>
-          ) : (
-            <span className="min-w-0 flex-1 truncate text-sm font-semibold">{t("account")}</span>
-          )}
+          {account}
           <LogoutForm>
             <IconButton type="submit" tone="muted" label={t("logout")} icon={<LogOut aria-hidden="true" size={18} />} />
           </LogoutForm>
         </div>
       </div>
     </aside>
+  );
+}
+
+// The account block of the side bar: the avatar, and the name and handle, or a generic label when the profile could not
+// be read (`account` null).
+export function SidebarAccount({ userId, account }: { userId: string; account: ShellAccount | null }) {
+  const t = useTranslations("shell");
+  return (
+    <>
+      <Avatar seed={userId} name={account?.displayName} size="sm" />
+      {account ? (
+        // Each line is its own block, so a name in a right-to-left script does not move the handle.
+        <div className="flex min-w-0 flex-1 flex-col">
+          <span className="truncate text-sm font-semibold">{account.displayName}</span>
+          <span className="truncate text-[13px] text-muted">@{account.handle}</span>
+        </div>
+      ) : (
+        <span className="min-w-0 flex-1 truncate text-sm font-semibold">{t("account")}</span>
+      )}
+    </>
   );
 }

@@ -1,5 +1,5 @@
 # Cluster properties Redpanda applies when the cluster first forms (a new redpanda-data volume),
-# mounted as /etc/redpanda/.bootstrap.yaml (docs/adr/0008-async-upload-pipeline-stage2a.md, section 5).
+# mounted as /etc/redpanda/.bootstrap.yaml.
 
 # Topics come from redpanda-init only; a typo in a topic name must fail, not create a topic.
 auto_create_topics_enabled: false

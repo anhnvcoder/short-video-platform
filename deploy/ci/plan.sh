@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# plan.sh: the first job of images.yml (docs/adr/0015-cicd-devsecops-stage5.md, sections 3, 4 and 7). Decides what
+# plan.sh: the first job of images.yml. Decides what
 # this run does and hands it to the jobs after it as outputs (ci_output of platform.sh; stdout on a machine):
 #   mode            build | rescan | drill
 #   images          JSON array of the images to build (build: changed services; drill: the two drill images)
@@ -16,7 +16,7 @@
 #
 # Mode: rescan on schedule or dispatch rescan=true; drill on dispatch drill=true; otherwise build. Both inputs at once,
 # rescan or drill off main, services outside build or values_ref outside rescan: refused (the run fails), never
-# guessed. Base of the build (section 3; never github.event.before, which loses the changes of a queued run that was
+# guessed. Base of the build (never github.event.before, which loses the changes of a queued run that was
 # replaced and of a run that failed):
 #   push to main       head_sha of the newest successful push run of images.yml on main (last-success.sh); none →
 #                      all seven

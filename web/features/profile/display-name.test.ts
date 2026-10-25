@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { checkDisplayName } from "./display-name";
 
-// The rules of docs/adr/0018-web-profiles-public-video-upload.md, section 2, with the cases of user-service's own test
+// The display name rules of user-service, with the cases of user-service's own test
 // (TestDisplayNameRules in services/user-service/internal/server/profile_test.go), so both judge a name alike.
 describe("checkDisplayName", () => {
   it.each([

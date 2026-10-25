@@ -55,3 +55,10 @@ Chọn **C**, với các quy ước:
   `grpcurl` hoặc server reflection để gọi thử.
 - Xem lại khi: xuất hiện client thứ hai có nhu cầu dữ liệu khác hẳn (ví dụ trang quản trị). Lúc đó cân nhắc BFF riêng
   cho từng loại client.
+
+## Hiện thực ở
+
+- Contract gRPC: `proto/svp/`, `buf.yaml`, `buf.gen.yaml`, code sinh ở `gen/go/`; `buf lint`, `buf breaking` ở job `check` và
+  `buf` của `.github/workflows/ci.yml`.
+- Biên REST/JSON: `services/gateway/` (`internal/api/api.go` dịch REST sang gRPC và đặt hạn cho mỗi call, service chỉ chuyển
+  tiếp hạn đó), contract REST viết tay ở `services/gateway/openapi.yaml`.

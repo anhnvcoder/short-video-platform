@@ -4,7 +4,7 @@ import { serverEnv } from "@/server/env";
 import { bffServices } from "@/server/runtime";
 import { serializeSessionCookie, sessionCookieName } from "@/server/session";
 
-// POST /logout from a plain form, so it works without JavaScript (docs/adr/0016-web-client.md, section 5). A Route
+// POST /logout from a plain form, so it works without JavaScript. A Route
 // Handler rather than a Server Action, because the response needs Clear-Site-Data. proxy.ts has already checked the
 // request's origin. The session cookie is cleared with the same name and attributes it was set with; Clear-Site-Data
 // clears the cache only, not "cookies", which would also drop the language cookie.

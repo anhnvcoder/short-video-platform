@@ -1,5 +1,5 @@
 {{- /*
-Default-deny in both directions for every pod of the project's namespaces (ADR-0014 section 3; IN-2, FF-5): a pod
+Default-deny in both directions for every pod of the project's namespaces (IN-2, FF-5): a pod
 reaches and is reached by nothing until a policy of its own chart opens that one flow, so a compromised pod cannot
 scan the cluster or call out to the internet. Platform namespaces (cert-manager, envoy-gateway-system, ...) are not
 denied by default: their charts ship no policies, their webhooks are called by the API server from the node network,
@@ -77,7 +77,7 @@ spec:
 {{- end }}
 {{- end }}
 {{- /*
-Kyverno's admission controller (docs/adr/0015-cicd-devsecops-stage5.md, section 8). In: the API server's admission
+Kyverno's admission controller. In: the API server's admission
 calls on the webhook port. The API server runs on the server node: a call to a pod on that node comes from the node
 itself, one to a pod on the agent leaves through the server's VXLAN interface (values: kyverno.vxlanAddresses), so only
 those addresses and the nodes' network are let in, no pod. Out: TCP 443 to public addresses only, for the registries and Sigstore's TUF

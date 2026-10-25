@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Canary of the gateway on cluster svp (docs/adr/0014-kubernetes-local-stage4.md, section 13).
+# Canary of the gateway on cluster svp.
 #
 #   canary.sh drill    (make drill-k8s-canary) on the dev path, the gateway's Helm release from the working tree, no
 #     git; with drill traffic running (deploy/k8s/drills/traffic.sh; started here unless one runs, and then stopped):
@@ -83,8 +83,13 @@ now_ms() {
   t=$(now)
   echo "${t%.*}${t#*.}"
 }
-# hms MS: unix ms as HH:MM:SS.mmm (UTC).
-hms() { printf '%s.%03d' "$(date -u -r $(($1 / 1000)) +%H:%M:%S)" $(($1 % 1000)); }
+# hms MS: unix ms as HH:MM:SS.mmm (UTC). GNU date (Linux, the CI runner) reads an epoch with -d @SECONDS; BSD date
+# (macOS) has no -d for it and needs -r instead.
+if date -u -d @0 +%s >/dev/null 2>&1; then
+  hms() { printf '%s.%03d' "$(date -u -d "@$(($1 / 1000))" +%H:%M:%S)" $(($1 % 1000)); }
+else
+  hms() { printf '%s.%03d' "$(date -u -r $(($1 / 1000)) +%H:%M:%S)" $(($1 % 1000)); }
+fi
 # secs MS: a duration in ms as seconds with one decimal.
 secs() { printf '%d.%d' $(($1 / 1000)) $((($1 % 1000) / 100)); }
 # iso_ms ISO: a Kubernetes time (RFC 3339, seconds) as unix ms.

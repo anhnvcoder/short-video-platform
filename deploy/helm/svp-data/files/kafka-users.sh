@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Creates the SASL SCRAM-SHA-256 user of each Kafka client and grants it the least ACLs it needs
-# (docs/adr/0014-kubernetes-local-stage4.md, section 5; threat model IN-4, FF-6): a service writes only the topics of
+# (threat model IN-4, FF-6): a service writes only the topics of
 # the events it owns (and the dead-letter topics of the topics it consumes), reads only the topics it consumes, with
 # its own consumer group only. No application user gets CREATE, ALTER, DELETE or any right on the cluster.
 # Run by the redpanda-init Job of chart svp-data after create-topics.sh, as the superuser svp-admin (RPK_USER,
@@ -56,7 +56,7 @@ allow() {
   echo "redpanda-init: acl $who $op $* ok"
 }
 
-# The ACL table of ADR-0014 section 5 (each service may touch only the topics and groups its code uses); topic and group
+# The ACL table (each service may touch only the topics and groups its code uses); topic and group
 # names are those in the services' code. Producers are idempotent, which Redpanda allows with WRITE on any topic (no
 # IDEMPOTENT_WRITE on the cluster); READ and WRITE imply DESCRIBE, which metadata and offset lookups need.
 user svp-user-service

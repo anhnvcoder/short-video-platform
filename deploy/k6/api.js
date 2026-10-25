@@ -2,7 +2,7 @@ import exec from "k6/execution";
 import { routes } from "./lib/config.js";
 import { send } from "./lib/http.js";
 
-// Scenarios of the gateway's API, one per route of the SLOs (ADR-0020, section 2).
+// Scenarios of the gateway's API, one per route of the SLOs.
 
 // turn(data): this iteration's user and, for the routes that need one, its video. The users of the pool take turns in
 // order (iterationInInstance counts this instance's iterations of the scenario, so on a cloud pod, which runs only its

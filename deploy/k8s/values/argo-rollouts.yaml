@@ -1,7 +1,6 @@
 # Argo Rollouts v1.10.1 (chart https://argoproj.github.io/argo-helm argo-rollouts 2.43.8), release argo-rollouts in
-# namespace argo-rollouts, wave 2 of deploy/argocd/apps/components.json (docs/adr/0014-kubernetes-local-stage4.md,
-# sections 1, 3 and 13): the controller and its CRDs. The Rollouts are the gateway's and the web client's (chart
-# svp-service, wave 7, docs/adr/0019-web-k3d-supply-chain-observability.md section 3), each with its AnalysisTemplates.
+# namespace argo-rollouts, wave 2 of deploy/argocd/apps/components.json: the controller and its CRDs. The Rollouts
+# are the gateway's and the web client's (chart svp-service, wave 7), each with its AnalysisTemplates.
 # The chart's pod meets Pod Security "restricted" (non-root, read-only root, drop ALL, seccomp RuntimeDefault), which
 # namespace argo-rollouts enforces: chart svp-cluster (wave 1) makes it with that label.
 #
@@ -34,15 +33,14 @@
 clusterInstall: false
 
 controller:
-  # One controller: the lab runs one canary at a time, and a second replica only waits for the lease (about 150 MiB,
-  # ADR-0014 section 2).
+  # One controller: the lab runs one canary at a time, and a second replica only waits for the lease (about 150 MiB).
   replicas: 1
   # By digest (multi-arch index: linux/amd64 and linux/arm64), the chart's appVersion beside it for the reader: a tag
-  # can be pushed again to other content, a digest cannot (docs/adr/0015-cicd-devsecops-stage5.md, section 8). The chart
+  # can be pushed again to other content, a digest cannot. The chart
   # takes version@digest in tag and strips the digest from its version label; deploy/k8s/check-image-digests.sh fails
   # on an image without one. The plugin below is a binary pinned by its sha256, not an image. registry and repository
   # are the chart's defaults written out: Renovate's helm-values manager finds a pin only as repository and tag under a
-  # key ending in "image" (ADR-0015 section 10), and without registry it would look the image up on Docker Hub.
+  # key ending in "image", and without registry it would look the image up on Docker Hub.
   image:
     registry: quay.io
     repository: argoproj/argo-rollouts
@@ -66,7 +64,7 @@ controller:
   # .../v0.17.0/gatewayapi-plugin-linux-amd64, sha256 1904ca787d33107c140521899d61fff030ee75d99908bd175fca5a4647759061).
   # The controller downloads it from GitHub when it starts (namespace argo-rollouts denies no egress) and refuses a file
   # whose sha256 differs; the release publishes no checksum file, so the value was computed on the downloaded asset and
-  # matches the asset digest GitHub shows (ADR-0014 section 13). It runs as a child process of the controller, with the
+  # matches the asset digest GitHub shows. It runs as a child process of the controller, with the
   # controller's ServiceAccount: it gets and updates HTTPRoutes api and web (Role below), nothing else.
   trafficRouterPlugins:
     - name: argoproj-labs/gatewayAPI

@@ -1,7 +1,6 @@
 -- +goose Up
 -- Events waiting for the relay, written in the transaction that changes the follow edge, so an
--- event exists exactly when its change commits (docs/adr/0009-engagement-feed-stage2b.md, section 1;
--- internal/outbox).
+-- event exists exactly when its change commits (internal/outbox).
 CREATE TABLE outbox (
     id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     event_id     uuid        NOT NULL UNIQUE,

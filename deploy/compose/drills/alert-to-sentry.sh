@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Drill: from a page alert to the error in under five minutes (docs/adr/0011-observability-stage3.md,
-# sections 7 to 9; the "done when" of stage 3). On the stack of `make up OBS=lgtm`:
+# Drill: from a page alert to the error in under five minutes (the "done when" of stage 3). On the
+# stack of `make up OBS=lgtm`:
 #   1. the observability stack answers (Grafana, Prometheus, Tempo, Loki, Alertmanager, the
 #      GlitchTip API with the drill token from .env); a fresh user reads GET /feed/following and
 #      GET /feed/explore in turn every load_interval seconds in the background until the drill
-#      ends (2 requests/s, far under the read limit of 600/min, burst 200: ADR-0010, section 2);
+#      ends (2 requests/s, far under the read limit of 600/min, burst 200);
 #   2. before T0: the page alert of feed-availability (FeedAvailabilityBudgetBurn, severity=page)
 #      is not in Alertmanager (after an earlier run its 30m/6h window keeps it firing for about 30
 #      minutes: the drill waits for it to resolve, at most resolve_timeout seconds, printing its
@@ -133,7 +133,13 @@ trace_log_line() {
 
 # since SECONDS_A SECONDS_B: B - A with one decimal.
 since() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.1f", b - a }'; }
-clock() { date -u -r "${1%.*}" +%H:%M:%SZ; }
+# clock SECONDS: the UTC time of day of SECONDS since the epoch. GNU date (Linux, the CI runner) reads an epoch with
+# -d @SECONDS; BSD date (macOS) has no -d for it and needs -r instead.
+if date -u -d @0 +%s >/dev/null 2>&1; then
+  clock() { date -u -d "@${1%.*}" +%H:%M:%SZ; }
+else
+  clock() { date -u -r "${1%.*}" +%H:%M:%SZ; }
+fi
 
 obs_preflight
 if telegram_loaded; then

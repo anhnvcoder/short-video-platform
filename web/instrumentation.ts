@@ -1,7 +1,7 @@
 import type { Instrumentation } from "next";
 
-// Server instrumentation, run once when the server starts (docs/adr/0019-web-k3d-supply-chain-observability.md,
-// sections 8 and 10). Node runtime only; the modules are imported here, not at the top, so no other runtime bundles them.
+// Server instrumentation (OpenTelemetry, then error reporting to GlitchTip), run once when the server starts.
+// Node runtime only; the modules are imported here, not at the top, so no other runtime bundles them.
 
 export async function register(): Promise<void> {
   // `next build` loads this file too, without the server's environment.

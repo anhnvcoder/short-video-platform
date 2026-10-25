@@ -1,4 +1,4 @@
-# SLO spec of docs/adr/0011-observability-stage3.md, section 8. `make slo` turns it into
+# SLO spec of the platform. `make slo` turns it into
 # deploy/observability/prometheus/rules/slo-generated.yaml with Sloth; edit this file, not that one.
 # 30-day window, Sloth's default multi-window burn rates: page 14.4x (1h/5m) and 6x (6h/30m),
 # ticket 3x (1d/2h) and 1x (3d/6h). Alertmanager pages only severity="page", so every page alert
@@ -15,7 +15,7 @@ service: "svp"
 # 30 days of 5 m ratios. That mean is NaN as soon as one 5 m window had no request (0/0), which on
 # this lab is nearly always; the raw ratio stays finite while any request fell in the 30 days, and
 # weighs each request the same. It costs Prometheus a read of 30 days of the raw series per
-# evaluation (ADR-0011, section 8).
+# evaluation.
 slo_plugins:
   overridePrevious: true
   chain:

@@ -1,4 +1,4 @@
-# Release gateway of chart deploy/helm/svp-service (docs/adr/0014-kubernetes-local-stage4.md, sections 9 and 10): the
+# Release gateway of chart deploy/helm/svp-service: the
 # public HTTP API behind Envoy at https://api.svp.localhost:8443. Secret gateway-env holds JWT_VERIFY_KEYS, public
 # keys only: the gateway verifies tokens, it cannot sign them (threat model JWT-10).
 image:
@@ -22,7 +22,7 @@ env:
   # Playlist and thumbnail URLs handed to clients: MinIO's media bucket through Gateway svp.
   MEDIA_PUBLIC_BASE_URL: https://s3.svp.localhost:8443/media
   # Rate limits are counted in Valkey db 10 so every gateway pod shares one count; Valkey down, the gateway falls back
-  # to in-memory counters (ADR-0010 section 2).
+  # to in-memory counters.
   REDIS_URL: redis://valkey.svp-data:6379/10
   # Envoy appends the address of the connection it got to X-Forwarded-For: one trusted hop, believed only when the
   # connection comes from the pod range, which the policy below narrows to Envoy's pods and the web client's, whose BFF
@@ -31,8 +31,7 @@ env:
   TRUSTED_PROXY_CIDRS: 10.42.0.0/16
   # Spans of a request become children of the traceparent it carries, so a page of the web client and the API calls it
   # makes are one trace. Safe here only because nothing else can set one: every HTTPRoute of chart svp-service removes
-  # the trace context a client sends, and only Envoy and the web pods may reach the gateway (ADR-0019 section 7,
-  # threat model WEB-24).
+  # the trace context a client sends, and only Envoy and the web pods may reach the gateway (threat model WEB-24).
   TRUST_TRACE_CONTEXT: "true"
   PYROSCOPE_SERVER_ADDRESS: http://pyroscope.svp-obs:4040
   SENTRY_ENVIRONMENT: k3d
@@ -45,7 +44,7 @@ httpRoute:
   host: api.svp.localhost
   # The name the gateway's route always had: the canary drills, measure-canary and Argo CD read HTTPRoute api.
   name: api
-# A Rollout with an analysed canary instead of a Deployment (ADR-0014 section 13): a new revision gets 25%, then 50% of the
+# A Rollout with an analysed canary instead of a Deployment: a new revision gets 25%, then 50% of the
 # requests through Envoy before it is promoted, and a canary whose 5xx or p99 Envoy measures above the limits is aborted
 # without a person. `make k8s-up` runs drill traffic while a canary is in progress (deploy/k8s/install.sh).
 canary: true

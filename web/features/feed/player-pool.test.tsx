@@ -65,7 +65,6 @@ function sources(count: number, origin = mediaOrigin): PoolSource[] {
   return Array.from({ length: count }, (_, index) => ({
     index,
     playlistUrl: `${origin}/media/hls/${index}/master.m3u8`,
-    posterUrl: `${origin}/media/thumbs/${index}.jpg`,
   }));
 }
 
@@ -73,9 +72,14 @@ function hosts(count: number): HTMLElement[] {
   return Array.from({ length: count }, () => document.body.appendChild(document.createElement("div")));
 }
 
-// The video of a host can play: hls.js appended its first data (canplay) or playback began (playing).
+// The video of a host can play: hls.js appended its first data (canplay) or playback began (playing). jsdom's element
+// stays at HAVE_NOTHING, so the element is given the ready state a browser reports by then.
 function start(host: HTMLElement | undefined, event: "canplay" | "playing" = "canplay") {
-  host?.querySelector("video")?.dispatchEvent(new Event(event));
+  const video = host?.querySelector("video");
+  if (video) {
+    Object.defineProperty(video, "readyState", { configurable: true, value: HTMLMediaElement.HAVE_ENOUGH_DATA });
+    video.dispatchEvent(new Event(event));
+  }
 }
 
 function callbacks() {
@@ -92,7 +96,10 @@ beforeEach(() => {
   FakeHls.supported = true;
   vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
   vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
-  vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+  // load() drops the old source, as in a browser: the element has no data again.
+  vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(function (this: HTMLMediaElement) {
+    Reflect.deleteProperty(this, "readyState");
+  });
 });
 
 afterEach(() => {
@@ -133,10 +140,25 @@ describe("PlayerPool", () => {
     expect(video?.muted).toBe(true);
     expect(video?.playsInline).toBe(true);
     expect(video?.getAttribute("crossorigin")).toBeNull();
-    expect(video?.poster).toBe(`${mediaOrigin}/media/thumbs/0.jpg`);
+    // The item's own <img> is the poster: the <video> paints nothing until its first frame.
+    expect(video?.hasAttribute("poster")).toBe(false);
     expect(live()).toHaveLength(1);
     expect(live()[0]?.source).toBe(`${mediaOrigin}/media/hls/0/master.m3u8`);
     expect(live()[0]?.config).not.toHaveProperty("xhrSetup");
+    start(host);
+    expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(1);
+  });
+
+  it("plays an hls.js source only once it can play", async () => {
+    const pool = new PlayerPool(mediaOrigin, callbacks(), loader);
+    const [host] = hosts(1);
+    pool.sync(0, sources(1), () => host ?? null, true);
+    await settle();
+    // Attached, no data yet: playing now would make hls.js seek over the gap before the first segment during playback,
+    // a seek WebKit on Linux can leave unfinished.
+    expect(live()[0]?.media).toBe(host?.querySelector("video"));
+    expect(HTMLMediaElement.prototype.play).not.toHaveBeenCalled();
+    start(host);
     expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(1);
   });
 
@@ -244,6 +266,19 @@ describe("PlayerPool", () => {
     }
   });
 
+  it("gives every instance hls.js's worker file, so segments are transmuxed off the main thread", async () => {
+    const pool = new PlayerPool(mediaOrigin, callbacks(), loader);
+    const elements = hosts(2);
+    pool.sync(0, sources(2), (index) => elements[index] ?? null, true);
+    await settle();
+    start(elements[0]);
+    await settle();
+    expect(live()).toHaveLength(2);
+    for (const instance of live()) {
+      expect(instance.config.workerPath).toMatch(/\/hls\.worker[^/]*\.js$/);
+    }
+  });
+
   it("loads the neighbours only once the current video starts", async () => {
     const pool = new PlayerPool(mediaOrigin, callbacks(), loader);
     const elements = hosts(3);
@@ -282,6 +317,8 @@ describe("PlayerPool", () => {
     pool.sync(2, list, (index) => elements[index] ?? null, true);
     await settle();
     expect(liveSources()).toEqual([list[1]?.playlistUrl, list[2]?.playlistUrl, list[3]?.playlistUrl]);
+    // It can play already, so it plays without waiting for another canplay.
+    expect(vi.mocked(HTMLMediaElement.prototype.play).mock.contexts).toContain(elements[2]?.querySelector("video"));
   });
 
   it("a current video that fails does not hold its neighbours back", async () => {
@@ -360,7 +397,7 @@ describe("PlayerPool", () => {
     expect(events.onState).toHaveBeenCalledWith(0, "loading");
   });
 
-  it("refuses a playlist or poster outside the media origin", async () => {
+  it("refuses a playlist outside the media origin", async () => {
     const events = callbacks();
     const pool = new PlayerPool(mediaOrigin, events, loader);
     const [host] = hosts(1);
@@ -368,7 +405,6 @@ describe("PlayerPool", () => {
     await settle();
     expect(events.onState).toHaveBeenLastCalledWith(0, "error");
     expect(FakeHls.instances).toHaveLength(0);
-    expect(host?.querySelector("video")?.hasAttribute("poster")).toBe(false);
     expect(host?.querySelector("video")?.getAttribute("src")).toBeNull();
   });
 
@@ -380,6 +416,8 @@ describe("PlayerPool", () => {
     await settle();
     expect(FakeHls.instances).toHaveLength(0);
     expect(host?.querySelector("video")?.getAttribute("src")).toBe(`${mediaOrigin}/media/hls/0/master.m3u8`);
+    // The browser's own HLS player loads little before play(), so it is told to play at once.
+    expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(1);
   });
 
   it("shows a playback error when hls.js cannot be loaded, after handing the error on", async () => {
@@ -437,6 +475,8 @@ describe("PlayerPool", () => {
       .mockResolvedValue(undefined);
     const [host] = hosts(1);
     pool.sync(0, sources(1), () => host ?? null, true);
+    await settle();
+    start(host);
     await settle();
     expect(events.onForcedMute).toHaveBeenCalledTimes(1);
     expect(host?.querySelector("video")?.muted).toBe(true);

@@ -1,6 +1,6 @@
 import type { Metric } from "web-vitals";
 
-// Web vitals of the page load (docs/adr/0019-web-k3d-supply-chain-observability.md, section 11): the values
+// Web vitals of the page load: the values
 // web-vitals reports are kept, then sent together in one beacon to the app's own POST /rum when the page is hidden,
 // which also happens when it is unloaded. `path` is the one the page loaded at, read by the caller at hydration:
 // web-vitals starts only after the load event and its chunk, by which time a client-side navigation may have changed
