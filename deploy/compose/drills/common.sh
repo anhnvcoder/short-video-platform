@@ -19,7 +19,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 read -r -a compose_cmd <<<"$COMPOSE"
 
 # Every service a drill may stop or kill; on exit they are all started again.
-stack_services=(redpanda minio user-service video-service engagement-service feed-service gateway media-worker)
+stack_services=(redpanda s3 user-service video-service engagement-service feed-service gateway media-worker)
 # Seconds to wait after the consumer groups caught up, so the relay (200 ms poll) and a late
 # redelivery would have shown up.
 settle_seconds=${settle_seconds:-5}

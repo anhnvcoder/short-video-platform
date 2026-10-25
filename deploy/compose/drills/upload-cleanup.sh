@@ -9,8 +9,9 @@
 #      its object is gone from the uploads bucket and video-service logged "upload abandoned" for
 #      it; "done" is not touched and goes READY;
 #   4. video-service is recreated with its default settings.
-# The object is looked up with mc inside the MinIO container, the root credential coming from that
-# container's environment, never printed and never on a command line. Every other video left
+# The object is looked up with a signed HEAD request by curl inside the object store's container,
+# the root credential coming from that container's environment, never printed and never on a
+# command line. Every other video left
 # UPLOADING for longer than abandon_after (earlier smoke and drill runs) is cleaned up too. Prints
 # one ok/FAIL line per check and exits non-zero on the first failure; on exit (passed or not)
 # every stack service runs again with its default settings. Reads no database.
@@ -29,18 +30,20 @@ sweep_interval=5s
 failed_timeout=60
 
 # upload_object NAME: prints "exists" or "missing" for the object of video NAME's upload form in
-# the uploads bucket; fails on any other answer of mc.
+# the uploads bucket; fails on any other answer of the store. curl reads the root credential as a
+# config line on its standard input.
 upload_object() {
   local path out
   path="$(basename "$(upload_url "$1")")/$(upload_key "$1")"
-  if out=$(compose exec -T minio sh -c \
-    'MC_HOST_svp="http://svp-admin:${MINIO_ROOT_PASSWORD}@localhost:9000" exec mc stat "svp/$1"' sh "$path" 2>&1); then
-    echo exists
-  elif [[ $out == *"does not exist"* ]]; then
-    echo missing
-  else
-    fail "look up $path with mc stat in the MinIO container: $(printf '%s' "$out" | tail -n 1)"
-  fi
+  out=$(compose exec -T s3 sh -c \
+    'printf "user = \"svp-admin:%s\"\n" "$RUSTFS_SECRET_KEY" |
+      exec curl -sS -K - --aws-sigv4 aws:amz:us-east-1:s3 --head -o /dev/null -w "%{http_code}" "http://127.0.0.1:9000/$1"' \
+    sh "$path" 2>&1) || true
+  case $out in
+    200) echo exists ;;
+    404) echo missing ;;
+    *) fail "look up $path with a HEAD request in the s3 container: $(printf '%s' "$out" | tail -n 1)" ;;
+  esac
 }
 
 # 0. video-service with the short settings.
