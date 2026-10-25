@@ -7,8 +7,9 @@
 # output is one of the fake results, as is a migrate Job's log marked by mark_log of the same file. verify-mask.sh
 # cluster on a binary value of 200 KiB, timed, and on small ones against the cut it made before. Then the
 # deadline criterion of the summary of deploy/ci/verify-sample.sh, with a fake docker and a fake sudo first on PATH;
-# one sample of its docker.tsv (workers transcoding, memory.stat of the nodes) with a fake docker, kubectl and pgrep and
-# a fixture of /proc; and its peak over a fixture of docker.tsv.
+# one sample of its docker.tsv (workers transcoding, memory.stat of the nodes) and compose.tsv with a fake docker,
+# kubectl and pgrep and a fixture of /proc; its peak over a fixture of docker.tsv, and the object store's peak over one
+# of compose.tsv. Then deploy/ci/verify-run.sh with a fake make (and a fake psql for the copy back to MinIO).
 # Last, that deploy/ci/changed-services.sh builds no image for a change of these scripts, in a throwaway git repository
 # holding a copy of it. Runs on macOS and Linux, no network, no Docker, no cluster.
 #
@@ -630,7 +631,34 @@ mv "$work/kube.orig" "$work/kube"
 
 # --- compose-obs run: no cluster list needed, .env's still applies.
 echo compose-obs >"$out/scenario"
+# The object store's files of a compose-obs run: the samples of each compose container, the store's RAM over
+# measure-upload and that target's summary, the outputs of the object store's tests and of the copy back to MinIO; and
+# a copy's output that printed the store's root password (a value of .env).
+printf '100\tsvp-s3-1\t130\n100\tsvp-gateway-1\t40\n' >"$out/samples/compose.tsv"
+echo '{"container":"svp-s3-1","samples":30,"peak_mib":210,"limit_mib":512,"peak_under_limit":true}' \
+  >"$out/ram-s3-upload.json"
+echo 'RAM of svp-s3-1 during measure-upload: peak 210 MiB at 1970-01-01T00:01:40Z over 30 sample(s)' \
+  >"$out/ram-s3-upload.txt"
+printf '%s\n' '=== RUN   TestIntegrationPresignedPost' \
+  '    integration_test.go:250: POST http://127.0.0.1:9000/media: status 400' \
+  '--- PASS: TestIntegrationPresignedPost (0.20s)' \
+  'object store tests: 39 passed, 0 failed, 0 skipped (tests and subtests); make test-stack exit 0' \
+  >"$out/logs/14-test-stack-objstore.log"
+printf '%s\n' 'object-store-copy: bucket media at MinIO: 12 object(s), 3456789 byte(s)' \
+  "object-store-copy: READY videos' keys lost before this copy: 0" \
+  's3-init (after the copy, on a store already initialised): 6 log line(s), 0 with a secret value of .env' \
+  >"$out/logs/19-object-store-roundtrip.log"
+printf 'object-store-copy: root %s\n' "$env_secret" >"$out/logs/20-object-store-roundtrip.log"
+jq -n '{measured_at: "2026-10-25T08:00:00Z", browser: "chromium", file_mb: 100.2, duration_s: 160, upload_ms: 4200,
+  throughput_mb_s: 23.9, cpu: {window_ms: 4300, task_ms: 300, script_ms: 120, task_share_pct: 7}, ready_ms: 190000}' \
+  >"$repo/web/test-results/measure-upload-2.json"
 collect compose "$work/secrets-compose" FAKE_KUBECTL_FAIL=1
+for src in '$SVP_VERIFY_OUT/samples/compose.tsv' '$SVP_VERIFY_OUT/ram-s3-upload.json' \
+  '$SVP_VERIFY_OUT/ram-s3-upload.txt' '$SVP_VERIFY_OUT/logs/14-test-stack-objstore.log' \
+  '$SVP_VERIFY_OUT/logs/19-object-store-roundtrip.log' web/test-results/measure-upload-2.json; do
+  expect compose "$src" kept
+done
+expect compose '$SVP_VERIFY_OUT/logs/20-object-store-roundtrip.log' secret-value
 expect compose .k8s/drills/canary-drill-1.json kept
 expect compose .k8s/drills/b64-1.json secret-value
 expect compose '$SVP_VERIFY_OUT/logs/02-k8s-smoke.log' secret-value
@@ -660,6 +688,8 @@ echo compose-obs >"$so/scenario"
 printf '100\t4000000\t0\t12\n105\t3900000\t0\t40\n' >"$so/samples/host.tsv"
 printf '100\t50000000000\t100000000000\t0\n' >"$so/samples/disk.tsv"
 for f in docker pods events event-polls; do : >"$so/samples/$f.tsv"; done
+# Two compose containers, the object store sampled three times.
+printf '100\tsvp-s3-1\t120\n100\tsvp-web-1\t300\n110\tsvp-s3-1\t260\n120\tsvp-s3-1\t140\n' >"$so/samples/compose.tsv"
 # sample [--no-end] NAME [ROW...]: verify-sample.sh stop over a results.tsv of ROWs (none: no results.tsv) and, with
 # ROWs and without --no-end, the end mark of verify-run.sh; prints within_deadline of runner.json and the targets it
 # lists as cut, its output in $work/sample-NAME.log.
@@ -698,6 +728,10 @@ expect_deadline no-end "false " "$(sample --no-end no-end "$(row 01 up ok 0 100 
 grep -q '^runner: results.tsv read true, verify-run.sh reached its end false, ' "$work/sample-no-end.log" &&
   ok "sample: runner.txt says verify-run.sh did not reach its end" ||
   fail "sample: runner.txt says verify-run.sh did not reach its end"
+same "sample: runner.json has the highest MEM USAGE of each compose container, with its time" \
+  "svp-s3-1=260@1970-01-01T00:01:50Z svp-web-1=300@1970-01-01T00:01:40Z" \
+  "$(jq -r '.compose_container_memory_max_mib | to_entries | map("\(.key)=\(.value.mib)@\(.value.at)") | join(" ")' \
+    "$so/runner.json")"
 grep -q '^runner enough: within_deadline=false ' "$work/sample-deadline.log" &&
   ok "sample: the runner enough line names within_deadline" || fail "sample: the runner enough line names within_deadline"
 # Targets verify-run.sh skipped after a failed build target, or left out by SVP_VERIFY_TARGETS, did not run out of time.
@@ -731,7 +765,10 @@ EOF
 cat >"$sb2/docker" <<'EOF'
 #!/bin/sh
 case $1 in
-  stats) printf 'k3d-svp-server-0\t150.00%%\t3GiB / 15.6GiB\nk3d-svp-agent-0\t120.00%%\t2.5GiB / 15.6GiB\nk3d-svp-registry\t0.00%%\t20MiB / 15.6GiB\n' ;;
+  stats)
+    printf 'k3d-svp-server-0\t150.00%%\t3GiB / 15.6GiB\nk3d-svp-agent-0\t120.00%%\t2.5GiB / 15.6GiB\nk3d-svp-registry\t0.00%%\t20MiB / 15.6GiB\n'
+    [ -z "${FAKE_COMPOSE:-}" ] ||
+      printf 'svp-s3-1\t3.00%%\t130.6MiB / 512MiB\nsvp-web-1\t1.00%%\t1.25GiB / 1.5GiB\nother-1\t0.00%%\t9MiB / 1GiB\n' ;;
   inspect) echo "running 0 2026-10-25T00:00:00Z" ;;
   exec)
     [ "$2" = "${FAKE_EXEC_FAIL:-}" ] && exit 1
@@ -766,6 +803,12 @@ same "sample: 3 Running workers, 2 transcoding (ffmpeg in their pod), memory.sta
   "$(row_tail 5652 0 150.00 120.00 3 0 running 0 2026-10-25T00:00:00Z 2 1536 700 150)" "$(take_sample)"
 same "sample: no worker Running counts 0 transcoding" \
   "$(row_tail 5652 0 150.00 120.00 0 0 running 0 2026-10-25T00:00:00Z 0 1536 700 150)" "$(take_sample FAKE_UIDS=)"
+[ ! -s "$ss/samples/compose.tsv" ] && ok "sample: no compose container, no compose.tsv line" ||
+  fail "sample: no compose container, no compose.tsv line"
+same "sample: compose containers are summed in docker.tsv" \
+  "$(row_tail 5652 1411 150.00 120.00 3 0 running 0 2026-10-25T00:00:00Z 2 1536 700 150)" "$(take_sample FAKE_COMPOSE=1)"
+same "sample: compose.tsv has a line per compose container, in MiB" "svp-s3-1 131|svp-web-1 1280" \
+  "$(cut -f 2,3 "$ss/samples/compose.tsv" | tr '\t' ' ' | paste -sd '|' -)"
 same "sample: the API not answering gives - for the workers; one node's memory.stat unread gives - for all three" \
   "$(row_tail 5652 0 150.00 120.00 - - running 0 2026-10-25T00:00:00Z - - - -)" \
   "$(take_sample FAKE_KUBECTL_FAIL=1 FAKE_EXEC_FAIL=k3d-svp-agent-0)"
@@ -813,6 +856,36 @@ else
   ok "peak: a missing END is refused"
 fi
 
+# --- verify-sample.sh s3-peak START END over a fixture of compose.tsv: the object store's samples before, in and after
+# the window, another container higher than it.
+# s3_peak NAME LINE...: s3-peak 100 200 over a compose.tsv of LINEs ("time name MiB"); prints its exit status and the
+# fields of ram-s3-upload.json, its output in $work/s3-peak-NAME.log.
+s3_peak() {
+  local name=$1 rc=0
+  shift
+  printf '%s\n' "$@" | tr ' ' '\t' >"$po/samples/compose.tsv"
+  rm -f "$po/ram-s3-upload.json"
+  env "${job[@]}" SVP_VERIFY_OUT="$po" "$here/verify-sample.sh" s3-peak 100 200 >"$work/s3-peak-$name.log" 2>&1 || rc=$?
+  printf '%s ' "$rc"
+  jq -r '[.samples, .before_mib, .before_at, .peak_mib, .peak_at, .peak_under_limit] | map(tostring) | join(" ")' \
+    "$po/ram-s3-upload.json"
+}
+same "s3-peak: the highest sample of svp-s3-1 in the window, the last one before it" \
+  "0 3 125 1970-01-01T00:01:30Z 300 1970-01-01T00:02:30Z true" \
+  "$(s3_peak ok '80 svp-s3-1 110' '90 svp-s3-1 125' '90 svp-web-1 900' '100 svp-s3-1 200' '150 svp-s3-1 300' \
+    '150 svp-web-1 1400' '200 svp-s3-1 180' '210 svp-s3-1 600')"
+grep -qx 'RAM of svp-s3-1 during measure-upload: peak 300 MiB at 1970-01-01T00:02:30Z over 3 sample(s), before it 125 MiB, under the 512 MiB limit: true' \
+  "$work/s3-peak-ok.log" && ok "s3-peak: ram-s3-upload.txt is printed" || fail "s3-peak: ram-s3-upload.txt is printed"
+same "s3-peak: a sample at the limit fails" "1 2 null null 512 1970-01-01T00:02:30Z false" \
+  "$(s3_peak limit '120 svp-s3-1 300' '150 svp-s3-1 512')"
+same "s3-peak: no sample of the store in the window fails, with no peak" "1 0 110 1970-01-01T00:01:20Z null null null" \
+  "$(s3_peak none '80 svp-s3-1 110' '150 svp-web-1 900' '210 svp-s3-1 600')"
+if env "${job[@]}" SVP_VERIFY_OUT="$po" "$here/verify-sample.sh" s3-peak 100 >/dev/null 2>&1; then
+  fail "s3-peak: a missing END is refused"
+else
+  ok "s3-peak: a missing END is refused"
+fi
+
 # --- verify-run.sh: the build target's failure skips the rest at once, SVP_VERIFY_TARGETS picks targets. It runs from
 # a copy in a throwaway tree with a fake .env, a fake make first on PATH (it logs its arguments and fails for the
 # targets FAKE_MAKE_FAIL names) and the fake kubectl above (no cluster answers), so no target, no cluster and no real
@@ -826,11 +899,24 @@ cp "$repo/.env" "$vr/.env"
 cat >"$vb/make" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_MAKE_LOG"
+[ "$1" = -s ] && shift
+[ -f "${FAKE_MAKE_DIR:-/nonexistent}/$1.out" ] && cat "$FAKE_MAKE_DIR/$1.out"
 case " ${FAKE_MAKE_FAIL:-} " in *" $1 "*) exit 2 ;; esac
 case " ${FAKE_MAKE_SLOW:-} " in *" $1 "*) sleep 60 ;; esac
 EOF
 printf '#!/bin/sh\ncommand -v gdate >/dev/null 2>&1 && exec gdate "$@"\nexec /bin/date "$@"\n' >"$vb/date"
-chmod 755 "$vb/make" "$vb/date"
+# The fake psql of the copy back to MinIO: the count of the videos of a status, FAKE_PSQL_<STATUS> (0 when unset), only
+# for the database, user and password verify-run.sh must give.
+cat >"$vb/psql" <<'EOF'
+#!/usr/bin/env bash
+[ "$PGPASSWORD" = postgres ] && [ "$1 $2 $3 $4 $5 $6 $7 $8" = "-h 127.0.0.1 -p 5432 -U postgres -d svp_video" ] || exit 2
+case $* in
+  *"WHERE status = 'PROCESSING'"*) echo "${FAKE_PSQL_PROCESSING:-0}" ;;
+  *"WHERE status = 'READY'"*) echo "${FAKE_PSQL_READY:-0}" ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod 755 "$vb/make" "$vb/date" "$vb/psql"
 # run_verify NAME SCENARIO [VAR=VALUE...]: the copy of verify-run.sh for SCENARIO; its output in $work/run-NAME.log,
 # the make calls in $work/run-NAME.make, its results in $work/run-NAME.out; prints its exit status. It runs as on a
 # machine, without the variables of any CI: a runner sets CI=true, which alone makes platform.sh refuse to run.
@@ -847,7 +933,8 @@ run_verify() {
 # results NAME: "id name status note" of each target of run NAME, one per line.
 results() { awk -F '\t' 'NR > 1 { print $1, $2, $3, $8 }' "$work/run-$1.out/results.tsv"; }
 compose_names="up smoke drill-obs-threats load-local fallback-alert-under-load web-lighthouse-1 web-lighthouse-2
-web-lighthouse-3 lcp drill-alert-to-sentry"
+web-lighthouse-3 lcp test-stack-objstore drill-upload-cleanup measure-upload ram-s3-upload drill-alert-to-sentry
+object-store-roundtrip"
 k3d_names="k8s-up k8s-smoke ram-rest-start drill-k8s-threats drill-k8s-pdb drill-k8s-canary k8s-web-sourcemaps
 k8s-web-e2e drill-k8s-web-obs drill-k8s-keda ram-peak drill-k8s-backup drill-k8s-backup-pitr ram-rest-end"
 # want_rows NAMES STATUS_OF_FIRST NOTE_OF_REST [ID NAME STATUS NOTE]...: the rows of a run: the first of NAMES with
@@ -905,6 +992,85 @@ if timeout --version 2>/dev/null | grep -q GNU; then
   same "verify-run: ram-peak without drill-k8s-keda makes the run fail" 1 "$rc"
   same "verify-run: ram-peak without drill-k8s-keda is skipped for it" \
     "$(want_rows "$k3d_names" ok 'not in targets' '11 ram-peak skipped drill-k8s-keda did not run')" "$(results peak)"
+
+  rc=$(run_verify s3-peak compose-obs SVP_VERIFY_TARGETS=ram-s3-upload)
+  same "verify-run: ram-s3-upload without measure-upload makes the run fail" 1 "$rc"
+  same "verify-run: ram-s3-upload without measure-upload is skipped for it" \
+    "$(want_rows "$compose_names" ok 'not in targets' '13 ram-s3-upload skipped measure-upload did not run')" \
+    "$(results s3-peak)"
+
+  # test-stack-objstore over the output of a fake make test-stack: a unit test and the five integration tests pass, one
+  # with a subtest; then a subtest skipped, an integration test missing, go test failing.
+  fm=$work/fake-make
+  mkdir -p "$fm"
+  # objstore NAME [LINE...]: test-stack-objstore over that output plus LINEs (DROP_TEST leaves a test out, FAKE_FAIL
+  # makes make fail); prints the step's status and its summary line.
+  objstore() {
+    local name=$1 t
+    shift
+    {
+      for t in TestNewRejectsMissingConfig TestIntegrationPresignedPost TestIntegrationWorkerPermissions \
+        TestIntegrationVideoServicePermissions TestIntegrationDeletePrefix TestIntegrationMultipartChecksum; do
+        [ "${DROP_TEST:-}" = "$t" ] || printf '=== RUN   %s\n--- PASS: %s (0.10s)\n' "$t" "$t"
+      done
+      echo '    --- PASS: TestIntegrationPresignedPost/valid_form (0.01s)'
+      [ "$#" = 0 ] || printf '%s\n' "$@"
+      printf 'ok  \tgithub.com/anhnvcoder/short-video-platform/internal/objstore\t1.2s\n'
+    } >"$fm/test-stack.out"
+    run_verify "objstore-$name" compose-obs SVP_VERIFY_TARGETS=test-stack-objstore FAKE_MAKE_DIR="$fm" \
+      ${FAKE_FAIL:+FAKE_MAKE_FAIL=test-stack} >/dev/null
+    printf '%s ' "$(results "objstore-$name" | awk '$2 == "test-stack-objstore" { print $3 }')"
+    grep '^object store tests: ' "$work/run-objstore-$name.out/logs/10-test-stack-objstore.log"
+  }
+  same "verify-run: test-stack-objstore passes when every test passes" \
+    "ok object store tests: 7 passed, 0 failed, 0 skipped (tests and subtests); make test-stack exit 0" "$(objstore pass)"
+  grep -qx 'test-stack PKGS=./internal/objstore/...' "$work/run-objstore-pass.make" &&
+    ok "verify-run: test-stack-objstore runs make test-stack on internal/objstore" ||
+    fail "verify-run: test-stack-objstore runs make test-stack on internal/objstore"
+  same "verify-run: a skipped subtest fails test-stack-objstore" \
+    "fail object store tests: 7 passed, 0 failed, 1 skipped (tests and subtests); make test-stack exit 0" \
+    "$(objstore skip '    --- SKIP: TestIntegrationMultipartChecksum/trailer (0.00s)')"
+  same "verify-run: an integration test that did not run fails test-stack-objstore" \
+    "fail object store tests: 6 passed, 0 failed, 0 skipped (tests and subtests); make test-stack exit 0" \
+    "$(DROP_TEST=TestIntegrationMultipartChecksum objstore missing)"
+  grep -qx 'FAIL  did not pass: TestIntegrationMultipartChecksum' \
+    "$work/run-objstore-missing.out/logs/10-test-stack-objstore.log" &&
+    ok "verify-run: the integration test that did not pass is named" ||
+    fail "verify-run: the integration test that did not pass is named"
+  same "verify-run: go test failing fails test-stack-objstore" \
+    "fail object store tests: 7 passed, 0 failed, 0 skipped (tests and subtests); make test-stack exit 2" \
+    "$(FAKE_FAIL=1 objstore exit)"
+
+  # object-store-roundtrip with a fake make (the s3-init log, the copy's output) and the fake psql.
+  # roundtrip NAME [VAR=VALUE...]: the step over INIT_LOG and a copy that reports LOST keys lost (default 0), 3 READY
+  # videos; prints its status.
+  roundtrip() {
+    local name=$1
+    shift
+    printf '%s\n' "${INIT_LOG:-s3-init-1  | ok buckets uploads media objstore-probe}" >"$fm/logs.out"
+    printf '%s\n' "object-store-copy: bucket media at MinIO: 12 object(s), 3456 byte(s)" \
+      "object-store-copy: READY videos' keys lost before this copy: ${LOST:-0}" >"$fm/object-store-copy.out"
+    run_verify "roundtrip-$name" compose-obs SVP_VERIFY_TARGETS=object-store-roundtrip FAKE_MAKE_DIR="$fm" \
+      FAKE_PSQL_READY=3 "$@" >/dev/null
+    results "roundtrip-$name" | awk '$2 == "object-store-roundtrip" { print $3 }'
+  }
+  rlog() { cat "$work/run-roundtrip-$1.out/logs/15-object-store-roundtrip.log"; }
+  same "verify-run: object-store-roundtrip passes when the copy, make up and smoke pass" ok "$(roundtrip pass)"
+  same "verify-run: object-store-roundtrip reads the s3-init log, stops the stack, copies back, starts it on RustFS" \
+    "$(printf '%s\n' 'up OBS=lgtm' '-s logs SVC=s3-init' down 'object-store-copy TO=minio' 'up OBS=lgtm' \
+      '-s logs SVC=s3-init' smoke)" "$(cat "$work/run-roundtrip-pass.make")"
+  rlog pass | grep -qx 's3-init (before the copy): 1 log line(s), 0 with a secret value of .env' &&
+    rlog pass | grep -qx 'videos READY in svp_video, made on RustFS by the targets before: 3' &&
+    ok "verify-run: object-store-roundtrip prints the counts" || fail "verify-run: object-store-roundtrip prints the counts"
+  same "verify-run: a failed copy fails object-store-roundtrip" fail "$(roundtrip copy FAKE_MAKE_FAIL=object-store-copy)"
+  same "verify-run: after a failed copy the stack still comes back on RustFS and smoke runs" \
+    "$(printf '%s\n' 'up OBS=lgtm' smoke)" "$(tail -n 3 "$work/run-roundtrip-copy.make" | grep -v '^-s logs')"
+  same "verify-run: a READY video's key lost fails object-store-roundtrip" fail "$(LOST=2 roundtrip lost)"
+  same "verify-run: no READY video fails object-store-roundtrip" fail "$(roundtrip none FAKE_PSQL_READY=0)"
+  same "verify-run: a value of .env in the s3-init log fails object-store-roundtrip" fail \
+    "$(INIT_LOG="s3-init-1  | key $env_secret" roundtrip leak)"
+  ! rlog leak | grep -qF "$env_secret" && rlog leak | grep -q ' 1 with a secret value of .env$' &&
+    ok "verify-run: the s3-init log is counted, never printed" || fail "verify-run: the s3-init log is counted, never printed"
 
   rc=$(run_verify unknown dev-k3d 'SVP_VERIFY_TARGETS=drill-k8s-threats drill-k8s-thraets')
   same "verify-run: a name that is no target of the scenario stops it" 2 "$rc"

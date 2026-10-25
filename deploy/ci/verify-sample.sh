@@ -13,7 +13,14 @@
 #                            highest median of 6 samples in a row that each saw 2 workers transcoding (the cluster's
 #                            peak), with the same median of MEM USAGE minus active_file, the
 #                            longest run of such samples, and the highest sample; also on macOS (awk and jq only)
-#   verify-sample.sh sample  takes one docker.tsv sample now, as the loop does every 10 s
+#   verify-sample.sh s3-peak START END
+#                            ram-s3-upload.json and ram-s3-upload.txt from the compose.tsv samples of container svp-s3-1
+#                            (the object store) between START and END (deploy/ci/verify-run.sh gives the start and end
+#                            of measure-upload, a ~100 MB upload from the browser): its highest sample, when it was
+#                            taken, and the last sample before START (the store before the upload); exits 1 when no
+#                            sample of the window saw the container, or the highest is not under its 512 MiB
+#                            mem_limit; also on macOS (awk and jq only)
+#   verify-sample.sh sample  takes one docker.tsv and compose.tsv sample now, as the loop does every 10 s
 #                            (deploy/ci/verify-collect-test.sh runs it with a fake docker, kubectl and pgrep)
 #
 # Samples, in $SVP_VERIFY_OUT/samples/ (one line each, seconds since the epoch first):
@@ -27,6 +34,9 @@
 #                                RestartCount and StartedAt ("-" without it); the Running media-worker pods that
 #                                transcode now, that is run an ffmpeg process (below); anon, active_file and kernel of
 #                                memory.stat summed over the two k3d nodes, in MiB ("-" unless both were read)
+#   compose.tsv      every 10 s  MEM USAGE of each compose container (svp-*) in MiB, from the same docker stats as
+#                                docker.tsv: container name, MiB (one line per container; the object store's peak
+#                                during an upload is read from it)
 #   pods.tsv         every 30 s  kubectl top pods --containers of namespaces svp, svp-data and cnpg-system: namespace,
 #                                pod, container, CPU in millicores, working set in MiB (the web pods, the Postgres pods
 #                                with the Barman Cloud sidecar, the plugin itself: what the web's resources and the
@@ -48,7 +58,8 @@
 # cancelled, or skipped for the deadline), whether verify-run.sh reached its end (its run-end mark), and the criteria of the table "runner đủ" for the scenario of
 # $SVP_VERIFY_OUT/scenario), df-after.txt, and while the cluster runs make k8s-status and kubectl get events -A
 # (k8s-status.txt, events.txt), or while compose runs make ps (compose-ps.txt). Only numbers, states and names reach
-# the log: never an event's text, never a service's log.
+# the log: never an event's text, never a service's log. runner.json also has the highest MEM USAGE of each compose
+# container sampled in compose.tsv.
 #
 # Workers transcoding: media-worker starts ffmpeg for each transcode and for nothing else, and the runner's kernel shows
 # every process of the k3d nodes' containers, each in the cgroup of its pod (".../pod<uid>/<container>" with the
@@ -137,6 +148,8 @@ docker_sample() {
     $1 ~ /^k3d-svp-/ { k += v } $1 ~ /^svp-/ { c += v }
     $1 == "k3d-svp-server-0" { s = cpu } $1 == "k3d-svp-agent-0" { a = cpu }
     END { printf "%.0f %.0f %s %s\n", k, c, (s == "" ? "-" : s), (a == "" ? "-" : a) }')
+  printf '%s\n' "$stats" | awk -F '\t' -v t="$t" "$awk_mem"'
+    $1 ~ /^svp-/ { split($3, m, " / "); printf "%s\t%s\t%.0f\n", t, $1, mib(m[1]) }' >>"$samples/compose.tsv"
   # The server's state also once it stopped: a server that went away must show in the samples, not drop out of them.
   state=$(docker_ inspect -f '{{if .State.Running}}running{{else}}stopped{{end}} {{.RestartCount}} {{.State.StartedAt}}' \
     k3d-svp-server-0 2>/dev/null) || state="- - -"
@@ -254,7 +267,8 @@ summary() {
   fi
 
   jq -n --rawfile host "$samples/host.tsv" --rawfile docker "$samples/docker.tsv" --rawfile disk "$samples/disk.tsv" \
-    --rawfile pods "$samples/pods.tsv" --rawfile events "$samples/events.tsv" --rawfile polls "$samples/event-polls.tsv" \
+    --rawfile pods "$samples/pods.tsv" --rawfile compose "$samples/compose.tsv" --rawfile events "$samples/events.tsv" \
+    --rawfile polls "$samples/event-polls.tsv" \
     --rawfile results "$results" --argjson results_read "$results_read" --argjson run_ended "$run_ended" \
     --arg scenario "$scenario" --arg oom "$oom" --arg kernel_oom "$kernel_oom" --arg restarted "$restarted" \
     --argjson logs429 "$logs429" '
@@ -262,7 +276,7 @@ summary() {
     def num: if . == "-" or . == null then null else tonumber end;
     # from_first(f): the rows from the first one where f holds, [] when none does.
     def from_first(f): . as $a | ([range(0; length) | select($a[.] | f)] | first) as $i | if $i then $a[$i:] else [] end;
-    (rows($host)) as $h | (rows($docker)) as $d | (rows($disk)) as $k | (rows($pods)) as $p |
+    (rows($host)) as $h | (rows($docker)) as $d | (rows($disk)) as $k | (rows($pods)) as $p | (rows($compose)) as $c |
     (rows($events) | unique_by(.[1])) as $e | (rows($polls)) as $q |
     ($d | from_first(.[7] == "running")) as $up |
     ($d | from_first(.[6] == "0")) as $ready |
@@ -274,6 +288,8 @@ summary() {
       cpu_busy_max_pct: ($h | map(.[3] | num) | map(select(. != null)) | max),
       k3d_mem_usage_max_mib: ($d | map(.[1] | num) | max),
       compose_mem_usage_max_mib: ($d | map(.[2] | num) | max),
+      compose_container_memory_max_mib: ($c | group_by(.[1]) | map(max_by(.[2] | tonumber) | {key: .[1],
+        value: {mib: (.[2] | tonumber), at: (.[0] | tonumber | todate)}}) | from_entries),
       disk_free_min_gib: ($k | map(.[1] | num) | min | if . then (. / 1073741824 * 10 | floor / 10) else null end),
       disk_low_seen: ($k | any(.[3] == "1")),
       k3d_server_seen: (($up | length) > 0),
@@ -362,11 +378,34 @@ peak() {
     "$file.json" | tee "$file.txt"
 }
 
+# s3_peak START END: see verify-sample.sh s3-peak in the header.
+s3_peak() {
+  local file=$out/ram-s3-upload limit=512
+  case $1$2 in '' | *[!0-9]*) fail "usage: verify-sample.sh s3-peak START END (seconds since the epoch)" ;; esac
+  [ -n "$1" ] && [ -n "$2" ] || fail "usage: verify-sample.sh s3-peak START END (seconds since the epoch)"
+  awk -F '\t' '$2 == "svp-s3-1"' "$samples/compose.tsv" |
+    jq -R -s --argjson start "$1" --argjson end "$2" --argjson limit "$limit" '
+    split("\n") | map(select(length > 0) | split("\t") | {t: (.[0] | tonumber), mib: (.[2] | tonumber)}) as $all |
+    ($all | map(select(.t >= $start and .t <= $end))) as $w |
+    ($w | max_by(.mib)) as $p |
+    ($all | map(select(.t < $start)) | last) as $before |
+    {
+      container: "svp-s3-1", window: {start: ($start | todate), end: ($end | todate)}, samples: ($w | length),
+      before_mib: $before.mib, before_at: (if $before then $before.t | todate else null end),
+      peak_mib: $p.mib, peak_at: (if $p then $p.t | todate else null end),
+      limit_mib: $limit, peak_under_limit: (if $p then $p.mib < $limit else null end),
+      note: "docker stats MEM USAGE of the object store container every 10 s (deploy/ci/verify-sample.sh), over make measure-upload"
+    }' >"$file.json" || return 1
+  jq -r '"RAM of svp-s3-1 during measure-upload: peak \(.peak_mib) MiB at \(.peak_at) over \(.samples) sample(s), before it \(.before_mib) MiB, under the \(.limit_mib) MiB limit: \(.peak_under_limit)"' \
+    "$file.json" | tee "$file.txt"
+  jq -e '.peak_under_limit == true' "$file.json" >/dev/null
+}
+
 case ${1:-} in
   start)
     running && fail "a sampler already runs (pid $pid)"
     mkdir -p "$samples"
-    for f in host docker pods disk events event-polls; do : >"$samples/$f.tsv"; done
+    for f in host docker compose pods disk events event-polls; do : >"$samples/$f.tsv"; done
     {
       echo "kernel: $(uname -r)  cpus: $(nproc)"
       free -m
@@ -395,11 +434,14 @@ case ${1:-} in
   peak)
     peak "${2:-}" "${3:-}"
     ;;
+  s3-peak)
+    s3_peak "${2:-}" "${3:-}"
+    ;;
   sample)
     mkdir -p "$samples"
     docker_sample "$(date +%s)"
     ;;
   *)
-    fail "usage: verify-sample.sh start|stop|peak START END|sample"
+    fail "usage: verify-sample.sh start|stop|peak START END|s3-peak START END|sample"
     ;;
 esac
