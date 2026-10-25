@@ -3,7 +3,9 @@
 # it calls. Everything is a fixture in a temporary directory: a fake checkout with a fake .env (the repository's .env is
 # never read), a fake results folder, and a fake kubectl first on PATH that lists made-up Secrets or fails. The fake
 # secrets, the JWT and the private key header are made at run time, so no file of the repository holds one. Then the
-# deadline criterion of the summary of deploy/ci/verify-sample.sh, with a fake docker and a fake sudo first on PATH.
+# deadline criterion of the summary of deploy/ci/verify-sample.sh, with a fake docker and a fake sudo first on PATH;
+# one sample of its docker.tsv (workers transcoding, memory.stat of the nodes) with a fake docker, kubectl and pgrep and
+# a fixture of /proc; and its peak over a fixture of docker.tsv.
 # Last, that deploy/ci/changed-services.sh builds no image for a change of these scripts, in a throwaway git repository
 # holding a copy of it. Runs on macOS and Linux, no network, no Docker, no cluster.
 #
@@ -203,6 +205,7 @@ echo "<html>Set-Cookie: svp=1</html>" >"$l/a.report.html"
 echo '{"audits":{}}' >"$l/b.report.json"
 echo '{}' >"$l/.lighthouseci/lhr-1.json"
 echo 'zip' >"$repo/web/test-results/playwright/trace.zip"
+echo '{"status":"failed","failedTests":["abc-123"]}' >"$repo/web/test-results/playwright/.last-run.json"
 echo '{"header":"Bearer abc"}' >"$repo/web/test-results/glitchtip-chromium.json"
 echo '{"cookie":"svp_sid=abc"}' >"$repo/web/test-results/measure-web-1.json"
 echo "{\"key\":\"$private_key_header\"}" >"$repo/web/test-results/measure-upload-1.json"
@@ -244,6 +247,7 @@ no_leak() {
 }
 has() { if grep -qF -- "$3" "$work/$1.log"; then ok "$1: $2"; else fail "$1: $2"; fi; }
 lacks() { if grep -qF -- "$3" "$work/$1.log"; then fail "$1: $2"; else ok "$1: $2"; fi; }
+same() { if [ "$3" = "$2" ]; then ok "$1"; else fail "$1: want '$2', got '$3'"; fi; }
 
 # --- verify-mask.sh env on its own: what it masks, what it keeps, and the marker only once.
 mask() {
@@ -302,6 +306,9 @@ expect k3d .k6/local-1/machine.json not-allowed
 expect k3d web/test-results/lighthouse/a.report.html set-cookie
 expect k3d web/test-results/lighthouse/.lighthouseci/lhr-1.json hidden
 expect k3d web/test-results/playwright/trace.zip not-allowed
+expect k3d web/test-results/playwright/.last-run.json not-allowed
+lacks k3d "Playwright's .last-run.json is dropped without a warning" '.last-run.json'
+has k3d "another hidden file still gets a warning" 'lighthouse/.lighthouseci/lhr-1.json: hidden'
 expect k3d web/test-results/glitchtip-chromium.json bearer
 expect k3d web/test-results/measure-web-1.json session-cookie
 expect k3d web/test-results/measure-upload-1.json private-key
@@ -490,6 +497,113 @@ expect_deadline infrastructure "true " "$(sample infrastructure "$(row 01 up fai
 expect_deadline unchosen "true " "$(sample unchosen "$(row 01 up ok 0 100 160 60 '')" \
   "$(row 02 smoke skipped '' 160 160 0 'not in targets')")"
 
+# --- verify-sample.sh sample: one line of docker.tsv. Three media-worker pods Running (A, B, C); ffmpeg runs twice in
+# A (cgroupfs path), once in B (systemd path), once on the runner itself (no pod), once in another pod D, and one pid
+# has gone by the time its cgroup is read: 2 transcoding. memory.stat of both nodes, summed in MiB, exact keys only.
+ss=$work/sample2-out
+sb2=$work/sample2-bin
+sp=$work/sample2-proc
+mkdir -p "$ss" "$sb2"
+uid_a=0a1b2c3d-0000-4000-8000-00000000000a
+uid_b=0a1b2c3d-0000-4000-8000-00000000000b
+uid_c=0a1b2c3d-0000-4000-8000-00000000000c
+uid_d=0a1b2c3d-0000-4000-8000-00000000000d
+cgroup_of() { mkdir -p "$sp/$1" && printf '0::%s\n' "$2" >"$sp/$1/cgroup"; }
+cgroup_of 101 "/system.slice/docker-$(printf 'e%.0s' {1..64}).scope/kubepods/burstable/pod$uid_a/$(printf 'c%.0s' {1..64})"
+cgroup_of 102 "/system.slice/docker-$(printf 'e%.0s' {1..64}).scope/kubepods/burstable/pod$uid_a/$(printf 'd%.0s' {1..64})"
+cgroup_of 103 "/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod${uid_b//-/_}.slice/cri-containerd-abc.scope"
+cgroup_of 104 /user.slice/user-1001.slice/session-1.scope
+cgroup_of 105 "/system.slice/docker-$(printf 'e%.0s' {1..64}).scope/kubepods/besteffort/pod$uid_d/$(printf 'f%.0s' {1..64})"
+cat >"$sb2/pgrep" <<'EOF'
+#!/bin/sh
+[ "$*" = "-x ffmpeg" ] || exit 2
+printf '101\n102\n103\n104\n105\n106\n'
+EOF
+cat >"$sb2/docker" <<'EOF'
+#!/bin/sh
+case $1 in
+  stats) printf 'k3d-svp-server-0\t150.00%%\t3GiB / 15.6GiB\nk3d-svp-agent-0\t120.00%%\t2.5GiB / 15.6GiB\nk3d-svp-registry\t0.00%%\t20MiB / 15.6GiB\n' ;;
+  inspect) echo "running 0 2026-10-25T00:00:00Z" ;;
+  exec)
+    [ "$2" = "${FAKE_EXEC_FAIL:-}" ] && exit 1
+    case $2 in
+      k3d-svp-server-0) printf 'anon 1073741824\nanon_thp 999\nactive_file 524288000\ninactive_file 999\nkernel 104857600\n' ;;
+      k3d-svp-agent-0) printf 'anon 536870912\nactive_file 209715200\nkernel_stack 999\nkernel 52428800\n' ;;
+    esac ;;
+  *) exit 1 ;;
+esac
+EOF
+cat >"$sb2/kubectl" <<'EOF'
+#!/bin/sh
+[ "${FAKE_KUBECTL_FAIL:-}" = 1 ] && exit 1
+case "$*" in
+  *" get pods -l app.kubernetes.io/name=media-worker,app.kubernetes.io/component=server --field-selector=status.phase=Running -o jsonpath="*)
+    printf '%s\n' "$FAKE_UIDS" ;;
+  *" get nodes --no-headers") printf 'k3d-svp-server-0   Ready   control-plane   1h   v1.36.0+k3s1\nk3d-svp-agent-0   Ready,SchedulingDisabled   <none>   1h   v1.36.0+k3s1\n' ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod 755 "$sb2/pgrep" "$sb2/docker" "$sb2/kubectl"
+# take_sample [VAR=VALUE...]: verify-sample.sh sample; prints the new line of docker.tsv without its time.
+take_sample() {
+  rm -rf "$ss/samples"
+  env "${job[@]}" PATH="$sb2:$PATH" SVP_VERIFY_OUT="$ss" SVP_VERIFY_PROC="$sp" \
+    FAKE_UIDS="$(printf '%s\n' "$uid_a" "$uid_b" "$uid_c")" "$@" "$here/verify-sample.sh" sample >"$work/sample2.log" 2>&1 ||
+    fail "sample: verify-sample.sh sample exits 0"
+  cut -f 2- "$ss/samples/docker.tsv"
+}
+row_tail() { local IFS=$'\t'; printf '%s' "$*"; }
+same "sample: 3 Running workers, 2 transcoding (ffmpeg in their pod), memory.stat of both nodes summed" \
+  "$(row_tail 5652 0 150.00 120.00 3 0 running 0 2026-10-25T00:00:00Z 2 1536 700 150)" "$(take_sample)"
+same "sample: no worker Running counts 0 transcoding" \
+  "$(row_tail 5652 0 150.00 120.00 0 0 running 0 2026-10-25T00:00:00Z 0 1536 700 150)" "$(take_sample FAKE_UIDS=)"
+same "sample: the API not answering gives - for the workers; one node's memory.stat unread gives - for all three" \
+  "$(row_tail 5652 0 150.00 120.00 - - running 0 2026-10-25T00:00:00Z - - - -)" \
+  "$(take_sample FAKE_KUBECTL_FAIL=1 FAKE_EXEC_FAIL=k3d-svp-agent-0)"
+
+# --- verify-sample.sh peak START END over a fixture of docker.tsv (time, MEM USAGE k3d, compose, CPU server, agent,
+# Running workers, nodes not Ready, server state, RestartCount, StartedAt, workers transcoding, anon, active_file,
+# kernel). 5 samples with 2 Running workers but 1 transcoding and the highest MEM USAGE (run 5's window) must not count;
+# then 8 with 2 transcoding (3 windows of 6), one the API missed, 5 more (no window), 1 worker; one sample before START
+# and one after END.
+po=$work/peak-out
+mkdir -p "$po/samples"
+peak_row() { local IFS=$'\t'; printf '%s\t%s\t0\t100.00\t100.00\t%s\t0\trunning\t0\t2026-10-25T00:00:00Z\t%s\t3000\t%s\t200\n' "$@"; }
+{
+  peak_row 90 99999 2 2 1000
+  for t in 100 110 120 130 140; do peak_row "$t" $((9100 + t)) 2 1 1000; done
+  peak_row 150 8000 2 2 -
+  i=0
+  for m in 8800 8820 8840 8860 8900 8950 9100; do
+    peak_row $((160 + i * 10)) "$m" 2 2 $((1000 + i * 100))
+    i=$((i + 1))
+  done
+  peak_row 230 8500 2 - 1000
+  for t in 240 250 260 270 280; do peak_row "$t" 8500 2 2 1000; done
+  peak_row 290 7000 1 0 1000
+  peak_row 300 99999 2 2 1000
+} >"$po/samples/docker.tsv"
+env "${job[@]}" SVP_VERIFY_OUT="$po" "$here/verify-sample.sh" peak 100 295 >"$work/peak.log" 2>&1 ||
+  fail "peak: verify-sample.sh peak exits 0"
+same "peak: only samples with 2 workers transcoding count, 6 in a row; the median minus active_file over the same 6" \
+  "20 19 13 8 1970-01-01T00:02:30Z 1970-01-01T00:03:40Z 3 8880 1970-01-01T00:02:50Z 7530 9240 9100 true" \
+  "$(jq -r '[.samples, .samples_with_2_running, .samples_with_2_transcoding, .longest_run_with_2_transcoding.samples,
+    .longest_run_with_2_transcoding.from, .longest_run_with_2_transcoding.to, .windows_of_6_with_2_transcoding,
+    .peak_median_of_6_mib, .peak_window_from, .peak_median_of_6_minus_active_file_mib, .highest_sample_mib,
+    .highest_sample_with_2_transcoding_mib, .peak_within_8_7_gib] | map(tostring) | join(" ")' "$po/ram-peak.json")"
+has peak "ram-peak.txt is printed" "RAM peak during drill-k8s-keda: median of 6 with 2 workers transcoding 8880 MiB (3 window(s), longest run 8 samples)"
+printf '%s\n' "$(peak_row 100 8000 2 1 1000)" >"$po/samples/docker.tsv"
+env "${job[@]}" SVP_VERIFY_OUT="$po" "$here/verify-sample.sh" peak 100 295 >"$work/peak-none.log" 2>&1 ||
+  fail "peak: verify-sample.sh peak exits 0 without a window"
+same "peak: no 6 samples in a row with 2 transcoding gives no peak" "0 null null null" \
+  "$(jq -r '[.windows_of_6_with_2_transcoding, .peak_median_of_6_mib, .peak_window_from, .peak_within_8_7_gib]
+    | map(tostring) | join(" ")' "$po/ram-peak.json")"
+if env "${job[@]}" SVP_VERIFY_OUT="$po" "$here/verify-sample.sh" peak 100 >/dev/null 2>&1; then
+  fail "peak: a missing END is refused"
+else
+  ok "peak: a missing END is refused"
+fi
+
 # --- verify-run.sh: the build target's failure skips the rest at once, SVP_VERIFY_TARGETS picks targets. It runs from
 # a copy in a throwaway tree with a fake .env, a fake make first on PATH (it logs its arguments and fails for the
 # targets FAKE_MAKE_FAIL names) and the fake kubectl above (no cluster answers), so no target, no cluster and no real
@@ -520,7 +634,6 @@ run_verify() {
 }
 # results NAME: "id name status note" of each target of run NAME, one per line.
 results() { awk -F '\t' 'NR > 1 { print $1, $2, $3, $8 }' "$work/run-$1.out/results.tsv"; }
-same() { if [ "$3" = "$2" ]; then ok "$1"; else fail "$1: want '$2', got '$3'"; fi; }
 compose_names="up smoke drill-obs-threats load-local fallback-alert-under-load web-lighthouse-1 web-lighthouse-2
 web-lighthouse-3 lcp drill-alert-to-sentry"
 k3d_names="k8s-up k8s-smoke ram-rest-start drill-k8s-threats drill-k8s-pdb drill-k8s-canary k8s-web-sourcemaps

@@ -66,9 +66,10 @@
 #                              summed by namespace, and kubectl top node; the window of those samples, to read
 #                              samples/pods.tsv at rest by; ram-rest-<label>.json and .txt, the .txt with free -m of
 #                              the runner at that point
-#   ram-peak (k3d)             over the samples taken while drill-k8s-keda ran: the highest median of 6 samples in a row
-#                              that each saw 2 Running media-worker pods, and the highest sample; ram-peak.json, .txt.
-#                              Skipped when drill-k8s-keda did not run
+#   ram-peak (k3d)             deploy/ci/verify-sample.sh peak over the samples taken while drill-k8s-keda ran: the
+#                              highest median of 6 samples in a row that each saw 2 media-worker pods transcoding (an
+#                              ffmpeg process in the pod), with MEM USAGE minus active_file over the same samples, and
+#                              the highest sample; ram-peak.json, .txt. Skipped when drill-k8s-keda did not run
 #
 # Linux only: GNU timeout and date -d.
 set -uo pipefail
@@ -458,27 +459,7 @@ ram_rest() {
   } | tee "$file.txt"
 }
 
-# ram_peak START END: see ram-peak in the header.
-ram_peak() {
-  local file=$SVP_VERIFY_OUT/ram-peak
-  awk -F '\t' -v a="$1" -v b="$2" '$1 >= a && $1 <= b' "$SVP_VERIFY_OUT/samples/docker.tsv" |
-    jq -R -s --argjson start "$1" --argjson end "$2" '
-    def median: sort | if length % 2 == 1 then .[length / 2 | floor] else (.[length / 2 - 1] + .[length / 2]) / 2 end;
-    split("\n") | map(select(length > 0) | split("\t") | {t: (.[0] | tonumber), mib: (.[1] | tonumber), workers: .[5]}) as $r |
-    [range(0; ($r | length) - 5) | $r[.:. + 6] | select(all(.workers == "2")) | {from: (.[0].t | todate), median: (map(.mib) | median)}] as $w |
-    {
-      window: {start: ($start | todate), end: ($end | todate)}, samples: ($r | length),
-      samples_with_2_workers: ($r | map(select(.workers == "2")) | length),
-      windows_of_6_with_2_workers: ($w | length),
-      peak_median_of_6_mib: ($w | map(.median) | max), peak_window_from: ($w | max_by(.median) | .from),
-      highest_sample_mib: ($r | map(.mib) | max),
-      peak_within_8_7_gib: ($w | map(.median) | max | if . == null then null else . < 8.7 * 1024 end),
-      note: "workers counts the Running media-worker pods of each sample, taken as both transcoding while drill-k8s-keda runs"
-    }' >"$file.json" || return 1
-  jq -r '"RAM peak during drill-k8s-keda: median of 6 with 2 workers \(.peak_median_of_6_mib) MiB (\(.windows_of_6_with_2_workers) window(s)), highest sample \(.highest_sample_mib) MiB, within 8.7 GiB: \(.peak_within_8_7_gib)"' \
-    "$file.json" | tee "$file.txt"
-}
-export -f load_local_watch fallback_alert_check lighthouse_run lcp_median kc not_ready ram_rest ram_peak
+export -f load_local_watch fallback_alert_check lighthouse_run lcp_median kc not_ready ram_rest
 
 # --- The scenarios (docs/adr/0021-deferred-verification-stage6b.md, section 5). Called twice: with listing set, step
 # and skip only add each name to names, which SVP_VERIFY_TARGETS is checked against; then for the run.
@@ -510,7 +491,7 @@ scenario_targets() {
       if [ "$last_status" = skipped ]; then
         skip ram-peak "drill-k8s-keda did not run"
       else
-        step ram-peak 2 bash -c 'ram_peak "$1" "$2"' _ "$last_start" "$last_end"
+        step ram-peak 2 "$here/verify-sample.sh" peak "$last_start" "$last_end"
       fi
       step drill-k8s-backup 40 make drill-k8s-backup MODE=latest
       step drill-k8s-backup-pitr 40 make drill-k8s-backup MODE=pitr

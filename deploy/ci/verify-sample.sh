@@ -7,6 +7,14 @@
 #                            $SVP_VERIFY_OUT/sampler.pid; refuses to start a second one
 #   verify-sample.sh stop    stops the process of that pid (only when its command line is this script's loop), then
 #                            writes the summary below and prints runner.txt
+#   verify-sample.sh peak START END
+#                            ram-peak.json and ram-peak.txt from the docker.tsv samples between START and END (seconds
+#                            since the epoch; deploy/ci/verify-run.sh gives the start and end of drill-k8s-keda): the
+#                            highest median of 6 samples in a row that each saw 2 workers transcoding (the cluster's
+#                            peak of ADR-0014 section 2), with the same median of MEM USAGE minus active_file, the
+#                            longest run of such samples, and the highest sample; also on macOS (awk and jq only)
+#   verify-sample.sh sample  takes one docker.tsv sample now, as the loop does every 10 s
+#                            (deploy/ci/verify-collect-test.sh runs it with a fake docker, kubectl and pgrep)
 #
 # Samples, in $SVP_VERIFY_OUT/samples/ (one line each, seconds since the epoch first):
 #   host.tsv         every 5 s   MemAvailable (KiB), swap in use (KiB), CPU busy % since the line before (/proc/stat;
@@ -16,7 +24,9 @@
 #                                containers (svp-*), in MiB; CPU % of k3d-svp-server-0 and k3d-svp-agent-0; the Running
 #                                media-worker pods and the nodes not Ready ("-" when the API did not answer, or without
 #                                a cluster); the state of container k3d-svp-server-0 (running or stopped), its
-#                                RestartCount and StartedAt ("-" without it)
+#                                RestartCount and StartedAt ("-" without it); the Running media-worker pods that
+#                                transcode now, that is run an ffmpeg process (below); anon, active_file and kernel of
+#                                memory.stat summed over the two k3d nodes, in MiB ("-" unless both were read)
 #   pods.tsv         every 30 s  kubectl top pods --containers of namespaces svp, svp-data and cnpg-system: namespace,
 #                                pod, container, CPU in millicores, working set in MiB (the web pods, the Postgres pods
 #                                with the Barman Cloud sidecar, the plugin itself: what the web's resources and the
@@ -40,6 +50,15 @@
 # (k8s-status.txt, events.txt), or while compose runs make ps (compose-ps.txt). Only numbers, states and names reach
 # the log: never an event's text, never a service's log.
 #
+# Workers transcoding: media-worker starts ffmpeg for each transcode and for nothing else, and the runner's kernel shows
+# every process of the k3d nodes' containers, each in the cgroup of its pod (".../pod<uid>/<container>" with the
+# cgroupfs driver of k3s, "...-pod<uid with _>.slice" with systemd's). So a sample counts the Running media-worker
+# pods whose UID is in the cgroup of an ffmpeg process at that instant: two pods Running while only one transcodes
+# (the other waits for a partition) count 1, and the ffmpeg runs on the runner itself (the drills make their test
+# videos so) have no pod in their cgroup. Not kubectl top: its CPU is an average over the last scrape of
+# metrics-server, so it lags the start and end of a transcode by up to a scrape, which is a sample or two of the
+# 6 in a row the peak needs, and it needs a threshold of its own.
+#
 # Of the k3d criteria, a sample the cluster could not answer counts against the runner, never for it: from the first
 # sample of a running k3s server on, every sample must see it running with the same RestartCount and StartedAt; from
 # the first sample with every node Ready on (before it the cluster is still being made), every sample must read the
@@ -57,6 +76,8 @@ samples=$out/samples
 pidfile=$out/sampler.pid
 gib=$((1024 * 1024 * 1024))
 worker_selector=app.kubernetes.io/name=media-worker,app.kubernetes.io/component=server
+# Where ffmpeg_pods reads the processes' cgroups; deploy/ci/verify-collect-test.sh points it at a fixture.
+proc=${SVP_VERIFY_PROC:-/proc}
 
 fail() {
   echo "FAIL  verify-sample: $1" >&2
@@ -88,8 +109,28 @@ awk_mem='function mib(s,   n, u) {
     return n / 1048576
   }'
 
+# ffmpeg_pods: the UIDs of the pods that run an ffmpeg process now, one per line (see "Workers transcoding" above).
+ffmpeg_pods() {
+  local pid
+  for pid in $(pgrep -x ffmpeg); do
+    sed -n 's/.*pod\([0-9a-f]\{8\}[-_][0-9a-f]\{4\}[-_][0-9a-f]\{4\}[-_][0-9a-f]\{4\}[-_][0-9a-f]\{12\}\).*/\1/p' \
+      "$proc/$pid/cgroup" 2>/dev/null
+  done | tr _ - | sort -u
+}
+
+# node_memstat: anon, active_file and kernel of memory.stat summed over the two k3d nodes, in MiB, tab separated;
+# "-" three times unless both nodes were read.
+node_memstat() {
+  local node
+  for node in k3d-svp-server-0 k3d-svp-agent-0; do
+    docker_ exec "$node" cat /sys/fs/cgroup/memory.stat 2>/dev/null || echo "unread 0"
+  done | awk '$1 == "unread" { bad = 1 } $1 == "anon" { a += $2; n++ } $1 == "active_file" { f += $2 }
+    $1 == "kernel" { k += $2 }
+    END { if (bad || n != 2) print "-\t-\t-"; else printf "%.0f\t%.0f\t%.0f\n", a / 1048576, f / 1048576, k / 1048576 }'
+}
+
 docker_sample() {
-  local t=$1 stats server agent workers=- notready=- nodes state
+  local t=$1 stats server agent workers=- notready=- transcoding=- memstat=$'-\t-\t-' nodes state uids
   stats=$(docker_ stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}' 2>/dev/null) || stats=
   read -r k3d_mib compose_mib server agent < <(printf '%s\n' "$stats" | awk -F '\t' "$awk_mem"'
     { split($3, m, " / "); v = mib(m[1]); cpu = $2; sub(/%$/, "", cpu) }
@@ -100,16 +141,21 @@ docker_sample() {
   state=$(docker_ inspect -f '{{if .State.Running}}running{{else}}stopped{{end}} {{.RestartCount}} {{.State.StartedAt}}' \
     k3d-svp-server-0 2>/dev/null) || state="- - -"
   if [ "${state%% *}" = running ]; then
-    workers=$(kc -n svp get pods -l "$worker_selector" --field-selector=status.phase=Running --no-headers 2>/dev/null |
-      wc -l | tr -d ' ')
+    if uids=$(kc -n svp get pods -l "$worker_selector" --field-selector=status.phase=Running \
+      -o jsonpath='{range .items[*]}{.metadata.uid}{"\n"}{end}' 2>/dev/null); then
+      workers=$(printf '%s' "$uids" | grep -c .)
+      transcoding=0
+      [ "$workers" -gt 0 ] && transcoding=$(ffmpeg_pods | grep -cxF -f <(printf '%s\n' "$uids"))
+    fi
     if nodes=$(kc get nodes --no-headers 2>/dev/null) && [ -n "$nodes" ]; then
       # Only the first field of STATUS: a cordoned node shows "Ready,SchedulingDisabled" and is still Ready (make
       # drill-k8s-pdb cordons every node for a while), while "NotReady,SchedulingDisabled" is not.
       notready=$(printf '%s\n' "$nodes" | awk '{ split($2, s, ",") } s[1] != "Ready"' | wc -l | tr -d ' ')
     fi
+    memstat=$(node_memstat)
   fi
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$t" "$k3d_mib" "$compose_mib" "$server" "$agent" "$workers" "$notready" \
-    "${state// /$'\t'}" >>"$samples/docker.tsv"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$t" "$k3d_mib" "$compose_mib" "$server" "$agent" "$workers" \
+    "$notready" "${state// /$'\t'}" "$transcoding" "$memstat" >>"$samples/docker.tsv"
 }
 
 pods_sample() {
@@ -270,6 +316,46 @@ summary() {
     tee "$out/runner.txt"
 }
 
+# peak START END: see verify-sample.sh peak in the header.
+peak() {
+  local file=$out/ram-peak
+  case $1$2 in '' | *[!0-9]*) fail "usage: verify-sample.sh peak START END (seconds since the epoch)" ;; esac
+  [ -n "$1" ] && [ -n "$2" ] || fail "usage: verify-sample.sh peak START END (seconds since the epoch)"
+  awk -F '\t' -v a="$1" -v b="$2" '$1 >= a && $1 <= b' "$samples/docker.tsv" |
+    jq -R -s --argjson start "$1" --argjson end "$2" '
+    def median: sort | if length == 0 then null elif length % 2 == 1 then .[length / 2 | floor]
+      else (.[length / 2 - 1] + .[length / 2]) / 2 end;
+    def num: if . == "-" or . == null then null else tonumber end;
+    def time: if . == null then null else todate end;
+    split("\n") | map(select(length > 0) | split("\t") | {t: (.[0] | tonumber), mib: (.[1] | tonumber),
+      running: .[5], transcoding: (.[10] // "-"), active_file: (.[12] | num)}) as $r |
+    # Every 6 samples in a row that each saw 2 workers transcoding; MEM USAGE minus active_file only when every one of
+    # the 6 read memory.stat of both nodes.
+    [range(0; ($r | length) - 5) | $r[.:. + 6] | select(all(.transcoding == "2")) | {from: .[0].t,
+      median: (map(.mib) | median),
+      minus_active_file: (if all(.active_file != null) then (map(.mib - .active_file) | median) else null end)}] as $w |
+    ($w | max_by(.median)) as $p |
+    ($r | reduce .[] as $x ({n: 0, from: null, best: 0, best_from: null, best_to: null};
+      if $x.transcoding == "2" then .n += 1 | (if .n == 1 then .from = $x.t else . end)
+        | (if .n > .best then .best = .n | .best_from = .from | .best_to = $x.t else . end)
+      else .n = 0 end)) as $run |
+    {
+      window: {start: ($start | todate), end: ($end | todate)}, samples: ($r | length),
+      samples_with_2_running: ($r | map(select(.running == "2")) | length),
+      samples_with_2_transcoding: ($r | map(select(.transcoding == "2")) | length),
+      longest_run_with_2_transcoding: {samples: $run.best, from: ($run.best_from | time), to: ($run.best_to | time)},
+      windows_of_6_with_2_transcoding: ($w | length),
+      peak_median_of_6_mib: $p.median, peak_window_from: ($p.from | time),
+      peak_median_of_6_minus_active_file_mib: $p.minus_active_file,
+      highest_sample_mib: ($r | map(.mib) | max),
+      highest_sample_with_2_transcoding_mib: ($r | map(select(.transcoding == "2") | .mib) | max),
+      peak_within_8_7_gib: (if $p == null then null else $p.median < 8.7 * 1024 end),
+      note: "transcoding counts the Running media-worker pods with an ffmpeg process in their cgroup at each sample (deploy/ci/verify-sample.sh); active_file is that of both k3d nodes"
+    }' >"$file.json" || return 1
+  jq -r '"RAM peak during drill-k8s-keda: median of 6 with 2 workers transcoding \(.peak_median_of_6_mib) MiB (\(.windows_of_6_with_2_transcoding) window(s), longest run \(.longest_run_with_2_transcoding.samples) samples), minus active_file \(.peak_median_of_6_minus_active_file_mib) MiB, highest sample \(.highest_sample_mib) MiB, within 8.7 GiB: \(.peak_within_8_7_gib)"' \
+    "$file.json" | tee "$file.txt"
+}
+
 case ${1:-} in
   start)
     running && fail "a sampler already runs (pid $pid)"
@@ -300,7 +386,14 @@ case ${1:-} in
     [ -d "$samples" ] || fail "no samples in $samples: verify-sample.sh start never ran"
     summary
     ;;
+  peak)
+    peak "${2:-}" "${3:-}"
+    ;;
+  sample)
+    mkdir -p "$samples"
+    docker_sample "$(date +%s)"
+    ;;
   *)
-    fail "usage: verify-sample.sh start|stop"
+    fail "usage: verify-sample.sh start|stop|peak START END|sample"
     ;;
 esac

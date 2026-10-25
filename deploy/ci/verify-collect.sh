@@ -25,7 +25,9 @@
 # a route, a status and a duration), .k6/<run>/summary.json, web/test-results/measure-*.json and glitchtip-*.json, the
 # Lighthouse reports web/test-results/lighthouse/*.json and *.html. Everything else under those places is listed in
 # files.txt as not-allowed: .env, kubeconfig, .k8s/ca.*, .k8s/helm/, .k8s/drills/threats-*.log, Playwright traces,
-# videos, screenshots, HAR and HTML report, k6's machine.json, hidden files and every service log never get in.
+# videos, screenshots, HAR and HTML report, k6's machine.json, hidden files and every service log never get in. A
+# hidden file is dropped with its own rule and a warning, except web/test-results/playwright/.last-run.json, which
+# Playwright writes on every run (the ids of the tests that failed): known, so not-allowed without a warning.
 #
 # Each candidate is refused when it is hidden, not a regular file (a link could point at .env), over 5 MiB, or when it
 # matches (grep -a: binary files are read as text):
@@ -207,6 +209,7 @@ for pair in .k8s/drills:k8s-drills .k6:k6 web/test-results:web-test-results; do
   while IFS= read -r -d '' file; do
     sub=${file#"$repo/$base"/}
     src=$base/$sub
+    if [ "$src" = web/test-results/playwright/.last-run.json ]; then drop "$src" not-allowed; continue; fi
     if hidden "$sub"; then drop "$src" hidden; continue; fi
     allowed=0
     case $base:$sub in
