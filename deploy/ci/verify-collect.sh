@@ -34,7 +34,8 @@
 #                  are read again here, the cluster's while it still runs
 #   jwt            eyJ<8+>.eyJ<8+>. (header and payload of a JWT or JWS; eyJ alone also occurs in the base64 of the
 #                  screenshots Lighthouse embeds, which have no dots)
-#   session-cookie svp_sid; bearer "Bearer "; set-cookie "Set-Cookie"; private-key "-----BEGIN ... PRIVATE KEY-----"
+#   session-cookie svp_sid (in the verdict lines of a threat model drill: svp_sid not followed by a space, see rule)
+#   bearer "Bearer "; set-cookie "Set-Cookie"; private-key "-----BEGIN ... PRIVATE KEY-----"
 # A file read from the stack or the cluster is copied only when every list it needs was read: .env's always, the
 # cluster's too unless the scenario is compose-obs. A list that could not be read (an .env that breaks its rule, a
 # cluster that died before its Secrets were read once) leaves only the files written on the runner itself
@@ -107,13 +108,20 @@ drop() {
   [ "$2" = not-allowed ] || ci_warning "$1: $2"
 }
 
-# rule FILE: prints the first scan rule FILE breaks, nothing when it is clean.
+# rule FILE [KIND]: prints the first scan rule FILE breaks, nothing when it is clean. KIND verdicts (the verdict lines
+# of a threat model drill, the drill's own sentences) narrows session-cookie: the web client's items name the session
+# cookie in prose, its name followed by a space ("session cookie __Host-Http-svp_sid in the drill's cookie jar"), and
+# no form a cookie's value is written in puts the value after the name and a space (a header has name=value, a cookie
+# jar name<TAB>value, JSON "name": ..., "value": ...). So there svp_sid followed by any other character, or ending a
+# line, is still refused; in every other file svp_sid at all.
 rule() {
+  local sid_re=svp_sid
+  [ "${2:-}" = verdicts ] && sid_re='svp_sid([^ ]|$)'
   if [ -s "$work/values" ] && grep -qaF -f "$work/values" -- "$1"; then
     echo secret-value
   elif grep -qaE -- "$jwt_re" "$1"; then
     echo jwt
-  elif grep -qaF -- svp_sid "$1"; then
+  elif grep -qaE -- "$sid_re" "$1"; then
     echo session-cookie
   elif grep -qaF -- 'Bearer ' "$1"; then
     echo bearer
@@ -125,7 +133,8 @@ rule() {
 }
 
 # consider FILE SRC DEST KIND [NOTE]: copies FILE (shown as SRC) to $art/DEST when it passes; KIND is runner (written
-# on the runner itself) or stack (read from the stack or the cluster); NOTE goes with it into files.txt.
+# on the runner itself), stack (read from the stack or the cluster) or verdicts (the verdict lines of a threat model
+# drill, read from the stack or the cluster, scanned by rule as such); NOTE goes with it into files.txt.
 consider() {
   local file=$1 src=$2 dest=$3 kind=$4 note=${5:-} r size
   if [ -L "$file" ] || [ ! -f "$file" ]; then
@@ -137,11 +146,11 @@ consider() {
     drop "$src" too-large
     return
   fi
-  if [ "$kind" = stack ] && [ "$lists_ok" != 1 ]; then
+  if [ "$kind" != runner ] && [ "$lists_ok" != 1 ]; then
     drop "$src" no-secret-list
     return
   fi
-  r=$(rule "$file")
+  r=$(rule "$file" "$kind")
   if [ -n "$r" ]; then
     drop "$src" "$r"
     return
@@ -174,7 +183,7 @@ if [ -d "$out" ]; then
       logs/*-drill-k8s-threats.log | logs/*-drill-obs-threats.log)
         grep -aE -e "$verdict_re" -e "$item_re" -e "$table_re" -e "$drill_end_re" "$file" |
           grep -avE -- "$service_log_re" >"$work/verdicts" || :
-        consider "$work/verdicts" "$src (verdict lines)" "${sub%.log}.verdicts.log" stack ;;
+        consider "$work/verdicts" "$src (verdict lines)" "${sub%.log}.verdicts.log" verdicts ;;
       logs/*.log)
         grep -avE -- "$service_log_re" "$file" >"$work/output" || :
         # grep -c, not wc -l: a last line without a newline counts too.

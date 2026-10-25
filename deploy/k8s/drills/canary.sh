@@ -83,8 +83,13 @@ now_ms() {
   t=$(now)
   echo "${t%.*}${t#*.}"
 }
-# hms MS: unix ms as HH:MM:SS.mmm (UTC).
-hms() { printf '%s.%03d' "$(date -u -r $(($1 / 1000)) +%H:%M:%S)" $(($1 % 1000)); }
+# hms MS: unix ms as HH:MM:SS.mmm (UTC). GNU date (Linux, the CI runner) reads an epoch with -d @SECONDS; BSD date
+# (macOS) has no -d for it and needs -r instead.
+if date -u -d @0 +%s >/dev/null 2>&1; then
+  hms() { printf '%s.%03d' "$(date -u -d "@$(($1 / 1000))" +%H:%M:%S)" $(($1 % 1000)); }
+else
+  hms() { printf '%s.%03d' "$(date -u -r $(($1 / 1000)) +%H:%M:%S)" $(($1 % 1000)); }
+fi
 # secs MS: a duration in ms as seconds with one decimal.
 secs() { printf '%d.%d' $(($1 / 1000)) $((($1 % 1000) / 100)); }
 # iso_ms ISO: a Kubernetes time (RFC 3339, seconds) as unix ms.

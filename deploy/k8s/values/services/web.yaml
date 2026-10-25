@@ -11,8 +11,12 @@ protocol: http
 # The image's port (PORT of deploy/docker/web.Dockerfile), as in compose.
 port: 3001
 resources:
-  # Compose measured 53 MiB at rest and 96 MiB after the end-to-end tests, before the OTel SDK and Sentry's server SDK;
-  # the limit leaves room for both until the cluster's memory is measured again.
+  # Measured with kubectl top on the dev path of the CI verification runner (amd64, 2026-10-25, both SDKs on): a web
+  # pod's working set 88-90 MiB 60 s after every pod was Ready, 136-137 MiB at rest after the drills and the end-to-end
+  # tests, 144 MiB at most during those tests; CPU 101m at most under them, 2-3m at rest. Memory limit: 1.5 times the
+  # highest working set rounded up to 64 Mi (256 Mi), but never under 384 Mi, the limit set before any measurement: the
+  # end-to-end tests are a light load, and the load tests set it again, only ever higher. Memory request: the median at
+  # rest (112.5 MiB) rounded up to 32 Mi, at least 128 Mi. CPU stays at 100m and 1 until a load test shows throttling.
   requests: {cpu: 100m, memory: 128Mi}
   limits: {cpu: "1", memory: 384Mi}
 env:

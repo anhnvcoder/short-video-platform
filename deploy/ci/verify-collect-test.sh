@@ -153,10 +153,19 @@ printf '05\tdrill-alert-to-sentry\tfail\t1\t190\t200\t10\t\n06\tdrill-obs-threat
   echo "FAIL  NP-1: probe reached minio"
   echo "== PROBE-HEADING-MARKER: body"
   echo "  PROBE-INDENT-MARKER   PASS with more"
+  echo "== WEB-7"
+  echo "ok    user @drill_ab12 registered: 303, session cookie __Host-Http-svp_sid in the drill's cookie jar"
   echo
   echo "drill-k8s-threats (20261025T080000Z-ab12)"
   printf '  %-14s %s\n' ITEM RESULT IN-2/IN-4 PASS NP-1 FAIL
 } >"$out/logs/04-drill-k8s-threats.log"
+# Verdict lines of a threat drill holding the session cookie in a form its value is written in, one file each: a
+# header, a cookie jar line, JSON, and the name ending a line. A plain target output that names the cookie in prose.
+printf 'FAIL  WEB-2: sent Cookie: __Host-Http-svp_sid=SID-MARKER\n' >"$out/logs/07-drill-k8s-threats.log"
+printf 'ok    jar: svp.localhost\tFALSE\t/\tTRUE\t0\t__Host-Http-svp_sid\tSID-MARKER\n' >"$out/logs/08-drill-k8s-threats.log"
+printf 'FAIL  WEB-9: got {"name":"svp_sid","value":"SID-MARKER"}\n' >"$out/logs/09-drill-obs-threats.log"
+printf 'FAIL  WEB-9: the cookie jar holds svp_sid\n' >"$out/logs/10-drill-obs-threats.log"
+printf 'ok    session cookie __Host-Http-svp_sid in the jar\n' >"$out/logs/11-k8s-web-e2e.log"
 printf 'ok    OPS-1: 8 loopback ports\nprobe answered: PROBE-OBS-MARKER\ndrill-obs-threats: all checks passed\n' \
   >"$out/logs/06-drill-obs-threats.log"
 printf '100\t4000000\t0\t12\n' >"$out/samples/host.tsv"
@@ -293,6 +302,12 @@ expect k3d web/test-results/playwright/trace.zip not-allowed
 expect k3d web/test-results/glitchtip-chromium.json bearer
 expect k3d web/test-results/measure-web-1.json session-cookie
 expect k3d web/test-results/measure-upload-1.json private-key
+for n in 07-drill-k8s-threats 08-drill-k8s-threats 09-drill-obs-threats 10-drill-obs-threats; do
+  expect k3d "\$SVP_VERIFY_OUT/logs/$n.log (verdict lines)" session-cookie
+done
+expect k3d '$SVP_VERIFY_OUT/logs/11-k8s-web-e2e.log' session-cookie
+grep -rqa SID-MARKER "$work/art-k3d" && fail "k3d: no session cookie value in the artifact" ||
+  ok "k3d: no session cookie value in the artifact"
 [ -f "$work/art-k3d/k8s-drills/canary-drill-1.json" ] && [ -f "$work/art-k3d/k6/local-1/summary.json" ] &&
   [ -f "$work/art-k3d/web-test-results/lighthouse/b.report.json" ] && ok "k3d: the checkout's files under visible folders" ||
   fail "k3d: the checkout's files under visible folders"
@@ -307,11 +322,13 @@ grep -q '^ok    IN-4: svp-feed-service .*(svp-admin)' "$work/art-k3d/logs/04-dri
   ok "k3d: a verdict naming Kafka users and svp-admin is kept" || fail "k3d: a verdict naming Kafka users and svp-admin is kept"
 v=$work/art-k3d/logs/04-drill-k8s-threats.verdicts.log
 want=$(printf '%s\n' "== IN-2/IN-4" "ok    IN-4: svp-feed-service may only read its topics (svp-admin)" "== NP-1" \
-  "FAIL  NP-1: probe reached minio" "drill-k8s-threats (20261025T080000Z-ab12)" "$(printf '  %-14s %s' ITEM RESULT)" \
+  "FAIL  NP-1: probe reached minio" "== WEB-7" \
+  "ok    user @drill_ab12 registered: 303, session cookie __Host-Http-svp_sid in the drill's cookie jar" \
+  "drill-k8s-threats (20261025T080000Z-ab12)" "$(printf '  %-14s %s' ITEM RESULT)" \
   "$(printf '  %-14s %s' IN-2/IN-4 PASS)" "$(printf '  %-14s %s' NP-1 FAIL)")
 [ "$(cat "$v")" = "$want" ] &&
-  ok "k3d: the threat drill keeps its item headings, verdicts and closing table, nothing else" ||
-  fail "k3d: the threat drill keeps its item headings, verdicts and closing table, nothing else"
+  ok "k3d: the threat drill keeps its item headings, verdicts (the session cookie named in prose) and closing table, nothing else" ||
+  fail "k3d: the threat drill keeps its item headings, verdicts (the session cookie named in prose) and closing table, nothing else"
 v=$work/art-k3d/logs/06-drill-obs-threats.verdicts.log
 [ "$(cat "$v")" = "$(printf '%s\n' "ok    OPS-1: 8 loopback ports" "drill-obs-threats: all checks passed")" ] &&
   ok "k3d: the threat drill's closing line is kept, its probe output left out" ||
