@@ -53,7 +53,7 @@ READY / FAILED p50 / p95", "Transcode duration p50 / p95".
 
 1. **Consumer không chạy**: `MEMBERS` 0, container dừng hay pod CrashLoopBackOff.
 2. **Handler lỗi tạm và đang thử lại**: log `kafka handler failed, retrying` lặp với cùng offset; thường do phụ thuộc chết
-   (Postgres của service, MinIO với media-worker và video-service). Hết số lần thử thì record vào DLQ
+   (Postgres của service, object store `s3` với media-worker và video-service). Hết số lần thử thì record vào DLQ
    ([kafka-dlq-records.md](kafka-dlq-records.md)) và lag tự hết.
 3. **Xử lý chậm hơn tốc độ vào** (thường là media-worker): burst upload, máy bận CPU. Số tham chiếu: một video 60 s 1080p tới
    `READY` 41,5–41,7 s trên compose `core`, p50 54,8 s trên `OBS=lgtm` (`make measure-ready N=5`, giai đoạn 3); trên k3d lúc

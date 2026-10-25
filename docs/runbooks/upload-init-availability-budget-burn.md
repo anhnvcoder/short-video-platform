@@ -49,7 +49,7 @@ Trace của request lỗi: dashboard `svp-red` (exemplar, "Recent gateway traces
 3. **Bản phát hành mới lỗi**: bắt đầu ngay sau deploy.
 
 `InitUpload` không được retry ở gateway (mỗi lần gọi tạo một video mới), nên một lần lỗi mạng ngắn cũng thành 5xx. Form
-presigned ký tại chỗ, không gọi MinIO: MinIO chết hay khoá S3 lệch không làm `POST /videos` lỗi mà làm bước tải lên MinIO
+presigned ký tại chỗ, không gọi object store: store chết hay khoá S3 lệch không làm `POST /videos` lỗi mà làm bước tải lên store
 hay `CompleteUpload` lỗi sau đó.
 
 ## Giảm thiểu

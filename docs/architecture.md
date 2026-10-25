@@ -10,9 +10,10 @@
 > ngày 2026-10-24, phần cần cluster GitOps và RAM lớn hơn dời giai đoạn 6b. Giai đoạn 6 (reliability,
 > [ADR-0020](adr/0020-reliability-stage6.md), [§5.4](#54-reliability-giai-đoạn-6)): phần local (k6 theo SLO, SLO web, backup và
 > diễn tập phục hồi Postgres trên k3d, runbook, game day, RFC) đã kiểm trên máy ngày 2026-10-24; phần đo thật dời giai đoạn 6b
-> và 7. ADR 0001–0020, contract ở [`proto/`](../proto/)
+> và 7; giai đoạn 6b phần 2 (2026-10-25) đổi object store local từ MinIO sang RustFS
+> ([ADR-0022](adr/0022-local-object-store-minio-replacement.md)). ADR 0001–0020, contract ở [`proto/`](../proto/)
 > ([§8](#8-contract)), threat model ở [`threat-model.md`](threat-model.md). `make up` chạy luồng đồng bộ (đăng ký, đăng
-> nhập, tạo và đọc video, follow), luồng upload bất đồng bộ (presigned POST lên MinIO, outbox → Redpanda, media-worker
+> nhập, tạo và đọc video, follow), luồng upload bất đồng bộ (presigned POST lên object store, outbox → Redpanda, media-worker
 > transcode ra HLS, video `READY` hoặc `FAILED`, job dọn upload bỏ dở), luồng feed (follow qua outbox, feed-service
 > fan-out on write, feed following và khám phá có cache trang đầu trong Redis, like, lượt xem gom theo lô ở
 > engagement-service), rate limit ở gateway bằng Redis, retry và circuit breaker cho lời gọi gRPC của gateway. Mọi
@@ -164,7 +165,7 @@ flowchart LR
         es["<b>engagement-service</b><br/>[Go, gRPC]<br/>Like, view, bộ đếm"]
         fs["<b>feed-service</b><br/>[Go, gRPC]<br/>Read model feed"]
         bus[["<b>Redpanda</b><br/>[Kafka API]"]]
-        obj[("<b>Object storage</b><br/>[MinIO / S3 / GCS]<br/>bucket uploads, media")]
+        obj[("<b>Object storage</b><br/>[RustFS / S3 / GCS]<br/>bucket uploads, media")]
         cdn["<b>CDN</b><br/>[CloudFront / Cloud CDN]<br/>chỉ có trên cloud"]
         redis[("<b>Redis</b>")]
         udb[("svp_user")]
@@ -206,18 +207,19 @@ flowchart LR
     bus -.->|"user.*, video.ready"| fs
 ```
 
-Local: Postgres và Redis native trên máy (mỗi service một database, xem [`CLAUDE.md`](../CLAUDE.md)), MinIO thay S3, không có
-CDN (client đọc thẳng MinIO). Redpanda và MinIO chạy trong compose profile `core`
-([ADR-0008](adr/0008-async-upload-pipeline-stage2a.md)):
+Local: Postgres và Redis native trên máy (mỗi service một database, xem [`CLAUDE.md`](../CLAUDE.md)), object store RustFS
+thay S3, không có CDN (client đọc thẳng store). Redpanda và object store chạy trong compose profile `core`
+([ADR-0008](adr/0008-async-upload-pipeline-stage2a.md), store theo [ADR-0022](adr/0022-local-object-store-minio-replacement.md)):
 
-- **MinIO:** hai bucket `uploads` (riêng tư) và `media` (ẩn danh chỉ đọc từng object, không liệt kê được); video-service và
-  media-worker mỗi bên một user với policy theo tiền tố key. Client upload và đọc HLS qua `127.0.0.1:9000`. CORS chỉ nhận
-  origin của web (`http://localhost:3001`, `web-dev` `http://localhost:3002`; `MINIO_API_CORS_ALLOW_ORIGIN`, toàn cục mọi
-  bucket, threat model WEB-10); web đặt `MEDIA_ORIGIN` và `UPLOAD_ORIGIN` là `http://127.0.0.1:9000`. MinIO community đã
-  ngừng phát hành (repo archive 2026-04-25, CVE 2026 chỉ vá ở bản thương mại): [ADR-0022](adr/0022-local-object-store-minio-replacement.md)
-  đề xuất đổi object store của compose và k3d sang RustFS, CORS theo bucket, tên trung tính `s3`, giữ MinIO image Chainguard làm
-  đường quay lại; đang ở trạng thái Đề xuất, chưa hiện thực (phần 2 của giai đoạn 6b), nên mọi chỗ trong tài liệu này vẫn là
-  MinIO.
+- **Object store `s3`** (RustFS ghim version và digest, non-root, root fs chỉ đọc, console tắt; ADR-0022): `s3` là endpoint
+  tương thích S3 API (không phải AWS S3), hiện chạy RustFS (trước là MinIO); code dùng `internal/objstore`. Hai bucket
+  `uploads` (riêng tư) và `media` (ẩn danh chỉ đọc từng object, không liệt kê được); video-service và media-worker mỗi bên một
+  user với policy theo tiền tố key; root chỉ ở container store và job init `s3-init` (`deploy/s3/init.sh`, chạy lại mỗi
+  `make up`, idempotent). Client upload và đọc HLS qua `127.0.0.1:9000`. CORS theo bucket do `s3-init` đặt, chỉ nhận origin của
+  web (`http://localhost:3001`, `web-dev` `http://localhost:3002`): `POST` vào `uploads`, `GET`/`HEAD` ở `media`; bucket khác
+  không có header CORS (threat model WEB-10); web đặt `MEDIA_ORIGIN` và `UPLOAD_ORIGIN` là `http://127.0.0.1:9000`. Compose có
+  thêm user thử `svp-objstore-probe` chỉ cho bucket `objstore-probe` của test tích hợp. MinIO (image Chainguard, store đến giai
+  đoạn 6b) là đường quay lại: dữ liệu cũ ở volume `svp_minio-data`, chép hai chiều bằng `make object-store-copy TO=s3|minio`.
 - **Redpanda:** một broker; topic và `.dlq` do container init tạo, broker tắt tự tạo topic. Trong compose là
   `redpanda:9092`, từ máy host là `127.0.0.1:19092`.
 - **engagement-service và feed-service** ([ADR-0009](adr/0009-engagement-feed-stage2b.md) mục 12): gRPC ở `:9103` và
@@ -236,12 +238,12 @@ CDN (client đọc thẳng MinIO). Redpanda và MinIO chạy trong compose profi
 - **web** ([ADR-0016](adr/0016-web-client.md) §5–7): Next.js standalone trong image distroless, publish
   `127.0.0.1:3001`, origin `http://localhost:3001`; gọi duy nhất `http://gateway:8080`; session ở Redis native db 9 (tiền
   tố `svp:web:`, khoá là `sha256(sid)`). Container chỉ đọc, bỏ mọi capability, non-root, 256 MB, 64 pid. Nằm trong mạng
-  compose riêng `web` chỉ chung với gateway (không tới service gRPC, Redpanda, MinIO theo tên compose), nhưng có
+  compose riêng `web` chỉ chung với gateway (không tới service gRPC, Redpanda, object store theo tên compose), nhưng có
   `host.docker.internal` để tới Redis của máy, nên vẫn tới mọi cổng publish trên loopback của máy (threat model WEB-13,
   chấp nhận ở compose). Từ giai đoạn 5b phần C ([ADR-0019](adr/0019-web-k3d-supply-chain-observability.md)): `otelcol` và `glitchtip` (profile `obs`) cũng nằm trong mạng `web`
   để web gửi OTLP và lỗi; gateway compose bật `TRUST_TRACE_CONTEXT` ([§5.3](#53-quan-sát-web-giai-đoạn-5b-phần-c)).
 - **Mạng riêng của media-worker:** worker chạy ffmpeg trên file người dùng tải lên, nên chỉ nằm trong mạng compose `worker`
-  (`internal`, không route ra ngoài) cùng Redpanda, MinIO và Collector `otelcol`; nó không tới được gateway, các service
+  (`internal`, không route ra ngoài) cùng Redpanda, object store `s3` và Collector `otelcol`; nó không tới được gateway, các service
   gRPC, Postgres hay internet. Container chỉ đọc, bỏ mọi capability, giới hạn 2 CPU, 2 GB.
 - **Observability** ([ADR-0011](adr/0011-observability-stage3.md), so sánh Elastic ở
   [ADR-0012](adr/0012-elastic-vs-grafana-stage3.md)): mọi service đẩy trace, metric (mỗi 15 s) và log qua OTLP/gRPC tới
@@ -283,7 +285,7 @@ flowchart LR
             pg[("Postgres svp-pg<br/>CloudNativePG")]
             vk[("Valkey")]
             rp[["Redpanda<br/>SASL + ACL"]]
-            minio[("MinIO")]
+            s3[("Object store s3<br/>RustFS")]
         end
         subgraph obs["svp-obs"]
             col["Collector"]
@@ -298,19 +300,19 @@ flowchart LR
     envoy -->|"HTTPRoute api<br/>stable / canary"| gw
     web --> gw
     web -->|"session db 9"| vk
-    envoy -->|"HTTPRoute s3"| minio
+    envoy -->|"HTTPRoute s3"| s3
     gw -->|gRPC| svc
     gw --> vk
     svc --> pg
     svc --> rp
     mw --> rp
-    mw --> minio
+    mw --> s3
     app -.->|OTLP| col
     col --> prom
     ui --> prom
 ```
 
-- **Namespace:** `svp` (6 service và web), `svp-data` (Postgres, Valkey, Redpanda, MinIO), `svp-obs` (observability, GlitchTip),
+- **Namespace:** `svp` (6 service và web), `svp-data` (Postgres, Valkey, Redpanda, object store `s3`), `svp-obs` (observability, GlitchTip),
   `svp-edge` (`Gateway`, chứng chỉ wildcard); công cụ ở `cert-manager`, `envoy-gateway-system`, `cnpg-system`, `keda`,
   `argo-rollouts`, `kyverno` (giai đoạn 5) và `argocd` (chỉ đường GitOps). Mọi namespace trừ `kube-system` chạy Pod
   Security `restricted`; bốn
@@ -319,17 +321,19 @@ flowchart LR
 - **Luồng vào:** client gọi `https://api.svp.localhost:8443` (tên `*.localhost` phân giải về loopback), qua load balancer
   của k3d và `svclb` tới Envoy proxy do Envoy Gateway dựng từ `Gateway` `svp`; TLS dùng chứng chỉ wildcard do cert-manager
   ký bằng CA local (`make k8s-ca` xuất CA ra `.k8s/ca.crt`). HTTPRoute `api` chia traffic giữa Service `gateway` và
-  `gateway-canary`; HTTPRoute `s3` (`s3.svp.localhost`) đưa presigned POST và GET HLS tới MinIO, nên URL ký có host công khai
+  `gateway-canary`; HTTPRoute `s3` (`s3.svp.localhost`) đưa presigned POST và GET HLS tới object store `s3`, nên URL ký có host công khai
   thay `127.0.0.1:9000`. Từ giai đoạn 5b phần C, trình duyệt mở web ở `https://svp.localhost:8443`: listener `https-apex` của
   Gateway với chứng chỉ riêng chỉ có tên `svp.localhost` (wildcard không phủ tên gốc; chứng chỉ chung cho cả hai tên làm trình
   duyệt gộp kết nối HTTP/2 của `s3` vào listener khác), HTTPRoute `web` tới Service `web:3001`; mọi route của chart service bỏ
-  `traceparent`, `tracestate`, `baggage`, `sentry-trace` của client. MinIO chỉ nhận CORS từ `https://svp.localhost:8443`. Gateway
+  `traceparent`, `tracestate`, `baggage`, `sentry-trace` của client. Object store chỉ nhận CORS từ `https://svp.localhost:8443`, theo bucket như compose. Gateway
   tin đúng một hop `X-Forwarded-For` từ dải pod `10.42.0.0/16` (threat model RL-1); mọi
   client trên máy đi ra cùng địa chỉ node nên rơi vào tối đa hai bucket rate limit (ADR-0014 §9).
 - **Dữ liệu trong cluster** (ADR-0014 §4, §5), không đụng Postgres/Redis native: Postgres `svp-pg` một instance do
   CloudNativePG quản, cùng tên database `svp_<svc>` và cặp role migrator/app như compose, đăng nhập `scram-sha-256`;
   Valkey không persistence, gateway db 10, feed-service db 14, web db 9 (session, từ giai đoạn 5b phần C); Redpanda một broker, SASL SCRAM mỗi service một user, ACL
-  theo bảng của ADR-0014 §5 (compose không SASL); MinIO cùng bucket, user và policy như compose. Mật khẩu sinh bằng
+  theo bảng của ADR-0014 §5 (compose không SASL); object store `s3` (StatefulSet một replica, `s3.svp-data:9000`) cùng
+  bucket, user, policy và script init như compose, không user thử. Cluster tạo khi store còn là MinIO bị `make k8s-up` từ chối
+  (dựng lại cluster, không nâng tại chỗ). Mật khẩu sinh bằng
   `make env`, đưa vào Secret bằng `deploy/k8s/secrets.sh`, không nằm trong git.
 - **Workload** (ADR-0014 §10): một chart chung `deploy/helm/svp-service` cho 6 service và web (probe, `requests`/`limits`,
   securityContext `restricted`, không token ServiceAccount); gateway 2 replica có PDB và HPA theo CPU, feed-service HPA
@@ -512,8 +516,8 @@ giai đoạn 6b (runner CI 16 GB hay VM thuê theo giờ, không dịch vụ AWS
   một mốc độ trễ ở tải rất nhẹ, **không kết luận năng lực**; `ci` chạy trong job `stack` của CI; `cloud` là Job Indexed 20 pod
   trong cluster, 1 000 req/s feed (giai đoạn 7; bản thu nhỏ ở giai đoạn 6b).
 - **Backup và phục hồi Postgres** (k3d): Cluster CloudNativePG `svp-pg` lưu WAL liên tục và backup cơ sở hằng ngày qua plugin
-  Barman Cloud (sidecar trong pod Postgres, controller ở `cnpg-system`) vào bucket `pg-backups` của MinIO trong cluster, bằng
-  user MinIO riêng chỉ có quyền bucket đó. Mỗi lần phục hồi ghi vào một thế hệ lưu trữ mới (`serverName`), vì Job phục hồi
+  Barman Cloud (sidecar trong pod Postgres, controller ở `cnpg-system`) vào bucket `pg-backups` của object store trong cluster,
+  bằng user `svp-pg-backup` riêng chỉ có quyền bucket đó. Mỗi lần phục hồi ghi vào một thế hệ lưu trữ mới (`serverName`), vì Job phục hồi
   từ chối lưu WAL vào nơi đã có WAL. PodMonitor đưa `cnpg_*`, `barman_cloud_*` vào Prometheus; cảnh báo
   `PostgresWALArchivingFailing` (page) và `PostgresBackupTooOld` (ticket). Diễn tập `make drill-k8s-backup` xoá Cluster và ổ
   rồi dựng lại cùng tên từ backup: RTO đo trên máy 151 s (`MODE=latest`, một lượt) và 85, 126 s (`MODE=pitr`, hai lượt; ADR-0020
@@ -544,7 +548,7 @@ giai đoạn 6b (runner CI 16 GB hay VM thuê theo giờ, không dịch vụ AWS
   laptop, chấp nhận; LCP `/` chưa đạt.
 - **Dời:** phần sau của giai đoạn 6b: đường GitOps trên runner (image web đã ký, Kyverno, source map của image CI, hai worker và
   RAM nghỉ), canary web dưới traffic, k6 thu nhỏ, ba thí nghiệm Chaos Mesh (kill pod, chậm mạng, tắt Redpanda), Velero với đích
-  object store trong cluster, ngưỡng canary và HPA của web theo số đo, thay MinIO (ADR-0022). Giai đoạn 7: k6 1 000 req/s, diễn
+  object store trong cluster, ngưỡng canary và HPA của web theo số đo, Velero trên RustFS (mục 12 của ADR-0022). Giai đoạn 7: k6 1 000 req/s, diễn
   tập phục hồi RDS, Velero với S3 và snapshot EBS, hạn 50 ms của Redis trên ElastiCache. Manifest của phần đo thật kiểm schema
   bằng `make cloud-check`; LCP mobile mô phỏng: `/v/{id}` đạt 2,5 s trên runner, `/` chưa đạt cả sau khi trang đầu của feed nằm
   trong HTML (ADR-0020, Kết quả "LCP").
@@ -855,7 +859,7 @@ Thân lỗi theo RFC 9457 (`Content-Type: application/problem+json`):
   `Retry-After`.
 - Circuit breaker của service đích đang mở ([§7.2](#72-đọc-feed)): gateway không gọi mạng mà trả ngay `UNAVAILABLE`, tức
   503 với `code` `UNAVAILABLE`, `detail` rỗng, như mọi 5xx. Service báo phụ thuộc của nó chết (`UNAVAILABLE` kèm reason
-  `DEPENDENCY_UNAVAILABLE`, ví dụ `RecordView` khi Redpanda chết, `CompleteUpload` khi MinIO chết) cũng là 503 không lộ
+  `DEPENDENCY_UNAVAILABLE`, ví dụ `RecordView` khi Redpanda chết, `CompleteUpload` khi object store chết) cũng là 503 không lộ
   reason.
 - Lỗi từ engagement-service khi ghép feed **không** đi qua bảng này: gateway nuốt lỗi và trả feed không kèm số đếm
   (graceful degradation, [§7.2](#72-đọc-feed)).

@@ -104,15 +104,15 @@ Không bao giờ xoá Backup hay object của bucket `pg-backups` để "dọn":
 
 ## Leo thang
 
-- Mọi thế hệ ở bước 2 đều không có backup `completed` (bucket mất cùng MinIO): không phục hồi được ở lab (backup cùng cluster,
+- Mọi thế hệ ở bước 2 đều không có backup `completed` (bucket mất cùng object store `s3`): không phục hồi được ở lab (backup cùng cluster,
   cùng ổ, BAK-1); dựng lại từ đầu bằng `make k8s-down && make k8s-up`, mất toàn bộ dữ liệu cluster. Ghi postmortem
   ([mẫu](../postmortems/README.md)).
 - Phục hồi lỗi hai lần với `NEW` mới: dừng, giữ nguyên trạng thái (không xoá gì thêm), ghi log Job phục hồi và của plugin
   (`kubectl --context k3d-svp -n cnpg-system logs deployment/plugin-barman-cloud --since=1h`).
 - Đường GitOps: Argo CD tự sửa `serverName` về giá trị trong git (và bỏ value phục hồi chỉ có trong lệnh), `make k8s-up` bị
   từ chối (`deploy/k8s/install.sh`), nên quy trình này không dùng được; phục hồi từ backup trên cluster đó chưa có quy trình
-  (ADR-0020 §5). **Không đụng gì thêm:** bucket `pg-backups` của MinIO trong cluster là bản duy nhất còn đưa dữ liệu về được,
-  và `make k8s-down` xoá cả MinIO lẫn bucket đó, biến mất mát còn phục hồi được thành mất hẳn. Không xoá Cluster, PVC, Backup
+  (ADR-0020 §5). **Không đụng gì thêm:** bucket `pg-backups` của object store trong cluster là bản duy nhất còn đưa dữ liệu về
+  được, và `make k8s-down` xoá cả store lẫn bucket đó, biến mất mát còn phục hồi được thành mất hẳn. Không xoá Cluster, PVC, Backup
   hay object, không dựng lại cluster; ghi trạng thái (bước 1–3 của Kiểm tra nhanh, log như ý trên) và giữ nguyên tới khi có
   quy trình phục hồi cho đường GitOps; mở postmortem ([mẫu](../postmortems/README.md)). Chỉ dựng lại cluster GitOps từ đầu
   (`make k8s-down`, rồi `make k8s-gitops-up` như lần đầu, mất toàn bộ dữ liệu trong cluster) khi mọi thế hệ ở bước 2 đều không

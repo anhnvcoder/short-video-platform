@@ -1,6 +1,7 @@
 # 0004. Client upload thẳng lên object storage bằng presigned POST; transcode bất đồng bộ ra HLS
 
-- Trạng thái: Chấp nhận
+- Trạng thái: Chấp nhận; object store local (MinIO ở Bối cảnh và Quyết định) bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md) (RustFS cho compose
+  và k3d; presigned POST, hai bucket và đọc công khai `media` giữ nguyên)
 - Ngày: 2026-10-04
 
 ## Bối cảnh
@@ -69,7 +70,8 @@ Service chỉ ký một URL có hạn dùng; client gửi file thẳng tới sto
 - Kết quả ghi vào `media/<video_id>/` (playlist chính + thư mục cho từng bản). Đường dẫn cố định theo `video_id` nên
   transcode lại một video chỉ ghi đè: worker idempotent mà không cần bảng chống trùng.
 - Hai bucket: `uploads` riêng tư (chỉ service đọc), `media` chỉ đọc được qua CDN trên cloud; local thì MinIO mở đọc công
-  khai cho `media`.
+  khai cho `media`. (**Bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md)**, 2026-10-25: store local là RustFS, cùng bucket policy ẩn danh
+  chỉ đọc từng object của `media`.)
 - Transcode chạy trong media-worker bằng ffmpeg. Trên cloud, media-worker sẽ gọi MediaConvert (AWS) hoặc Transcoder API
   (GCP) thay vì tự chạy ffmpeg; event vào ra không đổi.
 

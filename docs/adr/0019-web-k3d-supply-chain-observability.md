@@ -7,7 +7,8 @@
   trên runner ([0021](0021-deferred-verification-stage6b.md), mục Kết quả): `drill-obs-threats` (WEB-9), `drill-k8s-threats`, RAM
   và `resources` của web trên cluster dev, cổng CI quét lockfile npm đạt; cluster GitOps với image web đã ký, Kyverno từ chối web
   chưa ký, source map của image CI và canary web ở phần sau của giai đoạn 6b; §9 (source map của image CI kéo từ giai đoạn 7 về
-  giai đoạn 6b) sẽ chỉnh bởi 0021 khi hiện thực phần đó
+  giai đoạn 6b) sẽ chỉnh bởi 0021 khi hiện thực phần đó; §6 (CORS toàn cục của MinIO ở k3d) bị thay một phần bởi
+  [0022](0022-local-object-store-minio-replacement.md) (CORS theo bucket trên RustFS, cùng origin `https://svp.localhost:8443`)
 - Ngày: 2026-10-22
 
 ## Bối cảnh
@@ -340,6 +341,10 @@ Chọn **Valkey chung db 9**, mở rộng phần chấp nhận của IN-7, ở l
   sớm hơn nếu feed-service thêm đường ra mới.
 
 ## 6. CORS của MinIO ở k3d (WEB-10)
+
+**Bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md)** (2026-10-25): store của chart `svp-data` là RustFS, Job `s3-init` đặt CORS theo bucket
+(`S3_CORS_ALLOWED_ORIGINS=https://svp.localhost:8443`, `uploads` chỉ `POST`, `media` chỉ `GET`, `HEAD`); origin của web, route
+`s3` và `MEDIA_ORIGIN`, `UPLOAD_ORIGIN` không đổi. Phần dưới giữ nguyên như lúc quyết.
 
 - MinIO của chart `svp-data` đặt `MINIO_API_CORS_ALLOW_ORIGIN=https://svp.localhost:8443`, đúng một origin (không `*`, không
   origin của `web-dev`). Biến toàn cục mọi bucket như compose (ADR-0018 §9), áp cho cả phát HLS lẫn upload.
@@ -740,6 +745,7 @@ mục làm việc của máy, không commit (repo public, khoảng 300 MB mỗi 
   (`templates/canary.yaml`, `templates/httproute.yaml`, `values.yaml`), `deploy/k8s/values/argo-rollouts.yaml`,
   `web/features/monitoring/skew-reload.ts`.
 - NetworkPolicy và session ở Valkey (§4, §5): `deploy/k8s/values/services/web.yaml`, `deploy/helm/svp-data/templates/valkey.yaml`.
+- CORS ở k3d (§6, bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md)): Job `s3-init` của `deploy/helm/svp-data/templates/s3.yaml`, `deploy/s3/init.sh`.
 - Trace context từ web tới gateway (§7): `services/gateway/internal/httpx/middleware.go` (`TRUST_TRACE_CONTEXT`),
   `deploy/helm/svp-service/templates/httproute.yaml` (Envoy bỏ header trace của client), `deploy/k8s/values/services/gateway.yaml`,
   `deploy/compose/compose.yaml`.

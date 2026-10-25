@@ -1,6 +1,8 @@
 # 0008. Luồng upload bất đồng bộ của giai đoạn 2 phần A: franz-go, aws-sdk-go-v2, outbox có khoá relay, media-worker trên alpine + ffmpeg
 
-- Trạng thái: Chấp nhận; §9 (đúng một replica media-worker) chỉnh bởi [0014](0014-kubernetes-local-stage4.md) cho k8s
+- Trạng thái: Chấp nhận; §9 (đúng một replica media-worker) chỉnh bởi [0014](0014-kubernetes-local-stage4.md) cho k8s; §6 (MinIO
+  image Chainguard, `minio-init` bằng `mc`, console), tên `minio` và biến `SVP_MINIO_ROOT_PASSWORD` ở §11, cổng console ở §12
+  bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md) (RustFS, service `s3`, CORS theo bucket; user, policy và bucket policy của §6 giữ nguyên)
 - Ngày: 2026-10-11
 
 ## Bối cảnh
@@ -226,6 +228,11 @@ Chọn **C** và **3 partition**.
   cùng lúc với code phát chúng.
 
 ## 6. MinIO
+
+**Bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md)** (2026-10-25): object store của compose và k3d là RustFS, service `s3`; init viết lại
+(`deploy/s3/init.sh`, `curl --aws-sigv4` thay `mc`), CORS theo bucket, console tắt. Hai user service, `svp-pg-backup`, ba file
+policy và bucket policy ẩn danh của `media` giữ nguyên nội dung. Image MinIO Chainguard ghim digest chỉ còn trong bước chép
+`make object-store-copy`, làm đường quay lại. Phần dưới giữ nguyên như lúc quyết.
 
 ### Bối cảnh riêng: MinIO ngừng phát hành image chính thức
 
@@ -537,6 +544,8 @@ trị), như ADR-0007.
 | `gateway` | `MEDIA_PUBLIC_BASE_URL` | — (bắt buộc) | Gốc URL phát (mục 4); local `http://127.0.0.1:9000/media` |
 
 - Biến bí mật trong `.env` (mục 6): `SVP_MINIO_ROOT_PASSWORD`, `SVP_VIDEO_S3_SECRET_KEY`, `SVP_MEDIA_WORKER_S3_SECRET_KEY`.
+  (**Bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md)**: root là `SVP_S3_ROOT_PASSWORD`, thêm `SVP_S3_PROBE_SECRET_KEY` của user thử; endpoint
+  compose `http://s3:9000`.)
 - **Test:** `SVP_TEST_S3_ENDPOINT`, `SVP_TEST_S3_VIDEO_ACCESS_KEY` / `SVP_TEST_S3_VIDEO_SECRET_KEY`,
   `SVP_TEST_S3_WORKER_ACCESS_KEY` / `SVP_TEST_S3_WORKER_SECRET_KEY`, `SVP_TEST_KAFKA_BROKERS`. Thiếu biến nào thì test cần
   biến đó gọi `t.Skip`; test chỉ cần Kafka mà không cần broker thật dùng `kfake`, nên `make check` vẫn chạy được không cần
@@ -563,7 +572,7 @@ Chọn **A**:
 | Thành phần | Cổng publish | Ghi chú |
 | --- | --- | --- |
 | MinIO API | `127.0.0.1:9000` | Client upload, test, URL phát local |
-| MinIO console | `127.0.0.1:9001` | Xem bucket bằng trình duyệt |
+| MinIO console | `127.0.0.1:9001` | Xem bucket bằng trình duyệt (**bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md)**: console tắt, không cổng 9001) |
 | Redpanda (Kafka API) | `127.0.0.1:19092` | Test và `rpk` từ host; trong compose là `redpanda:9092` |
 
 Giới hạn bộ nhớ trên Docker VM 7,65 GiB:
@@ -643,8 +652,9 @@ Chọn **B**. Ngoài phần A (ghi lại ở Hệ quả):
   `services/video-service/internal/server/transcode.go`.
 - Object storage (§2–§4): `internal/objstore/` (aws-sdk-go-v2, presigned POST, hai endpoint, object key), test chạy thật ở
   `internal/objstore/integration_test.go`.
-- Redpanda (§5): `deploy/redpanda/bootstrap.yaml`, `deploy/redpanda/create-topics.sh`. MinIO (§6): `deploy/minio/init.sh`,
-  service `minio` của `deploy/compose/compose.yaml`.
+- Redpanda (§5): `deploy/redpanda/bootstrap.yaml`, `deploy/redpanda/create-topics.sh`. MinIO (§6): bị thay một phần bởi
+  [0022](0022-local-object-store-minio-replacement.md); user, policy và bucket policy giữ ở `deploy/s3/` (`init.sh`, file JSON), service `s3` của
+  `deploy/compose/compose.yaml`.
 - Outbox một relay (§7): `internal/outbox/`, `services/video-service/migrations/00002_create_outbox.sql`.
 - media-worker, HLS và ffmpeg (§9, §10): `services/media-worker/` (`cmd/media-worker/main.go`, `internal/worker/`,
   `internal/transcode/`), `deploy/docker/media-worker.Dockerfile`; trên k3d `deploy/k8s/values/services/media-worker.yaml`,

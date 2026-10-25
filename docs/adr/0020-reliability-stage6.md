@@ -6,7 +6,9 @@
   gateway dưới probe mới, RAM plugin, hai lượt backup trên runner, điều kiện mới của `RateLimitFallbackActive` đạt; LCP `/` (và
   `/v/{id}` ở lượt cuối) chưa đạt; k6 tải lớn, Chaos Mesh, Velero, hai media-worker trên cluster GitOps ở phần sau của giai đoạn 6b. §2 (`render.sh` nhận số
   pod), §6, §7 (Velero, Chaos Mesh trên k3d của runner) sẽ chỉnh bởi 0021 khi hiện thực phần đó; quyết định giữ `Suspense` của
-  feed (Kết quả "LCP") đảo theo D17 của 0021 (đòn bẩy (a) đã làm, LCP `/` vẫn chưa đạt)
+  feed (Kết quả "LCP") đảo theo D17 của 0021 (đòn bẩy (a) đã làm, LCP `/` vẫn chưa đạt). Đích MinIO của backup (§5, Tên chốt:
+  user, policy, `endpointURL`) và việc tồn "Thay MinIO" (§16) bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md) (RustFS, `s3.svp-data:9000`;
+  bucket, user `svp-pg-backup`, policy giữ nguyên; backup hai chế độ kiểm lại trên RustFS ngày 2026-10-25)
 - Ngày: 2026-10-24
 
 ## Bối cảnh
@@ -99,9 +101,9 @@ Code, cấu hình, diễn tập và tài liệu dùng đúng các tên này; đ�
 | SLO | `web-availability` | 99,9% response của server web không 5xx; cảnh báo `WebAvailabilityBudgetBurn` (page và ticket) |
 | SLO | `web-inp` | 75% lượt có INP ≤ 200 ms; cảnh báo `WebINPBudgetBurn`, chỉ ticket |
 | Backup | Component | `plugin-barman-cloud` trong `deploy/argocd/apps/components.json`, namespace `cnpg-system`, wave 3, chart `plugin-barman-cloud` 0.8.1 của `https://cloudnative-pg.github.io/charts`, values `deploy/k8s/values/plugin-barman-cloud.yaml` |
-| Backup | Bucket, user MinIO | Bucket `pg-backups`; user `svp-pg-backup` với policy `deploy/minio/pg-backup-policy.json` (chỉ bucket đó); secret key `SVP_PG_BACKUP_S3_SECRET_KEY` trong `K8S_SECRET_VARS` (chỉ cluster) |
+| Backup | Bucket, user MinIO | Bucket `pg-backups`; user `svp-pg-backup` với policy `deploy/minio/pg-backup-policy.json` (chỉ bucket đó; bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md): store RustFS, policy ở `deploy/s3/pg-backup-policy.json`); secret key `SVP_PG_BACKUP_S3_SECRET_KEY` trong `K8S_SECRET_VARS` (chỉ cluster) |
 | Backup | Secret | `svp-data/pg-backup-s3`, khoá `ACCESS_KEY_ID`, `ACCESS_SECRET_KEY` |
-| Backup | ObjectStore | `svp-pg-backup` (`barmancloud.cnpg.io/v1`): `destinationPath: s3://pg-backups/`, `endpointURL: http://minio.svp-data:9000`, nén `gzip` cho WAL và dữ liệu, `retentionPolicy: "7d"` |
+| Backup | ObjectStore | `svp-pg-backup` (`barmancloud.cnpg.io/v1`): `destinationPath: s3://pg-backups/`, `endpointURL: http://minio.svp-data:9000` (bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md): `http://s3.svp-data:9000`), nén `gzip` cho WAL và dữ liệu, `retentionPolicy: "7d"` |
 | Backup | ScheduledBackup | `svp-pg-daily`: `schedule: "0 0 3 * * *"` (03:00 UTC; cron 6 trường có giây), `immediate: true`, `method: plugin`, `backupOwnerReference: none`; là hook Helm `post-install,post-upgrade` (Argo CD: PostSync) weight 1, `before-hook-creation` (mục 5) |
 | Backup | `serverName` | Value `postgres.backup.serverName` của chart `svp-data`, mặc định `svp-pg`; mỗi lần phục hồi một thế hệ mới `svp-pg-<yymmddhhmmss>` (UTC) |
 | Backup | Diễn tập | Database `svp_drill` trong `svp-pg`, bảng `markers`; JSON `.k8s/drills/backup-<time>.json` |
@@ -339,7 +341,9 @@ và quá 50 ms.
 
 ### Quyết định
 
-**Plugin Barman Cloud, đích là MinIO trong cluster, diễn tập DR tại chỗ trên cluster dev.**
+**Plugin Barman Cloud, đích là MinIO trong cluster, diễn tập DR tại chỗ trên cluster dev.** (**Bị thay một phần bởi
+[0022](0022-local-object-store-minio-replacement.md)**, 2026-10-25: đích là object store RustFS `s3` trong cluster, Job `s3-init` tạo bucket và user; ObjectStore chỉ
+đổi `endpointURL`; phần dưới giữ nguyên như lúc quyết.)
 
 - **Component** `plugin-barman-cloud` (wave 3, sau `cloudnative-pg` wave 2 và cert-manager wave 0, trước `svp-data` wave 4) trong
   `components.json`, cả đường dev và GitOps. Values: image plugin và sidecar ghim `tag: v0.15.1@sha256:…` (mục Kiểm chứng),
@@ -742,7 +746,8 @@ chính thức kèm ngày tra và giả định) hay ghi rõ là ước lượng 
 - **Thay MinIO: dời giai đoạn 7.** Trên cloud object store là S3/R2/GCS, MinIO chỉ còn ở lab loopback; bộ kiểm tương thích của bản thay
   (presigned POST có policy UP-1…UP-7, CORS, policy theo user) trùng việc kiểm R2 của giai đoạn 7: làm một lần. **Sửa 2026-10-24:**
   thay MinIO cho đường local làm ở giai đoạn 6b, bằng ADR riêng (mục 1); kiểm R2 vẫn ở giai đoạn 7. ADR riêng đó là
-  [ADR-0022](0022-local-object-store-minio-replacement.md) (RustFS, Đề xuất), hiện thực ở phần 2 của giai đoạn 6b.
+  [ADR-0022](0022-local-object-store-minio-replacement.md) (RustFS), hiện thực ở phần 2 của giai đoạn 6b (**bị thay một phần bởi
+  0022**, 2026-10-25: đã hiện thực, kết quả ở mục Kết quả của 0022).
 - **Istio ambient: dời sau giai đoạn 7.** Máy 16 GB không còn RAM cho ztunnel và istiod. Đường tới Postgres đã có TLS
   (`sslmode=require`) và SCRAM, Redpanda có SASL SCRAM và ACL, NetworkPolicy chặn hai chiều; còn thiếu là mã hoá và danh tính giữa
   gateway và service gRPC (IN-3, chấp nhận tới đó). Xem lại khi cluster cloud đủ RAM, có tenant thứ hai, hay ở review bảo mật giai
@@ -1156,8 +1161,8 @@ trước mục tiêu) ([40145677985](https://github.com/anhnvcoder/short-video-p
   (`render.sh`, `job.yaml.in`, `run.sh`).
 - SLO web và cảnh báo (§3): `deploy/observability/slo/svp-slos.yaml`, `deploy/observability/prometheus/rules/svp-alerts.yaml`.
 - Backup và phục hồi Postgres (§5): `deploy/helm/svp-data/templates/backup.yaml`, `deploy/helm/svp-data/values.yaml`,
-  `deploy/k8s/values/plugin-barman-cloud.yaml`, metric ở `deploy/helm/svp-observability/templates/postgres.yaml`, user MinIO
-  `svp-pg-backup` ở `deploy/minio/init.sh` và `deploy/k8s/secrets.sh` (biến của `deploy/compose/compose.mk`), giữ thế hệ lưu trữ ở
+  `deploy/k8s/values/plugin-barman-cloud.yaml`, metric ở `deploy/helm/svp-observability/templates/postgres.yaml`, user
+  `svp-pg-backup` ở `deploy/s3/init.sh` (store theo [0022](0022-local-object-store-minio-replacement.md)) và `deploy/k8s/secrets.sh` (biến của `deploy/compose/compose.mk`), giữ thế hệ lưu trữ ở
   `deploy/k8s/install.sh`, `deploy/k8s/lib.sh`; diễn tập `deploy/k8s/drills/backup.sh`; BAK-1 ở `deploy/k8s/drills/threats.sh`;
   ngoại lệ RBAC của plugin ở `deploy/ci/trivy-config-ignore.yaml`.
 - Velero, Chaos Mesh, kiểm tĩnh bằng kubeconform (§6–§8): `deploy/k8s/cloud/` (`chaos/`, `velero/`, `values/`, `check.sh`,

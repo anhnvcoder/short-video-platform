@@ -7,7 +7,8 @@
   `svp.localhost` thay SAN của chứng chỉ wildcard), §10 (`@sentry/nextjs` chỉ ở server, thêm dev dependency `sentry`, CLI getsentry/cli; ngân sách tải lần đầu của login nới lên
   210 kB) và
   §11 (cơ chế tin `traceparent`) chỉnh bởi 0019; phần C hiện thực và đã kiểm trên máy ngày 2026-10-24 (mục "Kết quả phần C"
-  của 0019), phần cần cluster GitOps và RAM lớn hơn dời giai đoạn 7 (0019 §12)
+  của 0019), phần cần cluster GitOps và RAM lớn hơn dời giai đoạn 7 (0019 §12); §11 (CORS MinIO toàn cục, MinIO community
+  để ADR riêng) bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md) (RustFS, CORS theo bucket)
 - Ngày: 2026-10-21
 
 ## Bối cảnh
@@ -619,6 +620,7 @@ ngoài danh sách này cần hỏi trước. Phần A **chỉ cài gói của ph
 - **E2E trong CI:** giai đoạn 6, cùng "stack chạy trong CI" mà ADR-0015 §12 đã dời. 5b chạy e2e local; CI chạy lint, type,
   unit, size-limit và kiểm `web/gen/api.d.ts` không lệch.
 - **MinIO community đã archive:** ngoài phạm vi 5b; quyết ở giai đoạn 6/7 bằng ADR riêng. CORS toàn cục đủ cho lab.
+  (**Bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md)**, 2026-10-25: ADR riêng đó chọn RustFS cho compose và k3d, CORS theo bucket.)
 
 ## Kết quả phần A (đo ngày 2026-10-22)
 

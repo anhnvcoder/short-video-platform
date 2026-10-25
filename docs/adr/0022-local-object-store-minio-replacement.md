@@ -1,6 +1,7 @@
 # 0022. Object store của đường local (compose và k3d) đổi từ MinIO (image Chainguard) sang RustFS, CORS theo bucket, tên trung tính `s3`; MinIO Chainguard là đường quay lại
 
-- Trạng thái: Đề xuất
+- Trạng thái: Chấp nhận, trừ mục 12 (Velero) kiểm ở phần 3. Hiện thực và kiểm ngày 2026-10-25: mục 1–11 và 13 của kế hoạch kiểm
+  đạt trên code cuối (mục Kết quả); mục 12 đạt ở phần 3 của giai đoạn 6b thì bỏ phần "trừ", trượt thì theo "Xem lại khi"
 - Ngày: 2026-10-24
 - Chỉnh 2026-10-25 (trước lượt hiện thực, không đổi lựa chọn E, không nới hợp đồng nào): tắt console RustFS (Quyết định 7),
   Velero kiểm ở phần 3 và điều kiện trạng thái (Quyết định 8), user thử `svp-objstore-probe`, ca multipart CRC32 kiểm cả dạng
@@ -323,6 +324,80 @@ cơ học; sót một chỗ thì NetworkPolicy hay `S3_ENDPOINT` trỏ vào tên
 có thể mất dữ liệu: nó không xoá object hay volume nào ở cả hai phía, từ chối trước khi ghi khi đích có key ngoài nguồn hay khác
 kích thước (quy tắc 2), và endpoint chỉ đổi sau khi kiểm của nó đạt.
 
+## Kết quả
+
+Chạy ngày 2026-10-25 trên nhánh `feat/stage6b-objstore` (PR #24), store `rustfs/rustfs:1.0.3` ghim digest. Code của store (compose,
+chart, `deploy/s3/`, script chép, test) giống nhau ở `50f1cfe`, `f63c484` và `a1741ff`: sau `50f1cfe` chỉ script kiểm của
+`compose-obs` (`deploy/ci/verify-*.sh`, chú thích của `verify.yml`) đổi, nên lượt `dev-k3d` trên `50f1cfe`, lượt `compose-obs` và
+CI trên `f63c484` là của code store cuối. `a1741ff` sửa hai phép đo của chính `compose-obs` (đếm restart cả của container đã gỡ hay
+dựng lại; so RAM với ngưỡng trước khi làm tròn); lượt `compose-obs` trên `a1741ff` ([40207235062](https://github.com/anhnvcoder/short-video-platform/actions/runs/40207235062))
+chạy lại mọi bước với hai phép đo đó, và CI của `a1741ff` ([40207239730](https://github.com/anhnvcoder/short-video-platform/actions/runs/40207239730)) xanh cả job `stack`.
+Trong cả hai lượt `compose-obs` chỉ `web-lighthouse` ×3 và `lcp` đỏ: LCP của web, việc đã biết ở D17 của
+[ADR-0021](0021-deferred-verification-stage6b.md), không thuộc kế hoạch kiểm này.
+
+| # | Kết quả | Nguồn |
+| --- | --- | --- |
+| 1 | Đạt | CI của PR #24 ([40203127200](https://github.com/anhnvcoder/short-video-platform/actions/runs/40203127200), `f63c484`): job `check` (`make check-go`), `config` (`make compose-config`, `make helm-check`, `deploy/k8s/check-image-digests.sh`, …), `web`, `generate`, `buf` xanh, `ci-ok` xanh; cùng các job xanh ở `a1741ff` ([40207239730](https://github.com/anhnvcoder/short-video-platform/actions/runs/40207239730)). Trên máy: `make compose-config` sạch cho bốn cấu hình, `make helm-check` exit 0, `check-image-digests.sh` "40 pinned by digest, exceptions 0", `make trivy-config` 0 kết quả, `make renovate-check` sạch. Hai ca có sẵn của mục 3 đổi cách kiểm, có lý do (dưới bảng) |
+| 2 | Đạt | Máy (lần 1, trên volume vừa chép): `make up` exit 0, `s3-init` exit 0 với 5 dòng `ok`. Runner `compose-obs` [40203123781](https://github.com/anhnvcoder/short-video-platform/actions/runs/40203123781) và [40207235062](https://github.com/anhnvcoder/short-video-platform/actions/runs/40207235062): bước `up` trên volume mới (344 s, 318 s), rồi `make up` lần hai trên store đã init trong `object-store-roundtrip`, mọi lần `s3-init` thành công. Log `s3-init` và `s3`: 0 lần xuất hiện của mọi giá trị bí mật của `.env` (máy: dò 7 giá trị; runner: dò cả danh sách của `verify-mask.sh`) |
+| 3 | Đạt | `make test-stack PKGS=./internal/objstore/...` trên máy và ở bước `test-stack-objstore` của [40203123781](https://github.com/anhnvcoder/short-video-platform/actions/runs/40203123781) và [40207235062](https://github.com/anhnvcoder/short-video-platform/actions/runs/40207235062): mỗi lần 39 PASS, 0 FAIL, **0 SKIP**; đủ `TestIntegrationPresignedPost` (13 ca, gồm policy sửa sau khi ký và form không chữ ký), `TestIntegrationWorkerPermissions`, `TestIntegrationVideoServicePermissions`, `TestIntegrationDeletePrefix`, `TestIntegrationMultipartChecksum` (user thử không ghi được `uploads`, `media`; CRC32 dạng header qua `http://`, dạng trailer `aws-chunked` qua proxy TLS của test, đọc lại đúng từng byte) |
+| 4 | Đạt | `make smoke` trên máy (58 bước), ở job `stack` của [40203127200](https://github.com/anhnvcoder/short-video-platform/actions/runs/40203127200) và lại sau đường quay lại của [40203123781](https://github.com/anhnvcoder/short-video-platform/actions/runs/40203123781): upload tới `READY`, HLS và thumbnail ẩn danh 200, đọc ẩn danh `uploads` 403, liệt kê ẩn danh `media` 403, `EntityTooLarge` 400 |
+| 5 | Đạt | Job `stack` của [40203127200](https://github.com/anhnvcoder/short-video-platform/actions/runs/40203127200): `make web-e2e` 64/64 (chromium 29/29, webkit 29/29, chromium-publishing 3/3, webkit-publishing 3/3) |
+| 6 | Đạt | Test WEB-10 của `web/e2e/security.e2e.ts` (sáu preflight, gồm hai ca mới) xanh trên Chromium và WebKit ở job `stack` trên; trên máy cùng sáu ca bằng `curl -si -X OPTIONS` (thêm vào e2e, không thay): origin lạ không header, `http://localhost:3001` và `:3002` đúng origin, `POST /media` và `GET /uploads/…` từ origin web không header, bucket `objstore-probe` không header |
+| 7 | Đạt | `make drill-upload-cleanup` của [40203123781](https://github.com/anhnvcoder/short-video-platform/actions/runs/40203123781) (31 s; [40207235062](https://github.com/anhnvcoder/short-video-platform/actions/runs/40207235062) cũng PASS, 31 s): video bỏ dở `FAILED` sau 22 s, object `uploads/<id>` bị xoá, video đã hoàn tất không bị đụng; script tra object bằng `curl --aws-sigv4`, không còn `mc stat` |
+| 8 | Đạt, một phần đổi cách kiểm | `make drill-obs-threats` của [40203123781](https://github.com/anhnvcoder/short-video-platform/actions/runs/40203123781) (169 s; [40207235062](https://github.com/anhnvcoder/short-video-platform/actions/runs/40207235062) PASS, 186 s): JWT-8, UP-8, RL-2, WEB-9 PASS; OPS-1 đúng 7 cổng loopback (alertmanager, gateway, glitchtip, lgtm, redpanda, `s3` `127.0.0.1:9000`, web), không 9001. "Log khởi động ghi console tắt" không kiểm được: RustFS 1.0.3 ở mức log mặc định không in dòng đó; console tắt kiểm bằng cổng: không listener 9001 trong container (`/proc/net/tcp`, trên máy) và OPS-1 |
+| 9 | Đạt | [40203123781](https://github.com/anhnvcoder/short-video-platform/actions/runs/40203123781), `docker stats` của `svp-s3-1` mỗi 10 s (`samples/compose.tsv`, mốc bước theo `results.tsv`). `compose-obs` không có bước nghỉ riêng: mẫu không tải duy nhất là 198 MiB cuối bước `up` (`s3-init` đã xong, video-service đã chạy), trước `smoke`; mọi mẫu trước `measure-upload` (cuối `up`, rồi `smoke`, `drill-obs-threats`, `load-local` k6 5 phút, Lighthouse ×3, `test-stack`, `drill-upload-cleanup`: có tải, không phải lúc nghỉ; 91 mẫu) median 247 MiB, cao nhất 282 MiB; trong `measure-upload` (102,5 MB từ Chromium, XHR 799 ms, tới `READY` 189 s) đỉnh **338 MiB** (34 mẫu, mẫu cuối của bước); cao nhất cả lượt 356 MiB, từ mẫu 8 s sau khi `measure-upload` xong (bước `drill-alert-to-sentry`, giữ khoảng 1 phút); dưới 512 MiB. Với phép so mới (không làm tròn), [40207235062](https://github.com/anhnvcoder/short-video-platform/actions/runs/40207235062): cuối `up` 190,7 MiB; trước `measure-upload` (90 mẫu, cùng các bước) median 243,2 MiB, cao nhất 286,7 MiB; đỉnh trong `measure-upload` (XHR 361 ms, tới `READY` 197 s) **325,1 MiB** (35 mẫu, mẫu cuối của bước); cao nhất cả lượt 340,8 MiB, từ mẫu 9 s sau khi `measure-upload` xong. Hai đỉnh này tính lại bằng chính `deploy/ci/verify-sample.sh s3-peak` với mốc của `results.tsv` trên `samples/compose.tsv` đủ của artifact: `ram-s3-upload.json` của cả hai lượt thiếu mẫu cuối (322 MiB / 33 mẫu, 305,1 MiB / 34 mẫu) vì bước `ram-s3-upload` đọc file mẫu ngay khi `measure-upload` xong, lúc sampler nền chưa ghi mẫu lấy 1–2 s trước đó; lỗi của script, sửa ở phần 3. Số nghỉ của compose đo trên máy (bảng dưới) |
+| 10 | Đạt | `dev-k3d` [40202083397](https://github.com/anhnvcoder/short-video-platform/actions/runs/40202083397), job 121195191303 (`50f1cfe`, 14/14 bước `ok`): `make k8s-up` 1 105 s, `s3-init` Completed, `s3-0` 0 restart; `make k8s-smoke` qua; `make drill-k8s-threats` 16/16 mục PASS, 0 FAIL, SKIP, WARN: WEB-10 (origin lạ và `localhost` không header, `https://svp.localhost:8443` đúng origin, hai ca mới không header), BAK-1 (`svp-pg-backup` liệt kê `pg-backups`, 403 `AccessDenied` ở `uploads`, `media`; user service 403 ở `pg-backups`: mã lỗi của RustFS trùng MinIO), OPS-2 route `svp-data/s3`, IN-2, FF-5, WEB-13 với `s3.svp-data:9000` |
+| 11 | Đạt | Cùng lượt: WAL lưu liên tục, backup cơ sở sau `s3-init`; `latest` RTO 89,7 s, RPO ≥ 63,4 s (0/60 dòng đánh dấu còn); `pitr` RTO 89,6 s, RPO 37,1 s (30/60, dòng mới nhất 0,5 s trước mục tiêu); 0/17 bảng lệch, `k8s-smoke` sau phục hồi qua, "Backups and bucket untouched". So lượt MinIO trên runner ([ADR-0021](0021-deferred-verification-stage6b.md) Kết quả, lượt 4, 5): `latest` 95,2/92,8 s, RPO ≥ 63,2/63,4 s; `pitr` 80,8/84,3 s, RPO 38,1/36,1 s: trong cùng khoảng. Không lỗi checksum nào, nên không đặt `AWS_REQUEST_CHECKSUM_CALCULATION` (Quyết định 5) |
+| 12 | Chưa chạy (phần 3, Quyết định 8) | — |
+| 13 | Đạt | Bước `object-store-roundtrip` của [40203123781](https://github.com/anhnvcoder/short-video-platform/actions/runs/40203123781) (54 s): không video `PROCESSING`, `make down`, `make object-store-copy TO=minio` vào volume `svp_minio-data` mới của runner: 22 video `READY` tạo trên RustFS ở lượt đó, `uploads` 22 và `media` 219 object, `keys lost before this copy: 0`, "MinIO holds every object of RustFS with the same key, size and Content-Type, and nothing else"; rồi `make up OBS=lgtm`, `make smoke` trên RustFS xanh; không revert. [40207235062](https://github.com/anhnvcoder/short-video-platform/actions/runs/40207235062) (56 s): cùng kết quả với 22 video `READY`, 22 + 219 object, 0 key mất, mẫu restart lấy ngay trước `make down`, `compose_no_restart=true` theo cách đếm mới |
+
+**RAM của store** so với giới hạn 512 MiB (Quyết định 6):
+
+| Nơi | Nghỉ | Có tải | Nguồn |
+| --- | --- | --- | --- |
+| Compose, máy | 126,2 MiB sau `make up`, trước mọi request; 189,1 MiB sau khi `test-stack` và `smoke` xong | Không đo (đo ở runner) | `docker stats`, 2026-10-25 |
+| Compose, runner | Không có bước nghỉ riêng; mẫu không tải duy nhất: 198 / 190,7 MiB cuối bước `up`, trước `smoke` | Trước `measure-upload` (`smoke`, diễn tập, `load-local` k6, Lighthouse, `test-stack`; 91 / 90 mẫu gồm cả mẫu cuối `up`): median 247 / 243,2 MiB, cao nhất 282 / 286,7 MiB; đỉnh 338 / 325,1 MiB trong `measure-upload` (tính lại từ `samples/compose.tsv`: JSON thiếu mẫu cuối, xem mục 9); 356 / 340,8 MiB cả lượt, ngay sau `measure-upload` | [40203123781](https://github.com/anhnvcoder/short-video-platform/actions/runs/40203123781) / [40207235062](https://github.com/anhnvcoder/short-video-platform/actions/runs/40207235062), `samples/compose.tsv` với mốc bước của `results.tsv` (đỉnh trong `measure-upload` bằng `verify-sample.sh s3-peak`), `runner.json` (cả lượt) |
+| k3d, runner | 112–113 MiB lúc nghỉ đầu; 278–282 MiB lúc nghỉ cuối (sau các diễn tập) | 286 MiB trong `drill-k8s-backup MODE=pitr`; ≤ 219 MiB trong e2e, ≤ 270 MiB trong KEDA | [40202083397](https://github.com/anhnvcoder/short-video-platform/actions/runs/40202083397) `samples/pods.tsv` (`kubectl top`, working set, mỗi 30 s: đỉnh ngắn giữa hai mẫu không thấy) |
+
+Giới hạn giữ 512 MiB ở cả hai nơi: số cao nhất đo được (356 MiB) là 70% giới hạn, còn hơn 150 MiB; hạ giới hạn chỉ vì vài lượt đo là
+bỏ khoảng dự phòng cho upload lớn hơn. Trên k3d store giữ ~280 MiB ở điểm nghỉ cuối (sau tải; cache), không trả về mức nghỉ đầu.
+
+**Bước chép chiều đi trên máy** (2026-10-25, quy tắc 1: `svp_video` có `READY` 505, `FAILED` 393, `UPLOADING` 35, không
+`PROCESSING`): `make object-store-copy TO=s3` exit 0 (20 s): `uploads` 58 object / 586 687 715 byte, `media` 922 object /
+923 504 665 byte ở RustFS, "RustFS holds every object of MinIO with the same key, size and Content-Type, and nothing else". "Đã
+mất từ trước": 894 key, playlist và thumbnail của 447/505 video `READY` mà object đã mất từ một lần `make clean-data` trước đó
+(volume xoá, Postgres native còn dòng); chúng 404 như trước khi chuyển. Một video cũ chép từ MinIO phát được trên RustFS (playlist,
+rendition, segment, thumbnail 200, `Content-Type` đúng); file gốc ở `uploads` vẫn 403 ẩn danh. Test của script
+(`deploy/compose/object-store-copy-test.sh`, volume và database thử riêng) 22 ca ok ở hai lượt liền. Volume `svp_minio-data` của
+máy còn nguyên; điều kiện xoá của quy tắc 4 (mục 13 đã chạy, mục 1–11 đạt) đã đủ, người học quyết lúc chạy
+`env -u DOCKER_DEFAULT_PLATFORM docker volume rm svp_minio-data`; script chép và digest A ở lại trong repo dù volume còn hay mất.
+
+**Khác với lúc viết** (không nới hợp đồng nào; mỗi điểm có lý do):
+
+- **Hai ca có sẵn của mục 3 đổi cách kiểm**, ngoại lệ có chủ đích của "không sửa hay bỏ test có sẵn" (mục 1):
+  `TestIntegrationPresignedPost/key_changed_to_another_upload` và `/key_changed_to_media` đòi đúng 403; RustFS 1.0.3 từ chối form đã ký
+  bị đổi key hay bucket bằng 400 `InvalidPolicyDocument` ("Policy condition 'eq' for field 'key' failed…"), MinIO và AWS S3 trả 403.
+  Hai ca giờ đòi một mã 4xx (ghi mã thật vào log test) **và** giữ nguyên kiểm không object nào được ghi (`assertAbsent`, liệt kê
+  `media`): kiểm hành vi, không kiểm mã riêng của một nhà cung cấp. Đã kiểm web không bị ảnh hưởng: `web/features/upload/upload-store.ts`
+  coi 403 là form hết hạn (xin form mới một lần), mà RustFS trả 403 `AccessDenied` "Request has expired" cho form hết hạn như MinIO;
+  400 chỉ gặp khi form bị sửa, web không sửa form. Bốn ca mới của mục 3 đòi 4xx ngay từ đầu.
+- **Init dùng `curl --aws-sigv4`, không `rc`** (Quyết định 4): `rc` (`rustfs/rc:v0.1.36`) có lệnh user, policy, CORS, nhưng
+  `rc admin user add` nhận secret key trên dòng lệnh, process khác trong container đọc được, và thêm một image phải ghim; `curl` có
+  sẵn trong image RustFS. Root đi qua stdin (`-K -`), secret của user qua file tạm mode 600. API admin `/rustfs/admin/v3/add-user`
+  nhận JSON thường, và user mới mặc định bị tắt nên init đặt `"status":"enabled"`.
+- Bốn file JSON giữ nguyên nội dung; thêm `deploy/s3/objstore-probe-policy.json` của user thử (Quyết định 9). Secret key giữ 40 hex
+  (RustFS chỉ đòi ≥ 8) để cùng `.env` dùng được cho đường quay lại MinIO.
+- `RUSTFS_CHECK_UPDATE=false`: RustFS mặc định gọi ra ngoài để kiểm bản mới lúc khởi động; lab không gửi gì ra ngoài. Log ra stdout,
+  không ghi file dưới root chỉ đọc. k3d thêm `startupProbe` (2 s × 60) vì chart chính chủ của RustFS hoãn liveness 30 s; root chỉ
+  đọc không cần `emptyDir` (compose qua upload 100 MB và multipart, pod `s3-0` chạy suốt lượt `dev-k3d` không restart).
+- **Đọc `media` bằng request có ký:** RustFS áp bucket policy ẩn danh của `media` cho mọi request, nên mọi user (cả `svp-pg-backup`,
+  `svp-objstore-probe`) đọc được object dưới `media/media/*` như khách, đúng phạm vi UP-6; liệt kê `media` và mọi ghi vẫn 403. Ca
+  BAK-1 "`svp-pg-backup` không đọc được `media`" của `threats.sh` đổi sang key ngoài tiền tố công khai (`/media/<obj>`), 403.
+- Health `/health/live` của RustFS trả JSON có `version`, `uptime` không cần xác thực (MinIO trả body rỗng); chỉ tới được trên
+  loopback, ghi ở mục 6 của [threat model](../threat-model.md).
+- Mục 6 trên máy chạy thêm `curl` sáu ca dù kế hoạch ghi "không curl tay": kiểm sớm trước khi job `stack` chạy; kết luận của mục
+  vẫn là e2e ở job `stack`.
+
 ## Hệ quả
 
 - Được: object store local có bảo trì, giấy phép Apache-2.0, ghim được theo version; CORS theo bucket như S3 nên WEB-10 chặt
@@ -343,8 +418,30 @@ kích thước (quy tắc 2), và endpoint chỉ đổi sau khi kiểm của nó
 
 ## Hiện thực ở
 
-Chưa hiện thực; file sẽ đổi liệt kê ở mục "Danh sách file phải đổi". Hiện chỉ một chỗ phụ thuộc quyết định này: mục bỏ qua cảnh
-báo của MinIO trong chart ở `deploy/ci/trivy-config-ignore.yaml`, bỏ cùng MinIO khi chuyển.
+- Store compose (Quyết định 1–3, 7): service `s3`, `s3-init`, volume `s3-data`, anchor image `x-s3-image` của
+  `deploy/compose/compose.yaml`; biến `.env`, `test-stack`, `clean-data`, target `object-store-copy` ở `deploy/compose/compose.mk`;
+  `.env.example`; Renovate theo version ở `renovate.json`.
+- Init, policy, CORS theo bucket, user thử (Quyết định 3, 4, 9): `deploy/s3/init.sh`, `deploy/s3/*-policy.json`,
+  `deploy/s3/media-anonymous.json`.
+- Store k3d (Quyết định 1–3, 5, 7, 10): `deploy/helm/svp-data/templates/s3.yaml` (StatefulSet, Service, HTTPRoute, Job `s3-init`),
+  `deploy/helm/svp-data/files/s3` (symlink tới `deploy/s3/`), `deploy/helm/svp-data/values.yaml`,
+  `deploy/helm/svp-data/templates/networkpolicies.yaml`, `deploy/helm/svp-data/templates/backup.yaml` (`endpointURL`),
+  `deploy/helm/svp-data/Chart.yaml`, `deploy/helm/svp-cluster/templates/namespaces.yaml`, `deploy/helm/svp-service/values.yaml`,
+  `deploy/k8s/values/services/{video-service,media-worker,gateway,web}.yaml`, `deploy/k8s/values/plugin-barman-cloud.yaml`;
+  Secret `s3-root`, `s3-users` ở `deploy/k8s/secrets.sh`; từ chối cluster còn MinIO ở `deploy/k8s/install.sh`,
+  `deploy/k8s/drills/backup.sh`, `deploy/k8s/k8s.mk`; `deploy/k8s/gitops.sh`; mục KSV-0125 của `s3.yaml` ở
+  `deploy/ci/trivy-config-ignore.yaml`.
+- Bước chép và đường quay lại (Cách chuyển): `deploy/compose/object-store-copy.sh` (digest A ở `minio_image=`),
+  `deploy/compose/object-store-copy-test.sh`.
+- Kiểm (Kế hoạch kiểm): `internal/objstore/integration_test.go` (ca chữ ký POST, multipart CRC32 hai lượt),
+  `web/e2e/security.e2e.ts` (WEB-10 sáu ca), `deploy/compose/drills/{common,upload-cleanup,obs-threats}.sh`,
+  `deploy/k8s/drills/threats.sh`, `deploy/observability/glitchtip/dotenv-test.sh`; trên runner `deploy/ci/verify-run.sh`,
+  `deploy/ci/verify-sample.sh`, `deploy/ci/verify-collect-test.sh`, `deploy/ci/verify-mask.sh`, chú thích của
+  `.github/workflows/verify.yml`.
+- Tên trung tính trong chú thích và chuỗi ví dụ: `internal/objstore/objstore.go`, `objstore_test.go`,
+  `services/video-service/cmd/video-service/main.go`, `services/media-worker/cmd/media-worker/main.go` (và hai `main_test.go`),
+  `proto/svp/video/v1/video_service.proto` (và `gen/go/svp/video/v1/video_service_grpc.pb.go` sinh lại), `web/server/{env,csp}.ts`,
+  `web/server/env.test.ts`, `web/e2e/{fixtures,measure-upload.e2e,stack}.ts`, `web/e2e/seed.sh`.
 
 ## Nguồn
 

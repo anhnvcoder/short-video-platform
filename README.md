@@ -24,8 +24,10 @@ make up          # tạo role/database trên Postgres native rồi dựng stack 
 make smoke       # luồng đầu-cuối qua gateway: đăng ký, upload tới READY, phát HLS, feed, like, follow
 ```
 
-Mở `http://localhost:3001` (dùng đúng `localhost`, không dùng `127.0.0.1`: MinIO chỉ nhận CORS từ `localhost`). Gateway
+Mở `http://localhost:3001` (dùng đúng `localhost`, không dùng `127.0.0.1`: object store chỉ nhận CORS từ `localhost`). Gateway
 ở `http://127.0.0.1:8080`. Gỡ stack bằng `make down`; `make down` giữ volume, dữ liệu còn nguyên.
+Object store là service `s3` (compose và k3d): một endpoint tương thích S3 API (không phải AWS S3), hiện chạy RustFS (trước là MinIO);
+code của service gọi nó qua `internal/objstore`.
 
 Muốn xem thêm telemetry (Grafana, Alertmanager, GlitchTip) thì `make up OBS=lgtm`. Không dùng `OBS` thì chỉ chạy các service.
 Chỉ chạy một bộ observability một lúc vì máy 16 GB RAM không đủ cho hai bộ.
@@ -51,7 +53,7 @@ Sổ lệnh đầy đủ (kiểm tra, diễn tập, k3d, cloud, CI) nằm ở [`
 | `web/` | Web client Next.js và BFF (giai đoạn 5b): `app/` route, `server/` phía server, `features/`, `components/`, `e2e/` Playwright. |
 | `deploy/compose/` | Stack compose `make up`, script smoke và diễn tập. |
 | `deploy/docker/` | Dockerfile của service Go, media-worker và web. |
-| `deploy/postgres/`, `deploy/redpanda/`, `deploy/minio/` | Bootstrap database, topic Kafka (compose), bucket và policy của object storage. ACL Kafka của cluster k3d nằm trong chart Helm. |
+| `deploy/postgres/`, `deploy/redpanda/`, `deploy/s3/` | Bootstrap database, topic Kafka (compose), bucket, user, policy và CORS của object storage (RustFS, service `s3`). ACL Kafka của cluster k3d nằm trong chart Helm. |
 | `deploy/observability/` | Collector, Prometheus và rule SLO, Alertmanager, Grafana LGTM, GlitchTip, Elastic (so sánh). |
 | `deploy/k8s/` | Cluster k3d: script `install.sh`, `k8s.mk`, values, PSA, và thư mục `drills/` (diễn tập), `cloud/` (manifest cho cluster đo thật). |
 | `deploy/helm/` | Chart Helm: `svp-service` (chung cho mọi service), `svp-cluster`, `svp-data`, `svp-observability`, `svp-policy` (Kyverno). |

@@ -7,7 +7,7 @@
 
 ## Ý nghĩa và tác động tới người dùng
 
-Lần lưu WAL gần nhất của `svp-pg` lên bucket `pg-backups` (MinIO trong cluster) **lỗi**, và tình trạng đó kéo dài 5 phút:
+Lần lưu WAL gần nhất của `svp-pg` lên bucket `pg-backups` (object store `s3` trong cluster) **lỗi**, và tình trạng đó kéo dài 5 phút:
 `cnpg_pg_stat_archiver_last_failed_time > cnpg_pg_stat_archiver_last_archived_time` (thời điểm lỗi cuối sau thời điểm lưu
 được cuối). Rule so thời điểm chứ không đo "lâu chưa lưu", vì lab nhàn rỗi có thể hàng giờ không sinh WAL.
 
@@ -36,8 +36,8 @@ kubectl --context k3d-svp -n svp-data exec "$PG" -c postgres -- psql -X -A -U po
 kubectl --context k3d-svp -n svp-data logs "$PG" -c plugin-barman-cloud --since=30m --tail=50
 # 4. PVC còn bao nhiêu chỗ, pg_wal chiếm bao nhiêu
 kubectl --context k3d-svp -n svp-data exec "$PG" -c postgres -- sh -c 'df -h /var/lib/postgresql/data; du -sh /var/lib/postgresql/data/pgdata/pg_wal'
-# 5. MinIO và plugin có chạy không
-kubectl --context k3d-svp -n svp-data get pods -l app.kubernetes.io/name=minio
+# 5. Object store và plugin có chạy không
+kubectl --context k3d-svp -n svp-data get pods -l app.kubernetes.io/name=s3
 kubectl --context k3d-svp -n cnpg-system get pods -l app.kubernetes.io/name=plugin-barman-cloud
 ```
 
@@ -52,17 +52,17 @@ curl -sG "$PROM/api/v1/query" --data-urlencode 'query=cnpg_collector_pg_wal_arch
 
 ## Nguyên nhân thường gặp
 
-1. **MinIO không chạy hay chưa Ready** (pod `minio-0` restart, PVC của MinIO đầy). Dấu hiệu: log sidecar có lỗi kết nối tới
-   `minio.svp-data:9000`, bước 5 MinIO không `Running`.
+1. **Object store không chạy hay chưa Ready** (pod `s3-0` restart, PVC của store đầy). Dấu hiệu: log sidecar có lỗi kết nối
+   tới `s3.svp-data:9000`, bước 5 pod `s3-0` không `Running`.
 2. **Credential lệch**: `SVP_PG_BACKUP_S3_SECRET_KEY` trong `.env` đổi, `make k8s-secrets` đã cập nhật Secret
-   `svp-data/pg-backup-s3` nhưng Job `minio-init` chưa chạy lại để đặt key mới cho user `svp-pg-backup` (hay ngược lại).
+   `svp-data/pg-backup-s3` nhưng Job `s3-init` chưa chạy lại để đặt key mới cho user `svp-pg-backup` (hay ngược lại).
    Dấu hiệu: log sidecar có `InvalidAccessKeyId`, `SignatureDoesNotMatch` hay `AccessDenied`.
 3. **Đích lưu không rỗng** ("Expected empty archive"): Cluster `svp-pg` được tạo lại (initdb hay phục hồi) mà vẫn dùng
    `serverName` của một thế hệ đã có WAL. Dấu hiệu: log sidecar hay log của Job phục hồi nêu archive không rỗng; thường sau
    một lần phục hồi làm tay không đổi `postgres.backup.serverName`.
-4. **Bucket `pg-backups` không có** (dữ liệu MinIO bị xoá, `minio-init` chưa chạy). Dấu hiệu: `NoSuchBucket` trong log.
-5. **NetworkPolicy chặn**: policy `postgres-backup` (egress Postgres → MinIO 9000) hay rule ingress `cnpg.io/cluster: svp-pg`
-   của policy `minio` (chart `svp-data`) bị sửa hay thiếu. Dấu hiệu: log sidecar quá hạn kết nối, MinIO vẫn chạy.
+4. **Bucket `pg-backups` không có** (dữ liệu của store bị xoá, `s3-init` chưa chạy). Dấu hiệu: `NoSuchBucket` trong log.
+5. **NetworkPolicy chặn**: policy `postgres-backup` (egress Postgres → `s3` 9000) hay rule ingress `cnpg.io/cluster: svp-pg`
+   của policy `s3` (chart `svp-data`) bị sửa hay thiếu. Dấu hiệu: log sidecar quá hạn kết nối, store vẫn chạy.
 
 ## Giảm thiểu
 
@@ -82,22 +82,22 @@ kubectl --context k3d-svp -n argocd get applications.argoproj.io svp-root    # N
 ```
 
 Ở dưới, "áp lại chart `svp-data`" là `make k8s-up` trên đường dev; trên cluster GitOps là một lần sync Application `svp-data`
-(chạy lại các Job init của nó, gồm `minio-init`):
+(chạy lại các Job init của nó, gồm `s3-init`):
 
 ```sh
 kubectl --context k3d-svp -n argocd patch applications.argoproj.io svp-data --type merge -p '{"operation":{"sync":{}}}'
 kubectl --context k3d-svp -n argocd get applications.argoproj.io svp-data -o jsonpath='{.status.sync.status} {.status.health.status} {.status.operationState.phase}{"\n"}'
 ```
 
-- Nguyên nhân 1: `kubectl --context k3d-svp -n svp-data rollout restart statefulset/minio` hay sửa PVC của MinIO; rồi chờ.
-- Nguyên nhân 2: sửa `.env` cho đúng (hay giữ giá trị mới), rồi `make k8s-secrets` và áp lại chart `svp-data`: Job `minio-init`
+- Nguyên nhân 1: `kubectl --context k3d-svp -n svp-data rollout restart statefulset/s3` hay sửa PVC của store; rồi chờ.
+- Nguyên nhân 2: sửa `.env` cho đúng (hay giữ giá trị mới), rồi `make k8s-secrets` và áp lại chart `svp-data`: Job `s3-init`
   đặt lại key của user `svp-pg-backup` theo `.env`.
 - Nguyên nhân 3: Cluster đang chạy phải lưu vào thế hệ mới, rỗng. Đường dev: cách an toàn là phục hồi lại theo
   [postgres-restore.md](postgres-restore.md) với `serverName` mới; không xoá object của thế hệ cũ. Cluster GitOps: Argo CD giữ
   `serverName` theo git, nên quy trình đó không dùng được. Không xoá gì (Cluster, PVC, Backup, object của bucket) và không dựng
   lại cluster: Cluster vừa được tạo lại thì backup của thế hệ cũ là bản duy nhất của dữ liệu; làm theo
   [Leo thang của postgres-restore.md](postgres-restore.md#leo-thang).
-- Nguyên nhân 4: áp lại chart `svp-data` (Job `minio-init` tạo bucket và user). Nếu dữ liệu MinIO đã mất thì backup cũ cũng
+- Nguyên nhân 4: áp lại chart `svp-data` (Job `s3-init` tạo bucket và user). Nếu dữ liệu của store đã mất thì backup cũ cũng
   mất: lấy ngay một backup cơ sở mới (lệnh ở [postgres-backup-too-old.md](postgres-backup-too-old.md)).
 - Nguyên nhân 5: đường dev `make k8s-up` áp lại NetworkPolicy của chart. Cluster GitOps: policy bị sửa tay thì self-heal của
   Argo CD trả về bản trong git (hay sync như trên); policy sai nằm trong git thì sửa bằng PR (hoàn tác bằng PR revert).
@@ -121,12 +121,12 @@ backup cơ sở để có điểm phục hồi mới (lệnh ở [postgres-backu
 - Lỗi lặp lại mà không rõ nguyên nhân: log của plugin `kubectl --context k3d-svp -n cnpg-system logs deployment/plugin-barman-cloud --since=1h`
   và của operator `kubectl --context k3d-svp -n cnpg-system logs deployment/cloudnative-pg --since=1h | grep -i barman`; ghi
   lại cho postmortem.
-- Không có ai khác dùng chung: Postgres và MinIO này chỉ thuộc cluster lab.
+- Không có ai khác dùng chung: Postgres và object store này chỉ thuộc cluster lab.
 
 ## Liên kết
 
 - ADR: [ADR-0020](../adr/0020-reliability-stage6.md) §5 (plugin, thế hệ lưu trữ, NetworkPolicy, cảnh báo); threat model BAK-1.
 - Cấu hình: `deploy/helm/svp-data/templates/backup.yaml` (ObjectStore, ScheduledBackup), `templates/postgres.yaml` (plugin
-  của Cluster), `deploy/k8s/values/plugin-barman-cloud.yaml`, `deploy/minio/pg-backup-policy.json`.
+  của Cluster), `deploy/k8s/values/plugin-barman-cloud.yaml`, `deploy/s3/pg-backup-policy.json`, `deploy/helm/svp-data/templates/s3.yaml` (store, Job `s3-init`).
 - Diễn tập: `make drill-k8s-backup` dừng trước khi xoá gì nếu `ContinuousArchiving` không `True`; chưa có diễn tập làm hỏng
   việc lưu WAL có chủ đích.

@@ -12,7 +12,7 @@ mở khi 5 lời gọi lỗi liên tiếp, hoặc ≥ 20 lời gọi trong 10 s 
 chết, không tới được) và `DEADLINE_EXCEEDED` (hạn 3 s). Mở 5 s rồi half-open cho 1 lời gọi thử
 ([ADR-0010](../adr/0010-redis-ratelimit-cache-resilience-stage2c.md) §4). Lúc mở, gateway trả **503 ngay**, không gọi mạng.
 
-Lỗi phụ thuộc của service đích (`DEPENDENCY_UNAVAILABLE`, ví dụ Redpanda chết khi ghi lượt xem, MinIO chết khi
+Lỗi phụ thuộc của service đích (`DEPENDENCY_UNAVAILABLE`, ví dụ Redpanda chết khi ghi lượt xem, object store chết khi
 `CompleteUpload`) **không** mở breaker: service còn sống thì breaker đóng, chỉ method đó trả 503.
 
 | `target` | Người dùng thấy | Vẫn chạy |

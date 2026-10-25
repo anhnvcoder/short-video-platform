@@ -49,7 +49,7 @@ lag. Log của media-worker và video-service có `video_id`, `trace_id` (UP-8).
 
 ## Nguyên nhân thường gặp
 
-1. **Video `FAILED`**: file hỏng, không phải video, dài hơn 3 phút (đúng thiết kế); hay MinIO lỗi khi worker đọc/ghi (lỗi
+1. **Video `FAILED`**: file hỏng, không phải video, dài hơn 3 phút (đúng thiết kế); hay object store lỗi khi worker đọc/ghi (lỗi
    kết nối trong log worker). Phân biệt bằng lỗi trong log của `video_id` đó.
 2. **Hàng đợi transcode dài**: burst upload; compose có 1 worker, k3d tối đa 2
    ([ADR-0017](../adr/0017-gitops-capacity-media-worker-max2.md)); lag media-worker tăng.
@@ -64,7 +64,7 @@ lag. Log của media-worker và video-service có `video_id`, `trace_id` (UP-8).
 
 - Worker dừng: compose `dc start media-worker`; k3d `kubectl --context k3d-svp -n svp rollout restart deployment/media-worker`.
 - CPU: cắm sạc, tắt Low Power Mode, dừng việc nặng khác. Không nâng số worker trên máy 16 GB.
-- MinIO lỗi: compose `make up OBS=lgtm` bật lại `minio`; k3d `kubectl --context k3d-svp -n svp-data get pods` rồi xử lý pod MinIO.
+- Object store lỗi: compose `make up OBS=lgtm` bật lại `s3`; k3d `kubectl --context k3d-svp -n svp-data get pods` rồi xử lý pod `s3-0`.
 - Video `FAILED` do đầu vào: không cần giảm thiểu; ghi nhận trong postmortem nếu cảnh báo cháy chỉ vì nó.
 
 ## Khôi phục và xác nhận
@@ -80,7 +80,7 @@ Lag media-worker về 0, video kẹt tới `READY` (hay `FAILED` có lý do), pa
 
 ## Leo thang
 
-- Nhiều video `FAILED` do lỗi hạ tầng (MinIO, Postgres), hay video kẹt `PROCESSING` quá 15 phút: mở postmortem với danh sách
+- Nhiều video `FAILED` do lỗi hạ tầng (object store, Postgres), hay video kẹt `PROCESSING` quá 15 phút: mở postmortem với danh sách
   `video_id`.
 - Trên k3d API server chậm hay node NotReady khi transcode: [k3s-server-down-under-transcode.md](k3s-server-down-under-transcode.md).
 

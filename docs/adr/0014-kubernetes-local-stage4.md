@@ -10,7 +10,10 @@
   tạo, sửa Secret PKI của nó ở đó) chỉnh bởi [0020](0020-reliability-stage6.md); §3 (uid/gid Valkey `10999`), §4 (Redpanda
   `--reserve-memory=128M`) và §13 (đường dev chọn asset plugin theo kiến trúc node) chỉnh bởi
   [0021](0021-deferred-verification-stage6b.md); §12 (Argo CD đọc repo qua HTTPS ẩn danh thay deploy key SSH) sẽ chỉnh bởi
-  0021 khi hiện thực phần 3 của giai đoạn 6b
+  0021 khi hiện thực phần 3 của giai đoạn 6b; MinIO ở §1 (image), §2 và §10 (RAM), §4 (StatefulSet `minio`, `deploy/minio/init.sh`
+  với `mc`), §7 (symlink), §8 (Secret `minio-root`, `minio-users`) và §9 (đích của HTTPRoute `s3`) bị thay một phần bởi
+  [0022](0022-local-object-store-minio-replacement.md) (RustFS, StatefulSet, Service và Job `s3`, `s3-init`, Secret `s3-root`, `s3-users`, CORS theo bucket; giới
+  hạn 512 MiB, uid 10001)
 - Ngày: 2026-10-18
 
 ## Bối cảnh
@@ -549,7 +552,9 @@ Chọn **B**. Test (`make test`) vẫn dùng Postgres/Redis native như cũ.
     `admin_api_require_auth: true` (mục 5) đặt ở `config.cluster` (áp khi cluster hình thành qua `.bootstrap.yaml`;
     `helm template` thấy cả ba trong `.bootstrap.json.in`); `create-topics.sh` vẫn đặt lại thuộc tính thứ hai mỗi lần chạy
     như ở compose.
-- **MinIO:** StatefulSet `minio` 1 replica ở `svp-data`, image Chainguard ghim digest như compose (uid 65532), PVC 5 Gi,
+- **MinIO** (**bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md)**, 2026-10-25: StatefulSet `s3` chạy RustFS ghim digest như compose, uid
+  10001, `s3.svp-data:9000`, Job `s3-init` chạy `deploy/s3/init.sh`; cluster tạo khi còn MinIO thì `make k8s-up` từ chối và
+  phải dựng lại): StatefulSet `minio` 1 replica ở `svp-data`, image Chainguard ghim digest như compose (uid 65532), PVC 5 Gi,
   Service `minio.svp-data:9000` (console 9001 không có route). Job init chạy **`deploy/minio/init.sh` có sẵn** cùng ba file
   policy JSON; script dùng `MC_HOST_svp=http://...@minio:9000`, trong namespace `svp-data` tên `minio` phân giải đúng nên
   không phải sửa.
@@ -1943,7 +1948,7 @@ thái các dòng "Chưa kiểm" của đường GitOps:
   (`templates/namespaces.yaml`, `templates/networkpolicies.yaml`, `values.yaml`), NetworkPolicy của từng chart
   (`deploy/helm/svp-data/templates/networkpolicies.yaml`, `deploy/helm/svp-observability/templates/networkpolicies.yaml`,
   `deploy/helm/svp-service/templates/networkpolicy.yaml`), security context ở `deploy/helm/svp-data/templates/_helpers.tpl`.
-- Dữ liệu trong cluster, Redpanda SASL và ACL (§4, §5): `deploy/helm/svp-data/` (Postgres CloudNativePG, Valkey, MinIO, Job init của
+- Dữ liệu trong cluster, Redpanda SASL và ACL (§4, §5): `deploy/helm/svp-data/` (Postgres CloudNativePG, Valkey, object store `s3` theo [0022](0022-local-object-store-minio-replacement.md), Job init của
   Redpanda, `files/kafka-users.sh`, scaler KEDA, `values.yaml`), `deploy/k8s/values/cloudnative-pg.yaml`,
   `deploy/k8s/values/redpanda.yaml`.
 - Image và chart (§6, §7): image dev và registry k3d ở `deploy/k8s/lib.sh`; năm chart dưới `deploy/helm/`; thứ tự cài

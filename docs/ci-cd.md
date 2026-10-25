@@ -149,7 +149,7 @@ Trigger: `workflow_dispatch` (input `scenario`, `targets`) và `schedule` hằng
 
 | Job | Làm gì | Chạy khi | Skip khi |
 | --- | --- | --- | --- |
-| `compose` | Kịch bản `compose-obs`: `make up OBS=lgtm`, smoke, `drill-obs-threats`, `load-local` dưới quan sát Alertmanager, Lighthouse ×3, `drill-alert-to-sentry`; hạn 120 phút | `github.event_name == 'schedule' \|\| inputs.scenario == 'compose-obs'` | Dispatch `dev-k3d` |
+| `compose` | Kịch bản `compose-obs`: `make up OBS=lgtm`, smoke, `drill-obs-threats`, `load-local` dưới quan sát Alertmanager, Lighthouse ×3, test tích hợp của object store (`test-stack-objstore`), `drill-upload-cleanup`, `measure-upload` và RAM đỉnh của `s3` (`ram-s3-upload`), `drill-alert-to-sentry`, đường quay lại MinIO (`object-store-roundtrip`: chép ngược, `make up` lần hai, smoke); hạn 120 phút | `github.event_name == 'schedule' \|\| inputs.scenario == 'compose-obs'` | Dispatch `dev-k3d` |
 | `k3d` | Kịch bản `dev-k3d`: `make k8s-up`, smoke, RAM nghỉ, diễn tập threat model, PDB, canary, source map, e2e web, `drill-k8s-web-obs`, KEDA và RAM đỉnh, backup hai chế độ; hạn 330 phút | `github.event_name == 'schedule' \|\| inputs.scenario == 'dev-k3d'` | Dispatch `compose-obs` |
 
 Mỗi job: kiểm ref, cài công cụ, `make env`, `deploy/ci/verify-mask.sh`, `verify-host.sh`, `verify-sample.sh start`, bước
@@ -248,7 +248,8 @@ của `deploy/ci/` chạy trên máy ở chế độ `local` của adapter: khô
 | Sau merge: bảy image build, ký, tới lúc PR promote mở | 4 phút 32 s (push 20:17:13 UTC → PR #19 mở 20:21:45 UTC) | [40129094574](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129094574) (2026-10-24) |
 | Sau khi merge PR promote: Argo CD sync, pod mới Ready | push → sync 109 s → pod cuối Ready 240 s (cluster GitOps trên máy, hai pause 60 s của canary) | [ADR-0014](adr/0014-kubernetes-local-stage4.md), mục Kiểm chứng |
 | `verify.yml` `compose-obs`, mọi bước | 54 phút | [40132157276](https://github.com/anhnvcoder/short-video-platform/actions/runs/40132157276) (2026-10-24) |
-| `verify.yml` `dev-k3d`, mọi bước | 70 phút (hai lượt) | [40145677985](https://github.com/anhnvcoder/short-video-platform/actions/runs/40145677985), [40151447243](https://github.com/anhnvcoder/short-video-platform/actions/runs/40151447243) (2026-10-25) |
+| `verify.yml` `compose-obs`, mọi bước, có các bước object store | 31 phút (job `compose`; kịch bản 29 phút); 45 phút ở lượt sau, trong đó 17 phút cài đặt trước kịch bản | [40203123781](https://github.com/anhnvcoder/short-video-platform/actions/runs/40203123781), [40207235062](https://github.com/anhnvcoder/short-video-platform/actions/runs/40207235062) (2026-10-25) |
+| `verify.yml` `dev-k3d`, mọi bước | 70 phút (hai lượt) | [40145677985](https://github.com/anhnvcoder/short-video-platform/actions/runs/40145677985), [40151447243](https://github.com/anhnvcoder/short-video-platform/actions/runs/40151447243) (2026-10-25); 65 phút trên RustFS [40202083397](https://github.com/anhnvcoder/short-video-platform/actions/runs/40202083397) (2026-10-25) |
 | `verify.yml` `dev-k3d`, chọn bước | 25 phút (`k8s-smoke drill-k8s-threats`); 31 phút (`drill-k8s-keda ram-peak`) | [40157833740](https://github.com/anhnvcoder/short-video-platform/actions/runs/40157833740), [40160414327](https://github.com/anhnvcoder/short-video-platform/actions/runs/40160414327) (2026-10-25) |
 
 Thời gian của runner dùng chung thay đổi theo tải của GitHub và cache (cache Go, pnpm, DB của trivy, build cache Docker); số trên
