@@ -62,7 +62,7 @@ WEB_KEY_VARS := NEXT_SERVER_ACTIONS_ENCRYPTION_KEY
 
 .PHONY: env env-required obs-valid obs-exclusive k3d-exclusive ci-bridge-check db-bootstrap glitchtip-init up down clean-data ps logs compose-config compose-hash slo-check smoke test-stack drill-kill-worker drill-duplicates measure-ready \
 	drill-duplicates-feed drill-engagement-down measure-freshness drill-rate-limit measure-explore-cache drill-upload-cleanup \
-	drill-alert-to-sentry drill-obs-threats gameday gameday-mark gameday-end
+	drill-alert-to-sentry drill-obs-threats gameday gameday-mark gameday-end object-store-copy
 
 # .env is read with the strict rule of deploy/observability/glitchtip/dotenv.sh, the same as
 # glitchtip-init: a line it refuses stops make env, naming the variable, before anything is written.
@@ -161,6 +161,14 @@ clean-data: ## Stop every profile and delete the stack's volumes (Redpanda topic
 	  if [ -n "$$kept" ]; then echo "Keeping these volumes of the project, which the compose file no longer declares:"; \
 	    for v in $$kept; do echo "  $$v"; done; fi
 	$(COMPOSE_ALL) down -v
+
+# Moves the object store's data between MinIO (volume svp_minio-data, the store to go back to) and RustFS
+# (svp_s3-data), so that every object a row of svp_video points to is on the store that runs next. The script never
+# deletes or overwrites an object and removes no volume: a target holding a key the source lacks, or of another size,
+# is refused before anything is written.
+TO ?=
+object-store-copy: env-required ## TO=s3|minio: copy buckets uploads and media from MinIO's volume svp_minio-data to RustFS's svp_s3-data (s3) or back (minio), then check keys, sizes and Content-Type match; refuses while the compose stack or k3d runs, a video is PROCESSING, or the target has a key the source lacks or of another size; never deletes or overwrites an object, removes no volume
+	deploy/compose/object-store-copy.sh '$(TO)'
 
 ps: ## Show the containers of every profile
 	$(COMPOSE_ALL) ps -a
