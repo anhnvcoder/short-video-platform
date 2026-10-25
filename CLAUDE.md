@@ -129,7 +129,8 @@ liệt kê target):
   cho loopback, [ADR-0018](docs/adr/0018-web-profiles-public-video-upload.md) §8). `make web-generate`: sinh `web/gen/api.d.ts` từ `services/gateway/openapi.yaml` (commit); `make generate` gồm cả
   `generate-go` lẫn `web-generate`, còn `make generate-check` chỉ kiểm phần Go. `make web-generate-check`: so bản sinh tạm
   với `web/gen/api.d.ts`, không ghi gì. `make web-check`: ESLint, Prettier, typecheck, Vitest (Redis db 15 qua
-  `SVP_TEST_REDIS_URL`), `next build`, ngân sách bundle size-limit (feed ≤ 200 kB trên runtime, ≤ 330 kB tải lần đầu; login
+  `SVP_TEST_REDIS_URL`), `next build`, khởi động thử server standalone (cổng loopback tự chọn, đợi `GET /healthz` 200 tối
+  đa 30 s: bắt module server thiếu lúc nạp), ngân sách bundle size-limit (feed ≤ 200 kB trên runtime, ≤ 330 kB tải lần đầu; login
   ≤ 80/210 kB; `/v/[id]` ≤ 200/330 kB; `/upload` ≤ 80/210 kB; tải lần đầu của login và upload nới từ 200 lên 210 kB ở
   [ADR-0019](docs/adr/0019-web-k3d-supply-chain-observability.md) §12). `make web-e2e`: Playwright trên Chromium và
   WebKit vào stack
@@ -437,14 +438,21 @@ liệt kê target):
   chạy với context của cluster đo ghi trong lệnh; script từ chối context `k3d-*` và context rỗng.
 - `make hooks`: bật git hook ở `.githooks/` một lần cho mỗi clone. `pre-commit` chạy `gofmt` trên file Go đã stage,
   `golangci-lint run`, `buf lint` và `gitleaks` trên thay đổi đã stage.
-- Giai đoạn 5, CI trên GitHub Actions ([ADR-0015](docs/adr/0015-cicd-devsecops-stage5.md)). Hai workflow, mọi action
+- Giai đoạn 5, CI trên GitHub Actions ([ADR-0015](docs/adr/0015-cicd-devsecops-stage5.md)); từ giai đoạn 6b thêm workflow
+  thứ ba `verify.yml` ([ADR-0021](docs/adr/0021-deferred-verification-stage6b.md)). Ba workflow, mọi action
   ghim SHA commit, `permissions: {}` ở đầu file và quyền khai theo job; mọi job của lượt `pull_request` (cả PR từ fork)
-  chỉ có `contents: read` và không secret; không `pull_request_target`, `workflow_run`:
+  chỉ có `contents: read` và không secret; không `pull_request_target`, `workflow_run`. CI trung lập nền tảng
+  ([ADR-0023](docs/adr/0023-ci-platform-neutral.md)): YAML chỉ nối bước, logic ở `Makefile` và `deploy/ci/`; mọi chỗ đọc
+  ngữ cảnh CI hay gọi API của nền tảng (output, summary, mask, link lượt chạy, PR, dispatch) đi qua hàm `ci_*` của adapter
+  `deploy/ci/platform.sh` (chế độ `github` trong Actions, `local` khi chạy script trên máy; CI khác thì dừng);
+  `deploy/ci/platform-guard.sh` báo script nào khác đọc biến `GITHUB_*` hay gọi `gh api|pr|run|workflow`:
   - `.github/workflows/ci.yml` (PR, push `main`, dispatch): `check` (`make check-go TESTFLAGS=-count=1`, Postgres và
     Redis là service container trên `127.0.0.1`, ffmpeg), `web` (Node theo `web/.nvmrc`, pnpm theo `packageManager`, Redis
-    service container; `make web-install`, `make web-check`, `make web-generate-check`), `generate` (`make generate-check`), `buf` (`buf breaking` so với
+    service container; `make web-install`, `make web-check`, `make web-generate-check`, `make web-lockfile-scan` chạy cả khi
+    bước trước đỏ, SARIF `trivy-lockfile-web`), `generate` (`make generate-check`), `buf` (`buf breaking` so với
     merge-base của PR, `main` trước push, hay merge-base với `origin/main` khi dispatch), `config`
-    (`deploy/ci/scan-gate.sh --check-ignorefile`, `make slo-check`, `make otelcol-validate`, `make env` rồi
+    (`deploy/ci/scan-gate.sh --check-ignorefile`, `deploy/ci/platform-guard.sh`, `deploy/ci/platform-test.sh`,
+    `make slo-check`, `make otelcol-validate`, `make env` rồi
     `make compose-config`, `make helm-check`, `deploy/k8s/check-image-digests.sh`, `make k6-check`, `make cloud-check`),
     `gitleaks` (toàn lịch sử, `--redact`), `trivy-config` (chỉ báo), `sarif` (chỉ `main`), check tổng `ci-ok` (cần đủ 7 job,
     trừ `sarif` và `stack`). Job `stack` (giai đoạn 6, ADR-0020 §15; **chỉ báo, ngoài `ci-ok`**, không chặn merge; xem lại
@@ -454,9 +462,13 @@ liệt kê target):
     `postgresql-client redis-tools ffmpeg jq`, rồi `make env`, `make up`, `make smoke`, `make web-install`, Playwright
     Chromium và WebKit, `make web-e2e`, `make load-ci`, `make web-lighthouse` (đỏ không làm job đỏ), `make ps` khi lỗi,
     `make down` luôn chạy; artifact chỉ `k6-summary` (`summary.json` đã grep bí mật) và `lighthouse` (báo cáo đã lọc
-    cookie). Mọi thứ của job này **kiểm sau push**.
+    cookie). Trước `make web-lighthouse` job bỏ hạn chế AppArmor `kernel.apparmor_restrict_unprivileged_userns` của runner
+    (Chrome của Playwright cần user namespace cho sandbox). Đã kiểm ngày 2026-10-24 (lượt PR
+    [40133806424](https://github.com/anhnvcoder/short-video-platform/actions/runs/40133806424), ba lần chạy liền xanh,
+    quyền ở đầu log chỉ `Contents: read`, artifact chỉ hai loại).
   - `.github/workflows/images.yml` (PR, push `main`, dispatch, lịch hằng ngày): chỉ build service đổi so với base
-    (`deploy/ci/changed-services.sh`; đổi `images.yml`, `deploy/ci/`, `deploy/k8s/lib.sh` hay dòng
+    (`deploy/ci/changed-services.sh`; đổi `images.yml`, `deploy/ci/` (trừ `trivy-config-ignore.yaml`, script và test của
+    `verify.yml`, `platform-test.sh`, `platform-guard.sh`: không job image nào đọc chúng), `deploy/k8s/lib.sh` hay dòng
     `TRIVY_IMAGE`/`SYFT_IMAGE`/`COSIGN_IMAGE` của `Makefile` thì cả bảy; `web` chỉ build khi đổi file dưới `web/` hay
     `deploy/docker/web.Dockerfile`, context `web/`, `SVP_BUILD_ID` là 12 hex của commit). Base: push `main` so với lượt
     push `main` thành
@@ -470,28 +482,63 @@ liệt kê target):
     PR đổi (đã ký, attestation không quá 48 giờ). Dispatch `-f services=<tên…|all>` build, ký và promote lại các service
     đó ở commit được dispatch, `-f rescan=true [-f values_ref=<ref>]` quét lại mọi digest phát hành (lịch hằng ngày làm
     việc này), `-f drill=true` đẩy hai image diễn tập; check tổng `images-ok`.
+  - `.github/workflows/verify.yml` (giai đoạn 6b, [ADR-0021](docs/adr/0021-deferred-verification-stage6b.md); không check
+    bắt buộc nào, không chạy ở PR): kiểm chứng trên runner `ubuntu-24.04` những gì máy 16 GB không chạy nổi, bằng đúng
+    target `make` như trên máy. Trigger: `workflow_dispatch` (chỉ người có quyền ghi; ref `main` hay `feat/stage6b-*`, ref
+    khác dừng ở bước đầu) và lịch hằng tuần trên `main` (00:37 UTC thứ Bảy, 07:37 giờ Việt Nam; cả hai kịch bản song song,
+    mọi bước; **kiểm sau push**). Kịch bản: `compose-obs` (job `compose`, hạn 120 phút: `make up OBS=lgtm`, `make smoke`,
+    `make drill-obs-threats`, `make load-local` dưới quan sát Alertmanager (`RateLimitFallbackActive` không được cháy),
+    `make web-lighthouse` ×3 và median LCP, `make drill-alert-to-sentry` với Telegram SKIP) và `dev-k3d` (job `k3d`, hạn 330
+    phút: `make k8s-up`, `make k8s-smoke`, RAM nghỉ, `make drill-k8s-threats`, `make drill-k8s-pdb`, `make drill-k8s-canary`,
+    `make k8s-web-sourcemaps`, `SVP_E2E_GLITCHTIP=1 make k8s-web-e2e`, `make drill-k8s-web-obs`, `make drill-k8s-keda N=9` và
+    RAM đỉnh, `make drill-k8s-backup` rồi `MODE=pitr`, RAM nghỉ cuối). Dispatch và đọc kết quả (AI được chạy, chỉ khi người
+    học giao): `gh workflow run verify.yml --ref <main|feat/stage6b-…> -f scenario=<compose-obs|dev-k3d> [-f
+    targets='<bước> …']` (`targets` rỗng là mọi bước, bước dựng luôn chạy; tên bước ở `results.tsv`), `gh run view <id>
+    --log`, `gh run download <id> -n verify-<kịch bản>`. Mỗi job chỉ `contents: read`, không secret, không environment;
+    `concurrency` một lượt mỗi kịch bản. Script `deploy/ci/verify-*.sh` (chạy được trên VM Linux thay runner):
+    `verify-host.sh` (cổng đĩa, `/etc/hosts` cho ba tên `*.svp.localhost`, lệch version kubectl, hạn chế AppArmor),
+    `verify-run.sh` (trình tự, hạn mỗi target, output mỗi target vào file thay vì log job, dừng sớm khi bước dựng đỏ),
+    `verify-sample.sh` (mẫu RAM, CPU, đĩa, `docker stats`, `memory.stat` của node, số pod media-worker đang chạy `ffmpeg`;
+    `runner.json`, `runner.txt` "runner đủ"), `verify-mask.sh` (`::add-mask::` giá trị bí mật của `.env` sau mỗi target và
+    của Secret trong cluster), `verify-collect.sh` (artifact `verify-<kịch bản>`, giữ 30 ngày: chỉ file theo danh sách cho
+    phép, quét theo giá trị bí mật đã biết và theo mẫu, file nghi bị bỏ kèm `::warning::`, `files.txt` liệt kê file giữ và
+    bỏ). `deploy/ci/verify-collect-test.sh` chạy trên máy (giá trị giả, `docker`/`kubectl` giả, không mạng).
   - Check bắt buộc của ruleset `main`: `ci-ok`, `images-ok`, chỉ nhận từ app GitHub Actions. Ruleset, năm cài đặt repo
     của ADR-0015 §11 (quyền mặc định của `GITHUB_TOKEN` chỉ đọc kèm "Allow GitHub Actions to create and approve pull
     requests"; Actions chỉ cho action của GitHub và `sigstore/cosign-installer`, ghim SHA bắt buộc; duyệt workflow của PR
     fork cho mọi người ngoài; secret scanning + push protection; Dependabot alerts) và package GHCR public do người học bật
     (ADR-0015 §5, §11): **kiểm sau push**.
   - Chạy lại một job trên máy, từ gốc repo: `make check-go TESTFLAGS=-count=1`; `make web-check`,
-    `make web-generate-check`; `make generate-check`;
-    `buf breaking --against '.git#ref=<base>'`; `deploy/ci/scan-gate.sh --check-ignorefile`, `make slo-check`,
+    `make web-generate-check`, `make web-lockfile-scan`; `make generate-check`;
+    `buf breaking --against '.git#ref=<base>'`; `deploy/ci/scan-gate.sh --check-ignorefile`, `deploy/ci/platform-guard.sh`,
+    `deploy/ci/platform-test.sh`, `make slo-check`,
     `make otelcol-validate`, `make compose-config`, `make helm-check`, `deploy/k8s/check-image-digests.sh`, `make k6-check`,
     `make cloud-check`; `gitleaks git --redact --no-banner`; `make trivy-config`; một chân image (build, quét, cổng, không push):
     `deploy/ci/build-image.sh <svc> arm64 "$(mktemp -d)"`; service nào sẽ build: `deploy/ci/changed-services.sh <base>
-    HEAD`. Push GHCR, ký, attest, promote chỉ chạy trong CI: không đăng nhập GHCR hay Sigstore từ máy.
+    HEAD`; bộ lọc artifact và sampler của `verify.yml`: `deploy/ci/verify-collect-test.sh`. Push GHCR, ký, attest chỉ chạy
+    trong CI: không đăng nhập GHCR hay Sigstore từ máy. `deploy/ci/promote.sh` trên máy (chế độ `local` của
+    `platform.sh`) không gọi API nào (in lệnh `gh` thay vì chạy) và chỉ push `bot/promote` khi push URL của `origin` là
+    đường dẫn trên đĩa (`/…`, `./…`, `../…`, `file://…`); origin mạng thì dừng, trừ khi `PROMOTE_DRY_RUN=1` (in lệnh push
+    thay vì push).
   - `make helm-check`: `helm lint` và `helm template` mọi chart của repo với values đường GitOps (`HELM_*_HOME` trong
     thư mục tạm). `deploy/k8s/check-image-digests.sh`: `helm template` mọi chart bên thứ ba với đúng values, mọi image
-    (ngoài 7 image của project) phải ghim `@sha256:`. `make trivy-config`: trivy quét cấu hình Dockerfile, chart, chỉ báo.
+    (ngoài 7 image của project) phải ghim `@sha256:`. `make trivy-config`: trivy quét cấu hình Dockerfile, chart, chỉ báo,
+    trừ các mục của `deploy/ci/trivy-config-ignore.yaml` (dưới đây). `make web-lockfile-scan`: trivy `fs` bằng `TRIVY_IMAGE`
+    trên `web/pnpm-lock.yaml` (gồm dev dependency, chỉ mount lockfile), `.trivyignore.yaml` như cổng image, rồi
+    `scan-gate.sh --fs`: CRITICAL chặn (cả chưa có bản vá), HIGH trở xuống chỉ đếm; báo lỗi khi trivy đọc được 0 gói npm;
+    `WEB_LOCKFILE=<đường tuyệt đối>` quét bản sao khác (ca âm), `WEB_LOCKFILE_SARIF=<đường tuyệt đối>` ghi SARIF HIGH/CRITICAL.
     `make renovate-check`: `renovate-config-validator --strict` trong `RENOVATE_IMAGE` ghim, không mạng. trivy, syft,
     cosign, Renovate, k6, kubeconform chạy trên máy chỉ bằng image ghim digest của `Makefile` (`TRIVY_IMAGE`, `SYFT_IMAGE`,
     `COSIGN_IMAGE`, `RENOVATE_IMAGE`, `K6_IMAGE`, `KUBECONFORM_IMAGE`), không cài. Riêng cosign, script (`cosign_` của `deploy/ci/common.sh`) dùng `cosign`
     trên PATH trước nếu có (CI cài bằng `sigstore/cosign-installer`), không có thì `COSIGN_IMAGE`.
-  - `.trivyignore.yaml` ở gốc repo (hiện chưa có): chỉ phần `vulnerabilities`, mỗi mục có `id`, `statement` (lý do) và
-    `expired_at` không quá 30 ngày sau ngày chạy; thêm qua PR; bí mật không bỏ qua được. File sai quy tắc làm job `config`
-    đỏ ở mọi PR.
+  - `.trivyignore.yaml` ở gốc repo (cổng image và `make web-lockfile-scan` đọc; hiện có các mục của cây dev `@lhci/cli`,
+    [ADR-0016](docs/adr/0016-web-client.md) §10): chỉ phần `vulnerabilities`, mỗi mục có `id`, `statement` (lý do),
+    `expired_at` không quá 30 ngày sau ngày chạy và `purls` đúng gói@version (cùng CVE ở gói hay version khác vẫn báo);
+    thêm qua PR; bí mật không bỏ qua được. `deploy/ci/trivy-config-ignore.yaml` (chỉ `make trivy-config` đọc,
+    [ADR-0021](docs/adr/0021-deferred-verification-stage6b.md) §9): chỉ phần `misconfigurations`, mỗi mục có `id` (`DS-…`,
+    `KSV-…`), `paths` bắt buộc (file có thật, không pattern, thư mục hay `..`), `statement` có nội dung và `expired_at` không
+    quá 90 ngày; chỉ lựa chọn có chủ đích vào đây, cảnh báo sửa được thì sửa. `scan-gate.sh --check-ignorefile` kiểm cả hai
+    file ở job `config`: file sai quy tắc làm job đỏ ở mọi PR.
   - Renovate: GitHub App Mend, chỉ repo này (người học cài, **kiểm sau push**); `renovate.json`: sáng thứ Bảy giờ Việt
     Nam, `minimumReleaseAge` 3 ngày (trừ cảnh báo lỗ hổng), không automerge, không đụng `deploy/k8s/values/services/`
     (của PR promote) và `gen/`. Ghim mới trong `Makefile`, `lib.sh` hay values bên thứ ba theo dạng của

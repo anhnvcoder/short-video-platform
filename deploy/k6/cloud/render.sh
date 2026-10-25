@@ -13,8 +13,10 @@
 #                    192.0.2.1, a documentation address, for the static check only)
 #   --forwarded-for  each pod writes its own IP in X-Forwarded-For: only when stage 7 trusts two hops (threat model RL-7)
 #   --ca-file        PEM file of the CA that signs Envoy's certificate, when a private CA does (job.yaml.in, lines
-#                    marked @CA@): a ConfigMap svp-k6-ca holds it and the pods trust it alone. Certificates only: a
-#                    file holding a private key is refused. Without it the pods trust the image's roots.
+#                    marked @CA@): a ConfigMap svp-k6-ca holds it, and the pods trust it in addition to whatever
+#                    roots the image holds in /etc/ssl/certs (SSL_CERT_FILE replaces only the bundle file, not that
+#                    directory). Certificates only: a file holding a private key is refused. Without it the pods trust
+#                    the image's roots.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)

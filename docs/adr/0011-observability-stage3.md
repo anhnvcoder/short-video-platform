@@ -3,7 +3,8 @@
 - Trạng thái: Chấp nhận; §1 chỉnh bởi [0012](0012-elastic-vs-grafana-stage3.md), §11 chỉnh bởi [0013](0013-kafka-metadata-min-age.md);
   §3 (gateway nhận `traceparent`/`tracestate` của request đến khi bật `TRUST_TRACE_CONTEXT`) chỉnh bởi
   [0019](0019-web-k3d-supply-chain-observability.md); §11 (ngân sách kết nối Postgres lúc khởi động 5 s thành cửa sổ thử lại 30 s)
-  chỉnh bởi [0020](0020-reliability-stage6.md)
+  chỉnh bởi [0020](0020-reliability-stage6.md); §8 (`RateLimitFallbackActive` theo tỷ lệ quyết định dự phòng của từng instance, có
+  sàn số lượng và `for: 1m`; thêm ticket `RateLimitFallbackElevated`) chỉnh bởi [0021](0021-deferred-verification-stage6b.md)
 - Ngày: 2026-10-16
 
 ## Bối cảnh

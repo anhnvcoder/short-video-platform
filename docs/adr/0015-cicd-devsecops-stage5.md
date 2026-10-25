@@ -3,7 +3,12 @@
 - Trạng thái: Chấp nhận; §2 (job `web`, job `check` chạy `make check-go`, `ci-ok` bảy job) chỉnh bởi [0016](0016-web-client.md);
   thứ tự cắt RAM của §8 chỉnh bởi [0017](0017-gitops-capacity-media-worker-max2.md) (thiếu tiêu chí (c) thì đi thẳng tới
   media-worker tối đa 2); §3–§9 (image thứ bảy `web`: context `web/`, `image_paths`, build arg `SVP_BUILD_ID`) chỉnh bởi
-  [0019](0019-web-k3d-supply-chain-observability.md)
+  [0019](0019-web-k3d-supply-chain-observability.md); §1 (workflow thứ ba `verify.yml`, chỉ dispatch và lịch hằng tuần, ngoài
+  check bắt buộc), §2 (job `trivy-config` bỏ qua có hạn qua `deploy/ci/trivy-config-ignore.yaml`; job `web` thêm cổng CRITICAL
+  `make web-lockfile-scan`) và §6 (tệp bỏ qua thứ hai chỉ `misconfigurations`, mỗi mục có `paths`, hạn tối đa 90 ngày,
+  `scan-gate.sh --check-ignorefile` kiểm cả hai tệp) chỉnh bởi [0021](0021-deferred-verification-stage6b.md); §3 (đổi các file
+  của `deploy/ci/` mà không job image nào đọc: tệp bỏ qua misconfig, script và test của `verify.yml`, `platform-test.sh`,
+  `platform-guard.sh`, không build lại image) chỉnh bởi 0021 và [0023](0023-ci-platform-neutral.md)
 - Ngày: 2026-10-20
 
 ## Bối cảnh

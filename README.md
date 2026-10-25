@@ -60,7 +60,7 @@ Sổ lệnh đầy đủ (kiểm tra, diễn tập, k3d, cloud, CI) nằm ở [`
 | `deploy/ci/` | Script của pipeline: build, quét, ký, attest, promote image. Phần lớn logic CI nằm ở đây, không nằm trong YAML. |
 | `.githooks/` | Git hook `pre-commit` (gofmt, golangci-lint, buf lint, gitleaks); bật một lần bằng `make hooks`. |
 | `.github/rulesets/` | Ruleset của nhánh `main` (check bắt buộc `ci-ok`, `images-ok`). |
-| `.github/workflows/` | `ci.yml` (kiểm tra và stack), `images.yml` (image và chuỗi cung ứng), `verify.yml` (kiểm chứng dồn, chạy tay). |
+| `.github/workflows/` | `ci.yml` (kiểm tra và stack), `images.yml` (image và chuỗi cung ứng), `verify.yml` (kiểm chứng dồn trên runner, chạy tay và hằng tuần). |
 | `docs/architecture.md` | Thiết kế hiện tại: yêu cầu, ước lượng quy mô, C4, luồng chính, contract. |
 | `docs/adr/` | Quyết định kiến trúc, mỗi quyết định một file (mục lục ở `docs/adr/README.md`). |
 | `docs/runbooks/` | Một runbook cho mỗi cảnh báo mức page và các sự cố đã gặp. Mở khi có cảnh báo. |
@@ -76,8 +76,9 @@ Bảng service: database và Redis db của từng service nằm ở `CLAUDE.md`
 2. [`docs/architecture.md`](docs/architecture.md) §5 và §7: các container và luồng upload, feed, like.
 3. [`docs/adr/README.md`](docs/adr/README.md), rồi các ADR theo giai đoạn ở mục dưới. ADR 0001 (ranh giới service) và ADR 0003
    (outbox, event) là nền của gần như mọi thứ khác.
-4. [`docs/threat-model.md`](docs/threat-model.md) khi làm bảo mật, và [`docs/runbooks/`](docs/runbooks/) khi có cảnh báo.
-5. [`CLAUDE.md`](CLAUDE.md) khi cần một lệnh cụ thể: sổ lệnh đầy đủ và quy tắc an toàn (cloud, database) nằm ở đó.
+4. [`docs/ci-cd.md`](docs/ci-cd.md) khi đọc một lượt chạy GitHub Actions: job nào chạy khi nào, vì sao skip, đọc kết quả ở đâu.
+5. [`docs/threat-model.md`](docs/threat-model.md) khi làm bảo mật, và [`docs/runbooks/`](docs/runbooks/) khi có cảnh báo.
+6. [`CLAUDE.md`](CLAUDE.md) khi cần một lệnh cụ thể: sổ lệnh đầy đủ và quy tắc an toàn (cloud, database) nằm ở đó.
 
 ## Các giai đoạn
 

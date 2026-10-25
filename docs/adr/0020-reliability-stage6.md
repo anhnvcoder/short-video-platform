@@ -1,7 +1,12 @@
 # 0020. Giai đoạn 6: reliability chia hai phần, phần local đo nhỏ (k6 theo SLO bằng image ghim, SLO web, backup/restore Postgres bằng CloudNativePG và plugin Barman Cloud có RTO/RPO đo trên k3d, runbook, game day, RFC, stack trong CI) và phần đo thật dời giai đoạn 6b và 7 (k6 tải lớn và 1 000 req/s, Chaos Mesh, Velero, hai media-worker) chỉ viết và kiểm tĩnh
 
 - Trạng thái: Chấp nhận; phần local hiện thực và đã kiểm trên máy ngày 2026-10-24 (mục Kết quả). Ghi chú 2026-10-24: phần đo
-  thật chia giai đoạn 6b "Kiểm chứng dồn" (không cần dịch vụ AWS/GCP) và giai đoạn 7 (dịch vụ cloud), mục 1
+  thật chia giai đoạn 6b "Kiểm chứng dồn" (không cần dịch vụ AWS/GCP) và giai đoạn 7 (dịch vụ cloud), mục 1. Ghi chú 2026-10-25:
+  phần 1 của giai đoạn 6b đã chạy trên runner ([0021](0021-deferred-verification-stage6b.md), mục Kết quả): job `stack`, canary
+  gateway dưới probe mới, RAM plugin, hai lượt backup trên runner, điều kiện mới của `RateLimitFallbackActive` đạt; LCP `/` chưa
+  đạt; k6 tải lớn, Chaos Mesh, Velero, hai media-worker trên cluster GitOps ở phần sau của giai đoạn 6b. §2 (`render.sh` nhận số
+  pod), §6, §7 (Velero, Chaos Mesh trên k3d của runner) sẽ chỉnh bởi 0021 khi hiện thực phần đó; quyết định giữ `Suspense` của
+  feed (Kết quả "LCP") đảo theo D17 của 0021 (đòn bẩy (a) đã làm, LCP `/` vẫn chưa đạt)
 - Ngày: 2026-10-24
 
 ## Bối cảnh
@@ -303,7 +308,7 @@ từ chối context `k3d-*` và context rỗng.
   `web/server/telemetry/vitals.ts`). `page_alert.disable: true`, ticket `WebINPBudgetBurn`. Không lượt RUM nào thì total không
   có series, không ra tỷ lệ giả (quy tắc đầu spec).
 - Ngưỡng p99 canary của web (`canaryLimits.p99Ms: 500`) và HPA web giữ nguyên; p95/p99 SSR của lượt k6 local chỉ ghi lại, quyết
-  lại ở giai đoạn 6b theo số k6 tải lớn (mục 1).
+  lại ở giai đoạn 6b theo số k6 tải lớn (mục 1); phần sau của giai đoạn 6b ([ADR-0021](0021-deferred-verification-stage6b.md) mục 5, mục 8, D14).
 
 ## 4. Hạn 50 ms của lệnh Redis
 
@@ -736,7 +741,8 @@ chính thức kèm ngày tra và giả định) hay ghi rõ là ước lượng 
   nào bản cũ che (WEB-9).
 - **Thay MinIO: dời giai đoạn 7.** Trên cloud object store là S3/R2/GCS, MinIO chỉ còn ở lab loopback; bộ kiểm tương thích của bản thay
   (presigned POST có policy UP-1…UP-7, CORS, policy theo user) trùng việc kiểm R2 của giai đoạn 7: làm một lần. **Sửa 2026-10-24:**
-  thay MinIO cho đường local làm ở giai đoạn 6b, bằng ADR riêng (mục 1); kiểm R2 vẫn ở giai đoạn 7.
+  thay MinIO cho đường local làm ở giai đoạn 6b, bằng ADR riêng (mục 1); kiểm R2 vẫn ở giai đoạn 7. ADR riêng đó là
+  [ADR-0022](0022-local-object-store-minio-replacement.md) (RustFS, Đề xuất), hiện thực ở phần 2 của giai đoạn 6b.
 - **Istio ambient: dời sau giai đoạn 7.** Máy 16 GB không còn RAM cho ztunnel và istiod. Đường tới Postgres đã có TLS
   (`sslmode=require`) và SCRAM, Redpanda có SASL SCRAM và ACL, NetworkPolicy chặn hai chiều; còn thiếu là mã hoá và danh tính giữa
   gateway và service gRPC (IN-3, chấp nhận tới đó). Xem lại khi cluster cloud đủ RAM, có tenant thứ hai, hay ở review bảo mật giai
@@ -760,7 +766,7 @@ cuối khi đã kiểm.
 
 | Giả định | Phép kiểm | Kết quả |
 | --- | --- | --- |
-| `k6 inspect` của mọi profile chạy không mạng với `K6_IMAGE` trên arm64 (máy) và amd64 (runner) | `make k6-check` trên máy; job `config` sau push | arm64: sạch (2026-10-24, lần cuối trên working tree cuối của giai đoạn); amd64: chưa kiểm, **kiểm sau push** (job `config`) |
+| `k6 inspect` của mọi profile chạy không mạng với `K6_IMAGE` trên arm64 (máy) và amd64 (runner) | `make k6-check` trên máy; job `config` sau push | arm64: sạch (2026-10-24, lần cuối trên working tree cuối của giai đoạn); amd64: **đạt** (2026-10-24, job `config` của lượt push `main` [40098899515](https://github.com/anhnvcoder/short-video-platform/actions/runs/40098899515) ở `b993162`, [ADR-0021](0021-deferred-verification-stage6b.md) D21) |
 | Container k6 trong mạng `svp_web` tới được gateway và web; form đăng nhập `multipart/form-data` có `Origin`, `Host` của `localhost:3001` được Next và CSRF nhận, cookie phiên vào jar | `make load-local` | Đạt (2026-10-24): 303 kèm cookie phiên cho cả 5 user; kịch bản lấy cookie từ response và gửi theo từng request với jar mới, không để trong jar của VU (một VU chạy nhiều phiên) |
 | Pool của profile `local` và `ci` không nhận 429 | `make load-local`, `make load-ci`: `svp_rate_limited` = 0 | Đạt (2026-10-24): 0 ở cả hai lượt |
 | Thư mục kết quả không có token, cookie, mật khẩu | grep của `make load-local` trên `.k6/` | Đạt (2026-10-24): grep không ra file nào |
@@ -775,19 +781,19 @@ cuối khi đã kiểm.
 | Phục hồi cùng tên với `serverName` thế hệ mới qua được kiểm archive rỗng; lượt hai trên cùng cluster PASS; PITR dừng đúng thời điểm | `make drill-k8s-backup` (`MODE=latest`, rồi `MODE=pitr`) | **Đạt** (2026-10-24): hai lượt liền trên cùng cluster PASS, thế hệ `svp-pg` → `svp-pg-261024092827` → `svp-pg-261024094017`; PITR: dòng cuối còn lại cách mục tiêu 0,5 s, không dòng nào sau mục tiêu (`pitr.ok=true`). Số ở mục Kết quả |
 | `make k8s-up` sau diễn tập giữ `serverName` của thế hệ đang chạy, không đổi Cluster đã phục hồi | `make k8s-up` sau diễn tập | **Đạt** (2026-10-24): `Postgres svp-pg keeps archive generation svp-pg-261024094017`; Cluster cùng UID, pod `svp-pg-1` không bị tạo lại hay restart, 30 dòng đánh dấu của lượt PITR còn nguyên; `spec.bootstrap` thành `initdb` (CloudNativePG chỉ đọc lúc tạo instance đầu); 3 phút 5 giây |
 | Role của operator ở `cnpg-system` thu hẹp (mục 5) không làm operator lỗi quyền; token operator không leo sang ServiceAccount của plugin | Buổi k3d: `make k8s-up` cluster mới, log operator, `make drill-k8s-backup MODE=pitr`, `make drill-k8s-threats` (can-i và tạo thử dưới tên operator, mỗi ca có đối chứng) | **Đạt** (2026-10-24): `cnpg-ca-secret` (`Opaque`) do operator tạo qua policy; `grep -ci forbidden` 0 cả sau diễn tập, log không có lần từ chối nào của policy; `Registered plugin` ×2; `svp-pg` healthy, `ContinuousArchiving` True, backup `immediate` completed; `drill-k8s-backup MODE=pitr` PASS (RTO 125,6 s, RPO 35,4 s, 0/17 bảng lệch); `drill-k8s-threats` 16/16 PASS: tạo pod, exec, sửa Deployment, tạo ServiceAccount, xoá Secret chỉ `yes` ở `svp-data` (`cnpg-system` `no`), `serviceaccounts/token` không ở đâu; dưới tên operator, tạo Secret token cho ServiceAccount của plugin, Secret token tên `cnpg-ca-secret`, Secret `Opaque` tên khác, và sửa (gắn nhãn) Secret TLS có sẵn `barman-cloud-client-tls` của plugin đều bị policy từ chối; đối chứng: `cnpg-ca-secret` `Opaque` → AlreadyExists (qua policy), sửa nhãn `cnpg-webhook-cert` qua, admin tạo Secret token được |
-| RAM plugin và sidecar trong limit, cluster dev còn trong ngân sách ADR-0014 §2 | Buổi k3d: `docker stats` một lần, `kubectl top pod` | Chỉ để biết (2026-10-24): dưới 8,7 GiB ở mẫu này, ngân sách chưa đo, đo ở giai đoạn 6b (ADR-0014 §2 đo ngưỡng nghỉ 6,5 GiB và ngưỡng đỉnh 8,7 GiB dưới tải của nó, không phải một mẫu): `docker stats` trong lúc `drill-k8s-threats`, mẫu cao nhất server 5,24 GiB + agent 2,00 GiB ≈ 7,2 GiB; `kubectl top`: plugin 26 Mi, sidecar 21 Mi (limit 256 Mi mỗi cái), container postgres 99 Mi |
-| Probe mới render đúng mọi release; không pod nào restart khi `make k8s-up` | `make helm-check`; buổi k3d: `restartCount` | **Đạt** (2026-10-24): trên pod: liveness 10/5/3 (period/timeout/failure), readiness 5/2/3 ở 8 pod có probe, startup 2/2/30 ở 4 service gRPC, media-worker không probe; 0 restart ở mọi pod ngoài `kube-system` sau `make k8s-up` cluster mới và sau `make k8s-up` cuối buổi. Cluster mới không có canary, lượt cuối không đổi pod template, nên canary dưới probe mới chưa chạy (giai đoạn 6b, cùng canary web dưới traffic) |
+| RAM plugin và sidecar trong limit, cluster dev còn trong ngân sách ADR-0014 §2 | Buổi k3d: `docker stats` một lần, `kubectl top pod` | Chỉ để biết (2026-10-24): dưới 8,7 GiB ở mẫu này, ngân sách chưa đo, đo ở giai đoạn 6b (ADR-0014 §2 đo ngưỡng nghỉ 6,5 GiB và ngưỡng đỉnh 8,7 GiB dưới tải của nó, không phải một mẫu): `docker stats` trong lúc `drill-k8s-threats`, mẫu cao nhất server 5,24 GiB + agent 2,00 GiB ≈ 7,2 GiB; `kubectl top`: plugin 26 Mi, sidecar 21 Mi (limit 256 Mi mỗi cái), container postgres 99 Mi. Giai đoạn 6b, cluster dev trên runner ([ADR-0021](0021-deferred-verification-stage6b.md) D19): **đạt** (2026-10-25): plugin cao nhất 26 và 31 MiB, sidecar 71 và 67 MiB, dưới limit 256 Mi; cluster đạt (b) ở điểm 60 s ([40145677985](https://github.com/anhnvcoder/short-video-platform/actions/runs/40145677985), [40151447243](https://github.com/anhnvcoder/short-video-platform/actions/runs/40151447243)) |
+| Probe mới render đúng mọi release; không pod nào restart khi `make k8s-up` | `make helm-check`; buổi k3d: `restartCount` | **Đạt** (2026-10-24): trên pod: liveness 10/5/3 (period/timeout/failure), readiness 5/2/3 ở 8 pod có probe, startup 2/2/30 ở 4 service gRPC, media-worker không probe; 0 restart ở mọi pod ngoài `kube-system` sau `make k8s-up` cluster mới và sau `make k8s-up` cuối buổi. Cluster mới không có canary, lượt cuối không đổi pod template, nên canary dưới probe mới chưa chạy (giai đoạn 6b, cùng canary web dưới traffic). Giai đoạn 6b ([ADR-0021](0021-deferred-verification-stage6b.md) D18): canary gateway dưới probe mới **đạt** hai lượt trên runner (2026-10-25): bản tốt promote sau 129,9 và 124,2 s, bản lỗi abort 88,0 và 87,3 s sau khi canary nhận traffic, 0 restart ([40145677985](https://github.com/anhnvcoder/short-video-platform/actions/runs/40145677985), [40151447243](https://github.com/anhnvcoder/short-video-platform/actions/runs/40151447243)); canary web: phần sau của giai đoạn 6b ([ADR-0021](0021-deferred-verification-stage6b.md) mục 5, kịch bản `web-canary`) |
 | Pod mới có Postgres nối được sau vài lần bị từ chối, không restart | Buổi k3d: dòng `database connected after retries`, `restartCount` 0 | **Đạt** (2026-10-24): 8/8 pod (4 Job migrate, 4 Deployment) có đúng một WARN `database not reachable, retrying` (`dial tcp <IP Service svp-pg-rw>:5432: connect: connection refused`) rồi INFO `database connected after retries` `attempts=2` sau 262–268 ms; `restartCount` 0, Job `failed=0`. Postgres đã Ready từ trước, nên khớp giả thuyết của mục 11; log không cho biết chắc rule nào từ chối |
-| Sinh schema CRD bằng `/openapi2jsonschema` và kubeconform `-strict` bắt được field sai | `make cloud-check`, cộng một bản sao thí nghiệm cố ý hỏng (ngoài repo) phải FAIL | **Đạt** (2026-10-24): `make cloud-check` sạch, `Valid: 49, Invalid: 0, Errors: 0, Skipped: 0` trên 14 file; bản sao đổi `latency` thành `latancy` ở thí nghiệm (b) FAIL `missing property 'latency' - additional properties 'latancy' not allowed` (48 valid, 1 invalid). Trên amd64 (job `config`): **kiểm sau push** |
-| Service container publish trên `172.17.0.1` tới được từ container compose; job `stack` chạy đủ bước; artifact chỉ hai loại; token lượt PR chỉ `contents: read` | Lượt PR đầu sau push (**kiểm sau push**) | Chưa kiểm: cần lượt PR đầu. Trên máy chỉ kiểm `make ci-bridge-check` (in gateway `172.17.0.1`, nhánh lỗi exit 2) và `make actionlint` sạch |
+| Sinh schema CRD bằng `/openapi2jsonschema` và kubeconform `-strict` bắt được field sai | `make cloud-check`, cộng một bản sao thí nghiệm cố ý hỏng (ngoài repo) phải FAIL | **Đạt** (2026-10-24): `make cloud-check` sạch, `Valid: 49, Invalid: 0, Errors: 0, Skipped: 0` trên 14 file; bản sao đổi `latency` thành `latancy` ở thí nghiệm (b) FAIL `missing property 'latency' - additional properties 'latancy' not allowed` (48 valid, 1 invalid). Trên amd64: **đạt** (2026-10-24, job `config` của [40098899515](https://github.com/anhnvcoder/short-video-platform/actions/runs/40098899515), `make cloud-check` trong `ci-ok`; [ADR-0021](0021-deferred-verification-stage6b.md) D21) |
+| Service container publish trên `172.17.0.1` tới được từ container compose; job `stack` chạy đủ bước; artifact chỉ hai loại; token lượt PR chỉ `contents: read` | Lượt PR đầu sau push (**kiểm sau push**) | **Đạt** (2026-10-24, [ADR-0021](0021-deferred-verification-stage6b.md) D22): lượt PR [40133806424](https://github.com/anhnvcoder/short-video-platform/actions/runs/40133806424) ở `7df7973`, ba lần chạy liền xanh (`make smoke`, `make web-e2e` 62/62, `make load-ci`, `make web-lighthouse`); quyền ở đầu log `Contents: read` (cùng `Metadata: read` GitHub luôn cấp), artifact chỉ `lighthouse`, `k6-summary`. Các lượt trước đỏ ở e2e WebKit trên Linux, đã sửa (ADR-0021, "Job `stack`") |
 | `runbook_url` có trên mọi rule page; thông báo page có link | `make slo-check`; đọc template Telegram | **Đạt** (2026-10-24): đọc mọi rule `severity=page` của `svp-alerts.yaml` và `slo-generated.yaml` (15 rule: 10 viết tay gồm `PostgresWALArchivingFailing`, 5 SLO), mỗi rule có `runbook_url` đúng tiền tố và file runbook có trong repo; `make slo-check` sạch; template mặc định của receiver Telegram (Alertmanager v0.34.1) in mọi annotation nên thông báo page có link, không phải sửa template |
 | `CircuitBreakerOpen` cháy dưới tải nền khi engagement-service tắt; stack về sạch sau buổi | `make gameday` | **Đạt** (2026-10-24): cảnh báo có trong Alertmanager 75 s sau T0 (mục Kết quả, "Game day"); sau buổi mọi service của stack chạy lại, tải k6 đã dừng |
 | Mỗi pod k6 trên cloud là một khoá rate limit (1 hop; 2 hop với `X-Forwarded-For` tự ghi) | Giai đoạn 7 (EKS), người học: sau `setup()`, `redis-cli --scan --pattern 'svp:gw:rl:register:*'` trên ElastiCache đếm được 20 khoá | Chưa kiểm |
-| 20 pod k6 giữ được tốc độ 1 250 req/s | Giai đoạn 7 (EKS): `dropped_iterations` = 0 mọi pod; giai đoạn 6b chạy bản thu nhỏ của profile `cloud` | Chưa kiểm |
-| Chaos Mesh 2.8.5 và Velero 1.18.4 chạy trên version EKS chọn (CI của cả hai tới 1.35); kernel AL2023 có `sch_netem` | Giai đoạn 6b: cài, chạy ba thí nghiệm và diễn tập Velero (đích MinIO) trên cluster của nơi chạy 6b, thí nghiệm (b) trên một pod thử trước; giai đoạn 7: version EKS, kernel AL2023 | Chưa kiểm |
+| 20 pod k6 giữ được tốc độ 1 250 req/s | Giai đoạn 7 (EKS): `dropped_iterations` = 0 mọi pod; giai đoạn 6b chạy bản thu nhỏ của profile `cloud` | Chưa kiểm; bản thu nhỏ: phần sau của giai đoạn 6b ([ADR-0021](0021-deferred-verification-stage6b.md) mục 5, kịch bản `k6-cloud-mini`) |
+| Chaos Mesh 2.8.5 và Velero 1.18.4 chạy trên version EKS chọn (CI của cả hai tới 1.35); kernel AL2023 có `sch_netem` | Giai đoạn 6b: cài, chạy ba thí nghiệm và diễn tập Velero (đích MinIO) trên cluster của nơi chạy 6b, thí nghiệm (b) trên một pod thử trước; giai đoạn 7: version EKS, kernel AL2023 | Chưa kiểm; giai đoạn 6b: phần sau của giai đoạn 6b ([ADR-0021](0021-deferred-verification-stage6b.md) mục 5, kịch bản `chaos`, `velero`) |
 | Plugin AWS của Velero nhận credential từ Pod Identity | Giai đoạn 7 (EKS): BackupStorageLocation `default` Available (`drill-restore.sh check`), backup Completed | Chưa kiểm |
-| Restore namespace có Redpanda giữ offset đã commit, pod `svp` phục hồi qua Kyverno | `drill-restore.sh`: giai đoạn 6b (đích MinIO), giai đoạn 7 (S3, snapshot EBS) | Chưa kiểm |
-| Hai media-worker cùng transcode trên node pool riêng không làm node NotReady | Giai đoạn 6b: `make drill-k8s-keda N=9` trên node đủ CPU của nơi chạy 6b ([ADR-0017](0017-gitops-capacity-media-worker-max2.md)); node pool riêng ở giai đoạn 7 | Chưa kiểm |
+| Restore namespace có Redpanda giữ offset đã commit, pod `svp` phục hồi qua Kyverno | `drill-restore.sh`: giai đoạn 6b (đích MinIO), giai đoạn 7 (S3, snapshot EBS) | Chưa kiểm; giai đoạn 6b: phần sau của giai đoạn 6b ([ADR-0021](0021-deferred-verification-stage6b.md) mục 5, kịch bản `velero`) |
+| Hai media-worker cùng transcode trên node pool riêng không làm node NotReady | Giai đoạn 6b: `make drill-k8s-keda N=9` trên node đủ CPU của nơi chạy 6b ([ADR-0017](0017-gitops-capacity-media-worker-max2.md)); node pool riêng ở giai đoạn 7 | Giai đoạn 6b, đường dev trên runner 4 vCPU ([ADR-0021](0021-deferred-verification-stage6b.md) D1, 2026-10-25): `make drill-k8s-keda N=9` PASS hai lượt có hai worker cùng transcode (137 s, khoảng 80 s), không node `NotReady`, k3s server không restart ([40145677985](https://github.com/anhnvcoder/short-video-platform/actions/runs/40145677985), [40151447243](https://github.com/anhnvcoder/short-video-platform/actions/runs/40151447243)); lượt thứ ba PASS nhưng không có khoảng hai worker cùng transcode (cách chia partition, [40160414327](https://github.com/anhnvcoder/short-video-platform/actions/runs/40160414327)). Đường GitOps: phần sau của giai đoạn 6b ([ADR-0021](0021-deferred-verification-stage6b.md) mục 5, kịch bản `gitops`); node pool riêng: giai đoạn 7 |
 
 ## Kết quả
 
@@ -800,13 +806,13 @@ Phần local đóng ngày 2026-10-24. Chi tiết và số đo ở các tiểu m�
 | Kịch bản k6 theo SLO | Đạt: `make k6-check` sạch; lượt `make load-local` đầu qua mọi threshold (7 573 request, 5xx 0, 429 0, không rơi iteration); lượt sau khi sửa metric web rơi 3 iteration, chưa rõ nguyên nhân ("Tải local (k6)") |
 | SLO web | Đạt: `web-availability`, `web-inp` trong spec Sloth, `make slo-check` sạch; recording rule có series trên compose và k3d |
 | Hạn 50 ms của Redis | Quy tắc mục 4 áp xong: p99 5 ms ở lượt k6, nhưng game day thấy lệnh quá hạn, nên ghi số và quyết lại ở giai đoạn 7 ("p99 Redis") |
-| Backup/restore Postgres | Đạt: `make drill-k8s-backup` `MODE=latest` rồi `MODE=pitr` PASS trên cùng cluster, RTO 151,2 s và 85,1 s, RPO ≥ 60 s và 37,3 s ("Restore RTO/RPO"); lượt `pitr` thứ ba sau khi thu hẹp quyền operator PASS, RTO 125,6 s |
+| Backup/restore Postgres | Đạt: `make drill-k8s-backup` `MODE=latest` rồi `MODE=pitr` PASS trên cùng cluster, RTO `latest` 151,2 s, `pitr` hai lượt 85,1 và 125,6 s (lượt thứ hai sau khi thu hẹp quyền operator), RPO ≥ 60 s và 37,3 s ("Restore RTO/RPO"); trên runner (giai đoạn 6b) thêm hai lượt mỗi chế độ |
 | Probe, thử lại kết nối Postgres | Đạt: 0 restart ở mọi pod ngoài `kube-system`; 8/8 pod có Postgres nối được sau đúng một lần bị từ chối |
 | Runbook, postmortem | Đạt: 15 rule page đều có `runbook_url` trỏ file có trong `docs/runbooks/`, thêm runbook sự cố và quy trình; mẫu postmortem |
 | Game day | Đạt: một buổi dưới tải k6, TTD 75 s, hồi phục T0 + 184 s, postmortem từ mốc thật ("Game day") |
 | RFC | Đạt: `docs/rfc/0001-reliability.md` |
-| Stack trong CI | **Kiểm sau push** (lượt PR đầu) |
-| LCP | **Chưa đạt** theo số Lighthouse mô phỏng (median `/` 3 666 ms, `/v/{id}` 2 688 ms); quyết định giữ `Suspense`, xem lại ở giai đoạn 6b ("LCP") |
+| Stack trong CI | **Đạt** (2026-10-24, lượt PR [40133806424](https://github.com/anhnvcoder/short-video-platform/actions/runs/40133806424), ba lần chạy liền xanh; mục Kiểm chứng sau) |
+| LCP | **Chưa đạt** theo số Lighthouse mô phỏng (median `/` 3 666 ms, `/v/{id}` 2 688 ms); quyết định giữ `Suspense`, xem lại ở giai đoạn 6b ("LCP"). Giai đoạn 6b trên runner: `/` vẫn **chưa đạt** sau khi bỏ `Suspense` (median 3 253 ms trước, kịch bản `compose-obs`; 3 144 ms sau, job `stack`), `/v/{id}` đạt (median 2 182 và 2 360 ms), TBT trên 200 ms ("LCP", đoạn "Giai đoạn 6b") |
 | Kiểm tĩnh phần cloud | Đạt: `make cloud-check` sạch (49/49 valid), ca cố ý hỏng FAIL |
 
 Kiểm toàn repo trên working tree cuối của giai đoạn (2026-10-24, trên máy): `make check`, thêm hai lượt
@@ -849,7 +855,7 @@ bản đúng cỡ (không 429, không rơi iteration) và cho một mốc độ 
   series; nguyên nhân và cách sửa ở mục Kiểm chứng và mục 3, lượt sau khi sửa ở dưới. Số server của web ở bảng lấy từ span metrics của Tempo trong LGTM
   (`traces_spanmetrics_latency_bucket{service="web",span_kind="SPAN_KIND_SERVER"}`, span `GET /`, `GET /v/[id]`, `GET
   /login`); số lượt trong cửa sổ (885, 295, 295) khớp k6, tức không span nào bị bỏ. Theo mục 3, số SSR chỉ ghi lại: canary
-  (`p99Ms: 500`) và HPA của web quyết ở giai đoạn 6b.
+  (`p99Ms: 500`) và HPA của web quyết ở giai đoạn 6b (phần sau, [ADR-0021](0021-deferred-verification-stage6b.md) D14).
 - **Metric HTTP của server web, lượt sau khi sửa** (2026-10-24, `make up OBS=lgtm` → `make smoke` → `make load-local`,
   04:54–05:00 UTC; image web build lại có `startSdk`, mục 3): `http_server_request_duration_seconds_*{service_name="web"}` có
   series, `increase(...[6m])` của GET 200 là ~1 538 (k6 gửi 1 571 request web, cộng probe `/healthz` của compose);
@@ -888,7 +894,13 @@ Cùng cửa sổ giữ tải của lượt `make load-local` ở trên, `db_clie
   vài lần mỗi phút qua `host.docker.internal`, và `RateLimitFallbackActive` (page) cháy, chặn hai lượt game day trước T0: vế
   "không lệnh nào quá hạn" không giữ được qua các lượt. Không đổi code ở giai đoạn này; giai đoạn 7 đo lại trên ElastiCache bằng
   cùng truy vấn với số của k6 cloud rồi quyết hạn. Cảnh báo page giả dưới tải lab (ngưỡng của `RateLimitFallbackActive`) là việc
-  của giai đoạn 6b.
+  của giai đoạn 6b. Kết quả giai đoạn 6b ([ADR-0021](0021-deferred-verification-stage6b.md) mục 11, D16): rule mới (tỷ lệ quyết
+  định dự phòng của từng instance ≥ 0,5 và ≥ 3 quyết định trong 2 phút, `for: 1m`; ticket `RateLimitFallbackElevated`) qua tám ca
+  promtool của `make slo-check`; trên runner (`compose-obs`, hai lượt) không page dưới `make load-local`: 0 cảnh báo trong
+  483–484 s, p99 lệnh Redis của gateway 4,95 ms, 0 `context_timeout`, 0 quyết định dự phòng (bằng chứng yếu: Redis tới qua bridge
+  Linux, không qua `host.docker.internal`), và RL-2 vẫn page 81 và 91 s sau login đầu (hạn 240 s)
+  ([40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687),
+  [40132157276](https://github.com/anhnvcoder/short-video-platform/actions/runs/40132157276)).
 
 ### LCP
 
@@ -963,6 +975,28 @@ những request đó vào mô hình mô phỏng của Lighthouse (Lantern), nên
   trên k3d ([ADR-0019](0019-web-k3d-supply-chain-observability.md), mục Kết quả). **Xem lại** ở giai đoạn 6b, khi Lighthouse
   chạy trên runner CI.
 
+**Giai đoạn 6b** (runner `ubuntu-24.04`, Lighthouse mô phỏng như trên; [ADR-0021](0021-deferred-verification-stage6b.md) D17):
+
+- **Bản giữ `Suspense`**, kịch bản `compose-obs` lượt 2 ([40132157276](https://github.com/anhnvcoder/short-video-platform/actions/runs/40132157276), 3 lượt mỗi trang): `/` 3 510, 3 253, 2 760 ms,
+  median **3 253 ms** (chưa đạt); `/v/{id}` 2 256, 1 952, 2 182 ms, median **2 182 ms** (đạt); TBT 334–417 ms ở cả sáu lượt;
+  `benchmarkIndex` 1 942–2 040. Job `stack` của cùng bản (một lượt mỗi trang mỗi lần chạy, [40133806424](https://github.com/anhnvcoder/short-video-platform/actions/runs/40133806424) ba lần chạy và
+  [40151451875](https://github.com/anhnvcoder/short-video-platform/actions/runs/40151451875)): `/` 2 833–3 793 ms, Render Delay 1 714–3 153 ms chiếm phần lớn; long task của hls.js trên `/` là 7 task
+  58–126 ms, đúng 7 segment đã tải, vì bản ESM `hls.light.mjs` không có worker nhúng nên transmux chạy trên main thread.
+- **Thay đổi** (theo D17 của ADR-0021, đòn bẩy (a) ở trên thành việc code): trang đầu của feed nằm trong HTML, `features/feed/feed-route.tsx`
+  bỏ `Suspense`; chuyển tab gọi `router.push` trong transition, tab mới hiện được chọn và skeleton phủ lên feed cũ trong lúc
+  chờ (giữ được "skeleton hiện ngay khi chuyển tab" mà quyết định ở trên muốn giữ); hls.js transmux trong worker (`workerPath` tới
+  `hls.worker.js`, `features/feed/player-pool.ts`). Cái giá đã nêu: lần tải đầu `/` chờ trang đầu trước byte HTML đầu (TTFB thêm
+  thời gian gọi gateway, tối đa 4 s khi gateway treo).
+- **Sau thay đổi**, job `stack` ở `db35f86` ([40160528767](https://github.com/anhnvcoder/short-video-platform/actions/runs/40160528767), ba lần chạy, một lượt mỗi trang mỗi lần): `/` LCP 3 144,
+  2 674, 3 152 ms, median **3 144 ms** (chưa đạt), TBT 224, 322, 216 ms (median 224, chưa đạt); `/v/{id}` LCP 2 360, 2 358,
+  3 908 ms, median **2 360 ms** (đạt), TBT 195, 220, 236 ms (median 220, chưa đạt); CLS ≤ 0,05; `benchmarkIndex` 2 290–3 640. Pha
+  LCP của lần chạy thứ ba: `/` TTFB 454, Load Delay 1 148, Load 255, Render Delay 1 292 ms; `/v/{id}` 453, 337, 147, 2 969 ms. e2e
+  29/29 mỗi trình duyệt ở cả ba lần chạy. Render Delay của `/` còn 1 292 ms (trước 1 714–3 153), nhưng Load Delay lên 1 148 ms
+  (trước 0–578): ảnh LCP bắt đầu tải muộn hơn, nên median LCP của `/` chỉ bớt khoảng 100–350 ms.
+- **Chưa đạt, việc còn lại** (việc code tiếp theo của giai đoạn 6b, mỗi cái đo lại bằng job `stack` và `compose-obs`): preload ảnh
+  LCP (poster của video đầu) để bớt Load Delay của `/`; font (đòn bẩy (b): bớt weight, −17 kB mỗi weight, đổi thiết kế); hydrate
+  của `/v/{id}` (Render Delay 2 969 ms ở lượt chậm). Số thực địa vẫn là RUM (LCP p75 0,57 s trên cluster dev của runner, ADR-0021).
+
 ### Game day
 
 Một buổi `make gameday` ngày 2026-10-24 trên `make up OBS=lgtm` (sau `make smoke`, 50 video `READY`), tải nền k6 `local` giữ
@@ -988,7 +1022,9 @@ Một buổi `make gameday` ngày 2026-10-24 trên `make up OBS=lgtm` (sau `make
 Một buổi k3d ngày 2026-10-24 trên cluster dev mới: Apple M2 16 GB, Docker VM 9,7 GiB, cắm điện, không Low Power Mode;
 `make k8s-up` 16 phút 10 giây (registry lạnh, cache build Docker còn). Postgres gần rỗng (17 bảng của service, vài dòng do
 `make k8s-smoke`), backup và WAL vào MinIO cùng cluster, cùng ổ. `make drill-k8s-backup` (`MODE=latest`) rồi
-`MODE=pitr` trên cùng cluster, mỗi chế độ **một lần đo**, không phải phân bố. JSON ở `.k8s/drills/backup-<time>.json`.
+`MODE=pitr` trên cùng cluster, mỗi chế độ một lần đo trong bảng dưới, không phải phân bố; cùng ngày một lượt `MODE=pitr` nữa
+sau khi thu hẹp quyền operator (mục Kiểm chứng sau): RTO 125,6 s, RPO 35,4 s, nên `pitr` có hai lượt trên máy, 85,1 và 125,6 s.
+JSON ở `.k8s/drills/backup-<time>.json`.
 
 | Mốc (giây so với T0; dòng đầu là thời lượng) | `MODE=latest` | `MODE=pitr` |
 | --- | --- | --- |
@@ -1007,6 +1043,12 @@ Lượt `latest` không ép `pg_switch_wal`, nên nó là lượt gần với s�
 chỉ có cận dưới (≥ 60 s); cận trên theo cấu hình là `archive_timeout` cộng thời gian lưu (phát hiện đầu dưới). RPO của lượt `pitr`
 chỉ chứng minh PITR dừng đúng chỗ. Hai lượt khác nhau 66 s ở RTO, chủ yếu vì Cluster Ready (108 s và 54 s); chưa tìm nguyên nhân, cần nhiều lượt
 hơn để biết đâu là số thường gặp.
+
+**Giai đoạn 6b** (runner `ubuntu-24.04` 4 vCPU amd64, cluster dev, kịch bản `dev-k3d`; số của runner, không so với máy;
+[ADR-0021](0021-deferred-verification-stage6b.md) D20): hai lượt mỗi chế độ đều PASS. `latest`: RTO 95,2 và 92,8 s, RPO ≥ 63,2 và
+≥ 63,4 s (không dòng đánh dấu nào trở lại); `pitr`: RTO 80,8 và 84,3 s, RPO 38,1 và 36,1 s (30/60 dòng giữ, dòng mới nhất 0,5 s
+trước mục tiêu) ([40145677985](https://github.com/anhnvcoder/short-video-platform/actions/runs/40145677985),
+[40151447243](https://github.com/anhnvcoder/short-video-platform/actions/runs/40151447243)).
 
 **Phát hiện:**
 
@@ -1050,8 +1092,8 @@ hơn để biết đâu là số thường gặp.
     mã hoá lúc nghỉ ở lab.
   - Diễn tập DR chỉ cho đường dev: đường GitOps tự sửa `serverName` về git.
   - Job `stack` thêm 15–25 phút runner mỗi PR mà không chặn merge.
-  - Số tải local nhỏ, phụ thuộc máy, không kết luận năng lực; "Xong khi" của roadmap chờ giai đoạn 6b (báo cáo chaos, tải lớn) và
-    giai đoạn 7 (1 000 req/s, phục hồi RDS).
+  - Số tải local nhỏ, phụ thuộc máy, không kết luận năng lực; "Xong khi" của roadmap chờ giai đoạn 6b (báo cáo chaos, tải lớn:
+    phần sau của 6b, [ADR-0021](0021-deferred-verification-stage6b.md) mục 5) và giai đoạn 7 (1 000 req/s, phục hồi RDS).
   - Chaos Mesh và Velero cần đặc quyền lớn (daemon privileged, `cluster-admin`) trong buổi đo (giai đoạn 6b, 7); Velero không giữ event Redpanda ghi
     sau lần backup cuối.
   - `make cloud-check` cần mạng (chart, schema trên GitHub).
@@ -1059,7 +1101,8 @@ hơn để biết đâu là số thường gặp.
   - Histogram HTTP của web có nhãn route: thêm SLO độ trễ SSR.
   - RUM có lượt thật đủ nhiều (không chỉ e2e, k6 không chạy JavaScript): đánh giá lại cảnh báo INP.
   - Hạn 50 ms của Redis: đã có lệnh quá hạn ở game day, nên quyết lại trên ElastiCache ở giai đoạn 7 (mục 4, Kết quả "p99
-    Redis"); ngưỡng page của `RateLimitFallbackActive` dưới tải lab xét ở giai đoạn 6b.
+    Redis"); ngưỡng page của `RateLimitFallbackActive` dưới tải lab xét ở giai đoạn 6b (đã đổi: [ADR-0021](0021-deferred-verification-stage6b.md) mục 11, Kết quả "p99
+    Redis").
   - Plugin Barman Cloud có cờ giới hạn namespace: thu hẹp RBAC như CloudNativePG.
   - CloudNativePG 1.31 phát hành: nâng operator cùng plugin (`barmanObjectStore` bị bỏ không ảnh hưởng vì đã dùng plugin).
   - Một pod k6 không giữ được tốc độ đặt (`dropped_iterations` > 0): thêm pod hay xét k6-operator.
