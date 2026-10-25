@@ -57,9 +57,13 @@ concurrency:
 jobs:
   # The compose stack with the LGTM observability profile, as job stack of ci.yml builds it: make up OBS=lgtm (GlitchTip
   # included), make smoke, make drill-obs-threats, make load-local under a watch of Alertmanager, make web-lighthouse
-  # three times, make drill-alert-to-sentry (Telegram is not configured, so that step SKIPs). The LOCAL LAB ONLY resets
-  # of smoke, the drills, k6 and Lighthouse (they delete the gateway's register rate limit keys in Redis db 10) touch
-  # only the Redis service container below, which belongs to this run.
+  # three times; then the object store's checks: make test-stack of internal/objstore (no test may skip), make
+  # drill-upload-cleanup, make measure-upload with the store's RAM peak; make drill-alert-to-sentry (Telegram is not
+  # configured, so that step SKIPs); last, the copy back to MinIO (make object-store-copy TO=minio into a volume of this
+  # runner), make up again on RustFS and make smoke. The LOCAL LAB ONLY resets of smoke, the drills, e2e, k6 and
+  # Lighthouse (they delete the gateway's register rate limit keys in Redis db 10) touch only the Redis service
+  # container below, which belongs to this run; the copy reads svp_video of the Postgres service container of this run
+  # only.
   compose:
     if: github.event_name == 'schedule' || inputs.scenario == 'compose-obs'
     runs-on: ubuntu-24.04
@@ -115,7 +119,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # make env runs go run ./tools/jwtkey for the JWT key pair; the Makefile also asks go for GOPATH.
+      # make env runs go run ./tools/jwtkey for the JWT key pair, make test-stack runs go test -race against the stack;
+      # the Makefile also asks go for GOPATH.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: 1.27.3
@@ -129,13 +134,14 @@ jobs:
         run: |
           version=$(node -p 'require("./package.json").packageManager.split("@")[1]')
           npm install -g "pnpm@$version"
-      # psql of the Postgres bootstrap, redis-cli of the rate limit resets, ffmpeg for the test videos, jq everywhere.
+      # psql of the Postgres bootstrap and the copy back to MinIO, redis-cli of the rate limit resets, ffmpeg for the
+      # test videos (the ~100 MB one of make measure-upload too), jq everywhere.
       - name: Install the tools of the scripts
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends postgresql-client redis-tools ffmpeg jq
-      # make web-lighthouse needs lhci from web/node_modules and Playwright's Chromium; this scenario runs no e2e test,
-      # so no WebKit.
+      # make web-lighthouse needs lhci from web/node_modules and Playwright's Chromium, and make measure-upload uploads
+      # from Chromium; this scenario runs no test on WebKit.
       - run: make web-install
       - name: Install the Playwright browser
         working-directory: web

@@ -9,7 +9,7 @@
 // S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY (required), S3_REGION (default us-east-1),
 // S3_UPLOADS_BUCKET (default uploads), S3_MEDIA_BUCKET (default media) and WORK_DIR (default
 // /work). The OTEL_* variables send traces, metrics and logs to the Collector; the worker has no
-// profiler and no error tracker, since its network reaches only Redpanda, MinIO and the
+// profiler and no error tracker, since its network reaches only Redpanda, the object store and the
 // Collector, and ffmpeg runs as a child process the profiler would not see.
 package main
 
@@ -104,7 +104,7 @@ func loadConfig() (config, error) {
 	return cfg, nil
 }
 
-// checkEndpoint requires an absolute http or https URL with a host, such as http://minio:9000.
+// checkEndpoint requires an absolute http or https URL with a host, such as http://s3:9000.
 func checkEndpoint(name, value string) error {
 	u, err := url.Parse(value)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {

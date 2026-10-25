@@ -132,8 +132,8 @@ export async function publicVideo(
   return (await response.json()) as { title: string; playlist_url: string; thumbnail_url: string };
 }
 
-// UPLOAD_ORIGIN of the stack: the storage the browser sends files to (MinIO's published port on compose, its route
-// through Envoy on k3d).
+// UPLOAD_ORIGIN of the stack: the storage the browser sends files to (the object store's published port on compose, its
+// route through Envoy on k3d).
 export const uploadOrigin = stack.uploadOrigin;
 
 // The URL of the presigned upload form: the uploads bucket, path-style. The media the pages play (MEDIA_ORIGIN) are on

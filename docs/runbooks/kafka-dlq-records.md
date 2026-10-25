@@ -45,7 +45,7 @@ Dòng log có `trace_id`: mở trace đó trong Grafana Explore → Tempo để 
 
 ## Nguyên nhân thường gặp
 
-1. **Phụ thuộc chết lâu hơn số lần thử** (`retries-exhausted`): Postgres của service, MinIO (video-service, media-worker).
+1. **Phụ thuộc chết lâu hơn số lần thử** (`retries-exhausted`): Postgres của service, object store `s3` (video-service, media-worker).
    Dấu hiệu: nhiều record cùng lúc, lỗi kết nối trong `error`.
 2. **Bản phát hành mới đọc sai event** (`permanent`): producer và consumer lệch schema, envelope sai
    ([ADR-0006](../adr/0006-contract-ids-and-event-envelope.md)). Dấu hiệu: bắt đầu ngay sau deploy, mọi record của một loại event.

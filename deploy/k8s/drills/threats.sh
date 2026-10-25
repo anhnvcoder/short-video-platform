@@ -7,13 +7,14 @@
 # ends the run, which exits non-zero when any failed:
 #   IN-2/IN-4  a pod in namespace svp-probe (created by the drill, PSA restricted enforced, the image media-worker runs:
 #              busybox nc and nslookup) resolves every name below but connects to none: gRPC 9101-9104, gateway 8080,
-#              web 3001, Redpanda Kafka 9092 and Admin API 9644, Postgres 5432, Valkey 6379, MinIO 9000. Controls:
-#              /readyz through Envoy (the gateway reaches user-, video- and feed-service), the explore feed of a drill
-#              user with stats on every item, in one of up to 3 pages (the gateway reaches engagement-service, which
-#              /readyz leaves out on purpose), /healthz (Envoy reaches the gateway), media-worker reaches Kafka and
-#              MinIO, Prometheus has up{job="redpanda"} == 1 from a scrape under 120 s old (the Collector scrapes 9644),
-#              GlitchTip's pod opens 5432, a login leaves its rate limit key in Valkey (the gateway reaches 6379),
-#              MinIO's health through Envoy, the web client's /healthz through Envoy (Envoy reaches web:3001);
+#              web 3001, Redpanda Kafka 9092 and Admin API 9644, Postgres 5432, Valkey 6379, the object store s3 9000.
+#              Controls: /readyz through Envoy (the gateway reaches user-, video- and feed-service), the explore feed
+#              of a drill user with stats on every item, in one of up to 3 pages (the gateway reaches
+#              engagement-service, which /readyz leaves out on purpose), /healthz (Envoy reaches the gateway),
+#              media-worker reaches Kafka and the object store, Prometheus has up{job="redpanda"} == 1 from a scrape
+#              under 120 s old (the Collector scrapes 9644), GlitchTip's pod opens 5432, a login leaves its rate limit
+#              key in Valkey (the gateway reaches 6379), the object store's /health/live through Envoy, the web
+#              client's /healthz through Envoy (Envoy reaches web:3001);
 #   IN-4/FF-6  each Kafka user (password from Secret svp-data/kafka-users, passed on stdin, never printed) runs rpk in
 #              the broker container: producing to a topic not its own is TOPIC_AUTHORIZATION_FAILED (svp-keda, which may
 #              write no topic, gets no producer id: CLUSTER_AUTHORIZATION_FAILED), producing to its own topic works
@@ -23,8 +24,8 @@
 #              API refuses node_config, cluster_config, security/users and brokers without credentials and serves
 #              /public_metrics; control: rpk with the broker's own login reads admin_api_require_auth (true);
 #   FF-5       from media-worker (kubectl exec): the internet (an IP and a name), the gateway, the four gRPC
-#              services, Postgres, Valkey and the API server are closed; MinIO, Kafka and the Collector open. Controls
-#              as above, and the probe pod (namespace without egress policy) reaches the API server;
+#              services, Postgres, Valkey and the API server are closed; the object store, Kafka and the Collector
+#              open. Controls as above, and the probe pod (namespace without egress policy) reaches the API server;
 #   FF-3/FF-4  every container of every pod in svp has CPU and memory requests and limits, runAsNonRoot,
 #              readOnlyRootFilesystem, drops ALL and adds nothing, allowPrivilegeEscalation false, seccomp
 #              RuntimeDefault (a container's own runAsNonRoot and seccomp override the pod's), no host namespace or
@@ -60,7 +61,7 @@
 #              restarted one: the instance label of the samples, random per process, names no pod); the drill tries
 #              again once the bucket is full, at most 3 attempts in all;
 #   OPS-1      /debug/pprof/, /debug/pprof/heap and /metrics through Envoy are 404; control: /healthz 200;
-#   OPS-2      the only routes are HTTPRoute svp/api, svp/web and svp-data/s3 (to gateway, web and minio; svp.localhost
+#   OPS-2      the only routes are HTTPRoute svp/api, svp/web and svp-data/s3 (to gateway, web and s3; svp.localhost
 #              to web and web-canary), no other route kind or
 #              Ingress, the only LoadBalancer or NodePort Service is Envoy's, no pod outside kube-system uses the
 #              host network or a hostPort; grafana, prometheus, alertmanager, glitchtip and argocd .svp.localhost are
@@ -118,15 +119,18 @@
 #              request reaches the gateway (400, its own code), /rum takes a beacon (204), /monitoring checks the body
 #              (400 INVALID_REPORT), and /logout (303) clears the cookie and ends the session on the server: the old
 #              session id sent again gets 401 from /api/me;
-#   WEB-10     preflights (OPTIONS) to MinIO through Envoy, /media/... (GET) and /uploads (POST) at
+#   WEB-10     preflights (OPTIONS) to the object store through Envoy, /media/... (GET) and /uploads (POST) at
 #              https://s3.svp.localhost:8443, from https://evil.example and from the compose origins
-#              http://localhost:3001 and :3002 get no Access-Control-Allow-Origin; control: from
-#              https://svp.localhost:8443 they get exactly that origin;
+#              http://localhost:3001 and :3002 get no Access-Control-Allow-Origin, and neither do the two requests the
+#              web client never makes, POST to /media and GET at /uploads/..., from https://svp.localhost:8443 itself
+#              (the CORS rules are per bucket, each allowing only what the web client does there); control: from
+#              https://svp.localhost:8443, GET at /media/... and POST to /uploads get exactly that origin;
 #   WEB-13     from each web pod (kubectl exec of the image's node, /nodejs/bin/node -e: distroless has no shell; a name
 #              is resolved first, so a closed port with a name that resolves is the policy): the internet (an IP and a
-#              name), Postgres, Redpanda (9092, 9644), MinIO, the four gRPC services, Pyroscope and the API server are
-#              closed; the gateway 8080, Valkey 6379, the Collector 4317 and GlitchTip 8000 open (the controls of the
-#              closed ones). The probe pod of svp-probe cannot open web:3001; control: Envoy reaches it (/healthz 200);
+#              name), Postgres, Redpanda (9092, 9644), the object store, the four gRPC services, Pyroscope and the API
+#              server are closed; the gateway 8080, Valkey 6379, the Collector 4317 and GlitchTip 8000 open (the
+#              controls of the closed ones). The probe pod of svp-probe cannot open web:3001; control: Envoy reaches it
+#              (/healthz 200);
 #   WEB-8      once every login-ip bucket has expired, 40 wrong logins through the web client's /login form (the Server
 #              Action, each with a new email and its own forged X-Forwarded-For) over one HTTP/2 connection to Envoy, 8
 #              in flight at a time: every answer is the form whose alert reads "Wrong email or password" or "Too many
@@ -135,16 +139,18 @@
 #              none the address of a web pod (which would put every web user in one bucket), no key is for a forged
 #              address, and the login-email key of every login that passed names one of those addresses: the gateway
 #              counts the address Envoy wrote, which the web client passes on unchanged;
-#   BAK-1      S3 requests to MinIO through Envoy (https://s3.svp.localhost:8443), signed (AWS Signature V4) with the
-#              MinIO logins of Secrets svp-data/pg-backup-s3 and svp-data/minio-users (in private curl config files,
-#              never on a command line): svp-pg-backup may neither list buckets uploads and media nor read an object
-#              there, 403 AccessDenied (media's objects are public to anonymous GETs by design, UP-6: this checks the
-#              user's own policy), and svp-video-service and svp-media-worker may neither list pg-backups nor read an
-#              object there. The objects read are a name of this run, which exists nowhere: MinIO answers 404 NoSuchKey
-#              where the user may read and 403 AccessDenied where not, so nothing of a backup is downloaded. Controls:
-#              svp-pg-backup lists pg-backups (200) and reads there (404 NoSuchKey), each service's user reads its
-#              own prefix uploads/uploads/ (404 NoSuchKey). Other pods cannot reach MinIO (IN-2, FF-5, WEB-13), and
-#              the Barman Cloud plugin's RBAC is printed with its reason (RBAC).
+#   BAK-1      S3 requests to the object store through Envoy (https://s3.svp.localhost:8443), signed (AWS Signature
+#              V4) with the store's logins of Secrets svp-data/pg-backup-s3 and svp-data/s3-users (in private curl
+#              config files, never on a command line): svp-pg-backup may neither list buckets uploads and media nor
+#              read an object there, 403 AccessDenied, and svp-video-service and svp-media-worker may neither list
+#              pg-backups nor read an object there. Objects under media/ of media are public to every GET by design
+#              (UP-6), signed ones included on RustFS, so svp-pg-backup's read of media is of a key outside that
+#              prefix, which only its own policy could allow. The objects read are a name of this run, which exists
+#              nowhere: the store answers 404 NoSuchKey where the user may read and 403 AccessDenied where not, so
+#              nothing of a backup is downloaded. Controls: svp-pg-backup lists pg-backups (200) and reads there (404
+#              NoSuchKey), each service's user reads its own prefix uploads/uploads/ (404 NoSuchKey). Other pods cannot
+#              reach the store (IN-2, FF-5, WEB-13), and the Barman Cloud plugin's RBAC is printed with its reason
+#              (RBAC).
 #
 # Test records: the drill writes one empty record (key drill-threats-<run>, header svp-drill=threats) to the
 # dead-letter topic of each user that has one; nothing consumes a dead-letter topic, and the dead-letter metric is
@@ -192,12 +198,12 @@ if [[ -z ${SVP_THREATS_LOG:-} ]]; then
     kc -n svp-data get secret kafka-users -o json | jq -r '.data[] | @base64d'
     kc -n svp-obs get secret grafana-admin -o json | jq -r '.data["admin-password"] | @base64d'
     kc -n svp-data get secret pg-backup-s3 -o json | jq -r '.data.ACCESS_SECRET_KEY | @base64d'
-    kc -n svp-data get secret minio-users -o json |
+    kc -n svp-data get secret s3-users -o json |
       jq -r '.data.SVP_VIDEO_S3_SECRET_KEY, .data.SVP_MEDIA_WORKER_S3_SECRET_KEY | @base64d'
   } | grep -v '^$' >"$values" || true
   n=$(wc -l <"$values" | tr -d ' ')
   if ((n < 10)); then
-    echo "FAIL  SECRETS: read the 10 Secret values the drill used (6 Kafka users, Grafana admin, 3 MinIO users) to search its output (got $n)" | tee -a "$log" >&2
+    echo "FAIL  SECRETS: read the 10 Secret values the drill used (6 Kafka users, Grafana admin, 3 object store users) to search its output (got $n)" | tee -a "$log" >&2
     exit 1
   fi
   leaks=$(grep -c -F -f "$values" "$log" || true)
@@ -205,7 +211,7 @@ if [[ -z ${SVP_THREATS_LOG:-} ]]; then
     echo "FAIL  SECRETS: $leaks line(s) of the drill's output hold one of the $n Secret values it read (${log#"$repo_root"/})" | tee -a "$log" >&2
     exit 1
   fi
-  echo "ok    SECRETS: none of the $n Secret values the drill read (6 Kafka users, Grafana admin, 3 MinIO users) is in its output (${log#"$repo_root"/})" | tee -a "$log"
+  echo "ok    SECRETS: none of the $n Secret values the drill read (6 Kafka users, Grafana admin, 3 object store users) is in its output (${log#"$repo_root"/})" | tee -a "$log"
   exit "$rc"
 fi
 
@@ -279,7 +285,7 @@ wrong_login() {
   request POST /auth/login "" "$work/login.json"
 }
 
-# The web client, behind listener https-apex of Gateway svp, and MinIO's route, which is the same site.
+# The web client, behind listener https-apex of Gateway svp, and the object store's route, which is the same site.
 web_base=https://svp.localhost:8443
 s3_origin=https://s3.svp.localhost:8443
 web_cookie=__Host-Http-svp_sid
@@ -597,9 +603,9 @@ control_valkey() {
     miss "control: a login is 401 and leaves its login-email key in Valkey db 10 (status $status, keys $keys)"
 }
 control_worker_data() {
-  reach svp deploy/media-worker redpanda.svp-data.svc.cluster.local:9092 minio.svp-data.svc.cluster.local:9000
+  reach svp deploy/media-worker redpanda.svp-data.svc.cluster.local:9092 s3.svp-data.svc.cluster.local:9000
   expect_reach redpanda.svp-data.svc.cluster.local:9092 open "control: from media-worker"
-  expect_reach minio.svp-data.svc.cluster.local:9000 open "control: from media-worker"
+  expect_reach s3.svp-data.svc.cluster.local:9000 open "control: from media-worker"
 }
 # control_redpanda_admin: the latest up{job="redpanda"} is 1 and its sample under 120 s old. The age comes from
 # timestamp() of the plain selector: on an expression such as `up == 1` it returns the evaluation time instead.
@@ -611,11 +617,11 @@ control_redpanda_admin() {
     control "Prometheus has up{job=\"redpanda\"} == 1 from a scrape $(printf '%.0f' "$age") s ago: the Collector scrapes redpanda-0:9644" ||
     miss "control: Prometheus has up{job=\"redpanda\"} == 1 from a scrape under 120 s old (up '${up}', age '${age}')"
 }
-control_minio_edge() {
+control_s3_edge() {
   local status
-  status=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "https://s3.svp.localhost:8443/minio/health/live" || true)
-  [[ $status == 200 ]] && control "MinIO's /minio/health/live through Envoy 200: Envoy reaches minio:9000" ||
-    miss "control: MinIO's /minio/health/live through Envoy is 200 (status $status)"
+  status=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "$s3_origin/health/live" || true)
+  [[ $status == 200 ]] && control "the object store's /health/live through Envoy 200: Envoy reaches s3:9000" ||
+    miss "control: the object store's /health/live through Envoy is 200 (status $status)"
 }
 control_web_edge() {
   local status
@@ -631,7 +637,7 @@ in2() {
     engagement-service.svp.svc.cluster.local:9103 feed-service.svp.svc.cluster.local:9104
     gateway.svp.svc.cluster.local:8080 web.svp.svc.cluster.local:3001 redpanda.svp-data.svc.cluster.local:9092
     redpanda-0.redpanda.svp-data.svc.cluster.local:9644 svp-pg-rw.svp-data.svc.cluster.local:5432
-    valkey.svp-data.svc.cluster.local:6379 minio.svp-data.svc.cluster.local:9000
+    valkey.svp-data.svc.cluster.local:6379 s3.svp-data.svc.cluster.local:9000
   )
   reach "$probe_ns" pod/probe "${targets[@]}"
   for t in "${targets[@]}"; do expect_reach "$t" closed "IN-2/IN-4: from $probe_ns"; done
@@ -644,7 +650,7 @@ in2() {
   control_redpanda_admin
   control_postgres
   control_valkey
-  control_minio_edge
+  control_s3_edge
   control_web_edge
 }
 
@@ -657,7 +663,7 @@ ff5() {
     valkey.svp-data.svc.cluster.local:6379 kubernetes.default.svc.cluster.local:443
   )
   local open=(
-    minio.svp-data.svc.cluster.local:9000 redpanda.svp-data.svc.cluster.local:9092
+    s3.svp-data.svc.cluster.local:9000 redpanda.svp-data.svc.cluster.local:9092
     otel-collector.svp-obs.svc.cluster.local:4317
   )
   reach svp deploy/media-worker "${closed[@]}" "${open[@]}"
@@ -1259,8 +1265,8 @@ operator_scope() {
   fi
 }
 
-# bak1_s3 CONFIG PATH: GET PATH of MinIO through Envoy, signed with AWS Signature V4 (MinIO's region us-east-1) as the
-# user whose login the private curl config CONFIG holds; prints "STATUS CODE", CODE the S3 error code of the answer
+# bak1_s3 CONFIG PATH: GET PATH of the object store through Envoy, signed with AWS Signature V4 (region us-east-1) as
+# the user whose login the private curl config CONFIG holds; prints "STATUS CODE", CODE the S3 error code of the answer
 # ("-" when it has none). The body stays in $work.
 bak1_s3() {
   local status code
@@ -1283,20 +1289,20 @@ bak1_expect() {
   fi
 }
 
-# bak1: the MinIO user of the backups of Postgres reads bucket pg-backups only, and no service's user reads that bucket
-# (threat model BAK-1).
+# bak1: the object store user of the backups of Postgres reads bucket pg-backups only, and no service's user reads that
+# bucket (threat model BAK-1).
 bak1() {
   local obj=drill-threats-$run_id user
   # The logins go to curl in private config files of $work, never on a command line, and are deleted at the end.
   kc -n svp-data get secret pg-backup-s3 -o json |
     jq -r '"user = \(((.data.ACCESS_KEY_ID | @base64d) + ":" + (.data.ACCESS_SECRET_KEY | @base64d)) | @json)"' \
       >"$work/bak1-svp-pg-backup.curl" || fail "BAK-1: read the login of svp-pg-backup from Secret svp-data/pg-backup-s3"
-  kc -n svp-data get secret minio-users -o json | jq -r '
+  kc -n svp-data get secret s3-users -o json | jq -r '
     "user = \(("svp-video-service:" + (.data.SVP_VIDEO_S3_SECRET_KEY | @base64d)) | @json)"' \
-    >"$work/bak1-svp-video-service.curl" || fail "BAK-1: read the login of svp-video-service from Secret svp-data/minio-users"
-  kc -n svp-data get secret minio-users -o json | jq -r '
+    >"$work/bak1-svp-video-service.curl" || fail "BAK-1: read the login of svp-video-service from Secret svp-data/s3-users"
+  kc -n svp-data get secret s3-users -o json | jq -r '
     "user = \(("svp-media-worker:" + (.data.SVP_MEDIA_WORKER_S3_SECRET_KEY | @base64d)) | @json)"' \
-    >"$work/bak1-svp-media-worker.curl" || fail "BAK-1: read the login of svp-media-worker from Secret svp-data/minio-users"
+    >"$work/bak1-svp-media-worker.curl" || fail "BAK-1: read the login of svp-media-worker from Secret svp-data/s3-users"
 
   user=svp-pg-backup
   bak1_expect "$work/bak1-$user.curl" "$user" "/pg-backups?list-type=2&max-keys=1" "200 -" "lists its bucket"
@@ -1304,7 +1310,8 @@ bak1() {
   bak1_expect "$work/bak1-$user.curl" "$user" "/uploads?list-type=2&max-keys=1" "403 AccessDenied" "lists no bucket of the services:"
   bak1_expect "$work/bak1-$user.curl" "$user" "/uploads/uploads/$obj" "403 AccessDenied" "reads no bucket of the services:"
   bak1_expect "$work/bak1-$user.curl" "$user" "/media?list-type=2&max-keys=1" "403 AccessDenied" "lists no bucket of the services:"
-  bak1_expect "$work/bak1-$user.curl" "$user" "/media/media/$obj" "403 AccessDenied" "reads no bucket of the services:"
+  # Not under media/: what is there any request may read (UP-6), signed or not.
+  bak1_expect "$work/bak1-$user.curl" "$user" "/media/$obj" "403 AccessDenied" "reads no bucket of the services:"
   for user in svp-video-service svp-media-worker; do
     bak1_expect "$work/bak1-$user.curl" "$user" "/uploads/uploads/$obj" "404 NoSuchKey" "reads its own prefix"
     bak1_expect "$work/bak1-$user.curl" "$user" "/pg-backups?list-type=2&max-keys=1" "403 AccessDenied" "lists no backup:"
@@ -1326,10 +1333,10 @@ ops2() {
   local kind out want status h
   out=$(kc get httproutes.gateway.networking.k8s.io -A -o json | jq -r '.items[]
     | "\(.metadata.namespace)/\(.metadata.name) \(.spec.hostnames | join(",")) \([.spec.rules[].backendRefs[]? | "\(.namespace // "-")/\(.name)"] | unique | join(","))"' | LC_ALL=C sort)
-  want="svp-data/s3 s3.svp.localhost -/minio
+  want="svp-data/s3 s3.svp.localhost -/s3
 svp/api api.svp.localhost -/gateway,-/gateway-canary
 svp/web svp.localhost -/web,-/web-canary"
-  [[ $out == "$want" ]] && ok "OPS-2: HTTPRoutes are exactly svp/api (api.svp.localhost to gateway, gateway-canary), svp/web (svp.localhost to web, web-canary) and svp-data/s3 (s3.svp.localhost to minio)" ||
+  [[ $out == "$want" ]] && ok "OPS-2: HTTPRoutes are exactly svp/api (api.svp.localhost to gateway, gateway-canary), svp/web (svp.localhost to web, web-canary) and svp-data/s3 (s3.svp.localhost to s3)" ||
     miss "OPS-2: HTTPRoutes are exactly svp/api, svp/web and svp-data/s3 (got: $(tr '\n' ';' <<<"$out"))"
   for kind in grpcroutes.gateway.networking.k8s.io tlsroutes.gateway.networking.k8s.io tcproutes.gateway.networking.k8s.io \
     udproutes.gateway.networking.k8s.io ingresses.networking.k8s.io; do
@@ -1886,16 +1893,23 @@ web2() {
     miss "control: after the logout GET /api/me with the old session id is 401 (status $status)"
 }
 
-# web10: MinIO's CORS answers the web client's origin only (threat model WEB-10).
+# web10_preflight PATH METHOD ORIGIN: a CORS preflight (OPTIONS) to the object store through Envoy; sets status and
+# acao, the Access-Control-Allow-Origin of the answer (empty when it has none).
+web10_preflight() {
+  : >"$work/cors.headers"
+  status=$(curl -s --max-time 5 -o /dev/null -D "$work/cors.headers" -w '%{http_code}' -X OPTIONS \
+    -H "Origin: $3" -H "Access-Control-Request-Method: $2" "$s3_origin$1" || true)
+  acao=$(tr -d '\r' <"$work/cors.headers" | awk 'tolower($1) == "access-control-allow-origin:" { print $2 }')
+}
+
+# web10: the object store's CORS answers the web client's origin only, and for each bucket only what the web client
+# does there: POST to uploads, GET at media (threat model WEB-10).
 web10() {
   local t path method origin status acao
   for t in "/media/media/drill-threats-$run_id/master.m3u8 GET" "/uploads POST"; do
     read -r path method <<<"$t"
     for origin in https://evil.example http://localhost:3001 http://localhost:3002 "$web_base"; do
-      : >"$work/cors.headers"
-      status=$(curl -s --max-time 5 -o /dev/null -D "$work/cors.headers" -w '%{http_code}' -X OPTIONS \
-        -H "Origin: $origin" -H "Access-Control-Request-Method: $method" "$s3_origin$path" || true)
-      acao=$(tr -d '\r' <"$work/cors.headers" | awk 'tolower($1) == "access-control-allow-origin:" { print $2 }')
+      web10_preflight "$path" "$method" "$origin"
       if [[ $origin == "$web_base" ]]; then
         [[ $status == 2?? && $acao == "$origin" ]] &&
           control "OPTIONS $s3_origin$path ($method) from $origin: $status, Access-Control-Allow-Origin $acao" ||
@@ -1906,6 +1920,15 @@ web10() {
           miss "WEB-10: OPTIONS $s3_origin$path ($method) from $origin answers without Access-Control-Allow-Origin (status $status, got '${acao}')"
       fi
     done
+  done
+  # The rules are per bucket: from the web client's own origin, the request each bucket's rule leaves out gets no
+  # header either. The controls above show each bucket answering that origin for the method its rule allows.
+  for t in "/media POST" "/uploads/uploads/drill-threats-$run_id GET"; do
+    read -r path method <<<"$t"
+    web10_preflight "$path" "$method" "$web_base"
+    [[ $status != 000 && -z $acao ]] &&
+      ok "WEB-10: OPTIONS $s3_origin$path ($method) from $web_base: $status without Access-Control-Allow-Origin (no rule of the bucket allows $method)" ||
+      miss "WEB-10: OPTIONS $s3_origin$path ($method) from $web_base answers without Access-Control-Allow-Origin (status $status, got '${acao}')"
   done
 }
 
@@ -1939,7 +1962,7 @@ web13() {
   local pod t
   local closed=(
     1.1.1.1:443 example.com:443 svp-pg-rw.svp-data.svc.cluster.local:5432 redpanda.svp-data.svc.cluster.local:9092
-    redpanda-0.redpanda.svp-data.svc.cluster.local:9644 minio.svp-data.svc.cluster.local:9000
+    redpanda-0.redpanda.svp-data.svc.cluster.local:9644 s3.svp-data.svc.cluster.local:9000
     user-service.svp.svc.cluster.local:9101 video-service.svp.svc.cluster.local:9102
     engagement-service.svp.svc.cluster.local:9103 feed-service.svp.svc.cluster.local:9104
     pyroscope.svp-obs.svc.cluster.local:4040 kubernetes.default.svc.cluster.local:443

@@ -82,6 +82,12 @@ esac
 if kc -n argocd get applications.argoproj.io svp-root >/dev/null 2>&1; then
   fail "cluster svp is managed by Argo CD (GitOps path), which would set the archive generation back to git's: this drill is for the dev path (make k8s-up) only"
 fi
+# The restore upgrades chart svp-data from this checkout: on a cluster still running MinIO it would replace the store
+# that holds the backups with a new, empty one after the deletion, and restore nothing (make k8s-up refuses such a
+# cluster for the same reason).
+old_store=$(kc -n svp-data get statefulset minio --ignore-not-found -o name) || fail "read StatefulSet svp-data/minio"
+[[ -z $old_store ]] ||
+  fail "cluster svp still runs MinIO (StatefulSet svp-data/minio), from before the object store became s3; nothing was changed. Start over with make k8s-down && make k8s-up"
 
 # shellcheck source=deploy/k8s/drills/lib.sh
 source "$(dirname "$0")/lib.sh"
@@ -248,9 +254,9 @@ fi
 read -r last_wal last_wal_time <<<"$(psql_ postgres -F ' ' -c "select coalesce(last_archived_wal, '-'),
     coalesce(to_char(last_archived_time at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'), '-') from pg_stat_archiver")"
 row_counts "$work/counts-before"
-# WAL archiving again, a minute after step 2: MinIO or the sidecar may have failed while the markers were written, and
-# the deletion would then lose what was never archived. pg_stat_archiver shows a failure as soon as the archiver meets
-# one, the condition once CloudNativePG has recorded it.
+# WAL archiving again, a minute after step 2: the object store or the sidecar may have failed while the markers were
+# written, and the deletion would then lose what was never archived. pg_stat_archiver shows a failure as soon as the
+# archiver meets one, the condition once CloudNativePG has recorded it.
 [[ $(condition ContinuousArchiving) == True ]] ||
   fail "Cluster svp-pg archives WAL just before the deletion (condition ContinuousArchiving is '$(condition ContinuousArchiving)'); nothing was deleted"
 [[ $(psql_ postgres -c "select last_failed_time is not null and (last_archived_time is null or last_failed_time > last_archived_time) from pg_stat_archiver") == f ]] ||

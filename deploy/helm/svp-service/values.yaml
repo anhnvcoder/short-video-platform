@@ -140,9 +140,9 @@ peers:
     namespace: svp-data
     labels: {app.kubernetes.io/name: redpanda, app.kubernetes.io/instance: redpanda}
     ports: [9092]
-  minio:
+  s3:
     namespace: svp-data
-    labels: {app.kubernetes.io/name: minio}
+    labels: {app.kubernetes.io/name: s3}
     ports: [9000]
   collector:
     namespace: svp-obs

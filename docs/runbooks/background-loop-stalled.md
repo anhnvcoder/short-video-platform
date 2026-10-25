@@ -54,7 +54,7 @@ max, chờ kết nối).
 1. **`outbox-relay`: Redpanda không nhận** (broker dừng, k3d: SASL/ACL sai sau khi đổi mật khẩu): log `outbox relay failed,
    retrying` với lỗi produce.
 2. **Postgres của service lỗi hay chậm**: mọi vòng của service đó cùng lỗi; pool hết kết nối.
-3. **Lỗi object store** (`upload-sweep`): MinIO chết hay sai quyền, log `delete abandoned upload`; theo thiết kế lượt dừng và thử
+3. **Lỗi object store** (`upload-sweep`): object store (`s3`) chết hay sai quyền, log `delete abandoned upload`; theo thiết kế lượt dừng và thử
    lại ở chu kỳ sau ([ADR-0010](../adr/0010-redis-ratelimit-cache-resilience-stage2c.md) §5).
 4. **Lượt chạy quá hạn** (`timeline-prune` 2 phút, `upload-sweep` 30 s mỗi lô, `outbox-cleanup` 30 s): khoá dòng lâu, Postgres
    chậm; log `prune timeline timed out`.
@@ -62,7 +62,7 @@ max, chờ kết nối).
 
 ## Giảm thiểu
 
-- Sửa phụ thuộc (Redpanda, Postgres, MinIO) trước; vòng tự chạy lại ở chu kỳ kế, không cần restart.
+- Sửa phụ thuộc (Redpanda, Postgres, object store `s3`) trước; vòng tự chạy lại ở chu kỳ kế, không cần restart.
 - `outbox-relay` đứng mà phụ thuộc khoẻ (nguyên nhân 5): restart service để vòng chạy lại: compose `dc restart video-service`,
   k3d `kubectl --context k3d-svp -n svp rollout restart deployment/video-service`. Event chưa gửi nằm trong bảng outbox
   (không bị xoá khi chưa gửi), relay gửi bù khi chạy lại.
@@ -86,7 +86,8 @@ Tuổi của vòng quay về dưới một chu kỳ, cảnh báo hết ở lần
 - `outbox-relay` đứng quá 15 phút dù Redpanda và Postgres khoẻ: không có goroutine dump để xem (pprof không publish, OPS-1),
   nên ghi lại thời điểm và log, restart, mở postmortem; Pyroscope (`make up OBS=lgtm`) có profile CPU của lúc đó.
 - Postgres native (compose) là chung với dự án khác: không restart, báo chủ máy.
-- `upload-sweep` lỗi vì quyền MinIO: kiểm policy của user `svp-video-service` (`deploy/minio/video-service-policy.json`); đổi
+- `upload-sweep` lỗi vì quyền của object store: kiểm policy của user `svp-video-service` (`deploy/s3/video-service-policy.json`,
+  job `s3-init` đặt lại mỗi lần `make up` hay `make k8s-up`); đổi
   policy là thay đổi cấu hình qua PR.
 
 ## Liên kết

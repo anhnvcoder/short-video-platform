@@ -127,7 +127,7 @@ liệt kê target):
   không có Corepack). Mọi target `web-*` tự đặt Node 26 mới nhất của nvm lên đầu `PATH`, kiểm major Node và version pnpm,
   lệch thì in lệnh cài và dừng. `make web-install`: `pnpm install --frozen-lockfile` (setting chuỗi cung ứng ở
   `web/pnpm-workspace.yaml`). `make web-dev`: `next dev` ở `http://localhost:3002`, trỏ gateway `127.0.0.1:8080`, Redis
-  db 9 và MinIO `http://127.0.0.1:9000` (`MEDIA_ORIGIN`, `UPLOAD_ORIGIN`: origin nhận presigned POST, bắt buộc, `http` chỉ
+  db 9 và object store `http://127.0.0.1:9000` (`MEDIA_ORIGIN`, `UPLOAD_ORIGIN`: origin nhận presigned POST, bắt buộc, `http` chỉ
   cho loopback, [ADR-0018](docs/adr/0018-web-profiles-public-video-upload.md) §8). `make web-generate`: sinh `web/gen/api.d.ts` từ `services/gateway/openapi.yaml` (commit); `make generate` gồm cả
   `generate-go` lẫn `web-generate`, còn `make generate-check` chỉ kiểm phần Go. `make web-generate-check`: so bản sinh tạm
   với `web/gen/api.d.ts`, không ghi gì. `make web-check`: ESLint, Prettier, typecheck, Vitest (Redis db 15 qua
@@ -163,13 +163,16 @@ liệt kê target):
   `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` của `.env`; gateway compose đặt `TRUST_TRACE_CONTEXT=true` (chỉ loopback, WEB-24).
 - `make cover`: `go test -race` như `make test` nhưng ghi coverage vào `cover.out` (đã gitignore) và in tổng; thu hẹp bằng
   `PKGS=`, xem từng dòng bằng `go tool cover -html=cover.out`.
-- `make env`: sinh `.env` local (mode 600, mật khẩu DB, mật khẩu root MinIO và secret key S3 của từng service ngẫu nhiên,
+- `make env`: sinh `.env` local (mode 600, mật khẩu DB, mật khẩu root của object store `SVP_S3_ROOT_PASSWORD`, secret key S3 của
+  từng service và của user thử `svp-objstore-probe` (`SVP_S3_PROBE_SECRET_KEY`, chỉ compose và `make test-stack`) ngẫu nhiên,
   khoá JWT mới, khoá Server Action của web `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` (base64 của 32 byte); thêm
   `GLITCHTIP_SECRET_KEY`, `GLITCHTIP_ADMIN_PASSWORD`, mật khẩu hai role `svp_glitchtip_*` và
   `GLITCHTIP_ADMIN_EMAIL=admin@svp.local`; cho cluster k3d, compose bỏ qua: `SVP_PG_SUPERUSER_PASSWORD`,
   `SVP_KAFKA_ADMIN_PASSWORD`, `SVP_KAFKA_KEDA_PASSWORD`, `SVP_KAFKA_<SERVICE>_PASSWORD` cho 5 service có Kafka,
-  `SVP_GRAFANA_ADMIN_PASSWORD`, `SVP_PG_BACKUP_S3_SECRET_KEY` (user MinIO `svp-pg-backup` của backup Postgres; 20 byte hex
-  như secret key S3 khác, vì MinIO giới hạn 40 ký tự)). `.env` có sẵn thì chỉ bổ sung biến còn thiếu hoặc đang rỗng, không đổi giá trị đã đặt.
+  `SVP_GRAFANA_ADMIN_PASSWORD`, `SVP_PG_BACKUP_S3_SECRET_KEY` (user `svp-pg-backup` của backup Postgres; 20 byte hex
+  như secret key S3 khác: 40 ký tự là độ dài secret key của AWS và giới hạn của MinIO, store của đường quay lại)). `.env` có
+  sẵn thì chỉ bổ sung biến còn thiếu hoặc đang rỗng, không đổi giá trị đã đặt; `SVP_MINIO_ROOT_PASSWORD` của `.env` cũ còn đó
+  thì không ai đọc.
 - Quy tắc đọc `.env` (`deploy/observability/glitchtip/dotenv.sh`, dùng chung cho `make env`, `make test-stack`,
   `make glitchtip-init`, bootstrap Postgres và script diễn tập): mỗi dòng là dòng trống, comment `#` ở cột 1, hoặc
   `KEY=value` với `KEY` ở cột 1 và `=` ngay sau; giá trị trơn (ASCII in được, không khoảng trắng, nháy, `\`, `$`) hoặc nằm
@@ -177,17 +180,20 @@ liệt kê target):
   đầu dòng hay `export`, khoá lặp, giá trị nhiều dòng, CRLF, byte NUL → dừng, nêu `FILE:dòng:` và tên biến, không in giá
   trị, không ghi gì.
 - `make up` / `make smoke` / `make down`: dựng stack compose profile `core` (bootstrap Postgres, Redpanda + tạo topic,
-  MinIO + bucket/user/policy, migrate, gateway, user-service, video-service, media-worker, engagement-service,
+  object store `s3` (RustFS, [ADR-0022](docs/adr/0022-local-object-store-minio-replacement.md)) + job `s3-init` tạo
+  bucket, user, policy, CORS, migrate, gateway, user-service, video-service, media-worker, engagement-service,
   feed-service, web client `web`), chạy luồng đầu-cuối qua gateway ở `127.0.0.1:8080` (gồm refresh token, dùng lại token
   cũ thì cả họ bị thu hồi, logout, follow, hồ sơ: handle tự chọn, trùng handle 409, handle sinh `u_…`, `GET`/`PATCH /me`
   không có email, `followed_by_me`, danh sách video theo tác giả chỉ tác giả thấy video chưa `READY`, upload video bằng
-  presigned POST lên MinIO, chờ `READY`, tải HLS và thumbnail, `GET /public/videos/{id}` không token 200 với video `READY`
+  presigned POST lên object store, chờ `READY`, tải HLS và thumbnail, `GET /public/videos/{id}` không token 200 với video `READY`
   và một 404 cho video chưa `READY` lẫn id ngẫu nhiên, video vào feed following và explore kèm `author`, like/unlike, lượt
   xem, unfollow), rồi gỡ stack (giữ volume). Gateway dùng Redis native db 10 (rate limit), feed-service db 14 (cache feed
-  khám phá), qua `host.docker.internal:6379`; web dùng db 9 (session). MinIO chỉ nhận CORS từ `http://localhost:3001` và
-  `http://localhost:3002` (`MINIO_API_CORS_ALLOW_ORIGIN`, toàn cục mọi bucket, WEB-10): mở web bằng `127.0.0.1:3001` thì
-  đăng nhập được nhưng không phát và không tải video lên được. Cổng publish chỉ trên `127.0.0.1`: 8080 gateway, 3001 web (mở
-  bằng `http://localhost:3001`), 9000 MinIO API, 9001 MinIO console, 19092 Redpanda (Kafka API). `make ps` và `make logs SVC=<tên>` để xem. `make smoke` và mọi script diễn tập cần
+  khám phá), qua `host.docker.internal:6379`; web dùng db 9 (session). Object store chỉ nhận CORS từ `http://localhost:3001` và
+  `http://localhost:3002`, theo bucket (`s3-init` đặt `PutBucketCors`: `uploads` chỉ `POST`, `media` chỉ `GET`, `HEAD`; danh
+  sách toàn cục `RUSTFS_CORS_ALLOWED_ORIGINS` rỗng nên bucket khác không có header CORS; WEB-10): mở web bằng
+  `127.0.0.1:3001` thì đăng nhập được nhưng không phát và không tải video lên được. Cổng publish chỉ trên `127.0.0.1`: 8080 gateway, 3001 web (mở
+  bằng `http://localhost:3001`), 9000 object store (API S3; console tắt, không cổng 9001), 19092 Redpanda (Kafka API). Xem object bằng
+  `curl --aws-sigv4` chạy trong container `s3` (như `make drill-upload-cleanup`), không mở cổng nào thêm. `make ps` và `make logs SVC=<tên>` để xem. `make smoke` và mọi script diễn tập cần
   `redis-cli` trên máy và Redis native đang chạy: trước khi chạy, script xoá khoá rate limit đăng ký theo IP
   `svp:gw:rl:register:*` ở db 10 (`SCAN` + `DEL`, không `FLUSHDB`), vì mọi request đi ra từ một IP bridge của Docker và
   vài lần chạy trong một giờ sẽ cạn burst 20. Việc xoá này **chỉ dùng ở lab local**, không trỏ script vào stack dùng
@@ -215,13 +221,24 @@ liệt kê target):
 - `make slo`: sinh `deploy/observability/prometheus/rules/slo-generated.yaml` từ `deploy/observability/slo/svp-slos.yaml`
   bằng Sloth; file sinh được commit, chạy lại sau khi sửa spec. `make slo-check`: promtool của image LGTM ghim, không
   mạng: `check config` cho cấu hình Prometheus và hai file rule, rồi `test rules` (`svp-alerts.test.yaml`).
-- `make test-stack`: `go test -race` trên stack đang chạy (`make up`), đặt các biến `SVP_TEST_*` cho MinIO và Redpanda,
-  nên integration test của `internal/objstore` chạy thật thay vì SKIP. Chỉ hai secret S3 lấy từ `.env`; endpoint,
+- `make test-stack`: `go test -race -count=1 -v` trên stack đang chạy (`make up`), đặt các biến `SVP_TEST_*` cho object store
+  và Redpanda, nên integration test của `internal/objstore` chạy thật thay vì SKIP (gồm ca multipart CRC32 bằng user thử
+  `svp-objstore-probe`, dạng header qua `http://` và dạng trailer qua proxy TLS của test). Chỉ ba secret S3 (hai service và
+  user thử) lấy từ `.env`; endpoint,
   access key, broker, `SVP_TEST_POSTGRES_URL` và `SVP_TEST_REDIS_URL` cố định trong `deploy/compose/compose.mk` và
-  `Makefile`. Thu hẹp bằng `PKGS=` như `make test`.
-- `make clean-data`: gỡ stack (mọi profile) và xoá volume của nó (topic Redpanda, bucket MinIO, thư mục tạm của
-  media-worker, dữ liệu LGTM, silence của Alertmanager, chỉ mục Elasticsearch); Postgres native (cả `svp_glitchtip`) không
-  bị đụng. Chỉ chạy khi cần làm lại dữ liệu từ đầu.
+  `Makefile`. Thu hẹp bằng `PKGS=` như `make test`, `TESTFLAGS` thêm cờ.
+- `make clean-data`: gỡ stack (mọi profile) và xoá volume của nó (topic Redpanda, bucket của object store `s3-data`, thư mục
+  tạm của media-worker, dữ liệu LGTM, silence của Alertmanager, chỉ mục Elasticsearch); Postgres native (cả `svp_glitchtip`)
+  không bị đụng; volume của project mà compose không còn khai (`svp_minio-data`, dữ liệu MinIO trước khi đổi store, đường
+  quay lại) được giữ và in ra. Chỉ chạy khi cần làm lại dữ liệu từ đầu.
+- `make object-store-copy TO=s3|minio` (script `deploy/compose/object-store-copy.sh`, [ADR-0022](docs/adr/0022-local-object-store-minio-replacement.md)
+  mục Cách chuyển): chép bucket `uploads`, `media` từ volume MinIO `svp_minio-data` sang volume RustFS `svp_s3-data` (`s3`)
+  hay ngược lại (`minio`, đường quay lại), dựng tạm hai store trên network nội bộ không publish cổng (MinIO bằng image
+  Chainguard ghim digest trong script, mật khẩu root ngẫu nhiên mỗi lượt), chép bằng `mc mirror` của image đó không
+  `--remove`, không `--overwrite`, rồi kiểm key, kích thước, `Content-Type` hai phía. Từ chối khi stack compose hay cluster
+  k3d đang chạy, container nào đang dùng một trong hai volume, còn video `PROCESSING` (`SELECT` trên `svp_video`), hay đích có
+  key mà nguồn không có hoặc cùng key khác kích thước (không ghi gì); in key của video `READY` đã mất từ trước ở cả hai phía
+  (không chặn). Không bao giờ xoá hay ghi đè object, không xoá volume nào; xoá ở đích hay xoá volume cũ là việc của người học.
 - `make drill-kill-worker`, `make drill-duplicates`, `make measure-ready N=5`: diễn tập trên stack đang chạy, script ở
   `deploy/compose/drills/`. Lần lượt: kill media-worker giữa lúc transcode rồi kiểm video vẫn `READY` đúng một lần; phát
   lại event bằng `rpk group seek` rồi kiểm không gì đổi; đo `CompleteUpload` → `READY` cho N video 60 s 1080p (p50, p95,
@@ -249,7 +266,7 @@ liệt kê target):
   của lần chạy trước resolve (tới khoảng 30 phút) và 31 s không có 5xx ở feed. Kiểm các dòng giai đoạn 3 của threat
   model: JWT-8 (trace, log, event GlitchTip của request login/feed/follow, cả lúc user-service tắt, không có email, mật
   khẩu, token), UP-8 (`video created`, `upload completed` có `user_id`, `video_id`, `trace_id`), OPS-1 (`/debug/pprof/`,
-  `/metrics` trả 404; project publish đúng 8 cổng loopback, gồm web 3001), RL-2 (gateway dựng lại với Redis `.invalid` thì metric
+  `/metrics` trả 404; project publish đúng 7 cổng loopback, gồm web 3001 và `s3` 9000, không 9001), RL-2 (gateway dựng lại với Redis `.invalid` thì metric
   `store="fallback"` > 0 và cảnh báo `RateLimitFallbackActive` trong 4 phút), WEB-9 (giai đoạn 5b phần C: email, token,
   sid, `?next=`, chữ ký presigned từ form của web, `/rum` và `/monitoring` không có trong GlitchTip, Tempo, Loki, Prometheus;
   đối chứng có dữ liệu của web). **Telegram tuỳ chọn:** người học tự tạo bot
@@ -288,9 +305,9 @@ liệt kê target):
   cluster hay registry `k3d-svp-registry` đang chạy. Cổng chỉ trên `127.0.0.1`: API 6550, HTTPS của Envoy 8443
   (`api.svp.localhost`, `s3.svp.localhost` với chứng chỉ wildcard; web ở `svp.localhost`, listener `https-apex` với chứng
   chỉ riêng; đều phân giải về loopback), registry 5111. Postgres (CloudNativePG; từ giai đoạn 6 backup cơ sở và WAL lưu
-  liên tục qua plugin Barman Cloud, component `plugin-barman-cloud` ở `cnpg-system`, vào bucket `pg-backups` của MinIO trong
-  cluster bằng user riêng `svp-pg-backup`, [ADR-0020](docs/adr/0020-reliability-stage6.md) §5), Valkey,
-  Redpanda (SASL + ACL), MinIO nằm trong cluster: target giai đoạn 4 không đụng Postgres/Redis native. File sinh ra nằm ở
+  liên tục qua plugin Barman Cloud, component `plugin-barman-cloud` ở `cnpg-system`, vào bucket `pg-backups` của object store
+  trong cluster bằng user riêng `svp-pg-backup`, [ADR-0020](docs/adr/0020-reliability-stage6.md) §5), Valkey,
+  Redpanda (SASL + ACL), object store (RustFS, StatefulSet `s3`, `s3.svp-data:9000`, Job `s3-init`) nằm trong cluster: target giai đoạn 4 không đụng Postgres/Redis native. File sinh ra nằm ở
   `.k8s/` (gitignore). Biến chỉ đặt ở cluster: service có Kafka đăng nhập SASL SCRAM bằng `KAFKA_SASL_USERNAME`,
   `KAFKA_SASL_PASSWORD` (đặt cả hai hay không biến nào; compose không đặt, broker không xác thực); gateway tin một hop
   `X-Forwarded-For` từ dải pod của Envoy qua `TRUSTED_PROXY_HOPS=1`, `TRUSTED_PROXY_CIDRS=10.42.0.0/16` (compose: không
@@ -300,7 +317,7 @@ liệt kê target):
   (WEB-24). Web (giai đoạn 5b phần C, [ADR-0019](docs/adr/0019-web-k3d-supply-chain-observability.md)):
   `GATEWAY_URL=http://gateway:8080`,
   `REDIS_URL=redis://valkey.svp-data:6379/9`, `APP_ORIGIN=https://svp.localhost:8443`, `MEDIA_ORIGIN`, `UPLOAD_ORIGIN`
-  `https://s3.svp.localhost:8443` (MinIO chỉ nhận CORS từ `https://svp.localhost:8443`), `SENTRY_ENVIRONMENT=k3d`,
+  `https://s3.svp.localhost:8443` (object store chỉ nhận CORS từ `https://svp.localhost:8443`, theo bucket như compose), `SENTRY_ENVIRONMENT=k3d`,
   `SENTRY_DSN` từ Secret `svp/sentry`, `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` từ Secret `svp/web-env`; `SVP_BUILD_ID` là build arg
   chép thành `ENV` của image (12 hex của commit ở CI, `dev-` + hash nội dung context ở đường dev, rỗng ở compose), dùng làm
   `deploymentId`, `release` của GlitchTip và `service.version`. API server có PSA `restricted` mặc định cho mọi namespace
@@ -324,17 +341,18 @@ liệt kê target):
   chối nâng `svp-data` khi `svp-pg` đang phục hồi (`bootstrap.recovery` có mà chưa Ready) hay đã mất mà còn Backup của nó;
   sau `svp-data` chờ WAL lưu liên tục và thế hệ đang chạy có backup cơ sở (chưa có thì chụp một bản; cluster mới chờ thêm vài
   phút); idempotent, cần `.env` (`make env`), từ chối cluster do Argo CD quản (có Application
-  `svp-root`). Khi pod template của gateway hay web (Argo Rollout) đổi, tức có canary, `k8s-up` tự chạy traffic diễn tập
+  `svp-root`) và cluster tạo khi object store còn là MinIO (StatefulSet `svp-data/minio`: in lệnh dựng lại `make k8s-down`,
+  `make k8s-up`, không nâng tại chỗ). Khi pod template của gateway hay web (Argo Rollout) đổi, tức có canary, `k8s-up` tự chạy traffic diễn tập
   trong lúc
   canary rồi dừng, chờ Rollout `Healthy` có hạn; abort hay inconclusive thì FAIL kèm lệnh gỡ (**LOCAL LAB ONLY**: traffic
   xoá khoá rate limit đăng ký ở Valkey db 10 của cluster). `k8s-down` xoá cluster và registry (volume compose và Postgres
   native không bị đụng). `k8s-status` in container, node và pod mọi namespace trừ `kube-system`.
 - `make k8s-secrets`, `make k8s-glitchtip-init`, `make k8s-ca`: `k8s-secrets` tạo/cập nhật Secret từ `.env` bằng
   `kubectl apply` qua stdin, không in giá trị (gồm `svp/web-env` chỉ chứa `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY`, phải là base64
-  chuẩn của 32 byte, sai dạng thì dừng; `svp-data/pg-backup-s3` là đăng nhập của user MinIO `svp-pg-backup`, chỉ sidecar của
+  chuẩn của 32 byte, sai dạng thì dừng; `svp-data/pg-backup-s3` là đăng nhập của user `svp-pg-backup` của object store, chỉ sidecar của
   plugin Barman Cloud trong pod Postgres đọc); mật khẩu superuser Redpanda đổi thì đặt vào broker đang chạy trước khi apply
-  (cần `redpanda-0` chạy; Admin API không trả lời hay không nhận mật khẩu nào thì dừng, không đổi Secret nào), MinIO hay
-  Redpanda chạy với mật khẩu khác `.env` thì restart; sau đó `make k8s-up` để Job init đặt mật khẩu mới và restart service
+  (cần `redpanda-0` chạy; Admin API không trả lời hay không nhận mật khẩu nào thì dừng, không đổi Secret nào), object store
+  (Secret `s3-root`, `s3-users`) hay Redpanda chạy với mật khẩu khác `.env` thì restart; sau đó `make k8s-up` để Job init đặt mật khẩu mới và restart service
   có Secret đổi (cluster GitOps: các bước tay ở đầu `deploy/k8s/gitops.sh`). `k8s-glitchtip-init` ghi DSN vào Secret
   `svp/sentry`, token API chỉ đọc vào `svp-obs/glitchtip-api` và token tải source map vào `svp-obs/glitchtip-sourcemaps`
   (không vào `.env`, không in), restart service khởi động
@@ -490,7 +508,11 @@ liệt kê target):
     khác dừng ở bước đầu) và lịch hằng tuần trên `main` (00:37 UTC thứ Bảy, 07:37 giờ Việt Nam; cả hai kịch bản song song,
     mọi bước; **kiểm sau push**). Kịch bản: `compose-obs` (job `compose`, hạn 120 phút: `make up OBS=lgtm`, `make smoke`,
     `make drill-obs-threats`, `make load-local` dưới quan sát Alertmanager (`RateLimitFallbackActive` không được cháy),
-    `make web-lighthouse` ×3 và median LCP, `make drill-alert-to-sentry` với Telegram SKIP) và `dev-k3d` (job `k3d`, hạn 330
+    `make web-lighthouse` ×3 và median LCP, `make test-stack PKGS=./internal/objstore/...` (một ca SKIP là đỏ),
+    `make drill-upload-cleanup`, `make measure-upload` và RAM đỉnh của `s3` trong lúc đó (dưới 512 MiB), `make
+    drill-alert-to-sentry` với Telegram SKIP, cuối cùng đường quay lại `object-store-roundtrip`: `make down`, `make
+    object-store-copy TO=minio` vào volume mới của runner, rồi `make up` lần hai (init chạy lại trên store đã init) và `make
+    smoke` trên RustFS) và `dev-k3d` (job `k3d`, hạn 330
     phút: `make k8s-up`, `make k8s-smoke`, RAM nghỉ, `make drill-k8s-threats`, `make drill-k8s-pdb`, `make drill-k8s-canary`,
     `make k8s-web-sourcemaps`, `SVP_E2E_GLITCHTIP=1 make k8s-web-e2e`, `make drill-k8s-web-obs`, `make drill-k8s-keda N=9` và
     RAM đỉnh, `make drill-k8s-backup` rồi `MODE=pitr`, RAM nghỉ cuối). Dispatch và đọc kết quả (AI được chạy, chỉ khi người
@@ -500,7 +522,8 @@ liệt kê target):
     `concurrency` một lượt mỗi kịch bản. Script `deploy/ci/verify-*.sh` (chạy được trên VM Linux thay runner):
     `verify-host.sh` (cổng đĩa, `/etc/hosts` cho ba tên `*.svp.localhost`, lệch version kubectl, hạn chế AppArmor),
     `verify-run.sh` (trình tự, hạn mỗi target, output mỗi target vào file thay vì log job, dừng sớm khi bước dựng đỏ),
-    `verify-sample.sh` (mẫu RAM, CPU, đĩa, `docker stats`, `memory.stat` của node, số pod media-worker đang chạy `ffmpeg`;
+    `verify-sample.sh` (mẫu RAM, CPU, đĩa, `docker stats`, `memory.stat` của node, số pod media-worker đang chạy `ffmpeg`,
+    số restart của từng container compose;
     `runner.json`, `runner.txt` "runner đủ"), `verify-mask.sh` (`::add-mask::` giá trị bí mật của `.env` sau mỗi target và
     của Secret trong cluster), `verify-collect.sh` (artifact `verify-<kịch bản>`, giữ 30 ngày: chỉ file theo danh sách cho
     phép, quét theo giá trị bí mật đã biết và theo mẫu, file nghi bị bỏ kèm `::warning::`, `files.txt` liệt kê file giữ và
@@ -560,8 +583,9 @@ Quy ước test:
   tới database test), mọi cổng do chính test mở; test đo thời gian với cửa sổ thử lại rút ngắn còn 1,5 s.
 - Test Kafka dùng `kfake` (cluster Kafka giả trong bộ nhớ của franz-go), không cần Docker, nên `make check` chạy được khi
   stack đang tắt.
-- Test cần MinIO hay Redpanda thật đọc `SVP_TEST_S3_ENDPOINT`, `SVP_TEST_S3_VIDEO_ACCESS_KEY` /
+- Test cần object store hay Redpanda thật đọc `SVP_TEST_S3_ENDPOINT`, `SVP_TEST_S3_VIDEO_ACCESS_KEY` /
   `SVP_TEST_S3_VIDEO_SECRET_KEY`, `SVP_TEST_S3_WORKER_ACCESS_KEY` / `SVP_TEST_S3_WORKER_SECRET_KEY`,
+  `SVP_TEST_S3_PROBE_ACCESS_KEY` / `SVP_TEST_S3_PROBE_SECRET_KEY`,
   `SVP_TEST_KAFKA_BROKERS`; thiếu biến thì test gọi `t.Skip`. `make test-stack` đặt các biến này; hiện chưa có test nào
   dùng `SVP_TEST_KAFKA_BROKERS`.
 - Test Redis dùng db 15 qua `SVP_TEST_REDIS_URL`; helper `internal/redistest` từ chối URL nào khác `127.0.0.1:6379` /

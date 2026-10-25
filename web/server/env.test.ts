@@ -70,7 +70,7 @@ describe("parseServerEnv", () => {
     ["UPLOAD_ORIGIN", "http://127.0.0.1:9000/"],
     ["UPLOAD_ORIGIN", "ftp://127.0.0.1:9000"],
     ["UPLOAD_ORIGIN", "ws://127.0.0.1:9000"],
-    ["UPLOAD_ORIGIN", "http://minio:9000"],
+    ["UPLOAD_ORIGIN", "http://s3:9000"],
     ["UPLOAD_ORIGIN", "http://s3.example.com"],
     ["UPLOAD_ORIGIN", "http://127.0.0.2:9000"],
     ["REDIS_URL", "http://127.0.0.1:6379/9"],

@@ -20,6 +20,14 @@ kc get --raw /readyz >/dev/null 2>&1 || fail "cluster svp is not reachable (cont
 if kc -n argocd get applications.argoproj.io svp-root >/dev/null 2>&1; then
   fail "cluster svp is managed by Argo CD (Application argocd/svp-root): change it through git, or start over on the dev path with make k8s-down && make k8s-up"
 fi
+# A cluster made while the object store was MinIO (StatefulSet svp-data/minio) is made again, never upgraded in place:
+# the upgrade would leave MinIO's volume behind and move ObjectStore svp-pg-backup to a new, empty store while WAL is
+# being archived, some backups on each side. The cluster made again has a new Postgres too, so nothing points at the
+# old objects.
+old_store=$(kc -n svp-data get statefulset minio --ignore-not-found -o name) || fail "read StatefulSet svp-data/minio"
+if [ -n "$old_store" ]; then
+  fail "cluster svp still runs MinIO (StatefulSet svp-data/minio), from before the object store became s3: it is not upgraded in place; start over with make k8s-down && make k8s-up"
+fi
 
 # The services' images first, so a build that fails stops the run before anything is installed. Each release of
 # chart svp-service then gets its image with --set (never written to a file): the local registry, the service's dev
@@ -42,8 +50,8 @@ image_sets() {
 # deploy/k8s/secrets.sh makes these Secrets outside Helm and Argo CD. So once a service's release is installed, its
 # Deployment is restarted here if <service>-env changed since its pods read it (restart_on_secret_change of
 # deploy/k8s/lib.sh). Not earlier: the services' releases come after svp-data, whose init Jobs have set the passwords
-# of .env in Postgres, MinIO and Redpanda by then; a pod restarted before that would start with a password its backend
-# does not take yet, and never get ready.
+# of .env in Postgres, the object store and Redpanda by then; a pod restarted before that would start with a password
+# its backend does not take yet, and never get ready.
 #
 # The KEDA operator likewise keeps the Kafka scaler it built with Secret keda/keda-kafka, and its connections logged in
 # as svp-keda, for as long as they work; nothing makes it read a changed Secret at once. It is restarted after
@@ -258,7 +266,7 @@ rollouts_plugin_sets() {
 
 # pg_base_backup: after chart svp-data, that Postgres svp-pg archives its WAL and that its archive generation has a base
 # backup to restore from. On a new cluster ScheduledBackup svp-pg-daily
-# takes the first one at once (immediate; a hook of the chart, made once the minio-init Job has made bucket pg-backups
+# takes the first one at once (immediate; a hook of the chart, made once the s3-init Job has made bucket pg-backups
 # and its login). On the upgrade that adds the plugin to a Cluster made before it, though, CloudNativePG starts that
 # Backup on whichever primary pod is Ready, which may still be the old one, without the plugin's sidecar: the Backup
 # then fails, for good (CloudNativePG never retries one; the schedule's next run is at 03:00 UTC). So once the primary

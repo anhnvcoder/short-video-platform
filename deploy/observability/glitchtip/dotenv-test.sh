@@ -397,11 +397,11 @@ echo "psql $db $(h "$SVP_MIGRATOR_PASSWORD") $(h "$SVP_APP_PASSWORD")" >> "$FAKE
 EOF
 cat > "$fake/go" <<'EOF'
 #!/usr/bin/env bash
-# Stands in for go in make test-stack: logs the hashes of the two S3 secret keys `go test` gets.
+# Stands in for go in make test-stack: logs the hashes of the three S3 secret keys `go test` gets.
 # The Makefile also runs `go env GOPATH` on every make; that prints a path and logs nothing.
 [ "$1" = test ] || { echo /nonexistent; exit 0; }
 h() { printf '%s' "$1" | shasum -a 256 | cut -d ' ' -f 1; }
-echo "go $(h "$SVP_TEST_S3_VIDEO_SECRET_KEY") $(h "$SVP_TEST_S3_WORKER_SECRET_KEY")" >> "$FAKE_LOG"
+echo "go $(h "$SVP_TEST_S3_VIDEO_SECRET_KEY") $(h "$SVP_TEST_S3_WORKER_SECRET_KEY") $(h "$SVP_TEST_S3_PROBE_SECRET_KEY")" >> "$FAKE_LOG"
 EOF
 cat > "$fake/docker" <<'EOF'
 #!/usr/bin/env bash
@@ -431,7 +431,8 @@ run_fake() {
 sed -e 's/^\(SVP_[A-Z_]*_MIGRATOR_DB_PASSWORD\)=\(.*\)/\1="\2"/' \
   -e "s/^\(SVP_[A-Z_]*_APP_DB_PASSWORD\)=\(.*\)/\1='\2'/" \
   -e 's/^\(SVP_VIDEO_S3_SECRET_KEY\)=\(.*\)/\1="\2"/' \
-  -e "s/^\(SVP_MEDIA_WORKER_S3_SECRET_KEY\)=\(.*\)/\1='\2'/" "$m/fresh" > "$m/quoted"
+  -e "s/^\(SVP_MEDIA_WORKER_S3_SECRET_KEY\)=\(.*\)/\1='\2'/" \
+  -e 's/^\(SVP_S3_PROBE_SECRET_KEY\)=\(.*\)/\1="\2"/' "$m/fresh" > "$m/quoted"
 chmod 600 "$m/quoted"
 cp -p "$m/quoted" "$m/.env"
 if run_make_env && cmp -s "$m/.env" "$m/quoted" && grep -q 'left unchanged' "$m/out"; then
@@ -452,6 +453,7 @@ else
   fail "make db-bootstrap: a quoted password reached psql other than unquoted"
 fi
 want_go="go $(h "$(dotenv_value "$m/fresh" SVP_VIDEO_S3_SECRET_KEY)") $(h "$(dotenv_value "$m/fresh" SVP_MEDIA_WORKER_S3_SECRET_KEY)")"
+want_go="$want_go $(h "$(dotenv_value "$m/fresh" SVP_S3_PROBE_SECRET_KEY)")"
 if run_fake test-stack PKGS=./... && [[ $(cat "$m/fake.log") == "$want_go" ]]; then
   ok "make test-stack: quoted S3 secret keys reach go test without their quotes"
 else
@@ -473,7 +475,7 @@ if command -v docker > /dev/null; then
     ! compose_hash "$m/changed" "$work/hash.changed"; then
     fail "compose: make compose-hash failed on a fixture"
   elif for svc in user-migrate user-service video-migrate video-service engagement-migrate engagement-service \
-    feed-migrate feed-service minio-init media-worker glitchtip; do
+    feed-migrate feed-service s3-init media-worker glitchtip; do
     line "$svc" "$work/hash.fresh" > /dev/null || missing="$missing $svc"
   done
   [[ -n $missing ]]; then

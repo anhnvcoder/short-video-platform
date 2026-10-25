@@ -35,9 +35,10 @@ SMOKE_URL ?= http://127.0.0.1:8080
 DB_PASSWORD_VARS := SVP_USER_MIGRATOR_DB_PASSWORD SVP_USER_APP_DB_PASSWORD SVP_VIDEO_MIGRATOR_DB_PASSWORD SVP_VIDEO_APP_DB_PASSWORD \
 	SVP_ENGAGEMENT_MIGRATOR_DB_PASSWORD SVP_ENGAGEMENT_APP_DB_PASSWORD SVP_FEED_MIGRATOR_DB_PASSWORD SVP_FEED_APP_DB_PASSWORD \
 	SVP_GLITCHTIP_MIGRATOR_DB_PASSWORD SVP_GLITCHTIP_APP_DB_PASSWORD
-# MinIO root password and per-service secret keys (deploy/minio/init.sh). MinIO caps secret keys at
-# 40 characters, hence 20 random bytes in hex.
-S3_SECRET_VARS := SVP_MINIO_ROOT_PASSWORD SVP_VIDEO_S3_SECRET_KEY SVP_MEDIA_WORKER_S3_SECRET_KEY
+# Root password of the object store and the secret keys of its users (deploy/s3/init.sh): the two
+# services and the probe user of the integration tests. 20 random bytes in hex, 40 characters, the
+# length of an AWS secret key and the cap of MinIO, the store to go back to.
+S3_SECRET_VARS := SVP_S3_ROOT_PASSWORD SVP_VIDEO_S3_SECRET_KEY SVP_MEDIA_WORKER_S3_SECRET_KEY SVP_S3_PROBE_SECRET_KEY
 # GlitchTip's Django secret key and its admin password: random per clone like the S3 secrets above, so no fixed
 # credential is committed.
 GLITCHTIP_SECRET_VARS := GLITCHTIP_SECRET_KEY GLITCHTIP_ADMIN_PASSWORD
@@ -47,9 +48,9 @@ GLITCHTIP_ADMIN_EMAIL := admin@svp.local
 JWT_VARS := JWT_SIGNING_KID JWT_SIGNING_KEY JWT_VERIFY_KEYS
 # Used by the k3d cluster only (deploy/k8s/secrets.sh): the
 # superuser of the in-cluster Postgres, Redpanda's superuser svp-admin, the Kafka user of KEDA and of each service with
-# Kafka (compose runs Redpanda without SASL), Grafana's admin login, and the secret key of MinIO user svp-pg-backup,
-# which the backups of the in-cluster Postgres log in with. The
-# *_S3_SECRET_KEY ones get 20 random bytes in hex like S3_SECRET_VARS (MinIO's 40-character cap), the others 24.
+# Kafka (compose runs Redpanda without SASL), Grafana's admin login, and the secret key of the object store's user
+# svp-pg-backup, which the backups of the in-cluster Postgres log in with. The
+# *_S3_SECRET_KEY ones get 20 random bytes in hex like S3_SECRET_VARS, the others 24.
 K8S_SECRET_VARS := SVP_PG_SUPERUSER_PASSWORD SVP_KAFKA_ADMIN_PASSWORD SVP_KAFKA_KEDA_PASSWORD \
 	SVP_KAFKA_USER_SERVICE_PASSWORD SVP_KAFKA_VIDEO_SERVICE_PASSWORD SVP_KAFKA_ENGAGEMENT_SERVICE_PASSWORD \
 	SVP_KAFKA_FEED_SERVICE_PASSWORD SVP_KAFKA_MEDIA_WORKER_PASSWORD SVP_GRAFANA_ADMIN_PASSWORD \
@@ -61,7 +62,7 @@ WEB_KEY_VARS := NEXT_SERVER_ACTIONS_ENCRYPTION_KEY
 
 .PHONY: env env-required obs-valid obs-exclusive k3d-exclusive ci-bridge-check db-bootstrap glitchtip-init up down clean-data ps logs compose-config compose-hash slo-check smoke test-stack drill-kill-worker drill-duplicates measure-ready \
 	drill-duplicates-feed drill-engagement-down measure-freshness drill-rate-limit measure-explore-cache drill-upload-cleanup \
-	drill-alert-to-sentry drill-obs-threats gameday gameday-mark gameday-end
+	drill-alert-to-sentry drill-obs-threats gameday gameday-mark gameday-end object-store-copy
 
 # .env is read with the strict rule of deploy/observability/glitchtip/dotenv.sh, the same as
 # glitchtip-init: a line it refuses stops make env, naming the variable, before anything is written.
@@ -148,10 +149,26 @@ up: k3d-exclusive env-required obs-valid obs-exclusive db-bootstrap ## Bootstrap
 down: ## Stop and remove the containers of every profile and the network (no volume is touched)
 	$(COMPOSE_ALL) down
 
-clean-data: ## Stop every profile and delete the stack's volumes (Redpanda topics, MinIO buckets, media-worker scratch, LGTM data, Alertmanager silences, Elasticsearch indices)
-	@echo "Removing the svp stack and these volumes with all their data (Postgres on the host is not touched):"
-	@env -u DOCKER_DEFAULT_PLATFORM docker volume ls -q --filter label=com.docker.compose.project=svp | sed 's/^/  /'
+# down -v removes only the volumes the compose file declares. A volume of the project that it no longer declares stays
+# and is named as kept: svp_minio-data, the MinIO data from before the store became RustFS, is the way back to MinIO.
+clean-data: ## Stop every profile and delete the stack's volumes (Redpanda topics, object store buckets, media-worker scratch, LGTM data, Alertmanager silences, Elasticsearch indices); a volume no longer in the compose file is kept
+	@declared=$$($(COMPOSE_ALL) config --volumes | sed 's/^/svp_/'); \
+	  existing=$$(env -u DOCKER_DEFAULT_PLATFORM docker volume ls -q --filter label=com.docker.compose.project=svp); \
+	  echo "Removing the svp stack and these volumes with all their data (Postgres on the host is not touched):"; \
+	  kept=; for v in $$existing; do \
+	    if printf '%s\n' $$declared | grep -qx "$$v"; then echo "  $$v"; else kept="$$kept $$v"; fi; \
+	  done; \
+	  if [ -n "$$kept" ]; then echo "Keeping these volumes of the project, which the compose file no longer declares:"; \
+	    for v in $$kept; do echo "  $$v"; done; fi
 	$(COMPOSE_ALL) down -v
+
+# Moves the object store's data between MinIO (volume svp_minio-data, the store to go back to) and RustFS
+# (svp_s3-data), so that every object a row of svp_video points to is on the store that runs next. The script never
+# deletes or overwrites an object and removes no volume: a target holding a key the source lacks, or of another size,
+# is refused before anything is written.
+TO ?=
+object-store-copy: env-required ## TO=s3|minio: copy buckets uploads and media from MinIO's volume svp_minio-data to RustFS's svp_s3-data (s3) or back (minio), then check keys, sizes and Content-Type match; refuses while the compose stack or k3d runs, a video is PROCESSING, or the target has a key the source lacks or of another size; never deletes or overwrites an object, removes no volume
+	deploy/compose/object-store-copy.sh '$(TO)'
 
 ps: ## Show the containers of every profile
 	$(COMPOSE_ALL) ps -a
@@ -263,8 +280,10 @@ measure-freshness: env-required ## Time video.ready to the last timeline row for
 
 # test-stack reads the S3 secret keys from .env with the strict rule of
 # deploy/observability/glitchtip/dotenv.sh, as deploy/postgres/bootstrap.sh and compose do: no
-# sourcing, no echo, and they reach go test through the environment, not its command line.
-test-stack: env-required ## go test -race against the running stack (make up): MinIO and Redpanda test variables set
+# sourcing, no echo, and they reach go test through the environment, not its command line. Every
+# run is uncached and verbose, so it shows each test that ran against the stack and each one that
+# skipped; TESTFLAGS adds flags as for make test.
+test-stack: env-required ## go test -race -count=1 -v against the running stack (make up): object store and Redpanda test variables set; TESTFLAGS adds flags
 	@set -e; \
 	. deploy/observability/glitchtip/dotenv.sh; \
 	value() { v=$$(dotenv_value .env "$$1") || return 1; \
@@ -272,10 +291,12 @@ test-stack: env-required ## go test -race against the running stack (make up): M
 	  printf '%s' "$$v"; }; \
 	SVP_TEST_S3_VIDEO_SECRET_KEY=$$(value SVP_VIDEO_S3_SECRET_KEY); \
 	SVP_TEST_S3_WORKER_SECRET_KEY=$$(value SVP_MEDIA_WORKER_S3_SECRET_KEY); \
-	export SVP_TEST_S3_VIDEO_SECRET_KEY SVP_TEST_S3_WORKER_SECRET_KEY; \
+	SVP_TEST_S3_PROBE_SECRET_KEY=$$(value SVP_S3_PROBE_SECRET_KEY); \
+	export SVP_TEST_S3_VIDEO_SECRET_KEY SVP_TEST_S3_WORKER_SECRET_KEY SVP_TEST_S3_PROBE_SECRET_KEY; \
 	export SVP_TEST_POSTGRES_URL='$(SVP_TEST_POSTGRES_URL)' SVP_TEST_REDIS_URL='$(SVP_TEST_REDIS_URL)'; \
 	export SVP_TEST_S3_ENDPOINT=http://127.0.0.1:9000; \
-	export SVP_TEST_S3_VIDEO_ACCESS_KEY=svp-video-service SVP_TEST_S3_WORKER_ACCESS_KEY=svp-media-worker; \
+	export SVP_TEST_S3_VIDEO_ACCESS_KEY=svp-video-service SVP_TEST_S3_WORKER_ACCESS_KEY=svp-media-worker \
+	  SVP_TEST_S3_PROBE_ACCESS_KEY=svp-objstore-probe; \
 	export SVP_TEST_KAFKA_BROKERS=127.0.0.1:19092; \
-	echo "go test -race $(PKGS) (SVP_TEST_* set for MinIO http://127.0.0.1:9000 and Redpanda 127.0.0.1:19092)"; \
-	go test -race $(PKGS)
+	echo "go test -race -count=1 -v $(TESTFLAGS) $(PKGS) (SVP_TEST_* set for the object store http://127.0.0.1:9000 and Redpanda 127.0.0.1:19092)"; \
+	go test -race -count=1 -v $(TESTFLAGS) $(PKGS)

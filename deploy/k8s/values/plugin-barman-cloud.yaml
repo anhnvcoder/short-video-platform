@@ -4,9 +4,9 @@
 # between the operator and the plugin from the chart's self-signed Issuer, and after the CloudNativePG operator (wave
 # 2), in the operator's namespace as the plugin requires; before chart svp-data (wave 4), whose ObjectStore
 # svp-pg-backup and Cluster svp-pg use it. The plugin streams the WAL and base backups of svp-pg to bucket pg-backups of
-# the cluster's MinIO: Barman runs in a sidecar it injects into the Postgres pod (and into the recovery Job's pod), so
-# the Postgres image stays the minimal one, which has no Barman. The chart's pod and the sidecar already meet Pod
-# Security "restricted" (non-root, read-only root, drop ALL, seccomp RuntimeDefault).
+# the cluster's object store s3: Barman runs in a sidecar it injects into the Postgres pod (and into the recovery Job's
+# pod), so the Postgres image stays the minimal one, which has no Barman. The chart's pod and the sidecar already meet
+# Pod Security "restricted" (non-root, read-only root, drop ALL, seccomp RuntimeDefault).
 #
 # RBAC: the chart's own ClusterRole is kept. It reads, creates and deletes Secrets and creates Roles and RoleBindings in
 # every namespace, and the plugin's manager builds its cache for the whole cluster with no flag to narrow it

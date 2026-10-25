@@ -20,7 +20,7 @@ export interface CspOptions {
 }
 
 export function contentSecurityPolicy({ nonce, mediaOrigin, uploadOrigin, secure, dev }: CspOptions): string {
-  // The upload origin is listed once when it is the media origin (one MinIO serves both in compose).
+  // The upload origin is listed once when it is the media origin (one object store serves both in compose).
   const connect = uploadOrigin === mediaOrigin ? mediaOrigin : `${mediaOrigin} ${uploadOrigin}`;
   const directives = [
     "default-src 'self'",

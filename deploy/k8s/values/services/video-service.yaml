@@ -1,6 +1,6 @@
 # Release video-service of chart deploy/helm/svp-service.
-# Secret video-service-env holds DATABASE_URL (app role), the Kafka login and MinIO user svp-video-service's secret key;
-# video-service-migrate-env the migrator role's DATABASE_URL.
+# Secret video-service-env holds DATABASE_URL (app role), the Kafka login and the object store user svp-video-service's
+# secret key; video-service-migrate-env the migrator role's DATABASE_URL.
 image:
   # Releases on GHCR, built, scanned and signed by CI (.github/workflows/images.yml). The promote pull request
   # writes the three lines below; the GitOps cluster pulls the digest, the tag names the commit for people. Empty:
@@ -17,9 +17,9 @@ resources:
 env:
   LISTEN_ADDR: ":9102"
   KAFKA_BROKERS: redpanda.svp-data.svc.cluster.local:9092
-  # Calls to MinIO stay in the cluster; the presigned upload URLs handed to clients name MinIO through Gateway svp:
-  # the browser uploads straight to MinIO, so the host in the form must be reachable from outside.
-  S3_ENDPOINT: http://minio.svp-data:9000
+  # Calls to the object store stay in the cluster; the presigned upload URLs handed to clients name it through Gateway
+  # svp: the browser uploads straight to the store, so the host in the form must be reachable from outside.
+  S3_ENDPOINT: http://s3.svp-data:9000
   S3_PUBLIC_ENDPOINT: https://s3.svp.localhost:8443
   S3_ACCESS_KEY_ID: svp-video-service
   PYROSCOPE_SERVER_ADDRESS: http://pyroscope.svp-obs:4040
@@ -27,4 +27,4 @@ env:
 # SENTRY_DSN from Secret sentry (errors to GlitchTip in svp-obs).
 errorTracking: true
 ingressFrom: [gateway]
-egressTo: [postgres, redpanda, minio, collector, pyroscope, glitchtip]
+egressTo: [postgres, redpanda, s3, collector, pyroscope, glitchtip]

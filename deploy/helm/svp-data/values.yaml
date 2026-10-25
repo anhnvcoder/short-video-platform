@@ -11,7 +11,8 @@ postgres:
   resources:
     requests: {cpu: 100m, memory: 256Mi}
     limits: {cpu: "1", memory: 512Mi}
-  # WAL archiving and base backups to bucket pg-backups of MinIO through the Barman Cloud plugin (templates/backup.yaml).
+  # WAL archiving and base backups to bucket pg-backups of the object store s3 through the Barman Cloud plugin
+  # (templates/backup.yaml).
   backup:
     # The archive generation svp-pg writes its WAL and base backups to, a prefix of the bucket. A Cluster restored from
     # backups must archive into a new, empty one (the recovery Job refuses an archive that already holds WAL, and two
@@ -43,21 +44,21 @@ valkey:
     requests: {cpu: 20m, memory: 16Mi}
     limits: {cpu: "1", memory: 128Mi}
 
-minio:
-  # Same image as compose; Chainguard's free tier publishes `latest` only, hence the digest.
-  image: cgr.dev/chainguard/minio@sha256:7df55d002b698e4494a131b848dd553361bbe58b7e19f62d9623c29af1ba9ccf
+s3:
+  # The object store, the same image as compose's s3 (RustFS), pinned by the digest of its multi-arch index.
+  image: docker.io/rustfs/rustfs:1.0.3@sha256:9ca9559533b537d10482fe923288b676ad08f92a7069d9a17327fbae3cab688b
   storage: 5Gi
   resources:
     requests: {cpu: 100m, memory: 256Mi}
     limits: {cpu: "1", memory: 512Mi}
   # Presigned POST uploads and HLS playback from the host go through Gateway svp at https://<host>:8443.
   host: s3.svp.localhost
-  # The one origin whose pages may read MinIO's answers (MINIO_API_CORS_ALLOW_ORIGIN): the web client's in the cluster.
-  # The browser talks to MinIO cross-origin, hls.js loading playlists and segments with XHR and the upload page posting
-  # the file with XHR (its progress listener makes that a preflight); MinIO's default is *, any site (threat model
-  # WEB-10). The setting covers every bucket. Only this origin: the web clients of compose and make web-dev
-  # (http://localhost:3001, :3002) use compose's MinIO, never this one.
-  corsAllowOrigin: https://svp.localhost:8443
+  # The origins whose pages may read the store's answers, set by the s3-init Job as the CORS rules of each bucket:
+  # POST to uploads, GET and HEAD at media, nothing else. The browser talks to the store cross-origin, hls.js loading
+  # playlists and segments with XHR and the upload page posting the file with XHR (its progress listener makes that a
+  # preflight) (threat model WEB-10). Only the web client's origin in the cluster: the web clients of compose and
+  # make web-dev (http://localhost:3001, :3002) use compose's store, never this one. Commas without spaces.
+  corsAllowedOrigins: https://svp.localhost:8443
 
 redpanda:
   # The broker image, for rpk in the init Job.
@@ -65,8 +66,8 @@ redpanda:
   brokers: redpanda.svp-data.svc.cluster.local:9092
   adminHosts: redpanda-0.redpanda.svp-data.svc.cluster.local:9644
 
-# The init Jobs (Postgres bootstrap, MinIO, Redpanda). waitSeconds bounds how long each waits for its server after an
-# install or upgrade before it fails.
+# The init Jobs (Postgres bootstrap, the object store s3, Redpanda). waitSeconds bounds how long each waits for its
+# server after an install or upgrade before it fails.
 initJobs:
   waitSeconds: 300
   resources:
@@ -81,4 +82,4 @@ clients:
   # Rate limits (db 10), the explore cache (db 14) and the web client's sessions (db 9).
   valkey: [gateway, feed-service, web]
   kafka: [user-service, video-service, engagement-service, feed-service, media-worker]
-  minio: [video-service, media-worker]
+  s3: [video-service, media-worker]

@@ -279,7 +279,7 @@ func positiveDuration(name, def string) (time.Duration, error) {
 	return d, nil
 }
 
-// checkEndpoint requires an absolute http or https URL with a host, such as http://minio:9000.
+// checkEndpoint requires an absolute http or https URL with a host, such as http://s3:9000.
 func checkEndpoint(name, value string) error {
 	u, err := url.Parse(value)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {

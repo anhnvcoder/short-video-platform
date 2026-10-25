@@ -85,8 +85,8 @@ const schema = z.object({
     "must be https, or http only on host localhost",
   ),
   MEDIA_ORIGIN: origin,
-  // The browser posts the file and its 15-minute upload credential here, so plain http is for loopback only (MinIO of
-  // compose on 127.0.0.1:9000), where the request never leaves the machine. Not an origin: as for APP_ORIGIN.
+  // The browser posts the file and its 15-minute upload credential here, so plain http is for loopback only (the object
+  // store of compose on 127.0.0.1:9000), where the request never leaves the machine. Not an origin: as for APP_ORIGIN.
   UPLOAD_ORIGIN: origin.refine(
     (value) => !isOrigin(value) || !value.startsWith("http:") || loopbackHosts.has(new URL(value).hostname),
     "must be https, or http only on a loopback host",

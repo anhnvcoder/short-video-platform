@@ -1,9 +1,9 @@
 apiVersion: v2
 name: svp-data
 description: >-
-  Data tier of the short-video platform on k3d, namespace svp-data: the CloudNativePG Cluster svp-pg, Valkey, MinIO and
-  its HTTPRoute, the NetworkPolicies of every data pod (Redpanda's included), the init Jobs that create the databases
-  and roles, the buckets and MinIO users, the topics, Kafka users and ACLs, and the login of KEDA's Kafka scaler
-  (ClusterTriggerAuthentication keda-kafka).
+  Data tier of the short-video platform on k3d, namespace svp-data: the CloudNativePG Cluster svp-pg, Valkey, the
+  object store s3 (RustFS) and its HTTPRoute, the NetworkPolicies of every data pod (Redpanda's included), the init Jobs
+  that create the databases and roles, the buckets and object store users, the topics, Kafka users and ACLs, and the
+  login of KEDA's Kafka scaler (ClusterTriggerAuthentication keda-kafka).
 type: application
 version: 0.1.0

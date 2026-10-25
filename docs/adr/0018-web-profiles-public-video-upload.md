@@ -1,7 +1,8 @@
 # 0018. Giai đoạn 5b phần B: handle không đổi và tên hiển thị ở user-service, danh sách video theo tác giả, route công khai `GET /public/videos/{id}` có rate limit theo IP, upload từ trình duyệt
 
 - Trạng thái: Chấp nhận; contract chốt ngày 2026-10-22, hiện thực và đã kiểm trên máy cùng ngày (mục "Kết quả phần B");
-  ngưỡng LCP của Lighthouse chưa đạt, chấp nhận ở phần B (§10)
+  ngưỡng LCP của Lighthouse chưa đạt, chấp nhận ở phần B (§10); §9 (CORS toàn cục của MinIO) bị thay một phần bởi
+  [0022](0022-local-object-store-minio-replacement.md) (CORS theo bucket trên RustFS, cùng origin web)
 - Ngày: 2026-10-22
 
 ## Bối cảnh
@@ -486,6 +487,10 @@ Chọn **A** (thiết kế `web/design/UploadFlow.dc.html`).
 
 ## 9. CORS của MinIO (WEB-10)
 
+**Bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md)** (2026-10-25): store là RustFS, CORS đặt theo bucket bằng `PutBucketCors` ở job `s3-init`
+(`uploads` chỉ `POST`, `media` chỉ `GET`, `HEAD`, cùng origin web), danh sách toàn cục để rỗng; `http://127.0.0.1:3001` vẫn
+không nằm trong danh sách. Phần dưới giữ nguyên như lúc quyết.
+
 - Compose: service `minio` đặt `MINIO_API_CORS_ALLOW_ORIGIN=http://localhost:3001,http://localhost:3002` (web và `web-dev`).
   Dấu phẩy, không khoảng trắng: MinIO không bỏ khoảng trắng quanh từng origin, và phần tử rỗng làm cấu hình lỗi.
 - Biến này toàn cục cho mọi bucket (MinIO community không có CORS theo bucket), áp cho cả upload (`POST` vào `uploads`) lẫn
@@ -651,8 +656,8 @@ của web (trang báo lỗi, không gửi byte nào), không có e2e; `make up O
   `web/features/feed/share-screen.tsx`.
 - Route web (§7): `web/app/(main)/u/[handle]/page.tsx`, `web/server/profile-page.ts`, `web/server/auth-state.ts`,
   `web/server/api-proxy.ts`, `web/features/feed/api.ts`.
-- Upload từ trình duyệt và CORS của MinIO (§8, §9): `web/features/upload/`, `UPLOAD_ORIGIN` và `MINIO_API_CORS_ALLOW_ORIGIN` ở
-  `deploy/compose/compose.yaml`.
+- Upload từ trình duyệt và CORS (§8, §9): `web/features/upload/`, `UPLOAD_ORIGIN` ở `deploy/compose/compose.yaml`; CORS theo
+  bucket ở `deploy/s3/init.sh` (bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md)).
 - Lighthouse và ngân sách bundle (§10, §11): `web/lighthouse/run.sh`, target `web-lighthouse`, `web-check` của `Makefile`.
 - Kiểm: `deploy/compose/smoke.sh`, `web/e2e/` (`profile.e2e.ts`, `share.e2e.ts`, `upload.e2e.ts`, `measure-upload.e2e.ts`,
   `security.e2e.ts`, `fixtures.ts`), `web/server/auth.test.ts`, `web/features/profile/display-name.test.ts`.

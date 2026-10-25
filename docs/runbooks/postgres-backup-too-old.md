@@ -12,7 +12,7 @@ của thế hệ lưu trữ đang chạy; 0 khi chưa có cái nào):
 
 - `backup="stale"`: backup cơ sở mới nhất cũ hơn 26 giờ (lịch `svp-pg-daily` 03:00 UTC mỗi ngày, cộng 2 giờ);
 - `backup="none"`: chưa có backup cơ sở nào suốt 1 giờ. `ScheduledBackup` có `immediate: true` và là hook của chart, tạo sau
-  Job `minio-init` (bucket, login đã có), nên cluster mới có backup đầu sau vài phút; trên đường dev `make k8s-up` còn tự lấy
+  Job `s3-init` (bucket, login đã có), nên cluster mới có backup đầu sau vài phút; trên đường dev `make k8s-up` còn tự lấy
   một backup khi thế hệ đang chạy chưa có. 0 lâu là backup đầu lỗi.
 
 Người dùng không thấy gì. WAL vẫn được lưu (nếu không, đã có [PostgresWALArchivingFailing](postgres-wal-archiving-failing.md)),
@@ -40,7 +40,7 @@ curl -sG "$PROM/api/v1/query" --data-urlencode 'query=barman_cloud_cloudnative_p
 
 1. **Cluster tắt lúc 03:00 UTC** (máy tắt, `k3d cluster stop`): CloudNativePG không chạy bù lịch đã lỡ. Dấu hiệu: bước 1
    không có Backup nào của hôm đó, không có lỗi. Đây là trường hợp thường gặp nhất ở lab.
-2. **Backup lỗi**: bước 1 có `PHASE` `failed` và `ERROR`; thường cùng nguyên nhân với lưu WAL lỗi (MinIO, credential,
+2. **Backup lỗi**: bước 1 có `PHASE` `failed` và `ERROR`; thường cùng nguyên nhân với lưu WAL lỗi (object store `s3`, credential,
    NetworkPolicy): xem [postgres-wal-archiving-failing.md](postgres-wal-archiving-failing.md). Trên cluster có từ trước plugin,
    Backup `immediate` đầu có thể lỗi vì chạy trên pod Postgres cũ chưa có sidecar; CloudNativePG không chạy lại Backup lỗi, còn
    `make k8s-up` (đường dev) lấy một backup thay nó; cluster GitOps không có bước đó.

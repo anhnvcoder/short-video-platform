@@ -1,5 +1,5 @@
 # Core stack: gateway, user-service, video-service and their one-shot migrations, plus Redpanda and
-# MinIO with their one-shot init containers, plus engagement-service and feed-service with their
+# the object store `s3` (RustFS) with their one-shot init containers, plus engagement-service and feed-service with their
 # migrations, plus the web client `web`. Run it through `make up` / `make down`
 # (deploy/compose/compose.mk), which pass --env-file .env.
 #
@@ -15,14 +15,14 @@
 #
 # Postgres and Redis are the native ones on the host (127.0.0.1:5432, 127.0.0.1:6379), reached
 # as host.docker.internal; each service has its own Redis db (CLAUDE.md).
-# Published ports are on the host's loopback only: the gateway, the web client (3001), the MinIO
-# API and console, Redpanda's host listener, and with `obs` Grafana (3000), Alertmanager (9093)
+# Published ports are on the host's loopback only: the gateway, the web client (3001), the object
+# store's S3 API (9000), Redpanda's host listener, and with `obs` Grafana (3000), Alertmanager (9093)
 # and GlitchTip (8000). gRPC ports stay inside the compose network (threat model IN-2); so do
 # the Collector (4317) and LGTM's Prometheus (9090), Tempo (3200), Loki (3100) and Pyroscope
 # (4040), reached from the host through Grafana's datasource proxy.
 #
 # Three networks: `default` holds everything but media-worker and web; `worker` (internal, no
-# route out) holds media-worker, Redpanda, MinIO and the Collector only, so the worker that runs
+# route out) holds media-worker, Redpanda, the object store and the Collector only, so the worker that runs
 # ffmpeg on uploaded files reaches neither the gateway, the gRPC services, Postgres, LGTM nor the
 # internet (threat model FF-4, FF-5). The Collector only receives telemetry
 # there; it proxies nothing for the worker. `web` holds web, the gateway and,
@@ -30,11 +30,11 @@
 # browsers, so code run in it (the React Server Components remote code execution class,
 # CVE-2025-55182) reaches the gateway's HTTP API, the error tracker it reports to and the Collector it
 # sends telemetry to and nothing else in the stack: not the gRPC services, which take x-user-id as given (threat model IN-2), not
-# Redpanda (no authentication in compose) or MinIO by their compose names. It is not internal,
+# Redpanda (no authentication in compose) or the object store by their compose names. It is not internal,
 # because web reaches its Redis db on the host through
 # host.docker.internal; that same name opens every port of the host's loopback to it, so code run
 # in web still reaches what is published there (Redpanda's host listener 19092 without
-# authentication, MinIO 9000/9001, the other Redis dbs, Postgres with its trust rule, and with
+# authentication, the object store's 9000, the other Redis dbs, Postgres with its trust rule, and with
 # `obs` Grafana, Alertmanager, GlitchTip). Accepted for the compose lab, where Redis is the host's
 # (threat model WEB-13); the k3d release closes it with NetworkPolicy.
 name: svp
@@ -71,8 +71,7 @@ x-telemetry-app-env: &telemetry-app-env
   SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-local}
 
 x-redpanda-image: &redpanda-image redpandadata/redpanda:v26.2.4@sha256:c98c2f04a751e6646012cc701bac5183252cee44c88ba1dfa412e4c7124f2e89
-# Chainguard's free tier only publishes `latest`, so the image is pinned by digest.
-x-minio-image: &minio-image cgr.dev/chainguard/minio@sha256:7df55d002b698e4494a131b848dd553361bbe58b7e19f62d9623c29af1ba9ccf
+x-s3-image: &s3-image rustfs/rustfs:1.0.3@sha256:9ca9559533b537d10482fe923288b676ad08f92a7069d9a17327fbae3cab688b
 x-glitchtip-image: &glitchtip-image glitchtip/glitchtip:6.2.6@sha256:a3d8eb1b36c1e1603d55ab32711ea3dd8115874742a781a57391a62a16e0dff6
 
 # Settings shared by `glitchtip` and `glitchtip-init`. Database svp_glitchtip
@@ -150,50 +149,68 @@ services:
       redpanda:
         condition: service_healthy
 
-  minio:
+  # The local object store: RustFS, an S3 API on one disk, with buckets, users, policies and CORS
+  # rules made by s3-init.
+  s3:
     profiles: [core]
-    image: *minio-image
-    command: ["server", "/data", "--console-address", ":9001"]
+    image: *s3-image
     environment:
-      # The root credential exists only here and in minio-init; services get their own users (UP-5).
-      MINIO_ROOT_USER: svp-admin
-      MINIO_ROOT_PASSWORD: ${SVP_MINIO_ROOT_PASSWORD:?run make env}
-      # The browser talks to MinIO cross-origin: hls.js loads playlists and segments with XHR,
-      # and the upload page posts the file with XHR (its progress listener makes that a CORS
-      # preflight). The default is *, any site; this lets only the web client's origins read the
-      # answers: `make up` (3001) and `make web-dev` (3002). Commas without spaces: MinIO does not
-      # trim around each origin, and an empty item is a config error (WEB-10).
-      MINIO_API_CORS_ALLOW_ORIGIN: http://localhost:3001,http://localhost:3002
+      # The root credential exists only here and in s3-init; services get their own users (UP-5).
+      RUSTFS_ACCESS_KEY: svp-admin
+      RUSTFS_SECRET_KEY: ${SVP_S3_ROOT_PASSWORD:?run make env}
+      # No web console (on by default, on :9001): nothing in the lab needs it, and it would be one
+      # more login with the root credential, so no listener is opened for it.
+      RUSTFS_CONSOLE_ENABLE: "false"
+      # No global CORS origins: only the rules s3-init sets on each bucket answer a browser, so a
+      # bucket without rules of its own sends no CORS header (WEB-10).
+      RUSTFS_CORS_ALLOWED_ORIGINS: ""
+      # The lab sends nothing out: no check for a new version at start.
+      RUSTFS_CHECK_UPDATE: "false"
+      # Logs go to stdout (docker logs), not to files under the image's /logs, which the read-only
+      # root would refuse.
+      RUSTFS_OBS_LOG_DIRECTORY: ""
     mem_limit: 512m
     networks: [default, worker]
     volumes:
-      # The image's /data is world-writable, so the new volume is writable by its uid 65532.
-      - minio-data:/data
+      - s3-data:/data
     ports:
       - "127.0.0.1:9000:9000"
-      - "127.0.0.1:9001:9001"
+    # The image has a shell, apk and curl, so the container takes them away as for media-worker:
+    # read-only root (the store writes only to /data), no capabilities, no privilege gain, the
+    # image's non-root user.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    user: "10001:10001"
     healthcheck:
-      # No curl in the image: mc asks the server's unauthenticated readiness endpoint.
-      test: ["CMD", "mc", "ready", "local"]
+      # The store's unauthenticated readiness endpoint, asked with the image's curl.
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:9000/health/ready"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 20s
       start_interval: 1s
 
-  minio-init:
+  s3-init:
     profiles: [core]
-    image: *minio-image
+    image: *s3-image
     entrypoint: ["/bin/sh", "/init/init.sh"]
     environment:
-      MINIO_ROOT_PASSWORD: ${SVP_MINIO_ROOT_PASSWORD:?run make env}
+      S3_ROOT_PASSWORD: ${SVP_S3_ROOT_PASSWORD:?run make env}
       SVP_VIDEO_S3_SECRET_KEY: ${SVP_VIDEO_S3_SECRET_KEY:?run make env}
       SVP_MEDIA_WORKER_S3_SECRET_KEY: ${SVP_MEDIA_WORKER_S3_SECRET_KEY:?run make env}
+      # The probe user of the integration tests (make test-stack).
+      SVP_S3_PROBE_SECRET_KEY: ${SVP_S3_PROBE_SECRET_KEY:?run make env}
+      # The browser talks to the store cross-origin: hls.js loads playlists and segments with XHR,
+      # and the upload page posts the file with XHR (its progress listener makes that a CORS
+      # preflight). Only the web client's origins may read the answers: `make up` (3001) and
+      # `make web-dev` (3002). Commas without spaces (WEB-10).
+      S3_CORS_ALLOWED_ORIGINS: http://localhost:3001,http://localhost:3002
     volumes:
-      - ../minio:/init:ro
+      - ../s3:/init:ro
     restart: "no"
     depends_on:
-      minio:
+      s3:
         condition: service_healthy
 
   user-migrate:
@@ -282,13 +299,13 @@ services:
       LISTEN_ADDR: ":9102"
       DATABASE_URL: postgres://svp_video_app:${SVP_VIDEO_APP_DB_PASSWORD:?run make env}@host.docker.internal:5432/svp_video?sslmode=disable
       KAFKA_BROKERS: redpanda:9092
-      # Service-to-MinIO calls use the compose name; upload URLs handed to clients use the host
+      # Service-to-store calls use the compose name; upload URLs handed to clients use the host
       # address.
-      S3_ENDPOINT: http://minio:9000
+      S3_ENDPOINT: http://s3:9000
       S3_PUBLIC_ENDPOINT: http://127.0.0.1:9000
       S3_ACCESS_KEY_ID: svp-video-service
       S3_SECRET_ACCESS_KEY: ${SVP_VIDEO_S3_SECRET_KEY:?run make env}
-      # Abandoned uploads are cleaned up after this long, so their objects do not stay in MinIO.
+      # Abandoned uploads are cleaned up after this long, so their objects do not stay in the store.
       # Only the upload-cleanup drill sets
       # SVP_UPLOAD_* short; a value under the 15 minutes of an upload form is for drills only.
       UPLOAD_ABANDON_AFTER: ${SVP_UPLOAD_ABANDON_AFTER:-1h}
@@ -303,7 +320,7 @@ services:
         condition: service_healthy
       redpanda-init:
         condition: service_completed_successfully
-      minio-init:
+      s3-init:
         condition: service_completed_successfully
 
   engagement-service:
@@ -419,7 +436,8 @@ services:
   # http://localhost:3001, the APP_ORIGIN that login redirects and the cookie's form go by.
   # http://127.0.0.1:3001 logs in too, with a session cookie of its own (browsers send
   # Sec-Fetch-Site: same-origin there, which the CSRF check accepts before it compares Origin),
-  # but plays and uploads no video: MinIO's CORS allows only the localhost origins.
+  # but plays and uploads no video: the CORS rules of the store's buckets allow only the localhost
+  # origins.
   web:
     <<: *host-services
     profiles: [core]
@@ -444,7 +462,7 @@ services:
       # Where the browser fetches HLS and thumbnails (the gateway's MEDIA_PUBLIC_BASE_URL), allowed
       # by the Content-Security-Policy.
       MEDIA_ORIGIN: http://127.0.0.1:9000
-      # Where the browser posts an upload (the presigned POST of video-service, on the same MinIO),
+      # Where the browser posts an upload (the presigned POST of video-service, on the same store),
       # allowed by the Content-Security-Policy; the upload page sends a file to no other origin.
       UPLOAD_ORIGIN: http://127.0.0.1:9000
       # Errors of the server and the browser's reports (POST /monitoring) go to GlitchTip at the
@@ -494,7 +512,7 @@ services:
     environment:
       <<: *telemetry-env
       KAFKA_BROKERS: redpanda:9092
-      S3_ENDPOINT: http://minio:9000
+      S3_ENDPOINT: http://s3:9000
       S3_ACCESS_KEY_ID: svp-media-worker
       S3_SECRET_ACCESS_KEY: ${SVP_MEDIA_WORKER_S3_SECRET_KEY:?run make env}
       WORK_DIR: /work
@@ -526,7 +544,7 @@ services:
         condition: service_healthy
       redpanda-init:
         condition: service_completed_successfully
-      minio-init:
+      s3-init:
         condition: service_completed_successfully
 
   otelcol:
@@ -785,7 +803,8 @@ networks:
 
 volumes:
   redpanda-data:
-  minio-data:
+  # The image's /data is owned by its uid 10001, so the new volume is writable by it.
+  s3-data:
   # Created owned by 65532:65532 from the image's /work, so the worker can write to it.
   media-worker-work:
   # Prometheus, Tempo, Loki, Pyroscope and Grafana data of the obs profile.

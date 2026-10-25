@@ -25,9 +25,9 @@
 # skipped with the note "not in targets", which does not make the run fail, and keep their id, so a log is named the
 # same in every run. A name that is not one of the scenario's, or a character other than a-z, 0-9, - and space, stops
 # the script before any target starts (exit 2). A target that reads another's result still needs it: ram-peak
-# without drill-k8s-keda is skipped, and fails the run; the others fail on their own, so name what they read with them:
-# the READY video of smoke (k8s-smoke) for load-local and drill-k8s-threats, the reports of web-lighthouse-<n> for
-# lcp, the run of k8s-web-e2e for drill-k8s-web-obs.
+# without drill-k8s-keda and ram-s3-upload without measure-upload are skipped, and fail the run; the others fail on
+# their own, so name what they read with them: the READY video of smoke (k8s-smoke) for load-local, drill-k8s-threats
+# and object-store-roundtrip, the reports of web-lighthouse-<n> for lcp, the run of k8s-web-e2e for drill-k8s-web-obs.
 #
 # Deadline: no target starts, and none runs, past the earlier of
 #   - the job's start ($SVP_VERIFY_OUT/job-start, written by the job's first step) + SVP_VERIFY_JOB_MINUTES - 25 min,
@@ -61,6 +61,25 @@
 #   web-lighthouse-<n>         make web-lighthouse, its manifest.json kept as manifest-<n>.json
 #   lcp                        median LCP of / and /v/{id} over the three runs, with Lighthouse's benchmarkIndex;
 #                              lcp.json; fails when a median is over 2500 ms
+#   test-stack-objstore        make test-stack PKGS=./internal/objstore/... (go test -race -count=1 -v against the
+#                              stack's object store), its output counted: fails when go test fails, when any test or
+#                              subtest SKIPs (a skipped case proves nothing about the store), or when one of the
+#                              integration tests (presigned POST, worker and video-service permissions, DeletePrefix,
+#                              multipart with CRC32) did not PASS
+#   ram-s3-upload              deploy/ci/verify-sample.sh s3-peak over the samples taken while measure-upload ran: the
+#                              highest MEM USAGE of the object store's container while ~100 MB went up from the browser
+#                              and transcoded; ram-s3-upload.json, .txt; fails when it is not under its 512 MiB limit or
+#                              no sample saw it. Skipped when measure-upload did not run
+#   object-store-roundtrip     the way back to MinIO, tried on this runner's data: searches the log of s3-init (make up
+#                              ran it) for every secret value of .env (only counts printed), waits until no video
+#                              is PROCESSING (SELECT on svp_video), takes one sample of verify-sample.sh when it keeps
+#                              samples (the compose containers' restarts, which make down removes with them), make
+#                              down, make object-store-copy TO=minio (into a new volume svp_minio-data of the runner),
+#                              which must pass and name no READY video's key lost, with at least one READY video made
+#                              on RustFS by the targets before; then, passed or not, make up OBS=lgtm again on RustFS
+#                              (s3-init a second time, on a store it already initialised: its log searched the same
+#                              way) and make smoke. Last: it stops and starts the whole stack, so a target after it
+#                              would run on another stack than in earlier runs
 #   ram-rest-<label> (k3d)     the cluster at rest: every pod Ready (or ended:
 #                              Succeeded, Failed), 60 s, then the median of the next 6 samples of verify-sample.sh
 #                              (10 s apart) of docker stats MEM USAGE of the k3d containers; anon, active_file and
@@ -84,7 +103,9 @@ cd "$repo" || exit 1
 . "$here/platform.sh"
 tmp_root=$(ci_temp_dir) || exit 1
 out=${SVP_VERIFY_OUT:-$tmp_root/verify}
-export SVP_VERIFY_OUT=$out repo here
+# The secret lists of deploy/ci/verify-mask.sh, which object-store-roundtrip searches the s3-init logs with.
+secrets=${SVP_VERIFY_SECRETS:-$tmp_root/verify-secrets}
+export SVP_VERIFY_OUT=$out SVP_VERIFY_SECRETS=$secrets repo here
 
 scenario=${1:-}
 case $scenario in
@@ -397,6 +418,79 @@ lcp_median() {
   jq -e 'length > 0 and all(.within_2500_ms)' "$SVP_VERIFY_OUT/lcp.json" >/dev/null
 }
 
+# objstore_tests: see test-stack-objstore in the header.
+objstore_tests() {
+  local tmp rc passes fails skips missing= t
+  tmp=$(mktemp)
+  make test-stack PKGS=./internal/objstore/... 2>&1 | tee "$tmp"
+  rc=${PIPESTATUS[0]}
+  passes=$(grep -cE '^ *--- PASS: ' "$tmp")
+  fails=$(grep -cE '^ *--- FAIL: ' "$tmp")
+  skips=$(grep -cE '^ *--- SKIP: ' "$tmp")
+  for t in TestIntegrationPresignedPost TestIntegrationWorkerPermissions TestIntegrationVideoServicePermissions \
+    TestIntegrationDeletePrefix TestIntegrationMultipartChecksum; do
+    grep -qE "^--- PASS: $t " "$tmp" || missing="$missing $t"
+  done
+  rm -f "$tmp"
+  echo "object store tests: $passes passed, $fails failed, $skips skipped (tests and subtests); make test-stack exit $rc"
+  [ -z "$missing" ] || echo "FAIL  did not pass:$missing"
+  [ "$skips" = 0 ] || echo "FAIL  $skips test(s) skipped: every test of the object store must run against it"
+  [ "$rc" = 0 ] && [ "$fails" = 0 ] && [ "$skips" = 0 ] && [ -z "$missing" ]
+}
+
+# s3_init_log WHICH: the log of the s3-init container (each of its runs since the last make down), counted and searched
+# for every secret value of .env, never printed (no service log reaches the job's log or the artifact); fails when it
+# has no line, when a value is in it, or without the list to search with.
+s3_init_log() {
+  local log lines hits list=$SVP_VERIFY_SECRETS/env.values
+  [ -s "$list" ] || { echo "FAIL  s3-init ($1): no secret list to search its log with"; return 1; }
+  log=$(make -s logs SVC=s3-init 2>&1) || { echo "FAIL  s3-init ($1): make logs SVC=s3-init failed"; return 1; }
+  lines=$(printf '%s\n' "$log" | grep -c .)
+  hits=$(printf '%s\n' "$log" | grep -cF -f "$list")
+  echo "s3-init ($1): $lines log line(s), $hits with a secret value of .env"
+  [ "$lines" -gt 0 ] && [ "$hits" = 0 ]
+}
+
+# object_store_roundtrip: see object-store-roundtrip in the header.
+object_store_roundtrip() {
+  local rc=0 ready processing deadline copy_out lost
+  # The Postgres of the runner is a service container of the job with the password postgres; object-store-copy.sh
+  # connects with -w and takes the password from the environment, as deploy/postgres/bootstrap.sh does.
+  export PGPASSWORD=${PGPASSWORD:-postgres}
+  pg() { psql -h 127.0.0.1 -p 5432 -U postgres -d svp_video -w -X -q -At -v ON_ERROR_STOP=1 -c "$1"; }
+  s3_init_log "before the copy" || rc=1
+  # Nothing may write to the store while it is copied: no upload runs between targets, and a transcode still going
+  # ends within minutes (the copy refuses while one is PROCESSING).
+  deadline=$(($(date +%s) + 300))
+  until processing=$(pg "SELECT count(*) FROM videos WHERE status = 'PROCESSING'") && [ "$processing" = 0 ]; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      echo "videos still PROCESSING after 300 s: ${processing:-unknown} (object-store-copy refuses then)"
+      break
+    fi
+    sleep 10
+  done
+  ready=$(pg "SELECT count(*) FROM videos WHERE status = 'READY'") || ready=
+  echo "videos READY in svp_video, made on RustFS by the targets before: ${ready:-unknown}"
+  case $ready in '' | 0) echo "FAIL  no READY video: the copy would prove nothing about the objects of one"; rc=1 ;; esac
+  # The sampler reads restarts every 10 s; one reading now keeps a restart since its last one, as make down removes the
+  # containers and make up makes them anew with a count of 0.
+  if [ -d "$SVP_VERIFY_OUT/samples" ]; then
+    "$here/verify-sample.sh" sample || echo "verify-sample.sh sample failed"
+  fi
+  make down || { echo "FAIL  make down"; return 1; }
+  copy_out=$(mktemp)
+  make object-store-copy TO=minio 2>&1 | tee "$copy_out"
+  [ "${PIPESTATUS[0]}" = 0 ] || { echo "FAIL  make object-store-copy TO=minio"; rc=1; }
+  lost=$(sed -n "s/^object-store-copy: READY videos' keys lost before this copy: //p" "$copy_out")
+  rm -f "$copy_out"
+  [ "$lost" = 0 ] || { echo "FAIL  READY videos' keys lost: ${lost:-not reported}"; rc=1; }
+  # The stack runs on RustFS again whatever the copy did: the copy never changes the store the stack uses.
+  make up OBS=lgtm || { echo "FAIL  make up OBS=lgtm after the copy"; return 1; }
+  s3_init_log "after the copy, on a store already initialised" || rc=1
+  make smoke || { echo "FAIL  make smoke after the copy"; rc=1; }
+  return "$rc"
+}
+
 kc() { kubectl --context k3d-svp "$@"; }
 
 # not_ready: the pods that have not ended (Succeeded or Failed) and are not Running with every container ready. A
@@ -461,7 +555,8 @@ ram_rest() {
   } | tee "$file.txt"
 }
 
-export -f load_local_watch fallback_alert_check lighthouse_run lcp_median kc not_ready ram_rest
+export -f load_local_watch fallback_alert_check lighthouse_run lcp_median objstore_tests s3_init_log \
+  object_store_roundtrip kc not_ready ram_rest
 
 # --- The scenarios. Called twice: with listing set, step
 # and skip only add each name to names, which SVP_VERIFY_TARGETS is checked against; then for the run.
@@ -475,9 +570,21 @@ scenario_targets() {
       step fallback-alert-under-load 1 bash -c fallback_alert_check
       for i in 1 2 3; do step "web-lighthouse-$i" 10 bash -c 'lighthouse_run "$1"' _ "$i"; done
       step lcp 1 bash -c lcp_median
-      # Last: an extra on top of the scenario's main sequence, and the longest wait (an alert of an earlier run must resolve
-      # first), so the deadline cuts it before anything else.
+      # The object store's own checks after the targets above, which so run as in the runs before the store changed.
+      step test-stack-objstore 20 bash -c objstore_tests
+      step drill-upload-cleanup 15 make drill-upload-cleanup
+      step measure-upload 25 make measure-upload
+      if [ "$last_status" = skipped ]; then
+        skip ram-s3-upload "measure-upload did not run"
+      else
+        step ram-s3-upload 2 "$here/verify-sample.sh" s3-peak "$last_start" "$last_end"
+      fi
+      # An extra on top of the scenario's main sequence, and the longest wait (an alert of an earlier run must resolve
+      # first).
       step drill-alert-to-sentry 40 make drill-alert-to-sentry
+      # Last: it takes the stack down and up again (see the header). The scenario takes about 45 min of the 70 its
+      # deadline leaves, so the deadline cutting it means something else ran far over.
+      step object-store-roundtrip 40 bash -c object_store_roundtrip
       ;;
     dev-k3d)
       step k8s-up 60 make k8s-up

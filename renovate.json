@@ -73,7 +73,7 @@
       "autoReplaceStringTemplate": "{{{indentation}}}# renovate: datasource={{{datasource}}} depName={{{depName}}}\n{{{indentation}}}version: {{{newValue}}}\n{{{indentation}}}image:\n{{{indentation}}}  tag: {{{newValue}}}@{{{newDigest}}}\n"
     },
     {
-      "description": "Images that compose.yaml defines once as a YAML anchor (x-<name>-image: &<name>-image <image>[:<tag>]@sha256:<digest>) and services use as *<name>-image: the docker-compose manager only reads image: lines. MinIO has no tag, only its digest is updated.",
+      "description": "Images that compose.yaml defines once as a YAML anchor (x-<name>-image: &<name>-image <image>[:<tag>]@sha256:<digest>) and services use as *<name>-image: the docker-compose manager only reads image: lines.",
       "customType": "regex",
       "managerFilePatterns": ["/^deploy/compose/compose\\.yaml$/"],
       "matchStrings": [
