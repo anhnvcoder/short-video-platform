@@ -8,7 +8,7 @@
 # - Explore must start with at least 21 READY videos that play, so the feed has a third page and 20 moves from video
 #   to video each reach a video not played yet in the run. Only the run of videos from the top of explore whose master
 #   playlist answers 200 counts, up to the first one that does not: the tests walk the feed from video 0, and an older
-#   video may be READY in Postgres while the storage that held its HLS files was emptied (a deleted MinIO volume).
+#   video may be READY in Postgres while the storage that held its HLS files was emptied (a deleted object store volume).
 #   Videos of earlier runs count; only the missing ones are uploaded, by
 #   fresh authors, at most per_author each: the gateway's upload class allows a burst of 10 per user and at most 3
 #   open uploads, so each upload waits for READY before the next one starts, and a 429 waits for its Retry-After.

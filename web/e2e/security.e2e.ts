@@ -191,16 +191,30 @@ authedTest("CSP: connect-src of /upload allows the upload origin", async ({ page
   expect(connectSrc).toContain(uploadOrigin);
 });
 
-// MinIO's CORS allows only the web's origins: the upload's preflight from any other site gets no
-// Access-Control-Allow-Origin, so the browser does not send the file there.
-test("WEB-10: the storage answers a preflight from the web's origin only", async ({ request }) => {
-  const preflight = (origin: string) =>
-    request.fetch(`${uploadOrigin}/uploads`, {
-      method: "OPTIONS",
-      headers: { Origin: origin, "Access-Control-Request-Method": "POST" },
-    });
-  const evil = await preflight("http://evil.example");
-  expect(evil.headers()["access-control-allow-origin"]).toBeUndefined();
-  const web = await preflight(stack.appOrigin);
-  expect(web.headers()["access-control-allow-origin"]).toBe(stack.appOrigin);
+// The object store's CORS is set per bucket and allows only the web's origins: uploads takes the upload form's POST,
+// media the player's GET. A preflight from any other site, or for the other bucket's method, gets no
+// Access-Control-Allow-Origin, so the browser sends nothing there. The store may answer such a preflight 403 or 200
+// without the header, so only the header is checked. A preflight reads no object: the keys below need not exist.
+test("WEB-10: the storage answers a preflight from the web's origin only, per bucket", async ({ request }) => {
+  const allowOrigin = async (path: string, method: string, origin: string) =>
+    (
+      await request.fetch(`${uploadOrigin}${path}`, {
+        method: "OPTIONS",
+        headers: { Origin: origin, "Access-Control-Request-Method": method },
+      })
+    ).headers()["access-control-allow-origin"];
+  const uploads = "/uploads";
+  const media = "/media/media/web10-preflight/master.m3u8";
+  const evil = "http://evil.example";
+
+  expect(await allowOrigin(uploads, "POST", evil), `POST ${uploads} from ${evil}`).toBeUndefined();
+  expect(await allowOrigin(uploads, "POST", stack.appOrigin), `POST ${uploads} from the web`).toBe(stack.appOrigin);
+  expect(await allowOrigin(media, "GET", evil), `GET ${media} from ${evil}`).toBeUndefined();
+  expect(await allowOrigin(media, "GET", stack.appOrigin), `GET ${media} from the web`).toBe(stack.appOrigin);
+  // Each bucket allows only its own method, even to the web's origin.
+  expect(await allowOrigin("/media", "POST", stack.appOrigin), "POST /media from the web").toBeUndefined();
+  expect(
+    await allowOrigin("/uploads/uploads/web10-preflight", "GET", stack.appOrigin),
+    "GET /uploads/uploads/web10-preflight from the web",
+  ).toBeUndefined();
 });

@@ -75,7 +75,8 @@ test("measure: upload of a ~100 MB video, then READY", { tag: "@publishes" }, as
   const result = {
     measured_at: new Date().toISOString(),
     browser: "chromium",
-    conditions: "compose stack on this machine, browser to MinIO over loopback (127.0.0.1:9000), no throttling",
+    conditions:
+      "compose stack on this machine, browser to the object store over loopback (127.0.0.1:9000), no throttling",
     file_mb: Number((sizeBytes / 1e6).toFixed(1)),
     duration_s: Math.round(durationS),
     upload_ms: Math.round(upload.ms),
