@@ -170,11 +170,11 @@ export function ShareScreen({ video, viewerId, mediaOrigin, loadedAt, appName }:
   useEffect(() => {
     pool.current?.sync(
       0,
-      [{ index: 0, playlistUrl: video.playlist_url, posterUrl: video.thumbnail_url }],
+      [{ index: 0, playlistUrl: video.playlist_url }],
       () => stage.current?.querySelector<HTMLElement>('[data-part="video-host"]') ?? null,
       shouldPlay,
     );
-  }, [video.playlist_url, video.thumbnail_url, shouldPlay]);
+  }, [video.playlist_url, shouldPlay]);
 
   // One view per page, only for a logged-in user. recordView rejects only when the session is refused (401).
   useEffect(() => {
@@ -362,7 +362,10 @@ export function ShareScreen({ video, viewerId, mediaOrigin, loadedAt, appName }:
           {s("openInApp")}
         </Link>
         {guest && (
-          <p className="text-center text-sm text-muted">
+          // Room for two lines whether the hint takes one or two: a name near the end of a line can wrap in the
+          // fallback font and not in the web font, and a bar that changed height when the font arrives would move
+          // the video above it.
+          <p className="min-h-10 content-center text-center text-sm text-muted">
             {authorName ? s("guestHint", { name: authorName }) : s("guestHintNoName")}
           </p>
         )}

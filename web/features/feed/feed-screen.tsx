@@ -232,10 +232,7 @@ export function FeedScreen({
     };
   }, [mediaOrigin]);
 
-  const sources = useMemo(
-    () => items.map((item, index) => ({ index, playlistUrl: item.playlist_url, posterUrl: item.thumbnail_url })),
-    [items],
-  );
+  const sources = useMemo(() => items.map((item, index) => ({ index, playlistUrl: item.playlist_url })), [items]);
   const shouldPlay = pausedIndex !== active && !hidden && !leaving;
   useEffect(() => {
     pool.current?.sync(active, sources, (index) => itemPart(scroller.current, index, "video-host"), shouldPlay);

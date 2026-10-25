@@ -239,6 +239,19 @@ describe("ShareScreen for a guest", () => {
     expect(screen.getAllByText(name).length).toBeGreaterThan(0);
   });
 
+  it("keeps room for two lines of the guest hint, so the bar under the video does not change height with the font", () => {
+    const { unmount } = renderShare();
+    const hint = (text: string) => screen.getByText(text).className.split(" ");
+    expect(hint(share().guestHint.replace("{name}", "Minh Anh"))).toEqual(
+      expect.arrayContaining(["min-h-10", "text-sm"]),
+    );
+    unmount();
+    const bare: FeedItem = { ...baseVideo };
+    delete bare.author;
+    renderShare({ video: bare });
+    expect(hint(share().guestHintNoName)).toEqual(expect.arrayContaining(["min-h-10", "text-sm"]));
+  });
+
   it("without author or stats hides them and still plays", async () => {
     const bare: FeedItem = { ...baseVideo };
     delete bare.author;

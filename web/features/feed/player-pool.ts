@@ -20,7 +20,6 @@ export type PlaybackState = "loading" | "playing" | "paused" | "buffering" | "er
 export interface PoolSource {
   index: number;
   playlistUrl: string;
-  posterUrl: string | null;
 }
 
 export interface PoolCallbacks {
@@ -236,11 +235,11 @@ export class PlayerPool {
     slot.source = source;
     slot.host = host;
     video.muted = this.muted;
-    if (source.posterUrl && isMediaUrl(source.posterUrl, this.mediaOrigin)) {
-      video.poster = source.posterUrl;
-    } else {
-      video.removeAttribute("poster");
-    }
+    // No poster: the item's own <img>, under the host, shows the thumbnail until the first frame, and a <video> without
+    // a frame paints nothing over it. A poster here would paint the same image again, on top, and the <img> can paint
+    // late, in the first frame after the long task of hydration, the very task that moves this <video> in: both then
+    // paint in the same frame at the same size, and the browser reports the <video> as the page's largest paint, an
+    // element that exists only once the page's scripts have run.
     host.append(video);
     this.callbacks.onState(source.index, "loading");
 
@@ -352,7 +351,6 @@ export class PlayerPool {
     if (slot.source !== null) {
       video.pause();
       video.removeAttribute("src");
-      video.removeAttribute("poster");
       // Drops the decoder and buffered data of the old source.
       video.load();
     }

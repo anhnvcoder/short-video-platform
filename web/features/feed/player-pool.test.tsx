@@ -65,7 +65,6 @@ function sources(count: number, origin = mediaOrigin): PoolSource[] {
   return Array.from({ length: count }, (_, index) => ({
     index,
     playlistUrl: `${origin}/media/hls/${index}/master.m3u8`,
-    posterUrl: `${origin}/media/thumbs/${index}.jpg`,
   }));
 }
 
@@ -141,7 +140,8 @@ describe("PlayerPool", () => {
     expect(video?.muted).toBe(true);
     expect(video?.playsInline).toBe(true);
     expect(video?.getAttribute("crossorigin")).toBeNull();
-    expect(video?.poster).toBe(`${mediaOrigin}/media/thumbs/0.jpg`);
+    // The item's own <img> is the poster: the <video> paints nothing until its first frame.
+    expect(video?.hasAttribute("poster")).toBe(false);
     expect(live()).toHaveLength(1);
     expect(live()[0]?.source).toBe(`${mediaOrigin}/media/hls/0/master.m3u8`);
     expect(live()[0]?.config).not.toHaveProperty("xhrSetup");
@@ -397,7 +397,7 @@ describe("PlayerPool", () => {
     expect(events.onState).toHaveBeenCalledWith(0, "loading");
   });
 
-  it("refuses a playlist or poster outside the media origin", async () => {
+  it("refuses a playlist outside the media origin", async () => {
     const events = callbacks();
     const pool = new PlayerPool(mediaOrigin, events, loader);
     const [host] = hosts(1);
@@ -405,7 +405,6 @@ describe("PlayerPool", () => {
     await settle();
     expect(events.onState).toHaveBeenLastCalledWith(0, "error");
     expect(FakeHls.instances).toHaveLength(0);
-    expect(host?.querySelector("video")?.hasAttribute("poster")).toBe(false);
     expect(host?.querySelector("video")?.getAttribute("src")).toBeNull();
   });
 
