@@ -26,7 +26,7 @@
 #   SVP_ATTEST_MAX_AGE drills only (never in .env): a shorter limit than 48h for the age of the vuln attestations.
 #
 # Secrets live outside git, so a changed .env reaches this cluster by hand: `make k8s-secrets`, then a sync of
-# Application svp-data, whose init Jobs set the new passwords in Postgres, MinIO and Redpanda
+# Application svp-data, whose init Jobs set the new passwords in Postgres, the object store and Redpanda
 # (kubectl --context k3d-svp -n argocd patch applications.argoproj.io svp-data --type merge
 #  -p '{"operation":{"sync":{}}}'), then `kubectl --context k3d-svp -n <namespace> rollout restart deployment/<name>` of
 # each workload whose Secret changed: five of the services, kps-grafana, glitchtip, keda-operator. The gateway and the

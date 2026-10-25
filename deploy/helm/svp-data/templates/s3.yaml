@@ -1,0 +1,200 @@
+{{- /*
+The object store s3 (RustFS) in place of compose's (threat model UP-4, UP-5, UP-6, WEB-10): same image, same buckets,
+users, policies and per-bucket CORS rules, made by the same deploy/s3/init.sh. Services reach it at s3.svp-data:9000;
+the host reaches it at https://s3.svp.localhost:8443 through Gateway svp (presigned POST uploads, HLS playback). No
+web console: it is turned off, so no port of the pod serves one.
+*/}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: s3
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  serviceName: s3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: s3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: s3
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        # The image's non-root user; fsGroup makes the new volume writable by it.
+        {{- include "svp-data.podSecurityContext" (dict "uid" 10001 "gid" 10001 "fsGroup" true) | nindent 8 }}
+      containers:
+        - name: s3
+          image: {{ .Values.s3.image }}
+          env:
+            # The root credential exists only here and in the s3-init Job; services get their own users (UP-5). Secret
+            # s3-root names it without the store's own variables, mapped to them here. Read at start only:
+            # deploy/k8s/secrets.sh restarts the store when the password in the Secret changes.
+            - name: RUSTFS_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: {name: s3-root, key: S3_ROOT_USER}
+            - name: RUSTFS_SECRET_KEY
+              valueFrom:
+                secretKeyRef: {name: s3-root, key: S3_ROOT_PASSWORD}
+            # No web console (on by default, on :9001): nothing in the lab needs it, and it would be one more login
+            # with the root credential, so no listener is opened for it.
+            - name: RUSTFS_CONSOLE_ENABLE
+              value: "false"
+            # No global CORS origins: only the rules s3-init sets on each bucket answer a browser, so a bucket without
+            # rules of its own sends no CORS header (WEB-10).
+            - name: RUSTFS_CORS_ALLOWED_ORIGINS
+              value: ""
+            # The lab sends nothing out: no check for a new version at start.
+            - name: RUSTFS_CHECK_UPDATE
+              value: "false"
+            # Logs go to stdout (kubectl logs), not to files under the image's /logs, which the read-only root would
+            # refuse; the store writes nothing else outside /data.
+            - name: RUSTFS_OBS_LOG_DIRECTORY
+              value: ""
+          ports:
+            - name: s3
+              containerPort: 9000
+          # The store's unauthenticated health endpoints. Liveness counts only once the server first answers (up to
+          # 2 minutes), so a slow start on a busy node is not cut short by restarts.
+          startupProbe:
+            httpGet: {path: /health/live, port: s3}
+            periodSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /health/ready, port: s3}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health/live, port: s3}
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.s3.resources | nindent 12 }}
+          securityContext:
+            {{- include "svp-data.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: {{ .Values.s3.storage }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: s3
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app.kubernetes.io/name: s3
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: s3
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: s3
+  namespace: {{ .Release.Namespace }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: svp
+      namespace: svp-edge
+      sectionName: https
+  hostnames:
+    - {{ .Values.s3.host | quote }}
+  rules:
+    - backendRefs:
+        - name: s3
+          port: 9000
+      # Without a timeout Envoy Gateway sets none on the route and Envoy cuts every request at 15 s, too short for an
+      # upload of up to 500 MiB.
+      timeouts:
+        request: 10m
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: s3-init
+  namespace: {{ .Release.Namespace }}
+data:
+  # deploy/s3/init.sh and its policy files through a symlink: compose and the cluster run the same files.
+  {{- (.Files.Glob "files/s3/*").AsConfig | nindent 2 }}
+---
+# Buckets with their CORS rules, the anonymous read policy of media and the users svp-video-service and
+# svp-media-worker, as compose's s3-init container does; in the cluster only, also bucket pg-backups and its user
+# svp-pg-backup (templates/backup.yaml).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: s3-init
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    {{- include "svp-data.initJobAnnotations" . | nindent 4 }}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ add .Values.initJobs.waitSeconds 120 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: svp-data-init
+        app.kubernetes.io/component: s3-init
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "svp-data.podSecurityContext" (dict "uid" 10001 "gid" 10001) | nindent 8 }}
+      containers:
+        - name: s3-init
+          image: {{ .Values.s3.image }}
+          # Asks the store's unauthenticated readiness endpoint until it answers; init.sh itself does not wait.
+          command:
+            - sh
+            - -c
+            - |
+              if ! timeout "$SVP_WAIT_SECONDS" sh -c \
+                'until curl -fs -o /dev/null --max-time 5 http://s3:9000/health/ready; do sleep 2; done'; then
+                echo "s3-init: the store at s3:9000 not ready within ${SVP_WAIT_SECONDS}s" >&2
+                exit 1
+              fi
+              exec sh /init/init.sh
+          env:
+            - name: SVP_WAIT_SECONDS
+              value: {{ .Values.initJobs.waitSeconds | quote }}
+            - name: S3_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: s3-root, key: S3_ROOT_PASSWORD}
+            - name: S3_CORS_ALLOWED_ORIGINS
+              value: {{ .Values.s3.corsAllowedOrigins | quote }}
+          envFrom:
+            # SVP_VIDEO_S3_SECRET_KEY, SVP_MEDIA_WORKER_S3_SECRET_KEY and SVP_PG_BACKUP_S3_SECRET_KEY (the last one
+            # only here, not in compose: bucket pg-backups and its user), the names init.sh reads.
+            - secretRef:
+                name: s3-users
+          resources:
+            {{- toYaml .Values.initJobs.resources | nindent 12 }}
+          securityContext:
+            {{- include "svp-data.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: init
+              mountPath: /init
+              readOnly: true
+            # init.sh keeps the request bodies it writes in a private temporary directory; the root filesystem is
+            # read-only.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: init
+          configMap:
+            name: s3-init
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi

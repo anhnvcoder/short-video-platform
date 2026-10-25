@@ -99,14 +99,14 @@ b64v() {
 # Shaped like deploy/k8s/secrets.sh: next to each secret, the identifiers it stores under keys of their own (user
 # names, an email, a key id, a SASL mechanism), which the drills print and must stay unmasked and searchable.
 jq -n --argjson backup "$(b64v ACCESS_KEY_ID=svp-pg-backup "ACCESS_SECRET_KEY=$cluster_secret" "username=$role_name")" \
-  --argjson minio "$(b64v MINIO_ROOT_USER=svp-admin "MINIO_ROOT_PASSWORD=$cluster_secret")" \
+  --argjson s3root "$(b64v S3_ROOT_USER=svp-admin "S3_ROOT_PASSWORD=$cluster_secret")" \
   --argjson keda "$(b64v sasl=scram_sha256 tls=disable username=svp-keda "password=$kafka_secret")" \
   --arg multi "$(b64 "route:
   receiver: telegram
   $line_secret
 ")" --arg helm "$(b64 "$helm_payload")" '{items: [
     {type: "Opaque", metadata: {name: "pg-backup-s3"}, data: $backup},
-    {type: "Opaque", metadata: {name: "minio-root"}, data: $minio},
+    {type: "Opaque", metadata: {name: "s3-root"}, data: $s3root},
     {type: "Opaque", metadata: {name: "keda-kafka"}, data: $keda},
     {type: "Opaque", metadata: {name: "alertmanager-svp"}, data: {"alertmanager.yaml": $multi}},
     {type: "helm.sh/release.v1", metadata: {name: "sh.helm.release.v1.svp-data.v1"}, data: {release: $helm}}]}' \
@@ -283,7 +283,7 @@ printf '    [svp-data] SECRET-TAIL-MARKER sasl password %s\nFAIL  install redpan
   echo "ok    IN-4: svp-feed-service may only read its topics (svp-admin)"
   echo "probe answered: PROBE-BODY-MARKER"
   echo "== NP-1"
-  echo "FAIL  NP-1: probe reached minio"
+  echo "FAIL  NP-1: probe reached s3"
   # An item stopped under set -e: bash's own line is left out, the drill's line after it is kept.
   echo "deploy/k8s/drills/threats.sh: line 1742: BASH-ERROR-MARKER: unbound variable"
   echo "FAIL  NP-1: the item ended with exit status 1"
@@ -509,7 +509,7 @@ grep -q '^ok    IN-4: svp-feed-service .*(svp-admin)' "$work/art-k3d/logs/04-dri
   ok "k3d: a verdict naming Kafka users and svp-admin is kept" || fail "k3d: a verdict naming Kafka users and svp-admin is kept"
 v=$work/art-k3d/logs/04-drill-k8s-threats.verdicts.log
 want=$(printf '%s\n' "== IN-2/IN-4" "ok    IN-4: svp-feed-service may only read its topics (svp-admin)" "== NP-1" \
-  "FAIL  NP-1: probe reached minio" "FAIL  NP-1: the item ended with exit status 1" "== WEB-7" \
+  "FAIL  NP-1: probe reached s3" "FAIL  NP-1: the item ended with exit status 1" "== WEB-7" \
   "ok    user @drill_ab12 registered: 303, session cookie __Host-Http-svp_sid in the drill's cookie jar" \
   "drill-k8s-threats (20261025T080000Z-ab12)" "$(printf '  %-14s %s' ITEM RESULT)" \
   "$(printf '  %-14s %s' IN-2/IN-4 PASS)" "$(printf '  %-14s %s' NP-1 FAIL)")

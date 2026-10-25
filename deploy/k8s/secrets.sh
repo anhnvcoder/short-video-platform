@@ -11,10 +11,10 @@
 #
 # Run by deploy/k8s/install.sh once chart svp-cluster has created the namespaces, before any chart that reads these
 # Secrets; on its own with `make k8s-secrets` (after changing .env; then `make k8s-up` runs the init Jobs again, which
-# set the new passwords in Postgres, MinIO and Redpanda, and restarts each service whose Secret changed). A changed
-# password of Redpanda's superuser is set in the running broker before any Secret is applied, and the script stops
-# when the broker does not run to take it (see redpanda_admin below). MinIO or Redpanda running with another password
-# than the one now in .env is restarted (see the end of this script).
+# set the new passwords in Postgres, the object store and Redpanda, and restarts each service whose Secret changed). A
+# changed password of Redpanda's superuser is set in the running broker before any Secret is applied, and the script
+# stops when the broker does not run to take it (see redpanda_admin below). The object store or Redpanda running with
+# another password than the one now in .env is restarted (see the end of this script).
 set -euo pipefail
 
 # shellcheck source=deploy/k8s/lib.sh
@@ -30,7 +30,7 @@ vars=(SVP_PG_SUPERUSER_PASSWORD
   SVP_USER_MIGRATOR_DB_PASSWORD SVP_USER_APP_DB_PASSWORD SVP_VIDEO_MIGRATOR_DB_PASSWORD SVP_VIDEO_APP_DB_PASSWORD
   SVP_ENGAGEMENT_MIGRATOR_DB_PASSWORD SVP_ENGAGEMENT_APP_DB_PASSWORD SVP_FEED_MIGRATOR_DB_PASSWORD
   SVP_FEED_APP_DB_PASSWORD SVP_GLITCHTIP_MIGRATOR_DB_PASSWORD SVP_GLITCHTIP_APP_DB_PASSWORD
-  SVP_MINIO_ROOT_PASSWORD SVP_VIDEO_S3_SECRET_KEY SVP_MEDIA_WORKER_S3_SECRET_KEY SVP_PG_BACKUP_S3_SECRET_KEY
+  SVP_S3_ROOT_PASSWORD SVP_VIDEO_S3_SECRET_KEY SVP_MEDIA_WORKER_S3_SECRET_KEY SVP_PG_BACKUP_S3_SECRET_KEY
   SVP_KAFKA_ADMIN_PASSWORD SVP_KAFKA_KEDA_PASSWORD SVP_KAFKA_USER_SERVICE_PASSWORD SVP_KAFKA_VIDEO_SERVICE_PASSWORD
   SVP_KAFKA_ENGAGEMENT_SERVICE_PASSWORD SVP_KAFKA_FEED_SERVICE_PASSWORD SVP_KAFKA_MEDIA_WORKER_PASSWORD
   JWT_SIGNING_KID JWT_SIGNING_KEY JWT_VERIFY_KEYS SVP_GRAFANA_ADMIN_PASSWORD
@@ -76,11 +76,12 @@ manifests() {
     SVP_FEED_APP_DB_PASSWORD="$SVP_FEED_APP_DB_PASSWORD" \
     SVP_GLITCHTIP_MIGRATOR_DB_PASSWORD="$SVP_GLITCHTIP_MIGRATOR_DB_PASSWORD" \
     SVP_GLITCHTIP_APP_DB_PASSWORD="$SVP_GLITCHTIP_APP_DB_PASSWORD"
-  # MinIO's root login, as in compose (deploy/minio/init.sh logs in as svp-admin): MinIO and its init Job only.
-  secret svp-data minio-root Opaque \
-    MINIO_ROOT_USER=svp-admin MINIO_ROOT_PASSWORD="$SVP_MINIO_ROOT_PASSWORD"
-  # Secret keys of the MinIO users svp-video-service, svp-media-worker and svp-pg-backup, for the minio-init Job.
-  secret svp-data minio-users Opaque \
+  # The object store's root login, as in compose (deploy/s3/init.sh logs in as svp-admin): the store and its init Job
+  # only. The keys name no store; chart svp-data maps them to the store's own variables.
+  secret svp-data s3-root Opaque \
+    S3_ROOT_USER=svp-admin S3_ROOT_PASSWORD="$SVP_S3_ROOT_PASSWORD"
+  # Secret keys of the object store users svp-video-service, svp-media-worker and svp-pg-backup, for the s3-init Job.
+  secret svp-data s3-users Opaque \
     SVP_VIDEO_S3_SECRET_KEY="$SVP_VIDEO_S3_SECRET_KEY" \
     SVP_MEDIA_WORKER_S3_SECRET_KEY="$SVP_MEDIA_WORKER_S3_SECRET_KEY" \
     SVP_PG_BACKUP_S3_SECRET_KEY="$SVP_PG_BACKUP_S3_SECRET_KEY"
@@ -226,12 +227,12 @@ obs_manifests() {
     GLITCHTIP_ADMIN_EMAIL="$GLITCHTIP_ADMIN_EMAIL" GLITCHTIP_ADMIN_PASSWORD="$GLITCHTIP_ADMIN_PASSWORD"
 }
 
-# Redpanda, unlike MinIO, keeps its superuser svp-admin with its password in its own data: it creates it from Secret
-# redpanda-bootstrap once, when the cluster forms, and never reads that Secret again. Every container that logs in as
-# svp-admin (the broker's rpk, the sidecar that keeps the superusers in step, the redpanda-init Job) takes the password
-# from that Secret when it starts. A changed password applied to the Secret alone would lock all of them out as soon
-# as they start again, with the password Redpanda knows gone from everywhere; restarting MinIO, which reads its root
-# password from its environment at every start, is all MinIO needs (below).
+# Redpanda, unlike the object store, keeps its superuser svp-admin with its password in its own data: it creates it
+# from Secret redpanda-bootstrap once, when the cluster forms, and never reads that Secret again. Every container that
+# logs in as svp-admin (the broker's rpk, the sidecar that keeps the superusers in step, the redpanda-init Job) takes
+# the password from that Secret when it starts. A changed password applied to the Secret alone would lock all of them
+# out as soon as they start again, with the password Redpanda knows gone from everywhere; restarting the object store,
+# which reads its root password from its environment at every start, is all the store needs (below).
 #
 # redpanda_admin: makes Redpanda take the password in .env for svp-admin before any Secret is applied. Inside the
 # broker container it logs in with that password; when that fails, with the one of Secret redpanda-bootstrap, then
@@ -294,7 +295,7 @@ redpanda_admin
 # kubectl prints only the kind and name of each object it applied.
 manifests | kc apply --server-side --field-manager=svp-secrets --force-conflicts -f - >/dev/null ||
   fail "apply the Secrets of namespace svp-data"
-ok "Secrets of svp-data applied from .env: pg-superuser, pg-roles, minio-root, minio-users, pg-backup-s3, redpanda-bootstrap, redpanda-superusers, kafka-users"
+ok "Secrets of svp-data applied from .env: pg-superuser, pg-roles, s3-root, s3-users, pg-backup-s3, redpanda-bootstrap, redpanda-superusers, kafka-users"
 
 svp_manifests | kc apply --server-side --field-manager=svp-secrets --force-conflicts -f - >/dev/null ||
   fail "apply the Secrets of namespace svp"
@@ -323,10 +324,10 @@ ok "Secret of keda applied from .env: keda-kafka"
 # A process reads a Secret given to it as an environment variable only when it starts: a changed Secret reaches a
 # running pod only through a restart, which Kubernetes does not do by itself. No chart can do it either, by a checksum
 # of the Secret in its pod template: these Secrets are made here, outside Helm and Argo CD, which never see them. So
-# MinIO and Redpanda are restarted here, on the dev and the GitOps path alike, before the init Jobs of svp-data log in
-# to them with the new password. The six services, the web client and the KEDA operator are restarted by
-# deploy/k8s/install.sh, after those Jobs have set their new passwords (restarted here, a service would start with a
-# password its backend does not take yet). The init Jobs need none (each run is a new pod), and CloudNativePG sets a
+# the object store and Redpanda are restarted here, on the dev and the GitOps path alike, before the init Jobs of
+# svp-data log in to them with the new password. The six services, the web client and the KEDA operator are restarted
+# by deploy/k8s/install.sh, after those Jobs have set their new passwords (restarted here, a service would start with
+# a password its backend does not take yet). The init Jobs need none (each run is a new pod), and CloudNativePG sets a
 # changed superuser password in Postgres itself, without a restart (Secret pg-superuser carries its label
 # cnpg.io/reload, above).
 
@@ -355,11 +356,12 @@ restart() {
   ok "$1 restarted: it had started with another password than the one in .env"
 }
 
-# MinIO takes the root password from its environment at start; it keeps its buckets and users when it starts with
-# another one (checked on the pinned image). Without this the minio-init Job, which logs in with the new password,
-# would fail.
-if stale minio-0 minio MINIO_ROOT_PASSWORD "$SVP_MINIO_ROOT_PASSWORD"; then
-  restart statefulset/minio
+# The object store (RustFS) takes the root password from its environment at start, in the variable chart svp-data maps
+# Secret s3-root to; it keeps its buckets, users, policies, CORS rules and objects when it starts with another one, and
+# the previous password no longer logs in (checked on the pinned image). Without this the s3-init Job, which logs in
+# with the new password, would fail.
+if stale s3-0 s3 RUSTFS_SECRET_KEY "$SVP_S3_ROOT_PASSWORD"; then
+  restart statefulset/s3
 fi
 
 # Redpanda takes the password in .env already (redpanda_admin, above); the broker's rpk and the sidecar keep logging

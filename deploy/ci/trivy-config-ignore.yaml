@@ -73,8 +73,8 @@ misconfigurations:
     expired_at: 2027-01-22
   - id: KSV-0125
     paths:
-      - deploy/helm/svp-data/templates/minio.yaml
+      - deploy/helm/svp-data/templates/s3.yaml
     statement: >-
-      Chainguard's MinIO image, pinned by digest, and MinIO is being replaced as the local object store
-      (RustFS is the proposed replacement); the entry goes with the chart's MinIO
+      RustFS's official image from Docker Hub, for the object store and its init Job, pinned by digest; a private
+      registry mirror is for the cloud stage
     expired_at: 2027-01-22

@@ -16,7 +16,7 @@
 # masking or searching for it would hide or drop half the log and every file that mentions it. For the same reason the
 # keys that hold identifiers by design are left out of the cluster's list: username, user, dbname, host, port, the
 # public certificates ca.crt and tls.crt, KEDA's sasl and tls (a mechanism, a mode), and any key whose name ends in
-# username, _user or -user (KAFKA_SASL_USERNAME, MINIO_ROOT_USER, Grafana's admin-user), email
+# username, _user or -user (KAFKA_SASL_USERNAME, S3_ROOT_USER, Grafana's admin-user), email
 # (GLITCHTIP_ADMIN_EMAIL), _key_id (ACCESS_KEY_ID, the S3 user name) or _kid (JWT_SIGNING_KID, the key's public id).
 # The drills print those names (drill-k8s-threats names the Kafka users and svp-admin in its verdicts), and
 # deploy/k8s/secrets.sh never stores a password, key or token under such a key. Secrets of type helm.sh/release.v1

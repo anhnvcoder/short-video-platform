@@ -1,6 +1,6 @@
 {{- /*
 Namespaces by role: svp (the six Go services and the web client), svp-data (Postgres, Valkey,
-Redpanda, MinIO), svp-obs (observability, GlitchTip), svp-edge (Gateway and wildcard certificate). Pod Security
+Redpanda, the object store s3), svp-obs (observability, GlitchTip), svp-edge (Gateway and wildcard certificate). Pod Security
 Admission enforces "restricted":
 pods must run as non-root, drop every capability, use seccomp RuntimeDefault and forbid privilege escalation; a chart
 that cannot is fixed in its values, the namespace is not loosened. warn and audit use the same level so kubectl and

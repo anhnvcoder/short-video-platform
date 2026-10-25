@@ -1,11 +1,11 @@
 {{- /*
 Backups of Postgres svp-pg (threat model BAK-1): the Barman Cloud plugin
 (release plugin-barman-cloud in cnpg-system, wave 3) archives every WAL segment and takes base backups, from a sidecar
-in the Postgres pod, to bucket pg-backups of the cluster's MinIO, as MinIO user svp-pg-backup, whose policy allows that
-bucket only (deploy/minio/pg-backup-policy.json, made by the minio-init Job; no service has this user). Its secret key
-comes from .env (SVP_PG_BACKUP_S3_SECRET_KEY) into Secret pg-backup-s3 (deploy/k8s/secrets.sh). The bucket is in the
-same cluster, on the same disk, as the data, and MinIO here has no KMS: enough for the lab to rehearse recovery (WAL,
-point in time, archive generations) and measure its RTO and RPO, not a copy that survives the cluster.
+in the Postgres pod, to bucket pg-backups of the cluster's object store s3, as its user svp-pg-backup, whose policy
+allows that bucket only (deploy/s3/pg-backup-policy.json, made by the s3-init Job; no service has this user). Its secret
+key comes from .env (SVP_PG_BACKUP_S3_SECRET_KEY) into Secret pg-backup-s3 (deploy/k8s/secrets.sh). The bucket is in
+the same cluster, on the same disk, as the data, and the store here has no KMS: enough for the lab to rehearse recovery
+(WAL, point in time, archive generations) and measure its RTO and RPO, not a copy that survives the cluster.
 
 Within the bucket each archive generation has its own prefix, the plugin's serverName (postgres.backup.serverName,
 templates/postgres.yaml).
@@ -18,7 +18,7 @@ metadata:
 spec:
   configuration:
     destinationPath: s3://pg-backups/
-    endpointURL: http://minio.svp-data:9000
+    endpointURL: http://s3.svp-data:9000
     s3Credentials:
       accessKeyId:
         name: pg-backup-s3
@@ -41,7 +41,7 @@ spec:
 # PostgresBackupTooOld fires when there is none for an hour).
 #
 # A hook, after the init Jobs (weight 0): CloudNativePG starts the immediate Backup on the first Ready primary and
-# never retries one that failed, while bucket pg-backups and the login svp-pg-backup exist only once the minio-init
+# never retries one that failed, while bucket pg-backups and the login svp-pg-backup exist only once the s3-init
 # Job has run, after the release's ordinary resources are ready (Argo CD: PostSync, the hooks in weight order). As an
 # ordinary resource its Backup would race that Job on a new cluster and fail for good. Each upgrade or sync makes the
 # object again; CloudNativePG then takes no second immediate Backup while the first one's object is left (it adopts

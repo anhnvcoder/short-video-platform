@@ -19,7 +19,7 @@ env:
   VIDEO_SERVICE_ADDR: video-service:9102
   FEED_SERVICE_ADDR: feed-service:9104
   ENGAGEMENT_SERVICE_ADDR: engagement-service:9103
-  # Playlist and thumbnail URLs handed to clients: MinIO's media bucket through Gateway svp.
+  # Playlist and thumbnail URLs handed to clients: the object store's media bucket through Gateway svp.
   MEDIA_PUBLIC_BASE_URL: https://s3.svp.localhost:8443/media
   # Rate limits are counted in Valkey db 10 so every gateway pod shares one count; Valkey down, the gateway falls back
   # to in-memory counters.

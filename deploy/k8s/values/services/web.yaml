@@ -31,8 +31,8 @@ env:
   # What the browser uses: the CSRF check, the __Host-Http- cookie with Secure, HSTS and the post-login redirect check
   # compare against it.
   APP_ORIGIN: https://svp.localhost:8443
-  # HLS, thumbnails and the presigned upload form: MinIO through route s3 of Gateway svp, the origin the gateway's
-  # MEDIA_PUBLIC_BASE_URL and video-service's S3_PUBLIC_ENDPOINT name; the Content-Security-Policy allows it.
+  # HLS, thumbnails and the presigned upload form: the object store through route s3 of Gateway svp, the origin the
+  # gateway's MEDIA_PUBLIC_BASE_URL and video-service's S3_PUBLIC_ENDPOINT name; the Content-Security-Policy allows it.
   MEDIA_ORIGIN: https://s3.svp.localhost:8443
   UPLOAD_ORIGIN: https://s3.svp.localhost:8443
   SENTRY_ENVIRONMENT: k3d
@@ -40,7 +40,7 @@ env:
 # NEXT_SERVER_ACTIONS_ENCRYPTION_KEY, set when the process starts so the key the image carries is never the one in use.
 errorTracking: true
 # Reached from Envoy only, on 3001; reaches the gateway, Valkey, the Collector and GlitchTip, nothing else: no
-# Postgres, Redpanda, MinIO, gRPC service, profiler, API server or internet (threat model WEB-13).
+# Postgres, Redpanda, object store, gRPC service, profiler, API server or internet (threat model WEB-13).
 ingressFrom: [envoy]
 egressTo: [gateway, valkey, collector, glitchtip]
 # https://svp.localhost:8443: listener https-apex of Gateway svp, whose certificate names svp.localhost alone (chart
