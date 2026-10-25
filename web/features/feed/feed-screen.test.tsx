@@ -765,6 +765,45 @@ describe("FeedScreen", () => {
     expect(likes).toEqual(["PUT"]);
   });
 
+  it("a like that ends while the next page loads stays when that page lands, and the next tap unlikes", async () => {
+    const likes: string[] = [];
+    const answerLike = ({ request }: { request: Request }) => {
+      likes.push(request.method);
+      return new HttpResponse(null, { status: 204 });
+    };
+    // The next page waits for the test, which answers it with the page it chooses.
+    const reads: ((page: FeedPage) => void)[] = [];
+    server.use(
+      http.put("*/api/videos/:id/like", answerLike),
+      http.delete("*/api/videos/:id/like", answerLike),
+      http.get("*/api/feed/explore", async () =>
+        HttpResponse.json(await new Promise<FeedPage>((resolve) => reads.push(resolve))),
+      ),
+    );
+    const client = new QueryClient();
+    // Two videos: the first one is already one of the last two, so the next page is asked for on mount.
+    renderFeed({ client, initialPage: page([item(1), item(2)], "c1") });
+    await waitFor(() => expect(reads).toHaveLength(1));
+    const like = () => within(articles()[0] as HTMLElement).getByRole("button", { name: likeName() });
+    fireEvent.click(like());
+    await waitFor(() => expect(client.isMutating()).toBe(0));
+    expect(likes).toEqual(["PUT"]);
+    expect(like().getAttribute("aria-pressed")).toBe("true");
+
+    // The next page was asked for before the like, from the pages as they were then.
+    await act(async () => reads[0]?.(page([item(3)])));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(articles().map((article) => article.getAttribute("aria-label"))).toContain("Video 3");
+    expect(like().getAttribute("aria-pressed")).toBe("true");
+    expect(like().textContent).toBe(formatCompact(12_401, "vi"));
+
+    fireEvent.click(like());
+    await waitFor(() => expect(client.isMutating()).toBe(0));
+    expect(likes).toEqual(["PUT", "DELETE"]);
+    expect(like().getAttribute("aria-pressed")).toBe("false");
+    expect(like().textContent).toBe(formatCompact(12_400, "vi"));
+  });
+
   it("a first page from a new server render is not fetched again, even with the server's clock two minutes off", async () => {
     const calls = vi.fn();
     server.use(

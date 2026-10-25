@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { server } from "@/lib/test/msw-server";
 import { ApiError, type FeedItem, type FeedPage, type VideoStats } from "./api";
+import { useFeed } from "./use-feed";
 import { useLike } from "./use-like";
 
 const videoId = "0192f0c1-0000-7000-8000-000000000001";
@@ -297,6 +298,79 @@ describe("useLike", () => {
       expect(client.getQueryData(["feed", "explore"])).toEqual(feed([feedItem(videoId, liked), other])),
     );
     expect(client.getQueryData(["feed", "following"])).toEqual(feed([feedItem(videoId, liked)]));
+  });
+
+  describe("while the feed's next page loads", () => {
+    const stats = { view_count: 5, like_count: 10, liked_by_me: false };
+    const first: FeedPage = { items: [feedItem(videoId, stats)], next_cursor: "c1" };
+
+    // A screen of the explore feed: the like of its first video, with the stats the feed holds, as FeedScreen reads
+    // them. The next page waits for `deliver`.
+    function renderFeedLike(client: QueryClient) {
+      const reads: ((page: FeedPage) => void)[] = [];
+      server.use(
+        http.get("*/api/feed/explore", async () =>
+          HttpResponse.json(await new Promise<FeedPage>((resolve) => reads.push(resolve))),
+        ),
+      );
+      const view = renderHook(
+        () => {
+          const feed = useFeed("explore", first, undefined, true);
+          return { feed, like: useLike(videoId, feed.data?.pages[0]?.items[0]?.stats, vi.fn()) };
+        },
+        { wrapper: inTab(client) },
+      );
+      return {
+        ...view,
+        async loadNext() {
+          act(() => void view.result.current.feed.fetchNextPage());
+          await waitFor(() => expect(reads).toHaveLength(1));
+        },
+        async deliver(page: FeedPage) {
+          await act(async () => reads[0]?.(page));
+          await waitFor(() => expect(client.isFetching()).toBe(0));
+        },
+      };
+    }
+
+    it("a like and an unlike that both end before the page lands: the unlike stays", async () => {
+      const api = likeServer();
+      const client = new QueryClient();
+      const { result, loadNext, deliver } = renderFeedLike(client);
+      await loadNext();
+      act(() => result.current.like.toggle());
+      await api.release();
+      await waitFor(() => expect(client.isMutating()).toBe(0));
+      act(() => result.current.like.toggle());
+      await api.release();
+      await waitFor(() => expect(client.isMutating()).toBe(0));
+
+      await deliver({ items: [feedItem(otherId, stats)], next_cursor: "" });
+      expect(result.current.feed.data?.pages).toHaveLength(2);
+      expect(result.current.like).toMatchObject({ liked: false, count: 10 });
+      expect(result.current.feed.data?.pages[0]?.items[0]?.stats).toEqual(stats);
+      expect(api.calls).toEqual(["PUT", "DELETE"]);
+    });
+
+    it("the state goes back only into the feed whose page landed: another feed read since keeps what it read", async () => {
+      const api = likeServer();
+      const client = new QueryClient();
+      const { result, loadNext, deliver } = renderFeedLike(client);
+      await loadNext();
+      act(() => result.current.like.toggle());
+      await api.release();
+      await waitFor(() => expect(client.isMutating()).toBe(0));
+      // Following read after another tab unliked the video.
+      const following: InfiniteData<FeedPage> = {
+        pages: [{ items: [feedItem(videoId, stats)], next_cursor: "" }],
+        pageParams: [""],
+      };
+      client.setQueryData(["feed", "following"], following);
+
+      await deliver({ items: [feedItem(otherId, stats)], next_cursor: "" });
+      expect(result.current.like).toMatchObject({ liked: true, count: 11 });
+      expect(client.getQueryData(["feed", "following"])).toEqual(following);
+    });
   });
 
   it("without stats hides the count but still likes", async () => {

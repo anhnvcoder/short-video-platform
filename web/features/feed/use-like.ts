@@ -92,21 +92,54 @@ function withLike(stats: VideoStats, liked: boolean): VideoStats {
     : { ...stats, liked_by_me: liked, like_count: Math.max(0, stats.like_count + (liked ? 1 : -1)) };
 }
 
+function feedWithLike(feed: InfiniteData<FeedPage> | undefined, videoId: string, liked: boolean) {
+  return feed
+    ? {
+        ...feed,
+        pages: feed.pages.map((page) => ({
+          ...page,
+          items: page.items.map((item) =>
+            item.video_id === videoId && item.stats ? { ...item, stats: withLike(item.stats, liked) } : item,
+          ),
+        })),
+      }
+    : feed;
+}
+
 // Writes the state the server confirmed into every feed of the cache that holds the video.
+//
+// A next page still loading lands with the feed's earlier pages as they were when it was asked for (only the new page
+// is read), and would put back the state stored meanwhile: such a feed gets the state again once that page has landed.
+// A fetch started after this one reads the cache as stored, so it needs nothing.
 function storeLike(client: QueryClient, videoId: string, liked: boolean) {
-  client.setQueriesData<InfiniteData<FeedPage>>({ queryKey: ["feed"] }, (feed) =>
-    feed
-      ? {
-          ...feed,
-          pages: feed.pages.map((page) => ({
-            ...page,
-            items: page.items.map((item) =>
-              item.video_id === videoId && item.stats ? { ...item, stats: withLike(item.stats, liked) } : item,
-            ),
-          })),
-        }
-      : feed,
-  );
+  client.setQueriesData<InfiniteData<FeedPage>>({ queryKey: ["feed"] }, (feed) => feedWithLike(feed, videoId, liked));
+  const cache = client.getQueryCache();
+  const loadingNext = cache.findAll({
+    queryKey: ["feed"],
+    predicate: (query) => query.state.fetchStatus !== "idle" && Boolean(query.state.fetchMeta?.fetchMore),
+  });
+  for (const query of loadingNext) {
+    const stop = cache.subscribe((event) => {
+      if (event.query !== query) {
+        return;
+      }
+      if (event.type === "removed") {
+        stop();
+        return;
+      }
+      // Writes into the cache (this one included) are not the page landing.
+      if (event.type !== "updated" || (event.action.type === "success" && event.action.manual)) {
+        return;
+      }
+      if (event.action.type === "success") {
+        stop();
+        client.setQueryData<InfiniteData<FeedPage>>(query.queryKey, (feed) => feedWithLike(feed, videoId, liked));
+      } else if (event.action.type === "fetch" || query.state.fetchStatus === "idle") {
+        // Another fetch took its place, or it failed or was cancelled: nothing landed over the stored state.
+        stop();
+      }
+    });
+  }
 }
 
 // A feed page still being read when a like request ends may have been read before the server applied it, and would
