@@ -25,7 +25,7 @@ func setStorageEnv(t *testing.T, env map[string]string) {
 
 func TestServeMalformedKafkaBrokersNamesTheVariable(t *testing.T) {
 	setStorageEnv(t, map[string]string{
-		"S3_ENDPOINT":          "http://minio:9000",
+		"S3_ENDPOINT":          "http://s3:9000",
 		"S3_ACCESS_KEY_ID":     "svp-video-service",
 		"S3_SECRET_ACCESS_KEY": "secret-value",
 	})
@@ -90,7 +90,7 @@ func (p *failureProbe) logged() []probedError {
 func serveEnv(t *testing.T) {
 	t.Helper()
 	setStorageEnv(t, map[string]string{
-		"S3_ENDPOINT":          "http://minio:9000",
+		"S3_ENDPOINT":          "http://s3:9000",
 		"S3_ACCESS_KEY_ID":     "svp-video-service",
 		"S3_SECRET_ACCESS_KEY": "secret-value",
 	})
@@ -147,7 +147,7 @@ func TestServeLeavesEarlyFailureToMain(t *testing.T) {
 
 func TestStorageConfigDefaults(t *testing.T) {
 	setStorageEnv(t, map[string]string{
-		"S3_ENDPOINT":          "http://minio:9000",
+		"S3_ENDPOINT":          "http://s3:9000",
 		"S3_ACCESS_KEY_ID":     "svp-video-service",
 		"S3_SECRET_ACCESS_KEY": "secret-value",
 	})
@@ -156,8 +156,8 @@ func TestStorageConfigDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := objstore.Config{
-		Endpoint:        "http://minio:9000",
-		PublicEndpoint:  "http://minio:9000",
+		Endpoint:        "http://s3:9000",
+		PublicEndpoint:  "http://s3:9000",
 		Region:          "us-east-1",
 		AccessKeyID:     "svp-video-service",
 		SecretAccessKey: "secret-value",
@@ -171,7 +171,7 @@ func TestStorageConfigDefaults(t *testing.T) {
 
 func TestStorageConfigSetValues(t *testing.T) {
 	setStorageEnv(t, map[string]string{
-		"S3_ENDPOINT":          "http://minio:9000",
+		"S3_ENDPOINT":          "http://s3:9000",
 		"S3_PUBLIC_ENDPOINT":   "http://127.0.0.1:9000",
 		"S3_REGION":            "ap-southeast-1",
 		"S3_ACCESS_KEY_ID":     "key",
@@ -191,14 +191,14 @@ func TestStorageConfigSetValues(t *testing.T) {
 
 func TestStorageConfigErrorsNameTheVariable(t *testing.T) {
 	valid := map[string]string{
-		"S3_ENDPOINT":          "http://minio:9000",
+		"S3_ENDPOINT":          "http://s3:9000",
 		"S3_ACCESS_KEY_ID":     "key",
 		"S3_SECRET_ACCESS_KEY": "secret-value",
 	}
 	for _, tc := range []struct{ name, variable, value string }{
 		{"missing endpoint", "S3_ENDPOINT", ""},
-		{"endpoint without scheme", "S3_ENDPOINT", "minio:9000"},
-		{"endpoint with another scheme", "S3_ENDPOINT", "ftp://minio:9000"},
+		{"endpoint without scheme", "S3_ENDPOINT", "s3:9000"},
+		{"endpoint with another scheme", "S3_ENDPOINT", "ftp://s3:9000"},
 		{"endpoint without host", "S3_ENDPOINT", "http:///x"},
 		{"bad public endpoint", "S3_PUBLIC_ENDPOINT", "127.0.0.1:9000"},
 		{"missing access key", "S3_ACCESS_KEY_ID", ""},
@@ -300,7 +300,7 @@ func TestPositiveDuration(t *testing.T) {
 
 func TestServeRejectsInvalidSweepSettings(t *testing.T) {
 	setStorageEnv(t, map[string]string{
-		"S3_ENDPOINT":          "http://minio:9000",
+		"S3_ENDPOINT":          "http://s3:9000",
 		"S3_ACCESS_KEY_ID":     "svp-video-service",
 		"S3_SECRET_ACCESS_KEY": "secret-value",
 	})

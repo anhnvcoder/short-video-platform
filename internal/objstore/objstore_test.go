@@ -35,7 +35,7 @@ func newTestStore(t *testing.T, cfg Config) *Store {
 
 func TestNewRejectsMissingConfig(t *testing.T) {
 	for _, field := range []string{"Endpoint", "Region", "AccessKeyID", "SecretAccessKey", "UploadsBucket", "MediaBucket"} {
-		cfg := testConfig("http://minio:9000")
+		cfg := testConfig("http://s3:9000")
 		switch field {
 		case "Endpoint":
 			cfg.Endpoint = ""
@@ -58,7 +58,7 @@ func TestNewRejectsMissingConfig(t *testing.T) {
 }
 
 func TestBucketByPrefix(t *testing.T) {
-	cfg := testConfig("http://minio:9000")
+	cfg := testConfig("http://s3:9000")
 	cfg.UploadsBucket, cfg.MediaBucket = "up-bucket", "media-bucket"
 	s := newTestStore(t, cfg)
 	tests := []struct {
@@ -107,7 +107,7 @@ func decodePolicy(t *testing.T, policy string) (string, []any) {
 }
 
 func TestPresignPostPolicy(t *testing.T) {
-	cfg := testConfig("http://minio:9000")
+	cfg := testConfig("http://s3:9000")
 	cfg.PublicEndpoint = "http://127.0.0.1:9000"
 	s := newTestStore(t, cfg)
 	const key = "uploads/0192a7b4-5c3e-7d2f-8a1b-3c4d5e6f7a8b"
@@ -175,7 +175,7 @@ func TestPresignPostPolicy(t *testing.T) {
 }
 
 func TestPresignPostRejects(t *testing.T) {
-	s := newTestStore(t, testConfig("http://minio:9000"))
+	s := newTestStore(t, testConfig("http://s3:9000"))
 	tests := []struct {
 		name, key, contentType string
 		size                   int64

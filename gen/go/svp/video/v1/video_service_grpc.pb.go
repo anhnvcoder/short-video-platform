@@ -41,7 +41,7 @@ const (
 // All ids are UUIDv7 strings in canonical lowercase form (36 chars). Media
 // locations are object keys (for example `media/<video_id>/master.m3u8`),
 // never absolute URLs: the gateway builds public URLs from per-environment
-// configuration (MinIO locally, a CDN in the cloud).
+// configuration (the local object store, a CDN in the cloud).
 type VideoServiceClient interface {
 	// InitUpload creates a video in UPLOADING owned by the caller and returns a
 	// presigned POST for the object key `uploads/<video_id>`. The policy limits
@@ -182,7 +182,7 @@ func (c *videoServiceClient) ListAuthorVideos(ctx context.Context, in *ListAutho
 // All ids are UUIDv7 strings in canonical lowercase form (36 chars). Media
 // locations are object keys (for example `media/<video_id>/master.m3u8`),
 // never absolute URLs: the gateway builds public URLs from per-environment
-// configuration (MinIO locally, a CDN in the cloud).
+// configuration (the local object store, a CDN in the cloud).
 type VideoServiceServer interface {
 	// InitUpload creates a video in UPLOADING owned by the caller and returns a
 	// presigned POST for the object key `uploads/<video_id>`. The policy limits

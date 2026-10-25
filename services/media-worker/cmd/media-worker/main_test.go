@@ -14,7 +14,7 @@ import (
 func setRequired(t *testing.T) {
 	t.Helper()
 	t.Setenv("KAFKA_BROKERS", "redpanda:9092")
-	t.Setenv("S3_ENDPOINT", "http://minio:9000")
+	t.Setenv("S3_ENDPOINT", "http://s3:9000")
 	t.Setenv("S3_ACCESS_KEY_ID", "svp-media-worker")
 	t.Setenv("S3_SECRET_ACCESS_KEY", "test-secret-value")
 	for _, name := range []string{"S3_REGION", "S3_UPLOADS_BUCKET", "S3_MEDIA_BUCKET", "WORK_DIR"} {
@@ -29,7 +29,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := cfg.store
-	if cfg.brokers != "redpanda:9092" || s.Endpoint != "http://minio:9000" || s.AccessKeyID != "svp-media-worker" ||
+	if cfg.brokers != "redpanda:9092" || s.Endpoint != "http://s3:9000" || s.AccessKeyID != "svp-media-worker" ||
 		s.SecretAccessKey != "test-secret-value" {
 		t.Errorf("required values not read: %+v", cfg)
 	}
@@ -52,7 +52,7 @@ func TestLoadConfigMissingNamesVariable(t *testing.T) {
 }
 
 func TestLoadConfigRejectsMalformedEndpoint(t *testing.T) {
-	for _, value := range []string{"minio:9000", "127.0.0.1:9000", "ftp://minio:9000", "http://", "/minio"} {
+	for _, value := range []string{"s3:9000", "127.0.0.1:9000", "ftp://s3:9000", "http://", "/s3"} {
 		t.Run(value, func(t *testing.T) {
 			setRequired(t)
 			t.Setenv("S3_ENDPOINT", value)
