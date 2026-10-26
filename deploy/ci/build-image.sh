@@ -15,12 +15,67 @@
 # through the same CRITICAL and secret gate, and syft lists them in the SBOM. ARCH (amd64, arm64) must be this host's
 # architecture. OUT receives:
 #   image.tar, local-tag, platform, config-digest, trivy.json, trivy.sarif, sbom.spdx.json, scan-started,
-#   scan-finished, db-updated-at
+#   scan-finished, db-updated-at, and, for web only, sourcemaps/ (below).
 # Only drill-vulnerable passes --allow-critical to the gate; the secret gate holds for every image.
+#
+# Web source maps. The image serves its browser chunks without their maps; stage `sourcemaps` of the web Dockerfile
+# holds them. Right after the image, the same builder builds that stage with the same context and build argument into
+# OUT/sourcemaps, so it comes from the image's own build cache: a build without cache may make another bundle (Server
+# Action ids are random per build), whose maps would match no chunk the image serves. The leg then copies the image's
+# own chunks out of the image and fails unless the debug id of every chunk that carries one is a chunk of
+# OUT/sourcemaps: a bundle that differs stops the leg instead of shipping maps of another bundle. The bundle is built
+# natively on each architecture, so the maps go per architecture.
+#
+# build-image.sh --sourcemaps-artifact OUT DIGEST_FILE DEST: run in the main job after push-image.sh, packs
+# OUT/sourcemaps into DEST for the artifact web-sourcemaps-<arch>: the tree _next/static/... of chunks (as built, each
+# still ending with the sourceMappingURL comment that names its map) and maps, nothing else, plus the file image-digest
+# holding the content of DIGEST_FILE: the manifest digest of this leg as pushed (OUT/digest), the very digest the
+# signed index lists for linux/<arch>. A commit can be built more than once (a dispatch that rebuilds web makes another
+# bundle and another digest), so that digest, not the commit, tells which image the maps belong to. A missing or
+# malformed digest fails: an artifact nobody can match to an image is never packed.
 set -euo pipefail
 
 # shellcheck source=deploy/ci/common.sh
 . "$(dirname "$0")/common.sh"
+
+# check_sourcemaps DIR: DIR holds only regular files under _next/static/, each a .js chunk or a .map, no hidden entry,
+# at least one *.js.map, and every chunk still carries its sourceMappingURL comment (the upload pairs a chunk with its
+# map through that comment and reads the debug id from the chunk). The named map may be missing: a vendored file such as
+# the hls.js worker names a map next never writes, and goes as it is, like in the upload from a machine.
+check_sourcemaps() {
+  local dir=$1 bad js
+  [ -d "$dir" ] || fail "$dir is not a directory"
+  bad=$(cd "$dir" && find . -mindepth 1 \( -name '.*' -o \( ! -type f ! -type d \) \) -print)
+  [ -z "$bad" ] || fail "$dir holds hidden entries or entries that are not regular files: $bad"
+  bad=$(cd "$dir" && find . -type f | grep -vE '^\./_next/static/.+\.(js|map)$' || true)
+  [ -z "$bad" ] || fail "$dir holds files other than chunks and maps under _next/static/: $bad"
+  [ -n "$(find "$dir" -type f -name '*.js.map' | head -n 1)" ] || fail "$dir holds no *.js.map"
+  while IFS= read -r js; do
+    grep -qE '^//# sourceMappingURL=[^[:space:]]+$' "$js" || fail "${js#"$dir"/} has lost its sourceMappingURL comment"
+  done < <(find "$dir" -type f -name '*.js')
+}
+
+if [ "${1:-}" = --sourcemaps-artifact ]; then
+  [ $# -eq 4 ] || fail "usage: build-image.sh --sourcemaps-artifact OUT DIGEST_FILE DEST"
+  out=$2 digest_file=$3 dest=$4
+  [ -s "$digest_file" ] || fail "no manifest digest at $digest_file: this leg was not pushed (push-image.sh writes it)"
+  digest=$(cat "$digest_file")
+  [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] ||
+    fail "$digest_file does not hold one manifest digest of the form sha256:<64 hex>"
+  [ "$digest" != "$(cat "$out/config-digest")" ] ||
+    fail "$digest_file holds the config digest of the image, not the digest of its pushed manifest"
+  check_sourcemaps "$out/sourcemaps"
+  [ ! -e "$dest" ] || [ -z "$(ls -A "$dest")" ] || fail "$dest is not empty"
+  mkdir -p "$dest" || fail "create $dest"
+  cp -R "$out/sourcemaps/." "$dest/" || fail "copy the source maps to $dest"
+  printf '%s\n' "$digest" >"$dest/image-digest"
+  [ "$(cd "$dest" && find . -mindepth 1 -maxdepth 1 | LC_ALL=C sort | tr '\n' ' ')" = "./_next ./image-digest " ] ||
+    fail "$dest holds more than _next/ and image-digest"
+  maps=$(find "$dest" -type f -name '*.js.map' | wc -l | tr -d ' ')
+  chunks=$(find "$dest" -type f -name '*.js' | wc -l | tr -d ' ')
+  ok "packed $maps source maps and $chunks chunks for manifest $digest"
+  exit 0
+fi
 
 [ $# -eq 3 ] || fail "usage: build-image.sh IMAGE ARCH OUT"
 image=$1 arch=$2 out=$3
@@ -57,6 +112,37 @@ docker_ buildx build --load --provenance=false --sbom=false --file "$repo_root/$
   "${labels[@]}" --tag "$tag" "$repo_root/$context" || fail "build $image"
 echo "$tag" >"$out/local-tag"
 echo "linux/$arch" >"$out/platform"
+
+if [ "$image" = web ]; then
+  echo "export stage sourcemaps of $file, same context and build argument, from the build cache of the image"
+  rm -rf "$out/sourcemaps"
+  docker_ buildx build --provenance=false --sbom=false --file "$repo_root/$file" --target sourcemaps \
+    "${build_args[@]}" --output "type=local,dest=$out/sourcemaps" "$repo_root/$context" ||
+    fail "export the source maps of $image"
+  check_sourcemaps "$out/sourcemaps"
+  built=$(find "$out/sourcemaps" -type f -name '*.js' -exec sed -n 's|^//# debugId=||p' {} + | LC_ALL=C sort -u)
+  # The image has no shell: copy its chunks out of a container that is created, never started.
+  served=$out/image-chunks
+  rm -rf "$served" && mkdir "$served" || fail "create $served"
+  cid=$(docker_ create "$tag") || fail "create a container of $tag"
+  if ! docker_ cp "$cid:/app/.next/static/chunks" "$served/chunks" >/dev/null; then
+    docker_ rm "$cid" >/dev/null
+    fail "copy the chunks out of $tag"
+  fi
+  docker_ rm "$cid" >/dev/null || fail "remove container $cid"
+  checked=0
+  while IFS= read -r chunk; do
+    id=$(sed -n 's|^//# debugId=||p' "$chunk")
+    [ -n "$id" ] || continue
+    printf '%s\n' "$built" | grep -qxF -- "$id" ||
+      fail "chunk ${chunk#"$served"/} of $tag (debug id $id) is not in stage sourcemaps: the maps are of another bundle"
+    checked=$((checked + 1))
+  done < <(find "$served/chunks" -type f -name '*.js')
+  rm -rf "$served"
+  [ "$checked" -gt 0 ] || fail "no chunk of $tag carries a debug id"
+  maps=$(find "$out/sourcemaps" -type f -name '*.js.map' | wc -l | tr -d ' ')
+  ok "$maps source maps exported; the debug ids of the $checked chunks of $tag that carry one are all in them"
+fi
 
 rm -f "$out/image.tar"
 docker_ save --output "$out/image.tar" "$tag" || fail "save $tag to a tar"
