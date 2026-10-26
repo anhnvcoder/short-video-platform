@@ -1,0 +1,10 @@
+# The namespace of the CSI hostpath driver and the snapshot controller, on the k3d cluster of a CI runner only
+# (deploy/k8s/cloud/runner/csi/install.sh). The driver's node plugin is a privileged pod with hostPath mounts of the
+# node's kubelet directories and /dev, which Pod Security "restricted", the cluster's default, refuses; this label lets
+# it run here and nowhere else. The cluster lives for one job and is thrown away with it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: csi-hostpath
+  labels:
+    pod-security.kubernetes.io/enforce: privileged

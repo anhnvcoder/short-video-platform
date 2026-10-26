@@ -1,0 +1,27 @@
+# Template of the drill's backup on the k3d cluster of a CI runner (deploy/k8s/cloud/velero/drill-restore.sh with
+# --context k3d-svp, step 2): only Redpanda's objects of svp-data, by the labels its chart puts on all of them (the
+# StatefulSet, its pod and PVC, Services, ConfigMap, ServiceAccount, RBAC; the PVC brings its PersistentVolume and CSI
+# snapshot), and the drill's fixture ConfigMaps. The namespace also holds the object store this backup is written to,
+# Postgres and Valkey, which the drill must not touch. The script replaces the name and the namespace (svp-data here).
+# Secrets stay out (threat model BAK-2): the drill deletes none, so the ones Redpanda reads are still there after it.
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  name: drill-svp-data
+  namespace: velero
+  labels:
+    svp-drill: velero-restore
+spec:
+  includedNamespaces:
+    - svp-data
+  orLabelSelectors:
+    - matchLabels:
+        app.kubernetes.io/instance: redpanda
+        app.kubernetes.io/name: redpanda
+    - matchLabels:
+        svp-drill: velero-fixture
+  excludedResources:
+    - secrets
+  snapshotVolumes: true
+  storageLocation: default
+  ttl: 72h0m0s

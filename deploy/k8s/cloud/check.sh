@@ -4,7 +4,9 @@
 # (chart repositories, GitHub).
 #
 #   1. Renders every chart of deploy/k8s/cloud/charts.json with its values (`helm template`, Helm's homes in a temporary
-#      directory as in `make helm-check`), and gathers every manifest under deploy/k8s/cloud/ but the values files, every
+#      directory as in `make helm-check`), and once more with its runnerValues after them when it has some (the overlay
+#      of the k3d cluster of a CI runner, deploy/k8s/cloud/runner/<chart>/values.yaml), and gathers every manifest
+#      under deploy/k8s/cloud/ but the values files (values/ and runner/*/values.yaml), every
 #      *.yaml / *.yml under deploy/k6/ (none yet is fine: the k6 Jobs come later), and the output of
 #      deploy/k6/cloud/render.sh when that script exists (run with no argument, manifests on stdout).
 #   2. Turns into JSON schemas, with /openapi2jsonschema of KUBECONFORM_IMAGE (no network), the CRDs of each kind used:
@@ -81,13 +83,17 @@ yaml2json() {
 
 # 1. Charts and manifests.
 sep=$'\x1f'
-list=$(jq -r '.charts[] | [.name, .namespace, .repo, .chart, .version, (.values // "")] | join("\u001f")' \
-  "$cloud/charts.json") || fail "read $cloud/charts.json"
+list=$(jq -r '.charts[] | [.name, .namespace, .repo, .chart, .version, (.values // ""), (.runnerValues // "")]
+  | join("\u001f")' "$cloud/charts.json") || fail "read $cloud/charts.json"
 charts=0
-while IFS=$sep read -r name namespace repo chart version values; do
+while IFS=$sep read -r name namespace repo chart version values runner_values; do
   args=(template "$name" "$chart" --repo "$repo" --version "$version" --namespace "$namespace")
   if [ -n "$values" ]; then args+=(--values "$root/$values"); fi
   helm "${args[@]}" >"$tmp/manifests/rendered__$name.yaml" 2>"$tmp/err" || { cat "$tmp/err" >&2; fail "helm template $name"; }
+  if [ -n "$runner_values" ]; then
+    helm "${args[@]}" --values "$root/$runner_values" >"$tmp/manifests/rendered__$name-runner.yaml" 2>"$tmp/err" ||
+      { cat "$tmp/err" >&2; fail "helm template $name with $runner_values"; }
+  fi
   helm pull "$chart" --repo "$repo" --version "$version" --untar --untardir "$tmp/charts/$name" 2>"$tmp/err" ||
     { cat "$tmp/err" >&2; fail "helm pull $name"; }
   # Velero's CRDs come from its source at the image's tag (step 2), not from the chart.
@@ -101,7 +107,8 @@ files=0
 while IFS= read -r f; do
   add_manifest "$f" "${f#"$root"/}"
   files=$((files + 1))
-done < <(find "$cloud" -type f \( -name '*.yaml' -o -name '*.yml' \) -not -path "$cloud/values/*" | sort)
+done < <(find "$cloud" -type f \( -name '*.yaml' -o -name '*.yml' \) -not -path "$cloud/values/*" \
+  -not -path "$cloud/runner/*/values.yaml" | sort)
 if [ -d "$root/deploy/k6" ]; then
   while IFS= read -r f; do
     add_manifest "$f" "${f#"$root"/}"

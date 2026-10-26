@@ -1,0 +1,39 @@
+# Velero on the k3d cluster of a CI runner (scenario velero of deploy/ci/verify-run.sh, steps in
+# deploy/ci/verify/velero.sh): applied after deploy/k8s/cloud/values/velero.yaml, whose image, plugin, CSI flags, no
+# node-agent and security context it keeps. What differs from the cloud cluster: the backups go to the object store
+# inside the cluster (RustFS, Service s3 of namespace svp-data) instead of S3 with Pod Identity, so Velero logs in with
+# the access key of its own user there, svp-velero, whose policy reaches bucket velero only (threat model BAK-2).
+#
+#   helm --kube-context k3d-svp upgrade --install velero velero --repo https://vmware-tanzu.github.io/helm-charts \
+#     --version 12.2.1 -n velero -f deploy/k8s/cloud/values/velero.yaml -f deploy/k8s/cloud/runner/velero/values.yaml
+#
+# Secret velero/velero-s3 is made by the scenario before this, key cloud holding an AWS shared credentials file
+# (profile default) with that user's random key; it is never in .env. The ingress into pod s3 is opened for Velero's
+# server pod alone by deploy/k8s/cloud/runner/velero/networkpolicy.yaml. `make cloud-check` renders the chart with both
+# values files (runnerValues in deploy/k8s/cloud/charts.json).
+
+# The AWS plugin reads the file through AWS_SHARED_CREDENTIALS_FILE, which the chart sets to the mounted Secret.
+credentials:
+  useSecret: true
+  existingSecret: velero-s3
+
+# The location is rendered by the chart here (the cloud cluster applies deploy/k8s/cloud/velero/backupstoragelocation.yaml
+# instead): helm uninstall removes it with the rest of the release.
+backupsEnabled: true
+configuration:
+  backupStorageLocation:
+    - name: default
+      provider: aws
+      bucket: velero
+      default: true
+      accessMode: ReadWrite
+      config:
+        # RustFS takes any region name in the signature; the services and the init Job use this one.
+        region: us-east-1
+        s3ForcePathStyle: "true"
+        # Plain HTTP inside the cluster: the plugin then sends the CRC32 checksum of a multipart upload in a header,
+        # not in an aws-chunked trailer, the form the object store's integration test checked for http://.
+        s3Url: http://s3.svp-data:9000
+        # The signed URLs Velero hands out (the drill's DownloadRequest for a backup's resource list) are fetched from
+        # the runner through Envoy, which serves the object store under this name with the cluster's CA.
+        publicUrl: https://s3.svp.localhost:8443

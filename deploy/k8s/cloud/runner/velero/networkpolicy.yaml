@@ -1,0 +1,30 @@
+# On the k3d cluster of a CI runner only, while Velero is installed there (scenario velero of deploy/ci/verify-run.sh,
+# which applies it before Velero and deletes it when Velero is uninstalled): the object store s3 of namespace svp-data
+# takes Velero's server pod in as well. Policy s3 of chart svp-data admits only its own clients and namespace velero is
+# not one of them; NetworkPolicies add up, so this one widens nothing else and the chart stays as it is.
+#
+# Ingress into pod s3 only, from namespace velero only, only from pods with both labels of the chart's server pod
+# (name and app.kubernetes.io/name; the Deployment selects on app.kubernetes.io/instance as well, so a probe pod with
+# these two labels is not adopted by it), on the S3 port only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: velero-s3
+  namespace: svp-data
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: s3
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: velero
+          podSelector:
+            matchLabels:
+              name: velero
+              app.kubernetes.io/name: velero
+      ports:
+        - protocol: TCP
+          port: 9000

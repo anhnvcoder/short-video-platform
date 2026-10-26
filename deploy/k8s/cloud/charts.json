@@ -14,7 +14,8 @@
       "repo": "https://vmware-tanzu.github.io/helm-charts",
       "chart": "velero",
       "version": "12.2.1",
-      "values": "deploy/k8s/cloud/values/velero.yaml"
+      "values": "deploy/k8s/cloud/values/velero.yaml",
+      "runnerValues": "deploy/k8s/cloud/runner/velero/values.yaml"
     }
   ]
 }

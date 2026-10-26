@@ -496,6 +496,25 @@ while IFS=$sep read -r name namespace wave path repo chart version values canary
     args+=(${pg_sets[@]+"${pg_sets[@]}"})
   fi
   if [ "$name" = argo-rollouts ]; then rollouts_plugin_check; fi
+  # A CI runner's job only (scenario velero of deploy/ci/verify-run.sh sets SVP_K8S_RUNNER_CSI=1): Redpanda's volume on
+  # the StorageClass of the CSI hostpath driver, whose snapshots Velero takes. The driver goes in right before this
+  # release, whose --wait needs the PVC bound; deploy/k8s/cloud/runner/csi/install.sh refuses any machine but such a
+  # runner, and fails before Redpanda is installed when the driver or the StorageClass is not ready. Unset, nothing here
+  # runs and the values of the dev and GitOps paths are untouched.
+  if [ "$name" = redpanda ] && [ -n "${SVP_K8S_RUNNER_CSI:-}" ]; then
+    [ "$SVP_K8S_RUNNER_CSI" = 1 ] || fail "SVP_K8S_RUNNER_CSI is 1 or unset"
+    # A PVC's StorageClass cannot change, and a StatefulSet's volumeClaimTemplates neither: a Redpanda installed
+    # without the variable keeps its volume, so the cluster is made again (always the case on a runner, whose cluster
+    # is new).
+    rp_class=$(kc -n "$namespace" get pvc datadir-redpanda-0 --ignore-not-found -o jsonpath='{.spec.storageClassName}') ||
+      fail "read PVC $namespace/datadir-redpanda-0"
+    if [ -n "$rp_class" ] && [ "$rp_class" != csi-hostpath ]; then
+      fail "Redpanda's volume is on StorageClass $rp_class, which cannot change to csi-hostpath in place: start over with make k8s-down && SVP_K8S_RUNNER_CSI=1 make k8s-up"
+    fi
+    "$repo_root/deploy/k8s/cloud/runner/csi/install.sh" ||
+      fail "the CSI hostpath driver is not ready (deploy/k8s/cloud/runner/csi/install.sh): Redpanda is not installed"
+    args+=(--set storage.persistentVolume.storageClass=csi-hostpath)
+  fi
   watcher=
   # The Collector mounts ConfigMap otel-collector-config of chart svp-observability, which its own chart cannot
   # checksum, and reads it only when it starts: the checksum of the file that ConfigMap holds goes into the pod
