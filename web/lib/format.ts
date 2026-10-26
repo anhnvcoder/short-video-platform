@@ -2,11 +2,6 @@
 // "12.4K" in English. One decimal at most, cut rather than rounded, so 999 999 reads "999,9 N" and never "1 Tr" before
 // it is one. `long` spells the unit out for screen readers ("12,4 nghìn").
 export function formatCompact(value: number, locale: string, display: "short" | "long" = "short"): string {
-  // Under a thousand the compact form is the plain number in both locales of the app ("956"), so no Intl.NumberFormat
-  // is built: a page's first one costs milliseconds of ICU setup, and the feed formats its counts while it hydrates.
-  if (Number.isInteger(value) && value >= 0 && value < 1000) {
-    return String(value);
-  }
   const parts = new Intl.NumberFormat(locale, {
     notation: "compact",
     compactDisplay: display,

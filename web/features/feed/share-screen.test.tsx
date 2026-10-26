@@ -50,12 +50,10 @@ function renderShare({
   viewerId = null,
   locale = "vi",
   client = new QueryClient(),
-  renderedAgo,
 }: {
   video?: FeedItem;
   viewerId?: string | null;
   locale?: Locale;
-  renderedAgo?: string | null;
   // The tab's client, shared by the renders of one test as it is by the pages of a tab.
   client?: QueryClient;
 } = {}) {
@@ -67,14 +65,7 @@ function renderShare({
       messages={{ feed: messages.feed, share: messages.share, ...linkPendingMessages(messages) }}
     >
       <QueryClientProvider client={client}>
-        <ShareScreen
-          video={video}
-          viewerId={viewerId}
-          mediaOrigin={mediaOrigin}
-          loadedAt={loadedAt}
-          renderedAgo={renderedAgo}
-          appName="SVP"
-        />
+        <ShareScreen video={video} viewerId={viewerId} mediaOrigin={mediaOrigin} loadedAt={loadedAt} appName="SVP" />
       </QueryClientProvider>
     </NextIntlClientProvider>,
   );
@@ -184,15 +175,6 @@ describe("ShareScreen for a guest", () => {
           .replace(/\s/g, " "),
       ),
     ).toBeTruthy();
-  });
-
-  it("hydrates the server's age of the video without building a formatter", () => {
-    const built = vi.spyOn(Intl, "RelativeTimeFormat");
-    onTestFinished(() => built.mockRestore());
-    // Not what the browser would write, so the test sees whose text is shown.
-    renderShare({ renderedAgo: "server text" });
-    expect(within(stage()).getByText("@minhanh · server text")).toBeTruthy();
-    expect(built).not.toHaveBeenCalled();
   });
 
   it("asks to log in on like, coming back here, and Escape closes it with focus back on the button", async () => {

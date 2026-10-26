@@ -34,8 +34,6 @@ type ShareScreenProps = {
   mediaOrigin: string;
   // When the server got the video (ms since the epoch): the clock of "2 days ago" until the browser's takes over.
   loadedAt: number;
-  // The server's "2 days ago" for the video, counted from `loadedAt`.
-  renderedAgo?: string | null;
   appName: string;
 };
 
@@ -51,7 +49,7 @@ const headerLink =
 // M38, SVP Desktop.dc.html D04): one video played by the feed's player pool, its author, title and counts. A guest's
 // like and follow ask them to log in and come back here, and their watching records no view; a logged-in user likes,
 // follows and records a view after 2 s of playback as in the feed.
-export function ShareScreen({ video, viewerId, mediaOrigin, loadedAt, renderedAgo, appName }: ShareScreenProps) {
+export function ShareScreen({ video, viewerId, mediaOrigin, loadedAt, appName }: ShareScreenProps) {
   const t = useTranslations("feed");
   const s = useTranslations("share");
   const locale = useLocale();
@@ -63,10 +61,7 @@ export function ShareScreen({ video, viewerId, mediaOrigin, loadedAt, renderedAg
   const register = `/register?next=${encodeURIComponent(pagePath)}`;
   // Profiles need a login: a guest sees the name without a link.
   const authorHref = author && !guest ? `/u/${author.handle}` : null;
-  const publishedAgo = usePublishedAgo(
-    useNow(loadedAt),
-    renderedAgo === undefined ? undefined : { at: loadedAt, texts: { [video.published_at]: renderedAgo } },
-  )(video.published_at);
+  const publishedAgo = usePublishedAgo(useNow(loadedAt))(video.published_at);
   const posterUrl = isMediaUrl(video.thumbnail_url, mediaOrigin) ? video.thumbnail_url : null;
   // The poster is the page's largest paint: rendered on the server, this puts a high-priority preload in the <head>,
   // so the image starts before the scripts and fonts the page also asks for.

@@ -15,7 +15,6 @@ vi.mock("@/server/video-page", async (importOriginal) => ({
 }));
 vi.mock("@/server/env", () => ({ serverEnv: () => testEnv }));
 vi.mock("next-intl/server", () => ({
-  getLocale: async () => "vi",
   getMessages: async () => messagesFor("vi"),
   getTranslations: async (namespace: string) =>
     createTranslator({ locale: "vi", messages: messagesFor("vi"), namespace: namespace as "share" }),
@@ -141,17 +140,7 @@ describe("/v/[id] page", () => {
       viewerId: "0192f0c1-7a3e-7c4b-9d2e-000000000001",
       mediaOrigin: testEnv.mediaOrigin,
       loadedAt: shown.loadedAt,
-      // Published after the gateway's answer in this fixture: a time ahead of the clock reads as just now.
-      renderedAgo: messagesFor("vi").feed.justNow,
       appName: "SVP",
     });
-  });
-
-  it("writes the video's age counted from when the gateway answered, so the browser hydrates it without formatting", async () => {
-    loader.load.mockResolvedValue({ ...shown, loadedAt: Date.parse(video.published_at) + 2 * 24 * 60 * 60 * 1000 });
-    const element = (await VideoPage(params(videoId))) as ReactElement<{
-      children: ReactElement<Record<string, unknown>>;
-    }>;
-    expect(element.props.children.props.renderedAgo).toBe("2 ngày trước");
   });
 });
