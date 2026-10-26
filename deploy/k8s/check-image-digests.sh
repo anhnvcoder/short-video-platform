@@ -13,9 +13,14 @@
 # The seven service images are left out: CI signs them and Kyverno verifies them. Exits 1 listing every other image
 # without exactly one @sha256:<64 hex>.
 #
+# Every environment runs the images built once for the base: a component with an overlay in deploy/k8s/envs/<env>/ is
+# rendered again with it after its values, as Argo CD reads them, and the images of that render, the seven service
+# images included, must be exactly those of the base render. Exits 1 naming each overlay that adds, drops or changes
+# one.
+#
 # Usage: deploy/k8s/check-image-digests.sh [ROOT]
 #   ROOT: a directory laid out like this repository (default: the repository), from which components.json, every values
-#   file, the repository's charts and gitops.sh are read; a copy with one values file changed shows what the check
+#   file and overlay, the repository's charts and gitops.sh are read; a copy with one values file changed shows what the check
 #   reports for it. Nothing is written outside a temporary directory; no cluster is needed. Needs helm, jq and network
 #   access to the chart repositories.
 set -euo pipefail
@@ -60,6 +65,7 @@ list=$(jq -r '.components[] | [.name, .namespace, (.path // ""), (.repo // ""), 
 list+=$'\n'"argocd${sep}argocd${sep}${sep}https://argoproj.github.io/argo-helm${sep}argo-cd${sep}$argocd_version${sep}deploy/k8s/values/argo-cd.yaml"
 
 rendered=0
+overlays=0
 while IFS=$sep read -r name namespace path repo chart version values; do
   args=(template "$name" --namespace "$namespace" --include-crds)
   if [ -n "$path" ]; then
@@ -74,16 +80,24 @@ while IFS=$sep read -r name namespace path repo chart version values; do
   if ! helm "${args[@]}" >"$out" 2>"$tmp/err"; then
     [ "$path" = "$service_chart" ] && helm "${args[@]}" "${placeholder[@]}" >"$out" 2>"$tmp/err" ||
       { cat "$tmp/err" >&2; fail "helm template $name"; }
+    args+=("${placeholder[@]}")
   fi
   rendered=$((rendered + 1))
+  # The same render with each environment's overlay of the component last, into env/<env>/<name>.yaml.
+  for overlay in "$root"/deploy/k8s/envs/*/"$name.yaml"; do
+    [ -f "$overlay" ] || continue
+    env=$(basename "$(dirname "$overlay")")
+    mkdir -p "$tmp/env/$env"
+    helm "${args[@]}" --values "$overlay" >"$tmp/env/$env/$name.yaml" 2>"$tmp/err" ||
+      { cat "$tmp/err" >&2; fail "helm template $name with deploy/k8s/envs/$env/$name.yaml"; }
+    overlays=$((overlays + 1))
+  done
 done <<<"$list"
 
-# Every image reference of the rendered manifests, "component<TAB>image", CustomResourceDefinitions left out (their
-# schemas describe image fields, they hold none).
-images=$tmp/images
-for out in "$tmp"/out/*.yaml; do
-  name=$(basename "$out" .yaml)
-  awk -v name="$name" '
+# image_refs NAME FILE: every image reference of the rendered manifests in FILE, "NAME<TAB>image" per line,
+# CustomResourceDefinitions left out (their schemas describe image fields, they hold none).
+image_refs() {
+  awk -v name="$1" '
     function unquote(ref) {
       gsub(/^["'\'']|["'\'',]+$/, "", ref)
       return ref
@@ -158,8 +172,25 @@ for out in "$tmp"/out/*.yaml; do
     /^---/ { flush(); next }
     { lines[++nl] = $0; if ($0 ~ /^kind: CustomResourceDefinition/) crd = 1 }
     END { flush() }
-  ' "$out"
+  ' "$2"
+}
+
+images=$tmp/images
+for out in "$tmp"/out/*.yaml; do
+  image_refs "$(basename "$out" .yaml)" "$out"
 done | sort -u >"$images"
+
+# Each overlay's render against the base's, every image compared, the service images included.
+drift=
+for out in "$tmp"/env/*/*.yaml; do
+  [ -f "$out" ] || continue
+  name=$(basename "$out" .yaml)
+  env=$(basename "$(dirname "$out")")
+  image_refs "$name" "$out" | sort -u >"$tmp/env-images"
+  if ! diff=$(awk -F '\t' -v n="$name" '$1 == n' "$images" | diff - "$tmp/env-images"); then
+    drift+="  deploy/k8s/envs/$env/$name.yaml (< base, > $env):"$'\n'"$(sed 's/^/    /' <<<"$diff")"$'\n'
+  fi
+done
 
 total=0 pinned=0 excepted=0 services=0
 missing=
@@ -196,9 +227,12 @@ while IFS=$'\t' read -r name ref; do
   fi
 done <"$images"
 
-echo "charts rendered: $rendered; third-party images: $total, pinned by digest: $pinned, exceptions: $excepted; service images left out: $services"
+echo "charts rendered: $rendered, with an environment's overlay: $overlays; third-party images: $total, pinned by digest: $pinned, exceptions: $excepted; service images left out: $services"
+if [ -n "$drift" ]; then
+  printf 'FAIL  overlays whose render runs other images than the base:\n%s' "$drift" >&2
+fi
 if [ -n "$missing" ]; then
   printf 'FAIL  images without exactly one @sha256:<64 hex>:\n%s' "$missing" >&2
-  exit 1
 fi
-echo "ok    every third-party image is pinned by digest"
+[ -z "$drift$missing" ] || exit 1
+echo "ok    every third-party image is pinned by digest; every overlay runs the images of the base"

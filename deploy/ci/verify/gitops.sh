@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # Scenario gitops of deploy/ci/verify-run.sh, which sources this file: a new cluster k3d-svp that Argo CD builds from
 # this repository, running the signed release images of GHCR by digest (job gitops of .github/workflows/verify.yml).
-# make k8s-gitops-up on the branch this run checked out, make k8s-smoke, RAM at rest, the supply chain drill (Kyverno
+# make k8s-gitops-up on the branch this run checked out (the cluster runs as staging), the staging overlay seen applied,
+# make k8s-smoke, RAM at rest, the supply chain drill (Kyverno
 # enforcing), the threat model drill, the source maps of the image CI built, the web's e2e tests with GlitchTip, its
 # observability drill, KEDA with two workers transcoding twice (each with the RAM peak of it), RAM at rest again.
 # ram-rest-<label> and ram-peak-<n> are described in verify-run.sh.
@@ -18,6 +19,9 @@
 #               name them (or leave them out) as any other; they get no line in results.tsv, the step's result is theirs.
 #
 # Steps that are not a make target of their own:
+#   gitops-env             the overlays of deploy/k8s/envs/stg reached the cluster: Application gateway reads
+#                          deploy/k8s/envs/stg/gateway.yaml after its values, and every running gateway pod has
+#                          SENTRY_ENVIRONMENT=stg (the only variable of the pod spec read)
 #   drill-k8s-supplychain  make drill-k8s-supplychain with the images it needs, read from GHCR without credentials
 #                          (deploy/ci/gitops-sourcemaps.sh): the linux/amd64 manifest of the web release the cluster runs
 #                          as the unsigned image (no signature or attestation names it, they name its index), the newest
@@ -48,6 +52,41 @@ gitops_up() {
     return 1
   fi
   make k8s-gitops-up GITOPS_REV="$gitops_rev"
+}
+
+# gitops_env: see gitops-env in the header.
+gitops_env() {
+  # shellcheck disable=SC2016 # $values is Argo CD's name of the values source, written as it is
+  local want='$values/deploy/k8s/envs/stg/gateway.yaml' files pods values
+  files=$(kc -n argocd get applications.argoproj.io gateway -o json |
+    jq -r '[.spec.sources[] | .helm.valueFiles // [] | .[]] | join(" ")') || {
+    echo "FAIL  gitops-env: read Application gateway"
+    return 1
+  }
+  echo "Application gateway reads: $files"
+  case " $files " in
+  *" $want "*) ;;
+  *)
+    echo "FAIL  gitops-env: Application gateway does not read $want"
+    return 1
+    ;;
+  esac
+  pods=$(kc -n svp get pods -l app.kubernetes.io/name=gateway --field-selector=status.phase=Running -o json) || {
+    echo "FAIL  gitops-env: list the gateway's pods"
+    return 1
+  }
+  # One line per running pod: its name and the value of SENTRY_ENVIRONMENT in its gateway container, nothing else.
+  values=$(jq -r '.items[] | .metadata.name + " " + ([.spec.containers[] | select(.name == "gateway") | .env[]?
+    | select(.name == "SENTRY_ENVIRONMENT") | .value] | first // "unset")' <<<"$pods") || {
+    echo "FAIL  gitops-env: read SENTRY_ENVIRONMENT of the gateway's pods"
+    return 1
+  }
+  if [ -n "$values" ]; then sed 's/^/SENTRY_ENVIRONMENT of /' <<<"$values"; else echo "no running gateway pod"; fi
+  if [ -z "$values" ] || awk '$2 != "stg" { bad = 1 } END { exit !bad }' <<<"$values"; then
+    echo "FAIL  gitops-env: every running gateway pod must have SENTRY_ENVIRONMENT=stg"
+    return 1
+  fi
+  echo "ok    the staging overlay is applied"
 }
 
 # gitops_supplychain: see drill-k8s-supplychain in the header.
@@ -86,7 +125,7 @@ gitops_sourcemaps() {
     ;;
   esac
 }
-export -f gitops_up gitops_supplychain gitops_sourcemaps
+export -f gitops_up gitops_env gitops_supplychain gitops_sourcemaps
 
 scenario_targets() {
   local round maps maps_status maps_reason no_maps
@@ -95,6 +134,7 @@ scenario_targets() {
   maps_status=$(cat "$maps/status" 2>/dev/null) || maps_status=
   maps_reason=$(head -n 1 "$maps/reason" 2>/dev/null) || maps_reason=
   step k8s-gitops-up 60 bash -c gitops_up
+  step gitops-env 2 bash -c gitops_env
   step k8s-smoke 15 make k8s-smoke
   step ram-rest-start 15 bash -c 'ram_rest start'
   step drill-k8s-supplychain 40 bash -c gitops_supplychain

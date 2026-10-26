@@ -10,7 +10,8 @@
 #   3. the Secrets from .env (deploy/k8s/secrets.sh), which never go to git;
 #   4. Argo CD (deploy/k8s/values/argo-cd.yaml) in namespace argocd with Pod Security "restricted", AppProject svp and
 #      the emptied AppProject default (deploy/argocd/project.yaml) and root Application svp-root (chart
-#      deploy/argocd/apps at the same revision, told the architecture of the nodes). No repository Secret: the
+#      deploy/argocd/apps at the same revision, told the architecture of the nodes and the environment, stg: this
+#      cluster runs as staging, the base values plus the overlays of deploy/k8s/envs/stg). No repository Secret: the
 #      repository is public and Argo CD reads it over HTTPS without credentials, so this path holds no key or token;
 #      a repository that turned private again would need a read-only credential here;
 #   5. a bounded wait until every Application is Synced and Healthy with its last sync Succeeded, with GlitchTip's DSN
@@ -58,6 +59,21 @@ elif [[ $rev =~ ^[0-9a-f]{40}$ ]] && sha=$(git -C "$repo_root" rev-parse --verif
   echo "revision: commit $sha"
 else
   fail "GITOPS_REV=$rev is neither a branch of origin (refs/remotes/origin/$rev) nor a full commit SHA of this clone"
+fi
+
+# The environment the root hands to chart deploy/argocd/apps (value env). Always stg: a lab cluster only ever runs as
+# staging, and prd is rendered by make helm-check alone, so there is nothing to choose. The overlays carry no image, so
+# the release images checked below, from the base values, are the ones deployed. A revision from before the overlays
+# has a chart that reads no env and builds from the base values; one whose chart reads it (files/envs) but that has no
+# directory for stg would only fail in Argo CD once the cluster exists, so it is refused here.
+env=stg
+envs_dir=deploy/k8s/envs
+if git -C "$repo_root" cat-file -e "$sha:$envs_dir/$env" 2>/dev/null; then
+  echo "env: $env (overlays of $envs_dir/$env at ${sha:0:12})"
+elif git -C "$repo_root" cat-file -e "$sha:deploy/argocd/apps/files/envs" 2>/dev/null; then
+  fail "${sha:0:12} has chart deploy/argocd/apps reading an environment but no $envs_dir/$env, so Argo CD could not render it; nothing was created"
+else
+  echo "skip  env: ${sha:0:12} has no $envs_dir/$env; its chart deploy/argocd/apps reads no environment and builds from the base values"
 fi
 
 # Every service is checked before the script stops, so one run names every release that is missing. release_image
@@ -185,11 +201,12 @@ ok "AppProject svp, AppProject default emptied"
 
 # The root follows $rev, and hands the same revision to every Application it makes (value targetRevision of chart
 # deploy/argocd/apps), so the releases checked above are the ones deployed. argocd_root_app (lib.sh) writes the revision
-# as a string whatever it looks like; the nodes' architecture joins it in the root's values, a string too.
-argocd_root_app "$repo_url" "$rev" | jq --arg arch "$node_arch" '.spec.source.helm.valuesObject.nodeArch = $arch' |
+# and the environment as strings whatever they look like; the nodes' architecture joins them in the root's values, a
+# string too.
+argocd_root_app "$repo_url" "$rev" "$env" | jq --arg arch "$node_arch" '.spec.source.helm.valuesObject.nodeArch = $arch' |
   kc apply --server-side --field-manager=svp-gitops -f - >/dev/null ||
   fail "apply Application svp-root"
-ok "Application svp-root follows $rev of $repo_url (HTTPS, no credentials), nodeArch $node_arch"
+ok "Application svp-root follows $rev of $repo_url (HTTPS, no credentials), nodeArch $node_arch, env $env"
 
 if [ -z "$has_apps" ]; then
   # Argo CD reports a ComparisonError on the root once the repo-server has tried the revision: its message tells a

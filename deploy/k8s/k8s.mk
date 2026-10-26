@@ -22,14 +22,15 @@ k8s-up: k8s-exclusive env-required ## Create (or start) the registry 127.0.0.1:5
 	@bash -c '$(K8S_LIB) && ensure_registry && ensure_cluster'
 	deploy/k8s/install.sh
 
-# The GitOps path: a new cluster svp that Argo CD builds from GitHub, running the release images of GHCR. GITOPS_REV
-# is what Argo CD follows: a branch of origin (its values are read from origin/<branch> as last fetched) or a full
-# commit SHA. Releases are built, signed and promoted by CI (.github/workflows/images.yml): no target builds one on
-# this machine. Argo CD reads the public repository over HTTPS without credentials: no deploy key, no secret (a deploy
-# key made for the SSH setup before is no longer used, and can be deleted on GitHub).
+# The GitOps path: a new cluster svp that Argo CD builds from GitHub, running the release images of GHCR, as the
+# staging environment: the base values plus the overlays of deploy/k8s/envs/stg (production is only rendered, by make
+# helm-check). GITOPS_REV is what Argo CD follows: a branch of origin (its values are read from origin/<branch> as last
+# fetched) or a full commit SHA. Releases are built, signed and promoted by CI (.github/workflows/images.yml): no
+# target builds one on this machine. Argo CD reads the public repository over HTTPS without credentials: no deploy key,
+# no secret (a deploy key made for the SSH setup before is no longer used, and can be deleted on GitHub).
 GITOPS_REV ?= main
 
-k8s-gitops-up: k8s-exclusive env-required ## Create a new cluster svp that Argo CD builds from GitHub over anonymous HTTPS (no deploy key) [GITOPS_REV=main]; first checks that the seven release digests at that revision are on GHCR (anonymous pull), signed, with a clean vuln attestation at most 48 h old; applies the Secrets of .env, installs Argo CD with the plugin of Argo Rollouts for the nodes' architecture, waits until every Application is Synced and Healthy
+k8s-gitops-up: k8s-exclusive env-required ## Create a new cluster svp that runs as staging (base values plus deploy/k8s/envs/stg), built by Argo CD from GitHub over anonymous HTTPS (no deploy key) [GITOPS_REV=main]; first checks that the seven release digests at that revision are on GHCR (anonymous pull), signed, with a clean vuln attestation at most 48 h old; applies the Secrets of .env, installs Argo CD with the plugin of Argo Rollouts for the nodes' architecture, waits until every Application is Synced and Healthy
 	GITOPS_REV='$(GITOPS_REV)' deploy/k8s/gitops.sh
 
 measure-gitops: ## On the GitOps cluster, time release commit REV=<commit> (the merge of a promote pull request) from its push (reflog of origin/main, else GitHub's PushEvent) through Argo CD's sync to the first and last pod Ready with the new digest; JSON in .k8s/drills/ (read only)

@@ -229,9 +229,10 @@ secret() {
   done
 }
 
-# argocd_root_app REPO_URL REVISION: prints the root Application svp-root of the GitOps path, as JSON for
+# argocd_root_app REPO_URL REVISION ENV: prints the root Application svp-root of the GitOps path, as JSON for
 # `kc apply -f -`: chart deploy/argocd/apps of REPO_URL at REVISION, which hands the same revision to every Application
-# it makes (its value targetRevision). Built by jq from --arg values, so the revision is always a JSON string: a
+# it makes (its value targetRevision) and adds the overlays of environment ENV (its value env, a directory of
+# deploy/k8s/envs). Built by jq from --arg values, so the revision and the environment are always JSON strings: a
 # branch named 2026, true or 1e3 written into YAML as it is would be read as a number or a boolean, which the
 # Application CRD refuses (targetRevision is a string).
 #
@@ -244,7 +245,7 @@ secret() {
 # kubectl.kubernetes.io/last-applied-configuration annotation of a client-side apply and sees the deletion. The
 # children apply their own objects server-side (ServerSideApply=true), for which the server-side diff is right.
 argocd_root_app() {
-  jq -n --arg repo "$1" --arg rev "$2" '{
+  jq -n --arg repo "$1" --arg rev "$2" --arg env "$3" '{
     apiVersion: "argoproj.io/v1alpha1",
     kind: "Application",
     metadata: {
@@ -258,7 +259,7 @@ argocd_root_app() {
         repoURL: $repo,
         targetRevision: $rev,
         path: "deploy/argocd/apps",
-        helm: {valuesObject: {targetRevision: $rev}}
+        helm: {valuesObject: {targetRevision: $rev, env: $env}}
       },
       destination: {server: "https://kubernetes.default.svc", namespace: "argocd"},
       syncPolicy: {

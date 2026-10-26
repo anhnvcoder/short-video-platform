@@ -12,3 +12,9 @@ project: svp
 # values file named there for it on top of its values (Argo Rollouts' traffic router plugin is a native binary, one
 # per architecture). deploy/k8s/gitops.sh sets it from the nodes it created; arm64, the nodes of a Mac, otherwise.
 nodeArch: arm64
+# The environment this cluster runs, the name of a directory of deploy/k8s/envs (files/envs is a symlink to it): an
+# Application whose component has a file <name>.yaml there reads it after its other values files. Required, no default:
+# a cluster that forgot it would otherwise run another environment's settings without a word. deploy/k8s/gitops.sh
+# sets stg, the only environment a lab cluster runs; prd is rendered by make helm-check only. The dev path
+# (deploy/k8s/install.sh) does not use this chart and reads the base values alone.
+env: ""

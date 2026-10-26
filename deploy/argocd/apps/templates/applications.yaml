@@ -43,6 +43,51 @@ files/svp-cluster-values.yaml is a symlink to that file), for the namespaces of 
 */}}
 {{- $svpCluster := .Files.Get "files/svp-cluster-values.yaml" | fromYaml }}
 {{- $podSecurityVersion := required "podSecurityVersion missing in files/svp-cluster-values.yaml" $svpCluster.podSecurityVersion }}
+{{- /*
+The environment's overlays. files/envs is a symlink to deploy/k8s/envs: one directory per environment, holding a file
+<name>.yaml for each component (its name in components.json) whose values differ there from the base, and nothing but
+those differences. An Application whose component has a file in the directory of value env reads it after its other
+values files. An overlay never holds an image (every environment runs the images of the base, built and signed once),
+nor canary or httpRoute.name of a release of chart svp-service (canaryRoute below mirrors those two for every
+environment), nor a secret. Whatever breaks these rules fails the render, so Argo CD reports a ComparisonError on the
+root instead of running an environment with an overlay silently left out: an env with no directory, a file that names no
+component or is not a YAML map, an image or canary key in a service's overlay. The images of the other charts are held
+to the base's by deploy/k8s/check-image-digests.sh, which renders every overlay.
+*/}}
+{{- $env := toString (required "env is not set: the name of a directory of deploy/k8s/envs (deploy/k8s/gitops.sh sets stg)" .Values.env) }}
+{{- $names := dict }}
+{{- range $components }}{{- $_ := set $names .name .path }}{{- end }}
+{{- $envs := list }}
+{{- $overlays := dict }}
+{{- range $file, $content := .Files.Glob "files/envs/*/*" }}
+{{- $parts := splitList "/" $file }}
+{{- $dir := index $parts 2 }}
+{{- $base := index $parts 3 }}
+{{- /* A hidden file (an editor's or Finder's) is no overlay; git never holds one here. */}}
+{{- if not (hasPrefix "." $base) }}
+{{- $envs = append $envs $dir }}
+{{- if eq $dir $env }}
+{{- $name := trimSuffix ".yaml" $base }}
+{{- if or (not (hasSuffix ".yaml" $base)) (not (hasKey $names $name)) }}
+{{- fail (printf "deploy/k8s/envs/%s/%s: an overlay is <name>.yaml, name a component of components.json" $env $base) }}
+{{- end }}
+{{- $values := fromYaml (toString $content) }}
+{{- if hasKey $values "Error" }}
+{{- fail (printf "deploy/k8s/envs/%s/%s is not a YAML map: %s" $env $base (get $values "Error")) }}
+{{- end }}
+{{- if eq (get $names $name) "deploy/helm/svp-service" }}
+{{- $route := get $values "httpRoute" }}
+{{- if or (hasKey $values "image") (hasKey $values "canary") (and (kindIs "map" $route) (hasKey $route "name")) }}
+{{- fail (printf "deploy/k8s/envs/%s/%s sets image, canary or httpRoute.name: every environment runs the base's image and canary" $env $base) }}
+{{- end }}
+{{- end }}
+{{- $_ := set $overlays $name (printf "deploy/k8s/envs/%s/%s" $env $base) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if not (has $env $envs) }}
+{{- fail (printf "env is %q: deploy/k8s/envs has no overlay directory of that name (%s)" $env (uniq $envs | sortAlpha | join ", ")) }}
+{{- end }}
 {{- range $components }}
 ---
 apiVersion: argoproj.io/v1alpha1
@@ -73,12 +118,18 @@ spec:
     {{- end }}
       helm:
         releaseName: {{ .name }}
-        {{- if .values }}
+        {{- $overlay := get $overlays .name }}
+        {{- if or .values $overlay }}
         valueFiles:
+          {{- if .values }}
           - $values/{{ .values }}
           {{- with .archValues }}{{ with index . $.Values.nodeArch }}
           - $values/{{ . }}
           {{- end }}{{ end }}
+          {{- end }}
+          {{- with $overlay }}
+          - $values/{{ . }}
+          {{- end }}
         {{- end }}
         {{- if eq .name "otel-collector" }}
         parameters:
@@ -86,7 +137,7 @@ spec:
             value: {{ $collectorSum | quote }}
             forceString: true
         {{- end }}
-    {{- if .values }}
+    {{- if or .values (get $overlays .name) }}
     - repoURL: {{ $.Values.repoURL }}
       targetRevision: {{ $.Values.targetRevision | quote }}
       ref: values

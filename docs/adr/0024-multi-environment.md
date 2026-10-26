@@ -1,6 +1,6 @@
 # 0024. Nhiều môi trường dev, stg, prd: build một lần, mọi env chạy cùng digest đã ký, khác biệt chỉ ở overlay values `deploy/k8s/envs/<env>/` mà Argo CD chọn theo giá trị `env` của root Application; ở giai đoạn 6b cluster GitOps trên k3d đóng vai stg, prd chỉ render và kiểm tĩnh
 
-- Trạng thái: Đề xuất (chờ người học trả lời các dòng "Cần người học chọn" ở cuối mục Quyết định); chưa hiện thực
+- Trạng thái: Chấp nhận (người học duyệt 2026-10-26, chọn (a) ở cả bảy dòng "Cần người học chọn")
 - Ngày: 2026-10-26
 
 ## Bối cảnh
@@ -107,7 +107,7 @@
 
 ## Quyết định
 
-Chọn 1A, 3A, 5A và 6A; 4A và 2B là đề xuất của dòng 1 và 2 trong "Cần người học chọn". Lý do chung: giữ một công cụ (Helm) và một
+Chọn 1A, 2B, 3A, 4A, 5A và 6A (4A và 2B theo câu trả lời dòng 1 và 2 của "Cần người học chọn"). Lý do chung: giữ một công cụ (Helm) và một
 nhánh, đặt khác biệt của env ở nơi đọc được và kiểm được bằng render, và không thêm controller nào khi mỗi lúc chỉ có một cluster.
 
 ### 1. Ba môi trường
@@ -331,6 +331,11 @@ tài liệu sau khi hiện thực.
 
 Mỗi dòng hai phương án đều dùng được; đề xuất đứng trước. Chỉ dòng 1 và 3 đổi việc hiện thực của phần 3; các dòng còn lại chốt
 hướng cho phần 4 và giai đoạn 7, phần 3 như nhau với mọi câu trả lời.
+
+Người học trả lời ngày 2026-10-26: (a) ở cả bảy dòng (1a không có `envs/dev/`; 2a mỗi env một bộ file digest, promote prd chép cả
+bộ của một bản ghi triển khai stg; 3a `svp.example` cùng phép kiểm render prd không còn `svp.localhost`; 4a CODEOWNERS bắt buộc trên
+`envs/prd/` và file chung; 5a giữ chart app-of-apps với `env`; 6a mỗi cluster một Argo CD; 7a bản ghi stg do phép kiểm ngoài cluster
+ghi).
 
 1. **dev có thư mục `envs/dev/` không?** (a) Không: dev là values gốc qua `make k8s-up` và compose. Lý do: đường dev đọc working tree,
    không đọc git; không có cluster thứ hai để chạy một env dev của Argo CD; thư mục không ai đọc là thừa. (b) Có, kèm một env Argo CD đi
