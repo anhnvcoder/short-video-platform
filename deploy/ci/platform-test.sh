@@ -14,7 +14,9 @@
 #   - platform-guard.sh passes the throwaway checkout and fails, naming file:line, a script that reads GITHUB_OUTPUT or
 #     calls gh itself;
 #   - changed-services.sh builds all seven images for a change of platform.sh, as for common.sh, and none for a change
-#     of this test, of platform-guard.sh, of the policy's values or of docs/.
+#     of this test, of platform-guard.sh, of a scenario file under deploy/ci/verify/, of the policy's values or of
+#     docs/;
+#   - platform-guard.sh reads the scenario files under deploy/ci/verify/ too.
 # Runs on macOS and Linux: no network, no Docker, no cluster.
 #
 # Usage, from anywhere: deploy/ci/platform-test.sh
@@ -44,18 +46,50 @@ same() {
 has() { grep -qF -- "$2" "$1"; }
 lacks() { ! grep -qF -- "$2" "$1"; }
 
-# --- Fakes. gh writes each call to gh.log, one line of %q-quoted arguments, and answers pr list from gh/prs.json and
-# api with gh/events.json run through its --jq filter; cosign refuses every signature and records its arguments.
+# --- Fakes. gh writes each call to gh.log, one line of %q-quoted arguments, and answers pr list from gh/prs.json; api
+# with gh/runs.json for a workflow's runs, gh/artifacts-<run>.json for a run's artifacts (none when the file is missing)
+# and gh/events.json otherwise, run through its --jq filter; run download writes the file image-digest into its --dir.
+# With FAKE_GH_FAIL set it fails as the host would; with FAKE_GH_DOWNLOAD_FAIL set only run download fails, naming the
+# signed link it was sent to, as gh does, and with GH_DEBUG or DEBUG set run download prints its request line as gh's
+# debug log does. cosign refuses every signature and records its arguments.
 mkdir -p "$work/bin" "$work/gh" "$work/runner-temp" "$work/home"
 cat >"$work/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 printf '%q ' "$@" >>"$FAKE_GH_LOG"
 echo >>"$FAKE_GH_LOG"
+if [ -n "${FAKE_GH_FAIL:-}" ]; then
+  echo "HTTP 502: Bad Gateway" >&2
+  exit 1
+fi
 case "$1 $2" in
 "pr list") cat "$FAKE_GH_DIR/prs.json" ;;
 "api -X")
+  path=$4
   while [ $# -gt 0 ] && [ "$1" != --jq ]; do shift; done
-  jq -r "$2" "$FAKE_GH_DIR/events.json"
+  case $path in
+  */actions/workflows/*/runs) file=$FAKE_GH_DIR/runs.json ;;
+  */actions/runs/*/artifacts)
+    id=${path%/artifacts}
+    file=$FAKE_GH_DIR/artifacts-${id##*/}.json
+    [ -f "$file" ] || file=$FAKE_GH_DIR/no-artifacts.json
+    ;;
+  *) file=$FAKE_GH_DIR/events.json ;;
+  esac
+  jq -r "$2" "$file"
+  ;;
+"run download")
+  if [ -n "${GH_DEBUG:-}${DEBUG:-}" ]; then
+    echo "> GET /a/archive.zip?sv=2025-01-05&sig=SIGNEDQUERY%3D HTTP/1.1" >&2
+  fi
+  if [ -n "${FAKE_GH_DOWNLOAD_FAIL:-}" ]; then
+    echo "error downloading web-sourcemaps-amd64: HTTP 403: Server failed to authenticate the request." \
+      "(https://results.blob.example/a/archive.zip?sv=2025-01-05&se=2026-10-26T14%3A00Z&sig=SIGNEDQUERY%3D)" >&2
+    echo "error downloading web-sourcemaps-amd64: Get \"https://results.blob.example:443/a/archive.zip?sig=SIGNEDQUERY\":" \
+      "dial tcp: lookup results.blob.example: no such host" >&2
+    exit 1
+  fi
+  while [ $# -gt 0 ] && [ "$1" != --dir ]; do shift; done
+  echo "$FAKE_GH_DIGEST" >"$2/image-digest"
   ;;
 esac
 EOF
@@ -67,6 +101,7 @@ exit 1
 EOF
 chmod 755 "$work/bin/gh" "$work/bin/cosign"
 echo '[]' >"$work/gh/prs.json"
+echo '{"total_count": 0, "artifacts": []}' >"$work/gh/no-artifacts.json"
 
 # on PLATFORM COMMAND...: runs COMMAND with the variables of PLATFORM and none of the others': github (a made-up job of
 # repository octo/repo), local (none), gitlab (GitLab CI's own). git reads no configuration of this machine.
@@ -75,9 +110,10 @@ on() {
   shift
   local base=(env -u GITHUB_ACTIONS -u GITHUB_OUTPUT -u GITHUB_STEP_SUMMARY -u GITHUB_REPOSITORY -u GITHUB_SERVER_URL
     -u GITHUB_RUN_ID -u GITHUB_RUN_ATTEMPT -u GITHUB_WORKFLOW_REF -u RUNNER_TEMP -u CI -u GITLAB_CI -u JENKINS_URL
-    -u TF_BUILD -u GIT_DIR -u GIT_WORK_TREE -u PROMOTE_DRY_RUN -u PROMOTE_DRY_RUN_PRS
+    -u TF_BUILD -u GIT_DIR -u GIT_WORK_TREE -u PROMOTE_DRY_RUN -u PROMOTE_DRY_RUN_PRS -u RUNNER_ENVIRONMENT
+    -u FAKE_GH_FAIL -u FAKE_GH_DOWNLOAD_FAIL
     PATH="$work/bin:$PATH" HOME="$work/home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-    FAKE_GH_LOG="$work/gh.log" FAKE_GH_DIR="$work/gh" FAKE_COSIGN_LOG="$work/cosign.log")
+    FAKE_GH_LOG="$work/gh.log" FAKE_GH_DIR="$work/gh" FAKE_GH_DIGEST=sha256:fetched FAKE_COSIGN_LOG="$work/cosign.log")
   case $platform in
   github)
     "${base[@]}" GITHUB_ACTIONS=true CI=true GITHUB_OUTPUT="$work/output" GITHUB_STEP_SUMMARY="$work/summary" \
@@ -212,6 +248,171 @@ same "local: the events are read for this repository" "$(gh_line api -X GET \
 if fn local 'ci_push_time "x\" or true"' 2>/dev/null; then fail "local: ci_push_time takes only a full SHA"; else
   ok "local: ci_push_time takes only a full SHA"
 fi
+
+# --- ci_hosted_runner: true only on a runner GitHub hands out for the job; silent either way.
+check "github: a github-hosted runner is a hosted runner" on github env RUNNER_ENVIRONMENT=github-hosted "$BASH" -c \
+  '. "$0"; ci_hosted_runner' "$here/platform.sh"
+same "github: a hosted runner prints nothing" "" "$(on github env RUNNER_ENVIRONMENT=github-hosted "$BASH" -c \
+  '. "$0"; ci_hosted_runner' "$here/platform.sh" 2>&1)"
+for runner in self-hosted ""; do
+  rc=0
+  out=$(on github env RUNNER_ENVIRONMENT="$runner" "$BASH" -c '. "$0"; ci_hosted_runner' "$here/platform.sh" 2>&1) ||
+    rc=$?
+  same "github: RUNNER_ENVIRONMENT='$runner' is no hosted runner, silently" "1 " "$rc $out"
+done
+rc=0
+out=$(fn github ci_hosted_runner 2>&1) || rc=$?
+same "github: no RUNNER_ENVIRONMENT is no hosted runner, silently" "1 " "$rc $out"
+rc=0
+out=$(on local env RUNNER_ENVIRONMENT=github-hosted "$BASH" -c '. "$0"; ci_hosted_runner' "$here/platform.sh" 2>&1) ||
+  rc=$?
+same "local: a machine is no hosted runner, whatever RUNNER_ENVIRONMENT says, silently" "1 " "$rc $out"
+rc=0
+out=$(on gitlab env RUNNER_ENVIRONMENT=github-hosted "$BASH" -c '. "$0"; ci_hosted_runner' "$here/platform.sh" 2>&1) ||
+  rc=$?
+case "$rc $out" in "1 FAIL  this runs on GitLab CI"*) ok "gitlab: ci_hosted_runner fails, naming GitLab CI" ;;
+*) fail "gitlab: ci_hosted_runner fails, naming GitLab CI (got '$rc $out')" ;; esac
+
+# --- ci_artifact_runs, ci_artifact_fetch. Runs of images.yml: two builds of the commit that hold the artifact (a push,
+# then a dispatch that built it again, started later), a red run that still released it, and runs that must not be
+# listed: a pull request's, one still running, one whose artifact expired, the latest one with no such artifact (and
+# another artifact), and a run of another commit.
+other=fedcba9876543210fedcba9876543210fedcba98
+jq -n --arg sha "$sha" --arg other "$other" '[
+  {id: 101, head_sha: $sha, event: "push", status: "completed", conclusion: "success",
+    run_started_at: "2026-10-01T00:00:00Z"},
+  {id: 102, head_sha: $sha, event: "workflow_dispatch", status: "completed", conclusion: "success",
+    run_started_at: "2026-10-03T00:00:00Z"},
+  {id: 103, head_sha: $sha, event: "push", status: "completed", conclusion: "failure",
+    run_started_at: "2026-10-02T00:00:00Z"},
+  {id: 104, head_sha: $sha, event: "pull_request", status: "completed", conclusion: "success",
+    run_started_at: "2026-10-04T00:00:00Z"},
+  {id: 105, head_sha: $sha, event: "push", status: "in_progress", conclusion: null,
+    run_started_at: "2026-10-05T00:00:00Z"},
+  {id: 106, head_sha: $sha, event: "push", status: "completed", conclusion: "success",
+    run_started_at: "2026-10-06T00:00:00Z"},
+  {id: 107, head_sha: $sha, event: "workflow_dispatch", status: "completed", conclusion: "failure",
+    run_started_at: "2026-10-07T00:00:00Z"},
+  {id: 108, head_sha: $other, event: "push", status: "completed", conclusion: "success",
+    run_started_at: "2026-10-08T00:00:00Z"}
+] | {total_count: length, workflow_runs: .}' >"$work/gh/runs.json"
+for id in 101 102 103 104 105 108; do
+  jq -n '{total_count: 1, artifacts: [{name: "web-sourcemaps-amd64", expired: false}]}' >"$work/gh/artifacts-$id.json"
+done
+jq -n '{total_count: 1, artifacts: [{name: "web-sourcemaps-amd64", expired: true}]}' >"$work/gh/artifacts-106.json"
+jq -n '{total_count: 1, artifacts: [{name: "release-web", expired: false}]}' >"$work/gh/artifacts-107.json"
+runs_jq="\"\\(.total_count) \\(.workflow_runs | length)\", (.workflow_runs
+        | map(select(.head_sha == \"$sha\" and .status == \"completed\"
+          and (.event == \"push\" or .event == \"workflow_dispatch\")))
+        | sort_by(.run_started_at, .id) | reverse | .[].id)"
+for p in github local; do
+  [ $p = github ] && repo=octo/repo || repo=anhnvcoder/short-video-platform
+  fresh
+  rc=0
+  got=$(fn $p "ci_artifact_runs images.yml $sha web-sourcemaps-amd64") || rc=$?
+  same "$p: ci_artifact_runs lists every finished push or dispatch build holding the artifact, latest started first" \
+    "0 102 103 101" "$rc $(echo $got)"
+  same "$p: ci_artifact_runs asks for the workflow's finished runs of the commit in the repository" "$(gh_line api \
+    -X GET "repos/$repo/actions/workflows/images.yml/runs" -f head_sha=$sha -f status=completed -f per_page=100 \
+    --jq "$runs_jq")" "$(head -n 1 "$work/gh.log")"
+  check "$p: ci_artifact_runs asks a candidate run for its artifact" has "$work/gh.log" "$(gh_line api -X GET \
+    "repos/$repo/actions/runs/102/artifacts" -f name=web-sourcemaps-amd64 -f per_page=100 --jq \
+    '[.artifacts[] | select(.name == "web-sourcemaps-amd64" and .expired == false)] | length')"
+  same "$p: ci_artifact_runs asks only the five finished push or dispatch runs of the commit for artifacts" \
+    "107 106 102 103 101" "$(sed -n 's|.*/actions/runs/\([0-9]*\)/artifacts .*|\1|p' "$work/gh.log" | tr '\n' ' ' |
+      sed 's/ $//')"
+done
+rc=0
+got=$(fn local "ci_artifact_runs images.yml $sha web-sourcemaps-arm64" 2>&1) || rc=$?
+same "local: ci_artifact_runs exits 3, silently, when no run holds the artifact" "3 " "$rc $got"
+rc=0
+got=$(fn local "ci_artifact_runs images.yml 1111111111111111111111111111111111111111 web-sourcemaps-amd64" 2>&1) ||
+  rc=$?
+same "local: ci_artifact_runs exits 3 for a commit with no run" "3 " "$rc $got"
+for args in "images.yml ${sha:0:12} web-sourcemaps-amd64" "images.yml $(tr a-f A-F <<<"$sha") web-sourcemaps-amd64" \
+  "'images.yml\" or true' $sha web-sourcemaps-amd64" "images.yml $sha 'web\") or true'" "images.yml $sha ''" \
+  "images.yml $sha"; do
+  fresh
+  rc=0
+  fn local "ci_artifact_runs $args" >/dev/null 2>"$work/err" || rc=$?
+  same "local: ci_artifact_runs $args is refused before gh is called" "1 0" "$rc $(wc -l <"$work/gh.log" | tr -d ' ')"
+done
+rc=0
+fn local "export FAKE_GH_FAIL=1; ci_artifact_runs images.yml $sha web-sourcemaps-amd64" >/dev/null 2>"$work/err" ||
+  rc=$?
+same "local: ci_artifact_runs exits 1 when the host fails" 1 "$rc"
+check "local: ci_artifact_runs shows the host's error" has "$work/err" "HTTP 502: Bad Gateway"
+jq '.total_count = 101' "$work/gh/runs.json" >"$work/gh/runs-more.json" &&
+  mv "$work/gh/runs-more.json" "$work/gh/runs.json"
+rc=0
+got=$(fn local "ci_artifact_runs images.yml $sha web-sourcemaps-amd64" 2>"$work/err") || rc=$?
+same "local: ci_artifact_runs fails, listing nothing, when the host has more runs than one page" "1 " "$rc $got"
+check "local: ci_artifact_runs says a page is missing" has "$work/err" \
+  "FAIL  the host has 101 finished runs of images.yml at $sha but returned 8: read the next page"
+rc=0
+fn gitlab "ci_artifact_runs images.yml $sha web-sourcemaps-amd64" >/dev/null 2>"$work/err" || rc=$?
+same "gitlab: ci_artifact_runs fails" 1 "$rc"
+check "gitlab: ci_artifact_runs names GitLab CI" has "$work/err" "this runs on GitLab CI"
+
+for p in github local; do
+  [ $p = github ] && repo=octo/repo || repo=anhnvcoder/short-video-platform
+  fresh
+  rm -rf "$work/fetch" && mkdir "$work/fetch"
+  rc=0
+  fn $p "ci_artifact_fetch 102 web-sourcemaps-amd64 '$work/fetch'" >/dev/null || rc=$?
+  same "$p: ci_artifact_fetch downloads the run's artifact into the directory" "0 sha256:fetched" \
+    "$rc $(cat "$work/fetch/image-digest" 2>/dev/null)"
+  same "$p: ci_artifact_fetch checks the artifact, then downloads it by name from the repository" "$(gh_line api \
+    -X GET "repos/$repo/actions/runs/102/artifacts" -f name=web-sourcemaps-amd64 -f per_page=100 --jq \
+    '[.artifacts[] | select(.name == "web-sourcemaps-amd64" and .expired == false)] | length')"$'\n'"$(gh_line run \
+    download 102 --repo "$repo" --name web-sourcemaps-amd64 --dir "$work/fetch")" "$(cat "$work/gh.log")"
+done
+for run in 106 107 999; do
+  fresh
+  rm -rf "$work/fetch" && mkdir "$work/fetch"
+  rc=0
+  got=$(fn local "ci_artifact_fetch $run web-sourcemaps-amd64 '$work/fetch'" 2>&1) || rc=$?
+  same "local: ci_artifact_fetch exits 3, silently, for run $run (artifact expired, absent, no run)" "3 " "$rc $got"
+  check "local: ci_artifact_fetch downloads nothing from run $run" lacks "$work/gh.log" "run download"
+done
+rm -rf "$work/fetch" && mkdir "$work/fetch"
+echo old >"$work/fetch/.left-over"
+fresh
+rc=0
+fn local "ci_artifact_fetch 102 web-sourcemaps-amd64 '$work/fetch'" >/dev/null 2>"$work/err" || rc=$?
+same "local: ci_artifact_fetch refuses a directory that is not empty" "1 0" "$rc $(wc -l <"$work/gh.log" | tr -d ' ')"
+check "local: ci_artifact_fetch names the directory that is not empty" has "$work/err" \
+  "FAIL  $work/fetch is not an empty directory"
+same "local: ci_artifact_fetch leaves that directory as it was" .left-over "$(ls -A "$work/fetch")"
+for args in "102 web-sourcemaps-amd64 '$work/no-such-dir'" \
+  "'102 or true' web-sourcemaps-amd64 '$work/empty'" "-1 web-sourcemaps-amd64 '$work/empty'" \
+  "102 'web\") or true' '$work/empty'" "102 web-sourcemaps-amd64"; do
+  fresh
+  rm -rf "$work/empty" && mkdir "$work/empty"
+  rc=0
+  fn local "ci_artifact_fetch $args" >/dev/null 2>"$work/err" || rc=$?
+  same "local: ci_artifact_fetch $args is refused before gh is called" "1 0" "$rc $(wc -l <"$work/gh.log" | tr -d ' ')"
+done
+rm -rf "$work/empty" && mkdir "$work/empty"
+rc=0
+fn local "export FAKE_GH_FAIL=1; ci_artifact_fetch 102 web-sourcemaps-amd64 '$work/empty'" >/dev/null 2>"$work/err" ||
+  rc=$?
+same "local: ci_artifact_fetch exits 1 when the host fails" 1 "$rc"
+check "local: ci_artifact_fetch shows the host's error" has "$work/err" "HTTP 502: Bad Gateway"
+for p in github local; do
+  rm -rf "$work/empty" && mkdir "$work/empty"
+  rc=0
+  fn $p "export FAKE_GH_DOWNLOAD_FAIL=1 GH_DEBUG=api DEBUG=1
+    ci_artifact_fetch 102 web-sourcemaps-amd64 '$work/empty'" >"$work/out" 2>"$work/err" || rc=$?
+  same "$p: ci_artifact_fetch exits 1 when the download fails" 1 "$rc"
+  same "$p: ci_artifact_fetch shows gh's error with each link cut to its scheme and host, and no debug log" \
+    "error downloading web-sourcemaps-amd64: HTTP 403: Server failed to authenticate the request. \
+(https://results.blob.example/<hidden>
+error downloading web-sourcemaps-amd64: Get \"https://results.blob.example/<hidden>\": dial tcp: lookup \
+results.blob.example: no such host" "$(cat "$work/err")"
+  same "$p: ci_artifact_fetch prints nothing on stdout when the download fails" "" "$(cat "$work/out")"
+  check "$p: ci_artifact_fetch never prints the signed part of the link" lacks "$work/err" SIGNEDQUERY
+done
 
 # --- another CI: a clear error, nothing written.
 fresh
@@ -433,17 +634,22 @@ ln -s ../k8s "$tree/deploy/ci/linked-dir"
 check "platform-guard.sh: clean, a link to a directory skipped" on local "$tree/deploy/ci/platform-guard.sh"
 printf '#!/usr/bin/env bash\necho "a=b" >>"$GITHUB_OUTPUT"\n' >"$tree/deploy/ci/new-step.sh"
 echo 'gh pr view 1' >>"$tree/deploy/ci/rescan.sh"
+# A scenario file of the verification runs reading the run's branch from GitHub itself.
+printf '# shellcheck shell=bash\nrev=$GITHUB_REF_NAME\n' >"$tree/deploy/ci/verify/new-scenario.sh"
 rc=0
 on local "$tree/deploy/ci/platform-guard.sh" >"$work/guard.out" 2>&1 || rc=$?
 same "platform-guard.sh: a match exits 1" 1 "$rc"
 check "platform-guard.sh: names the untracked script's line" has "$work/guard.out" "deploy/ci/new-step.sh:2:"
 check "platform-guard.sh: names the tracked script's line" has "$work/guard.out" \
   "deploy/ci/rescan.sh:$(wc -l <"$tree/deploy/ci/rescan.sh" | tr -d ' '):gh pr view 1"
-rm "$tree/deploy/ci/new-step.sh" "$tree/deploy/ci/linked-dir"
+check "platform-guard.sh: reads the scenario files under deploy/ci/verify/" has "$work/guard.out" \
+  "deploy/ci/verify/new-scenario.sh:2:"
+rm "$tree/deploy/ci/new-step.sh" "$tree/deploy/ci/linked-dir" "$tree/deploy/ci/verify/new-scenario.sh"
 g checkout -q -- deploy/ci/rescan.sh
 
 # --- changed-services.sh: platform.sh is part of the image pipeline (common.sh sources it), so a change of it builds
-# all seven; this test, platform-guard.sh, the policy's values and docs/ are read by no image job.
+# all seven; this test, platform-guard.sh, the scenario files of the verification runs, the policy's values and docs/
+# are read by no image job.
 changed_by() {
   echo "# changed" >>"$tree/$1"
   g commit -qam "change $1"
@@ -453,6 +659,7 @@ all="engagement-service feed-service gateway media-worker user-service video-ser
 same "changed-services: a change of platform.sh builds all seven" "$all" "$(changed_by deploy/ci/platform.sh)"
 same "changed-services: a change of platform-test.sh builds nothing" "" "$(changed_by deploy/ci/platform-test.sh)"
 same "changed-services: a change of platform-guard.sh builds nothing" "" "$(changed_by deploy/ci/platform-guard.sh)"
+same "changed-services: a change under deploy/ci/verify/ builds nothing" "" "$(changed_by deploy/ci/verify/gitops.sh)"
 same "changed-services: a change of the policy's values builds nothing" "" \
   "$(changed_by deploy/helm/svp-policy/values.yaml)"
 same "changed-services: a change under docs/ builds nothing" "" "$(changed_by docs/decision.md)"

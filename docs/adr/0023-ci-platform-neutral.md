@@ -79,6 +79,9 @@ dự án công ty chạy GitLab), không phải lúc chỉ có một nền tản
    | `ci_change_request_list BRANCH BASE`, `ci_change_request_pick`, `ci_change_request_write [--dry-run] NUMBER BRANCH BASE TITLE BODY_FILE` | `gh pr list/edit/create`; chỉ PR do bot mở từ chính repo | đọc qua `gh`; ghi chỉ in `dry run: gh ...` | `glab mr list/create/update` bằng project access token |
    | `ci_dispatch_hint WORKFLOW REF [NAME=VALUE...]` | in `gh workflow run ...` (không chạy) | như `github` | `glab ci run` với `--input` |
    | `ci_push_time SHA` | sự kiện `PushEvent` (100 sự kiện mới nhất) | như `github` (đọc) | events API của project |
+   | `ci_hosted_runner` | exit 0 khi `RUNNER_ENVIRONMENT=github-hosted`, exit 1 khi rỗng hay `self-hosted`; không in gì | exit 1 | không biến nào chứng minh runner do GitLab cấp (tag `saas-linux-*` runner riêng cũng gắn được): exit 1 |
+   | `ci_artifact_runs WORKFLOW COMMIT ARTIFACT` | `gh api .../actions/workflows/<WORKFLOW>/runs` (head là `COMMIT`, `completed`, `push`/`workflow_dispatch`, mọi conclusion) rồi artifact chưa hết hạn của từng lượt; in id, lượt bắt đầu sau nhất trước; exit 3 khi không lượt nào | như `github` (đọc) | pipelines API (`sha`, `source` `push`/`web`) rồi artifact theo job (`artifacts:name`, `expire_at`) |
+   | `ci_artifact_fetch RUN ARTIFACT DIR` | `gh run download` vào `DIR` rỗng; không in URL tải có chữ ký: tắt debug log của `gh` (`GH_DEBUG`, `DEBUG`), lỗi của `gh` in ra với mỗi URL chỉ còn scheme và host; exit 3 khi lượt không có artifact đó hay đã hết hạn | như `github` (đọc) | job artifacts API (`glab job artifact`) với `CI_JOB_TOKEN` |
 
 4. **Identity ký một chỗ:** issuer và subject chỉ viết ở `imageVerification.issuer`, `.subject` của
    `deploy/helm/svp-policy/values.yaml` (comment "đổi khi đổi nền tảng CI"); `common.sh` (`sign_identity`, dùng bởi

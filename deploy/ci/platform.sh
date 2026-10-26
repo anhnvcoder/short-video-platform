@@ -36,6 +36,11 @@
 #                         CI_JOB_TOKEN may read merge requests but not open one
 #   ci_dispatch_hint      glab ci run with --input (pipeline variables are turned off for new projects on gitlab.com)
 #   ci_push_time          the project's push events, from GitLab's events API
+#   ci_hosted_runner      no variable says a runner is GitLab's own: gitlab.com's hosted runners carry tags
+#                         (saas-linux-*) that a project's own runner may carry too, so false until a job can prove it
+#   ci_artifact_runs      the pipelines API (sha=, status, source push or web), then each pipeline's jobs: an artifact
+#                         belongs to a job there (artifacts:name), and expires at the job's artifacts expire_at
+#   ci_artifact_fetch     the job artifacts API with the job's id (glab job artifact), with the job's CI_JOB_TOKEN
 # CI_SERVER_URL is the instance's own URL, so on a self-managed instance every URL above starts with the company's
 # domain, not gitlab.com.
 
@@ -341,6 +346,109 @@ ci_push_time() {
     repo=$(ci_repo) || return 1
     gh api -X GET "repos/$repo/events" -f per_page=100 \
       --jq "[.[] | select(.type == \"PushEvent\" and .payload.head == \"$1\") | .created_at] | last // empty"
+    ;;
+  esac
+}
+
+# ci_hosted_runner: true only in a job on a runner the platform hands out for that one job and then throws away (on
+# GitHub, RUNNER_ENVIRONMENT=github-hosted). False on a machine and on a self-hosted runner, which may well be someone's
+# own computer; prints nothing either way. A script that would touch whatever cluster sits on the machine asks this
+# first: there, the cluster is the job's own.
+ci_hosted_runner() {
+  local platform
+  platform=$(ci_platform) || return 1
+  case $platform in
+  github) [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] ;;
+  local) return 1 ;;
+  esac
+}
+
+# _ci_name WHAT VALUE: fails unless VALUE is a plain name ([A-Za-z0-9._-]), which a query to the host can hold as is.
+_ci_name() {
+  [[ $2 =~ ^[A-Za-z0-9._-]+$ ]] || {
+    _ci_fail "$1 '$2' is not a plain name ([A-Za-z0-9._-])"
+    return 1
+  }
+}
+
+# ci_artifact_runs WORKFLOW COMMIT ARTIFACT: prints the id of every finished run of the workflow file WORKFLOW (a push
+# or a dispatch, not a pull request) whose head is COMMIT (a full SHA) and that still holds an unexpired artifact named
+# ARTIFACT, one per line, the latest started first. Every such run, whatever its conclusion: one commit can be built
+# more than once, and a run that failed elsewhere may still have released this build; the caller tells the builds
+# apart by what the artifact holds. Exit 0 with at least one id, 3 when there is none, 1 on any other error (the
+# host's on stderr). A read, so a machine asks GitHub too.
+ci_artifact_runs() {
+  local platform repo runs total got id n found=
+  platform=$(ci_platform) || return 1
+  [ $# -eq 3 ] || {
+    _ci_fail "usage: ci_artifact_runs WORKFLOW COMMIT ARTIFACT"
+    return 1
+  }
+  _ci_name workflow "$1" && _ci_name artifact "$3" || return 1
+  [[ $2 =~ ^[0-9a-f]{40}$ ]] || {
+    _ci_fail "ci_artifact_runs takes a full commit SHA, not '$2'"
+    return 1
+  }
+  case $platform in
+  github | local)
+    repo=$(ci_repo) || return 1
+    # The first line is the number of runs the host matched and the number on this page: a commit has far fewer than
+    # 100 runs, but one more than the page holds must fail rather than be skipped.
+    runs=$(gh api -X GET "repos/$repo/actions/workflows/$1/runs" -f head_sha="$2" -f status=completed -f per_page=100 \
+      --jq "\"\(.total_count) \(.workflow_runs | length)\", (.workflow_runs
+        | map(select(.head_sha == \"$2\" and .status == \"completed\"
+          and (.event == \"push\" or .event == \"workflow_dispatch\")))
+        | sort_by(.run_started_at, .id) | reverse | .[].id)") || return 1
+    read -r total got <<<"$runs"
+    [ "${total:-x}" = "${got:-y}" ] || {
+      _ci_fail "the host has ${total:-?} finished runs of $1 at $2 but returned ${got:-?}: read the next page"
+      return 1
+    }
+    for id in $(tail -n +2 <<<"$runs"); do
+      n=$(gh api -X GET "repos/$repo/actions/runs/$id/artifacts" -f name="$3" -f per_page=100 \
+        --jq "[.artifacts[] | select(.name == \"$3\" and .expired == false)] | length") || return 1
+      if [ "$n" -gt 0 ]; then
+        echo "$id"
+        found=1
+      fi
+    done
+    [ -n "$found" ] || return 3
+    ;;
+  esac
+}
+
+# ci_artifact_fetch RUN ARTIFACT DIR: downloads the artifact ARTIFACT of run RUN (a number) into DIR, an existing empty
+# directory, unpacked. Exit 0 when downloaded, 3 when the run holds no unexpired artifact of that name, 1 on any other
+# error (the host's on stderr). The download link is signed: it is never printed. A read, so a machine asks GitHub too.
+ci_artifact_fetch() {
+  local platform repo n out rc=0
+  platform=$(ci_platform) || return 1
+  [ $# -eq 3 ] || {
+    _ci_fail "usage: ci_artifact_fetch RUN ARTIFACT DIR"
+    return 1
+  }
+  [[ $1 =~ ^[0-9]+$ ]] || {
+    _ci_fail "ci_artifact_fetch takes a run id (a number), not '$1'"
+    return 1
+  }
+  _ci_name artifact "$2" || return 1
+  [ -d "$3" ] && [ -z "$(ls -A "$3")" ] || {
+    _ci_fail "$3 is not an empty directory: the artifact's files must not mix with others"
+    return 1
+  }
+  case $platform in
+  github | local)
+    repo=$(ci_repo) || return 1
+    n=$(gh api -X GET "repos/$repo/actions/runs/$1/artifacts" -f name="$2" -f per_page=100 \
+      --jq "[.artifacts[] | select(.name == \"$2\" and .expired == false)] | length") || return 1
+    [ "$n" -gt 0 ] || return 3
+    # The host answers the download with a redirect to a signed link that anyone holding it can fetch the artifact
+    # with until it expires. gh's debug log prints each request of it (path and query alone, past any filter), so the
+    # log is turned off; and gh names the link it failed on (an HTTP error, a dropped connection), so everything it
+    # prints is held back and shown with each URL cut down to its scheme and host.
+    out=$(env -u GH_DEBUG -u DEBUG gh run download "$1" --repo "$repo" --name "$2" --dir "$3" 2>&1) || rc=$?
+    [ -z "$out" ] || sed -E 's|([A-Za-z][A-Za-z0-9+.-]*://[A-Za-z0-9.-]*)[^[:space:]"]*|\1/<hidden>|g' <<<"$out" >&2
+    return $rc
     ;;
   esac
 }
