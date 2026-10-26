@@ -87,12 +87,14 @@ function renderFeed({
   locale = "vi",
   client = new QueryClient(),
   beside,
+  renderedAgo,
 }: {
   kind?: FeedKind;
   initialPage?: FeedPage;
   initialPageFetchedAt?: number;
   initialRetryAfterSeconds?: number;
   locale?: Locale;
+  renderedAgo?: Record<string, string | null>;
   // The tab's client, shared by the renders of one test as it is by the pages of a tab.
   client?: QueryClient;
   // Rendered next to the screen, in the same React root.
@@ -113,6 +115,7 @@ function renderFeed({
           mediaOrigin={mediaOrigin}
           currentUserId={me}
           renderedAt={renderedAt}
+          renderedAgo={renderedAgo}
         />
         {beside}
       </QueryClientProvider>
@@ -250,6 +253,39 @@ describe("FeedScreen", () => {
     expect(within(first).getByText(line)).toBeTruthy();
     // The avatar shows the name's first letter.
     expect(within(first).getByRole("button", { name: t(locale).follow }).textContent).toContain("M");
+  });
+
+  it("hydrates the server's age of a video without building a formatter, and formats it itself once its clock moves on", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    vi.setSystemTime(renderedAt);
+    const built = vi.spyOn(Intl, "RelativeTimeFormat");
+    onTestFinished(() => {
+      built.mockRestore();
+      vi.useRealTimers();
+    });
+    const author = { user_id: creator, handle: "minhanh", display_name: "Minh Anh" };
+    const published = "2026-10-21T02:00:00Z";
+    renderFeed({
+      initialPage: page([item(1, { author, published_at: published }), item(2, { author, published_at: published })]),
+      // Not what the browser would write, so the test sees whose text is shown.
+      renderedAgo: { [published]: "server text" },
+    });
+    const first = articles()[0] as HTMLElement;
+    expect(within(first).getByText("@minhanh · server text")).toBeTruthy();
+    expect(built).not.toHaveBeenCalled();
+
+    await advance(60_000);
+    expect(within(first).getByText("@minhanh · 1 ngày trước")).toBeTruthy();
+    expect(built).toHaveBeenCalled();
+  });
+
+  it("formats the age of a video the server wrote none for", () => {
+    const author = { user_id: creator, handle: "minhanh", display_name: "Minh Anh" };
+    renderFeed({
+      initialPage: page([item(1, { author, published_at: "2026-10-21T02:00:00Z" })]),
+      renderedAgo: { "2026-10-01T00:00:00Z": "server text" },
+    });
+    expect(within(articles()[0] as HTMLElement).getByText("@minhanh · 1 ngày trước")).toBeTruthy();
   });
 
   it("renders a name holding HTML as text, isolated from the handle after it", () => {

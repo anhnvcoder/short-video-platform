@@ -53,6 +53,8 @@ type FeedScreenProps = {
   currentUserId: string;
   // When the server rendered the page (ms since the epoch): the clock of "2 days ago" until the browser's takes over.
   renderedAt: number;
+  // The server's "2 days ago" for the first page's videos, by published_at, counted from `renderedAt`.
+  renderedAgo?: Readonly<Record<string, string | null>>;
 };
 
 type ToastState = { id: number; tone: "danger" | "success"; message: string; retry?: () => void };
@@ -86,9 +88,10 @@ export function FeedScreen({
   mediaOrigin,
   currentUserId,
   renderedAt,
+  renderedAgo,
 }: FeedScreenProps) {
   const t = useTranslations("feed");
-  const publishedAgo = usePublishedAgo(useNow(renderedAt));
+  const publishedAgo = usePublishedAgo(useNow(renderedAt), renderedAgo && { at: renderedAt, texts: renderedAgo });
   const router = useRouter();
   // Read from a deadline like the login page's countdown, so a page in the background never asks early.
   const firstWait = useCountdown(initialPage ? null : (initialRetryAfterSeconds ?? null), kind);

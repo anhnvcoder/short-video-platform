@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { formatCompact, formatRelativeTime } from "./format";
 
 // Intl puts a no-break space between the number and the unit.
@@ -30,6 +30,35 @@ describe("formatCompact", () => {
     expect(formatCompact(12_430, "en")).toBe("12.4K");
     expect(formatCompact(1_200_000, "en")).toBe("1.2M");
     expect(formatCompact(1_100_000_000, "en")).toBe("1.1B");
+  });
+
+  it("writes counts under a thousand as Intl does, in both locales and both displays", () => {
+    for (const locale of ["vi", "en"]) {
+      for (const display of ["short", "long"] as const) {
+        const intl = new Intl.NumberFormat(locale, {
+          notation: "compact",
+          compactDisplay: display,
+          maximumFractionDigits: 1,
+          roundingMode: "trunc",
+        });
+        for (let value = 0; value < 1000; value++) {
+          expect(formatCompact(value, locale, display)).toBe(intl.format(value));
+        }
+      }
+    }
+  });
+
+  it("builds no Intl.NumberFormat for a count under a thousand", () => {
+    const built = vi.spyOn(Intl, "NumberFormat");
+    try {
+      expect(formatCompact(956, "vi")).toBe("956");
+      expect(formatCompact(0, "en", "long")).toBe("0");
+      expect(built).not.toHaveBeenCalled();
+      expect(formatCompact(1000, "vi")).toBe(`1${nbsp}N`);
+      expect(built).toHaveBeenCalledOnce();
+    } finally {
+      built.mockRestore();
+    }
   });
 
   it("spells the unit out for screen readers", () => {

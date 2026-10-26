@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { NextIntlClientProvider } from "next-intl";
-import { getMessages, getTranslations } from "next-intl/server";
+import { getLocale, getMessages, getTranslations } from "next-intl/server";
 import { linkPendingMessages } from "@/components/shell/link-pending-messages";
 import { ShareScreen } from "@/features/feed/share-screen";
+import { timeZone } from "@/i18n/config";
+import { formatRelativeTime } from "@/lib/format";
 import { rateLimitedError } from "@/server/current-user";
 import { serverEnv } from "@/server/env";
 import { isVideoId, loadVideoPage, videoMetadata } from "@/server/video-page";
@@ -39,7 +41,14 @@ export default async function VideoPage({ params }: Props) {
   if (page.kind === "unavailable") {
     throw new Error("the video cannot be loaded right now");
   }
-  const [messages, common] = await Promise.all([getMessages(), getTranslations("common")]);
+  const [messages, common, feed, locale] = await Promise.all([
+    getMessages(),
+    getTranslations("common"),
+    getTranslations("feed"),
+    getLocale(),
+  ]);
+  // The video's "2 days ago", written here so the browser hydrates it without formatting.
+  const renderedAgo = formatRelativeTime(page.video.published_at, page.loadedAt, locale, timeZone, feed("justNow"));
   return (
     // Only the namespaces the page's client components translate go to the browser.
     <NextIntlClientProvider messages={{ feed: messages.feed, share: messages.share, ...linkPendingMessages(messages) }}>
@@ -48,6 +57,7 @@ export default async function VideoPage({ params }: Props) {
         viewerId={page.viewerId}
         mediaOrigin={serverEnv().mediaOrigin}
         loadedAt={page.loadedAt}
+        renderedAgo={renderedAgo}
         appName={common("appName")}
       />
     </NextIntlClientProvider>

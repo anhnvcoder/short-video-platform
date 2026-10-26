@@ -1,5 +1,8 @@
 import { NextIntlClientProvider, useMessages } from "next-intl";
+import { getLocale, getTranslations } from "next-intl/server";
 import { linkPendingMessages } from "@/components/shell/link-pending-messages";
+import { timeZone } from "@/i18n/config";
+import { formatRelativeTime } from "@/lib/format";
 import { requireSession } from "@/server/current-user";
 import { serverEnv } from "@/server/env";
 import { loadFirstFeedPage } from "@/server/feed";
@@ -30,8 +33,23 @@ function renderTime(): number {
 
 // The media origin is passed down as a prop: it is not a secret, and the browser bundle reads no environment variable.
 // When the first page cannot be had now, the client fetches it, after the Retry-After the gateway gave here if any.
+// The first page's "2 days ago" texts are written here too, so the browser hydrates them without formatting.
 async function LoadedFeed({ kind }: { kind: FeedKind }) {
-  const [user, first] = await Promise.all([requireSession(), loadFirstFeedPage(kind)]);
+  const [user, first, locale, t] = await Promise.all([
+    requireSession(),
+    loadFirstFeedPage(kind),
+    getLocale(),
+    getTranslations("feed"),
+  ]);
+  const renderedAt = renderTime();
+  const renderedAgo = first.page
+    ? Object.fromEntries(
+        first.page.items.map((item) => [
+          item.published_at,
+          formatRelativeTime(item.published_at, renderedAt, locale, timeZone, t("justNow")),
+        ]),
+      )
+    : undefined;
   return (
     <FeedScreen
       kind={kind}
@@ -40,7 +58,8 @@ async function LoadedFeed({ kind }: { kind: FeedKind }) {
       initialRetryAfterSeconds={first.retryAfterSeconds}
       mediaOrigin={serverEnv().mediaOrigin}
       currentUserId={user.userId}
-      renderedAt={renderTime()}
+      renderedAt={renderedAt}
+      renderedAgo={renderedAgo}
     />
   );
 }
