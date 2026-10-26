@@ -25,7 +25,9 @@
 # servers) and every line quoting an access log ("access log of trace"), and files.txt says how many lines it left out.
 # What is kept of a third-party log goes through the scan below like the rest of the file.
 # From the checkout (all read from the stack/cluster): .k8s/drills/*.json and traffic-*.log (each line a time, a user,
-# a route, a status and a duration), .k6/<run>/summary.json, web/test-results/measure-*.json and glitchtip-*.json, the
+# a route, a status and a duration), .k6/<run>/summary.json, the summary of each pod of the k6 Job
+# (.k6/cloud-<time>/pod-<i>.json of deploy/k6/cloud/run.sh logs, whose table is in the target's output),
+# web/test-results/measure-*.json and glitchtip-*.json, the
 # Lighthouse reports web/test-results/lighthouse/*.json and *.html. Everything else under those places is listed in
 # files.txt as not-allowed: .env, kubeconfig, .k8s/ca.*, .k8s/helm/, .k8s/drills/threats-*.log, Playwright traces,
 # videos, screenshots, HAR and HTML report, k6's machine.json, hidden files and every service log never get in. A
@@ -225,7 +227,7 @@ for pair in .k8s/drills:k8s-drills .k6:k6 web/test-results:web-test-results; do
       .k8s/drills:*/*) ;;
       .k8s/drills:*.json | .k8s/drills:traffic-*.log) allowed=1 ;;
       .k6:*/*/*) ;;
-      .k6:*/summary.json) allowed=1 ;;
+      .k6:*/summary.json | .k6:cloud-*/pod-*.json) allowed=1 ;;
       web/test-results:lighthouse/*/*) ;;
       web/test-results:lighthouse/*.json | web/test-results:lighthouse/*.html) allowed=1 ;;
       web/test-results:*/*) ;;

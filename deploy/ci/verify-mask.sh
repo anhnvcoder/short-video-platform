@@ -7,9 +7,9 @@
 #                            and SENTRY_DSN, read by the rule of deploy/observability/glitchtip/dotenv.sh (never
 #                            sourced); the first call of a job also masks a random marker and prints
 #                            "mask-check: <marker>", so the raw log shows the mask works without knowing any secret
-#   verify-mask.sh cluster   every value of every Secret in namespaces svp, svp-data, svp-obs, argocd and velero of
-#                            cluster k3d-svp, each line of a value of several lines on its own (each run of text
-#                            between control characters, for a binary value)
+#   verify-mask.sh cluster   every value of every Secret in namespaces svp, svp-data, svp-obs, argocd, velero,
+#                            chaos-mesh and svp-load of cluster k3d-svp, each line of a value of several lines on its
+#                            own (each run of text between control characters, for a binary value)
 #
 # Each value is kept as it is and in base64 (a Secret's own form, and what a JSON dump of it shows). Only values of at
 # least 8 characters count: a shorter one (svp, a port, a user name of four letters) is no secret worth the name, and
@@ -45,7 +45,7 @@ env_file=${SVP_VERIFY_ENV_FILE:-$repo/.env}
 tmp_root=$(ci_temp_dir) || exit 1
 secrets=${SVP_VERIFY_SECRETS:-$tmp_root/verify-secrets}
 min_len=8
-namespaces="svp svp-data svp-obs argocd velero"
+namespaces="svp svp-data svp-obs argocd velero chaos-mesh svp-load"
 # shellcheck source=deploy/observability/glitchtip/dotenv.sh
 . "$here/../observability/glitchtip/dotenv.sh"
 

@@ -9,8 +9,12 @@
 # deadline criterion of the summary of deploy/ci/verify-sample.sh, with a fake docker and a fake sudo first on PATH;
 # and its count of the compose containers' restarts over a fixture of restarts.tsv; one sample of its docker.tsv
 # (workers transcoding, memory.stat of the nodes), compose.tsv and restarts.tsv with a fake docker, kubectl and pgrep
-# and a fixture of /proc; its peak over a fixture of docker.tsv, and the object store's peak over one of compose.tsv.
-# Then deploy/ci/verify-run.sh with a fake make (and a fake psql and docker for the copy back to MinIO).
+# and a fixture of /proc; its peak over a fixture of docker.tsv, and the object store's peak over one of compose.tsv,
+# also with its last sample written late by a fake sampler; its k6.tsv over fixtures of /proc and of the cgroup tree;
+# the criteria of the k3d scenarios of part 3 (two KEDA drills of gitops, the k6 pods' CPU throttling).
+# Then deploy/ci/verify-run.sh with a fake make (and a fake psql and docker for the copy back to MinIO): the scenarios
+# of compose-obs and dev-k3d, each scenario of part 3 by its name, and made-up scenario files for what a scenario file
+# can get wrong and for a drill run twice.
 # Last, that deploy/ci/changed-services.sh builds no image for a change of these scripts, in a throwaway git repository
 # holding a copy of it. Runs on macOS and Linux, no network, no Docker, no cluster.
 #
@@ -334,6 +338,12 @@ ln -s ../../.env "$d/link-1.json"
 echo "CA" >"$repo/.k8s/ca.crt"
 echo '{"metrics":{"http_reqs":{"count":10}}}' >"$repo/.k6/local-1/summary.json"
 echo '{"raw":true}' >"$repo/.k6/local-1/machine.json"
+# The summaries of the k6 Job's pods (deploy/k6/cloud/run.sh logs): one clean, one holding a cluster secret.
+k6c=$repo/.k6/cloud-20261026T080000Z
+mkdir -p "$k6c"
+echo '{"thresholds_ok":true,"dropped_iterations":0}' >"$k6c/pod-0.json"
+echo "{\"thresholds_ok\":true,\"header\":\"$cluster_secret\"}" >"$k6c/pod-1.json"
+echo '{"raw":true}' >"$k6c/machine.json"
 l=$repo/web/test-results/lighthouse
 echo "<html>Set-Cookie: svp=1</html>" >"$l/a.report.html"
 echo '{"audits":{}}' >"$l/b.report.json"
@@ -482,6 +492,11 @@ expect k3d .k8s/drills/threats-1.log not-allowed
 expect k3d .k8s/drills/big-1.json too-large
 expect k3d .k8s/drills/link-1.json not-regular
 expect k3d .k6/local-1/machine.json not-allowed
+expect k3d .k6/cloud-20261026T080000Z/pod-0.json kept
+expect k3d .k6/cloud-20261026T080000Z/pod-1.json secret-value
+expect k3d .k6/cloud-20261026T080000Z/machine.json not-allowed
+[ -f "$work/art-k3d/k6/cloud-20261026T080000Z/pod-0.json" ] && ok "k3d: a k6 pod's summary lands under k6/" ||
+  fail "k3d: a k6 pod's summary lands under k6/"
 expect k3d web/test-results/lighthouse/a.report.html set-cookie
 expect k3d web/test-results/lighthouse/.lighthouseci/lhr-1.json hidden
 expect k3d web/test-results/playwright/trace.zip not-allowed
@@ -934,6 +949,178 @@ else
   ok "s3-peak: a missing END is refused"
 fi
 
+# --- s3-peak while the sampler runs: the window's last sample is taken before END but written after the step that
+# reads the window has started (docker stats and the cluster take seconds to answer). A fake sampler, its command line
+# that of the loop, writes it 2 s late, then a docker.tsv sample after END: s3-peak waits for that one, so its JSON
+# holds every sample of compose.tsv in the window, the late one the highest.
+lo=$work/late-out
+ls_dir=$work/late-sampler
+mkdir -p "$lo/samples" "$ls_dir"
+printf '%s\n' '90 svp-s3-1 200' '100 svp-s3-1 250' '150 svp-s3-1 300' | tr ' ' '\t' >"$lo/samples/compose.tsv"
+printf '150\t5000\n' >"$lo/samples/docker.tsv"
+cat >"$ls_dir/verify-sample.sh" <<'EOF2'
+sleep 2
+printf '195\tsvp-s3-1\t338\n' >>"$LATE_OUT/samples/compose.tsv"
+printf '195\t5000\n205\t5000\n' >>"$LATE_OUT/samples/docker.tsv"
+for _ in $(seq 1 30); do sleep 1; done
+EOF2
+LATE_OUT=$lo bash "$ls_dir/verify-sample.sh" loop &
+late_pid=$!
+echo "$late_pid" >"$lo/sampler.pid"
+if env "${job[@]}" SVP_VERIFY_OUT="$lo" "$here/verify-sample.sh" s3-peak 100 200 >"$work/s3-peak-late.log" 2>&1; then
+  ok "s3-peak: exits 0 with the late sample"
+else
+  fail "s3-peak: exits 0 with the late sample"
+fi
+kill "$late_pid" 2>/dev/null || :
+wait "$late_pid" 2>/dev/null || :
+same "s3-peak: the last sample of the window, written late, is the peak" "3 338 1970-01-01T00:03:15Z" \
+  "$(jq -r '[.samples, .peak_mib, .peak_at] | map(tostring) | join(" ")' "$lo/ram-s3-upload.json")"
+same "s3-peak: its JSON matches compose.tsv over the window" \
+  "$(awk -F '\t' '$2 == "svp-s3-1" && $1 >= 100 && $1 <= 200 { n++; if ($3 > m) m = $3 } END { print n, m }' \
+    "$lo/samples/compose.tsv")" \
+  "$(jq -r '"\(.samples) \(.peak_mib)"' "$lo/ram-s3-upload.json")"
+
+# --- verify-sample.sh sample: one k6.tsv line per pod of namespace svp-load running k6, with nr_periods, nr_throttled
+# and the cpu.max quota of the cgroup of its k6 process. k6 runs in pods E (cgroupfs path, a CPU limit), F (systemd
+# path, none) and H (no cpu.max read) of svp-load, in pod G of another namespace, and in a container that is no pod
+# (the compose stack's k6); pod E's cpu.stat has other keys around the two.
+kb=$work/k6-bin
+kp=$work/k6-proc
+kg=$work/k6-cgroup
+ko=$work/k6-out
+mkdir -p "$kb" "$kp" "$kg" "$ko"
+uid_e=0a1b2c3d-0000-4000-8000-0000000000e1
+uid_f=0a1b2c3d-0000-4000-8000-0000000000f1
+uid_g=0a1b2c3d-0000-4000-8000-0000000000a1
+uid_h=0a1b2c3d-0000-4000-8000-0000000000f2
+# k6_cgroup PID PATH NR_PERIODS NR_THROTTLED [CPU_MAX]: the cgroup of PID, its cpu.stat and, given, its cpu.max.
+k6_cgroup() {
+  mkdir -p "$kp/$1" "$kg$2"
+  printf '0::%s\n' "$2" >"$kp/$1/cgroup"
+  printf 'usage_usec 900\nnr_periods %s\nnr_throttled %s\nthrottled_usec 77\n' "$3" "$4" >"$kg$2/cpu.stat"
+  [ -z "${5:-}" ] || printf '%s\n' "$5" >"$kg$2/cpu.max"
+}
+k6_cgroup 301 "/system.slice/docker-$(printf 'e%.0s' {1..64}).scope/kubepods/burstable/pod$uid_e/$(printf 'c%.0s' {1..64})" 1000 30 \
+  '100000 100000'
+k6_cgroup 302 "/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod${uid_f//-/_}.slice/cri-containerd-f.scope" 0 0 \
+  'max 100000'
+k6_cgroup 303 "/system.slice/docker-$(printf 'e%.0s' {1..64}).scope/kubepods/besteffort/pod$uid_g/$(printf 'd%.0s' {1..64})" 500 400 \
+  '50000 100000'
+k6_cgroup 304 "/system.slice/docker-$(printf 'a%.0s' {1..64}).scope" 700 600 '50000 100000'
+k6_cgroup 305 "/system.slice/docker-$(printf 'e%.0s' {1..64}).scope/kubepods/burstable/pod$uid_h/$(printf 'b%.0s' {1..64})" 900 9
+cat >"$kb/pgrep" <<'EOF2'
+#!/bin/sh
+[ "$*" = "-x k6" ] || exit 1
+printf '301\n302\n303\n304\n305\n'
+EOF2
+cat >"$kb/kubectl" <<'EOF2'
+#!/bin/sh
+case "$*" in
+  *" -n svp-load get pods -o jsonpath="*) printf '%s\n' "$FAKE_K6_UIDS" ;;
+  *) exit 1 ;;
+esac
+EOF2
+chmod 755 "$kb/pgrep" "$kb/kubectl"
+env "${job[@]}" PATH="$kb:$sb2:$PATH" SVP_VERIFY_OUT="$ko" SVP_VERIFY_PROC="$kp" SVP_VERIFY_CGROUP="$kg" \
+  FAKE_K6_UIDS="$(printf '%s\n' "$uid_e" "$uid_f" "$uid_h")" "$here/verify-sample.sh" sample >"$work/k6-sample.log" 2>&1 ||
+  fail "k6 sample: verify-sample.sh sample exits 0"
+same "k6 sample: a line per k6 pod of svp-load, its cgroup's nr_periods, nr_throttled and CPU quota" \
+  "$uid_e 1000 30 100000|$uid_f 0 0 max|$uid_h 900 9 -" "$(cut -f 2- "$ko/samples/k6.tsv" | tr '\t' ' ' | paste -sd '|' -)"
+
+# --- verify-sample.sh stop: the criteria of the k3d scenarios of part 3, over the fixtures of the sample tests above.
+# gitops: each drill-k8s-keda-<n> that ran needs 6 samples in a row with 2 workers transcoding within its own window.
+# keda_rows FIRST_RUN_IN_A_ROW SECOND_RUN_IN_A_ROW: docker.tsv with that many samples in a row with 2 transcoding at the
+# start of the windows 100-200 and 300-400, then one with 1, then 4 more with 2.
+keda_rows() {
+  local t
+  for t in $(seq 100 10 $((100 + ($1 - 1) * 10))); do peak_row "$t" 8000 2 2 1000; done
+  peak_row $((100 + $1 * 10)) 8000 2 1 1000
+  for t in 170 180 190 200; do peak_row "$t" 8000 2 2 1000; done
+  for t in $(seq 300 10 $((300 + ($2 - 1) * 10))); do peak_row "$t" 8000 2 2 1000; done
+  peak_row $((300 + $2 * 10)) 8000 2 1 1000
+  for t in 370 380 390 400; do peak_row "$t" 8000 2 2 1000; done
+}
+keda1="$(row 02 drill-k8s-keda-1 ok 0 100 200 100 '')"
+keda2="$(row 04 drill-k8s-keda-2 ok 0 300 400 100 '')"
+echo gitops >"$so/scenario"
+keda_rows 6 6 >"$so/samples/docker.tsv"
+sample keda-both "$(row 01 k8s-gitops-up ok 0 50 100 50 '')" "$keda1" "$(row 03 ram-peak-1 ok 0 200 201 1 '')" "$keda2" \
+  >/dev/null
+same "sample: gitops, both drill-k8s-keda runs with 6 samples in a row with 2 transcoding" \
+  "true drill-k8s-keda-1=6 drill-k8s-keda-2=6" \
+  "$(jq -r '"\(.runner_enough.gitops_keda_two_transcoding) \(.keda_runs | map("\(.name)=\(.longest_run_with_2_transcoding)") | join(" "))"' \
+    "$so/runner.json")"
+grep -q '^runner: drill-k8s-keda, longest run of samples with 2 workers transcoding: drill-k8s-keda-1=6 drill-k8s-keda-2=6$' \
+  "$work/sample-keda-both.log" && ok "sample: runner.txt names each drill-k8s-keda run" ||
+  fail "sample: runner.txt names each drill-k8s-keda run"
+keda_rows 6 5 >"$so/samples/docker.tsv"
+sample keda-one "$(row 01 k8s-gitops-up ok 0 50 100 50 '')" "$keda1" "$keda2" >/dev/null
+same "sample: gitops, one drill-k8s-keda run with only 5 in a row fails the criterion" "false 6 5" \
+  "$(jq -r '"\(.runner_enough.gitops_keda_two_transcoding) \(.keda_runs | map(.longest_run_with_2_transcoding) | join(" "))"' \
+    "$so/runner.json")"
+sample keda-none "$(row 01 k8s-gitops-up ok 0 50 100 50 '')" "$(row 02 drill-k8s-keda-1 skipped '' 100 100 0 'not in targets')" \
+  >/dev/null
+same "sample: gitops, no drill-k8s-keda run: unmeasured, not passed" "unmeasured" \
+  "$(jq -r '.runner_enough.gitops_keda_two_transcoding' "$so/runner.json")"
+same "sample: every k3d scenario has the k3d criteria" "true" \
+  "$(jq -r '.runner_enough | has("k3d_server_kept") and has("k3d_nodes_ready") and has("k3d_no_eviction")' "$so/runner.json")"
+: >"$so/samples/docker.tsv"
+# k6-cloud-mini, chaos: no k6 pod throttled over 5% of its CPU periods in a window of k6-windows.tsv. In 100-200 pod A
+# 40 of 1000 periods (4%), pod B 20 of 1000 (2%); 100-300 adds pod C, 6 of 100 (6%); in 400-500 pods D and E without a
+# CPU limit (no period counted); in 600-700 pod F 1 251 of 25 000 (5.004%); in 800-900 pod G 1 000 of 20 000 (5%); in
+# 1000-1100 pod H 40 of 1000 and pod I a single sample (it ended); 1500-1600 has no sample.
+printf '%s\n' '100 a 1000 10 50000' '110 a 1500 30 50000' '200 a 2000 50 50000' '100 b 3000 0 50000' \
+  '200 b 4000 20 50000' '300 b 4100 21 50000' '250 c 0 0 50000' '300 c 100 6 50000' \
+  '400 d 0 0 max' '500 d 0 0 max' '400 e 0 0 max' '450 e 0 0 max' \
+  '600 f 1000 0 100000' '700 f 26000 1251 100000' '800 g 0 0 100000' '900 g 20000 1000 100000' \
+  '1000 h 0 0 100000' '1100 h 1000 40 100000' '1000 i 0 0 100000' | tr ' ' '\t' >"$so/samples/k6.tsv"
+# throttle NAME SCENARIO [WINDOW...]: verify-sample.sh stop with k6-windows.tsv of WINDOWs ("label from to pods"; none:
+# no file); prints the criterion and each window's highest share, pods measured and pods it ran.
+throttle() {
+  local name=$1
+  echo "$2" >"$so/scenario"
+  shift 2
+  rm -f "$so/k6-windows.tsv"
+  [ "$#" = 0 ] || printf '%s\n' "$@" | tr ' ' '\t' >"$so/k6-windows.tsv"
+  sample "$name" "$(row 01 k8s-up ok 0 50 100 50 '')" >/dev/null
+  jq -r '"\(.runner_enough.k6_cpu_throttle_5pct) \(.k6_windows | map("\(.label)=\(.throttled_pct_max)/\(.pods_measured)/\(.pods)") | join(" "))"' \
+    "$so/runner.json"
+}
+same "sample: k6-cloud-mini, every k6 pod at 5% or less of its periods throttled" "true level-1=4/2/2" \
+  "$(throttle k6-ok k6-cloud-mini 'level-1 100 200 2')"
+grep -qxF 'runner: k6 windows, highest share of CPU periods throttled in a pod: level-1=4% (2 of 2 pod(s) measured, 2 seen, 0 without a CPU limit)' \
+  "$work/sample-k6-ok.log" && ok "sample: runner.txt names each k6 window" || fail "sample: runner.txt names each k6 window"
+same "sample: chaos, a k6 pod over 5% fails the criterion" "false level-1=4/2/2 level-2=6/3/3" \
+  "$(throttle k6-over chaos 'level-1 100 200 2' 'level-2 100 300 3')"
+same "sample: k6 pods without a CPU limit are measured, none throttled" "true hold=0/2/2 2" \
+  "$(throttle k6-no-limit chaos 'hold 400 500 2') $(jq -r '.k6_windows[0].pods_without_cpu_limit' "$so/runner.json")"
+same "sample: 1 251 of 25 000 periods (5.004%) is over 5%, its share rounded up" "false level-8=5.01/1/1" \
+  "$(throttle k6-just-over k6-cloud-mini 'level-8 600 700 1')"
+same "sample: exactly 5% of the periods throttled passes" "true level-8=5/1/1" \
+  "$(throttle k6-at-5 k6-cloud-mini 'level-8 800 900 1')"
+same "sample: a k6 pod with a single sample in the window leaves it unmeasured" "unmeasured level-2=4/1/2" \
+  "$(throttle k6-one-sample k6-cloud-mini 'level-2 1000 1100 2')"
+grep -qxF 'runner: k6 windows, highest share of CPU periods throttled in a pod: level-2=4% unmeasured (1 of 2 pod(s) measured, 2 seen, 0 without a CPU limit)' \
+  "$work/sample-k6-one-sample.log" && ok "sample: runner.txt marks a window unmeasured" ||
+  fail "sample: runner.txt marks a window unmeasured"
+same "sample: a pod over 5% fails the criterion even beside a window unmeasured" "false level-2=4/1/2 level-4=5.01/1/1" \
+  "$(throttle k6-one-over k6-cloud-mini 'level-2 1000 1100 2' 'level-4 600 700 1')"
+same "sample: fewer k6 pods with two samples than the window ran: unmeasured" "unmeasured hold=0/2/3" \
+  "$(throttle k6-fewer chaos 'hold 400 500 3')"
+same "sample: a window without a k6 sample is unmeasured, not passed" "unmeasured level-1=4/2/2 level-3=null/0/1" \
+  "$(throttle k6-gap k6-cloud-mini 'level-1 100 200 2' 'level-3 1500 1600 1')"
+same "sample: lines of k6-windows.tsv not of its format leave the criterion unmeasured" "unmeasured level-1=4/2/2 3" \
+  "$(throttle k6-malformed k6-cloud-mini 'level-1 100 200 2' 'level-1 100 200' 'Level-2 100 200 2' 'level-3 100 200 0') $(
+    jq -r '.k6_windows_malformed_lines' "$so/runner.json")"
+grep -qxF 'runner: k6-windows.tsv, lines not label, start, end, pods: 3' "$work/sample-k6-malformed.log" &&
+  ok "sample: runner.txt counts the lines of k6-windows.tsv not of its format" ||
+  fail "sample: runner.txt counts the lines of k6-windows.tsv not of its format"
+same "sample: without k6-windows.tsv the criterion is unmeasured" "unmeasured " "$(throttle k6-none k6-cloud-mini)"
+same "sample: dev-k3d has no k6 criterion" "null level-1=4/2/2" "$(throttle k6-dev dev-k3d 'level-1 100 200 2')"
+rm -f "$so/k6-windows.tsv" "$so/samples/k6.tsv"
+echo compose-obs >"$so/scenario"
+
 # --- verify-run.sh: the build target's failure skips the rest at once, SVP_VERIFY_TARGETS picks targets. It runs from
 # a copy in a throwaway tree with a fake .env, a fake make first on PATH (it logs its arguments and fails for the
 # targets FAKE_MAKE_FAIL names), a fake docker and the fake kubectl above (no cluster answers), so no target, no
@@ -943,6 +1130,7 @@ vr=$work/verify-run
 vb=$work/verify-run-bin
 mkdir -p "$vr/deploy/ci" "$vr/deploy/observability/glitchtip" "$vb"
 cp "$here/verify-run.sh" "$here/verify-mask.sh" "$here/verify-sample.sh" "$here/platform.sh" "$vr/deploy/ci/"
+cp -R "$here/verify" "$vr/deploy/ci/"
 cp "$here/../observability/glitchtip/dotenv.sh" "$vr/deploy/observability/glitchtip/"
 cp "$repo/.env" "$vr/.env"
 cat >"$vb/make" <<'EOF'
@@ -952,6 +1140,7 @@ echo "$*" >>"$FAKE_MAKE_LOG"
 [ -f "${FAKE_MAKE_DIR:-/nonexistent}/$1.out" ] && cat "$FAKE_MAKE_DIR/$1.out"
 case " ${FAKE_MAKE_FAIL:-} " in *" $1 "*) exit 2 ;; esac
 case " ${FAKE_MAKE_SLOW:-} " in *" $1 "*) sleep 60 ;; esac
+case " ${FAKE_MAKE_PAUSE:-} " in *" $1 "*) sleep 2 ;; esac
 EOF
 printf '#!/bin/sh\ncommand -v gdate >/dev/null 2>&1 && exec gdate "$@"\nexec /bin/date "$@"\n' >"$vb/date"
 # The fake docker of verify-sample.sh sample: one container of compose project svp, restarted once; docker ps logged
@@ -976,7 +1165,8 @@ case $* in
 esac
 EOF
 chmod 755 "$vb/make" "$vb/date" "$vb/psql" "$vb/docker"
-# run_verify NAME SCENARIO [VAR=VALUE...]: the copy of verify-run.sh for SCENARIO; its output in $work/run-NAME.log,
+# run_verify NAME SCENARIO [VAR=VALUE...]: the copy of verify-run.sh (in run_tree, default $vr) for SCENARIO; its
+# output in $work/run-NAME.log,
 # the make calls in $work/run-NAME.make, its results in $work/run-NAME.out; prints its exit status. It runs as on a
 # machine, without the variables of any CI: a runner sets CI=true, which alone makes platform.sh refuse to run.
 run_verify() {
@@ -986,7 +1176,7 @@ run_verify() {
   env -u GITHUB_ACTIONS -u CI -u GITLAB_CI -u JENKINS_URL -u TF_BUILD PATH="$vb:$work/bin:$PATH" \
     SVP_VERIFY_OUT="$work/run-$name.out" \
     SVP_VERIFY_SECRETS="$work/run-$name.secrets" FAKE_MAKE_LOG="$work/run-$name.make" SVP_VERIFY_TARGETS= "$@" \
-    "$vr/deploy/ci/verify-run.sh" "$scenario" >"$work/run-$name.log" 2>&1 </dev/null || rc=$?
+    "${run_tree:-$vr}/deploy/ci/verify-run.sh" "$scenario" >"$work/run-$name.log" 2>&1 </dev/null || rc=$?
   echo "$rc"
 }
 # results NAME: "id name status note" of each target of run NAME, one per line.
@@ -1138,6 +1328,90 @@ if timeout --version 2>/dev/null | grep -q GNU; then
   ! rlog leak | grep -qF "$env_secret" && rlog leak | grep -q ' 1 with a secret value of .env$' &&
     ok "verify-run: the s3-init log is counted, never printed" || fail "verify-run: the s3-init log is counted, never printed"
 
+  # Each scenario of part 3 is a name verify-run.sh takes, its file sourced: the build target failing skips every other
+  # target at once, and only the build target ran. What comes after it is left to each scenario's own work. The copy
+  # is a git checkout on a branch, which gitops gives make k8s-gitops-up as the revision Argo CD follows.
+  git -c init.defaultBranch=feat/stage6b-verify init -q "$vr"
+  for sc in gitops:k8s-gitops-up web-canary:k8s-up k6-cloud-mini:k8s-up chaos:k8s-up velero:k8s-up; do
+    scn=${sc%%:*}
+    b=${sc#*:}
+    rc=$(run_verify "infra-$scn" "$scn" FAKE_MAKE_FAIL="$b")
+    same "verify-run: $scn is a scenario whose failed build target makes the run fail" 1 "$rc"
+    same "verify-run: $scn starts with its build target $b, which fails" "01 $b fail " \
+      "$(results "infra-$scn" | head -n 1)"
+    rows=$(results "infra-$scn" | tail -n +2)
+    [ -n "$rows" ] && ! printf '%s\n' "$rows" | grep -qv '^[0-9][0-9] [a-z0-9-]* skipped infrastructure step failed$' &&
+      ok "verify-run: $scn skips every target after its build target for it" ||
+      fail "verify-run: $scn skips every target after its build target for it"
+  done
+  same "verify-run: gitops builds the cluster from the branch of the checkout" \
+    "k8s-gitops-up GITOPS_REV=feat/stage6b-verify" "$(cat "$work/run-infra-gitops.make")"
+  same "verify-run: a k3d scenario of the dev path runs only make k8s-up when it fails" "k8s-up" \
+    "$(cat "$work/run-infra-velero.make")"
+  rc=$(run_verify no-scenario nope)
+  same "verify-run: a name that is no scenario stops it" 2 "$rc"
+  [ ! -s "$work/run-no-scenario.make" ] && [ ! -e "$work/run-no-scenario.out/results.tsv" ] &&
+    ok "verify-run: an unknown scenario starts nothing" || fail "verify-run: an unknown scenario starts nothing"
+
+  # A second copy whose scenario files are made for the test: one missing, one that declares too little, one whose
+  # first target is not its build target, one fake scenario that runs a drill twice, each followed by its RAM peak.
+  vr2=$work/verify-run-2
+  mkdir -p "$vr2/deploy"
+  cp -R "$vr/deploy/ci" "$vr/deploy/observability" "$vr2/deploy/"
+  cp "$vr/.env" "$vr2/.env"
+  rm "$vr2/deploy/ci/verify/web-canary.sh"
+  printf 'build=k8s-up\njob_minutes_default=330\nscenario_targets() { step k8s-up 1 make k8s-up; }\n' \
+    >"$vr2/deploy/ci/verify/chaos.sh"
+  printf 'build=k8s-up\njob_minutes_default=330\nk3d=1\nscenario_targets() { step other 1 make other; step k8s-up 1 make k8s-up; }\n' \
+    >"$vr2/deploy/ci/verify/k6-cloud-mini.sh"
+  cat >"$vr2/deploy/ci/verify/velero.sh" <<'EOF2'
+build=fake-up
+job_minutes_default=60
+k3d=0
+scenario_targets() {
+  local round
+  step fake-up 1 make fake-up
+  for round in 1 2; do
+    step "drill-k8s-keda-$round" 1 make "keda-$round"
+    if [ "$last_status" = skipped ]; then
+      skip "ram-peak-$round" "drill-k8s-keda-$round did not run"
+    else
+      step "ram-peak-$round" 1 "$here/verify-sample.sh" peak "$last_start" "$last_end" "$round"
+    fi
+  done
+}
+EOF2
+  rc=$(run_tree=$vr2 run_verify no-file web-canary)
+  same "verify-run: a scenario without its file stops it" 2 "$rc"
+  has run-no-file "the missing file is named" "no file deploy/ci/verify/web-canary.sh for scenario web-canary"
+  rc=$(run_tree=$vr2 run_verify no-k3d chaos)
+  same "verify-run: a scenario file that does not set k3d stops it" 2 "$rc"
+  [ ! -s "$work/run-no-k3d.make" ] && ok "verify-run: a scenario file that declares too little starts nothing" ||
+    fail "verify-run: a scenario file that declares too little starts nothing"
+  rc=$(run_tree=$vr2 run_verify build-second k6-cloud-mini)
+  same "verify-run: a scenario whose first target is not its build target stops it" 2 "$rc"
+  mkdir -p "$work/run-keda2.out/samples"
+  : >"$work/run-keda2.out/samples/docker.tsv"
+  rc=$(run_tree=$vr2 run_verify keda2 velero FAKE_MAKE_PAUSE='keda-1 keda-2')
+  same "verify-run: a scenario that runs a drill twice passes" 0 "$rc"
+  # window NAME ID: the start and end of target ID of run keda2 as verify-sample.sh writes them, and those of the file.
+  window() {
+    awk -F '\t' -v id="$2" '$1 == id { print $5, $6 }' "$work/run-keda2.out/results.tsv" |
+      while read -r a b; do jq -rn --argjson a "$a" --argjson b "$b" '"\($a | todate) \($b | todate)"'; done
+  }
+  w1=$(window keda2 02)
+  w2=$(window keda2 04)
+  [ "$w1" != "$w2" ] && ok "verify-run: the two drill runs have windows of their own" ||
+    fail "verify-run: the two drill runs have windows of their own"
+  same "verify-run: ram-peak-1 reads the window of drill-k8s-keda-1" "$w1" \
+    "$(jq -r '"\(.window.start) \(.window.end)"' "$work/run-keda2.out/ram-peak-1.json")"
+  same "verify-run: ram-peak-2 reads the window of drill-k8s-keda-2" "$w2" \
+    "$(jq -r '"\(.window.start) \(.window.end)"' "$work/run-keda2.out/ram-peak-2.json")"
+  rc=$(run_tree=$vr2 run_verify keda2-one velero SVP_VERIFY_TARGETS='drill-k8s-keda-1 ram-peak-1 ram-peak-2')
+  same "verify-run: ram-peak-2 without drill-k8s-keda-2 is skipped for it and fails the run" \
+    "1 05 ram-peak-2 skipped drill-k8s-keda-2 did not run" \
+    "$rc $(results keda2-one | tail -n 1)"
+
   rc=$(run_verify unknown dev-k3d 'SVP_VERIFY_TARGETS=drill-k8s-threats drill-k8s-thraets')
   same "verify-run: a name that is no target of the scenario stops it" 2 "$rc"
   [ ! -s "$work/run-unknown.make" ] && [ ! -e "$work/run-unknown.out/results.tsv" ] &&
@@ -1165,6 +1439,7 @@ cs=$work/changed-services
 mkdir -p "$cs/deploy/ci" "$cs/deploy/k8s"
 cp "$here/changed-services.sh" "$here/common.sh" "$here/platform.sh" "$here/verify-run.sh" "$here/verify-release.sh" \
   "$cs/deploy/ci/"
+cp -R "$here/verify" "$cs/deploy/ci/"
 cp "$here/../k8s/lib.sh" "$cs/deploy/k8s/"
 g() {
   GIT_DIR=$cs/.git GIT_WORK_TREE=$cs git -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false \
@@ -1180,6 +1455,9 @@ changed_by() {
 got=$(changed_by deploy/ci/verify-run.sh)
 [ -z "$got" ] && ok "changed-services: a change of verify-run.sh builds nothing" ||
   fail "changed-services: a change of verify-run.sh builds nothing (got '$got')"
+got=$(changed_by deploy/ci/verify/dev-k3d.sh)
+[ -z "$got" ] && ok "changed-services: a change of a scenario file of verify-run.sh builds nothing" ||
+  fail "changed-services: a change of a scenario file of verify-run.sh builds nothing (got '$got')"
 got=$(changed_by deploy/ci/verify-release.sh)
 [ "$got" = "engagement-service feed-service gateway media-worker user-service video-service web" ] &&
   ok "changed-services: a change of verify-release.sh builds all seven" ||

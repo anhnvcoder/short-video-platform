@@ -3,7 +3,7 @@
 # ubuntu-24.04, or the rented Linux VM that stands in for it. Fails
 # with the numbers, so a run that would have died hours later for want of disk or a name stops here.
 #
-#   verify-host.sh compose-obs|dev-k3d
+#   verify-host.sh compose-obs|dev-k3d|gitops|web-canary|k6-cloud-mini|chaos|velero
 #
 # 1. Disk: free space of the filesystem of Docker's data directory must be at least need + 15% of its size + 2 GiB,
 #    need being what the scenario adds (16 GiB for compose-obs: 1.25 times the 12.7 GiB its first run on the runner
@@ -26,6 +26,9 @@
 #    launches (the e2e tests) turn the sandbox off themselves and need nothing.
 # 5. k3d only: prints vm.min_free_kbytes. Seastar takes it off the broker's cgroup limit before it checks --memory, and
 #    deploy/k8s/values/redpanda.yaml leaves room for it (66 MiB on an x86_64 runner, 44 MiB in Docker Desktop's VM).
+# 6. chaos only: sudo modprobe sch_netem, the kernel module the network delay of Chaos Mesh needs (the k3d nodes share
+#    the runner's kernel), and writes loaded or absent to $SVP_VERIFY_OUT/sch-netem. Absent does not stop the run: the
+#    scenario's network delay step reads the file and skips, and the other experiments still run.
 # It writes the scenario's name to $SVP_VERIFY_OUT/scenario for deploy/ci/verify-collect.sh. Linux only (GNU df).
 set -euo pipefail
 
@@ -50,8 +53,9 @@ docker_() { env -u DOCKER_DEFAULT_PLATFORM docker "$@"; }
 scenario=${1:-}
 case $scenario in
   compose-obs) need_gib=16 k3d=0 ;;
-  dev-k3d) need_gib=30 k3d=1 ;;
-  *) fail "usage: verify-host.sh compose-obs|dev-k3d (got '$scenario')" ;;
+  # 30 GiB for each k3d scenario until its first run measures its own.
+  dev-k3d | gitops | web-canary | k6-cloud-mini | chaos | velero) need_gib=30 k3d=1 ;;
+  *) fail "usage: verify-host.sh compose-obs|dev-k3d|gitops|web-canary|k6-cloud-mini|chaos|velero (got '$scenario')" ;;
 esac
 [ "$(uname -s)" = Linux ] || fail "runs on Linux only (the runner or the rented VM)"
 mkdir -p "$out"
@@ -110,3 +114,10 @@ skew=$((client_minor - k3s_minor))
 echo "kubectl: 1.$client_minor for k3s 1.$k3s_minor (within one minor version)"
 
 echo "memory: vm.min_free_kbytes $(cat /proc/sys/vm/min_free_kbytes) kB (Seastar takes it off the Redpanda broker's limit)"
+
+if [ "$scenario" = chaos ]; then
+  netem=absent
+  sudo modprobe sch_netem 2>/dev/null && netem=loaded
+  printf '%s\n' "$netem" >"$out/sch-netem"
+  echo "netem: kernel module sch_netem $netem (the network delay experiment)"
+fi
