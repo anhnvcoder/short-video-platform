@@ -10,10 +10,11 @@ metadata:
   namespace: argocd
 spec:
   description: Short-video platform on the local k3d cluster svp
-  # This repository (charts and values in deploy/) and the chart repositories of components.json, nothing else.
+  # This repository (charts and values in deploy/), read over HTTPS without credentials as repoURL of
+  # deploy/argocd/apps/values.yaml names it, and the chart repositories of components.json, nothing else.
   # docker.io/envoyproxy is Envoy Gateway's OCI repository, written without the scheme as Argo CD takes it.
   sourceRepos:
-    - git@github.com:anhnvcoder/short-video-platform.git
+    - https://github.com/anhnvcoder/short-video-platform.git
     - https://charts.jetstack.io
     - docker.io/envoyproxy
     - https://cloudnative-pg.github.io/charts

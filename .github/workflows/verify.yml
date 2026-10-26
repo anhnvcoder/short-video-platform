@@ -13,7 +13,8 @@
 # The repository is public, so the log and the artifact of every run are too, red or not:
 # - only workflow_dispatch (write access to the repository needed) and schedule (the code of main, no input), never
 #   pull_request_target or workflow_run; no secret, no environment; every job has contents: read, and job gitops also
-#   actions: read (the source map artifact of the images run that built the web image it runs);
+#   actions: read (the source map artifact of the images run that built the web image it runs), with the job's token
+#   given to its two steps that read the platform's API only, never to the scenario's step;
 # - every action is GitHub's own and pinned to a full commit SHA; checkout never leaves the token in .git/config;
 # - the inputs reach the scripts only through env (SCENARIO, SVP_VERIFY_TARGETS) and deploy/ci/verify-run.sh checks
 #   them again with a case; if: compares the scenario as an expression, never in a shell. A scheduled run has no
@@ -282,12 +283,14 @@ jobs:
   # public repository over anonymous HTTPS (no deploy key, no secret) and running the signed release images of GHCR by
   # digest under Kyverno's Enforce policy; then smoke, RAM at rest, the supply chain and threat model drills, the source
   # maps of the web image CI built, the web's e2e tests with GlitchTip and its observability drill, KEDA twice with the
-  # RAM peak of each, the wait for a release merged on main and make measure-gitops on it, RAM at rest again. Only
-  # dispatched: a scheduled run has no inputs, so this job is skipped then.
+  # RAM peak of each, RAM at rest again; after the scenario, on a run of main, the wait for a release merged while the
+  # cluster runs and make measure-gitops on it (deploy/ci/verify/gitops.sh). Only dispatched: a scheduled run has no
+  # inputs, so this job is skipped then.
   gitops:
     if: github.event_name == 'workflow_dispatch' && inputs.scenario == 'gitops'
     runs-on: ubuntu-24.04
-    # Setup about 20 minutes, the scenario step 285, then 25 for the steps after it; 30 minutes under GitHub's 6 hours.
+    # Setup about 10 minutes, the scenario step 175, the wait for a release 115, then 25 for the steps after them; 30
+    # minutes under GitHub's 6 hours.
     timeout-minutes: 330
     permissions:
       contents: read
@@ -297,7 +300,7 @@ jobs:
       SCENARIO: gitops
       SVP_VERIFY_TARGETS: ${{ inputs.targets }}
       SVP_VERIFY_JOB_MINUTES: 330
-      SVP_VERIFY_STEP_MINUTES: 285
+      SVP_VERIFY_STEP_MINUTES: 175
     steps:
       # As in job compose.
       - name: Check the ref and note the job's start
@@ -350,9 +353,28 @@ jobs:
       - run: deploy/ci/verify-mask.sh env
       - run: deploy/ci/verify-host.sh "$SCENARIO"
       - run: deploy/ci/verify-sample.sh start
+      # The source maps CI exported beside the web image Argo CD is about to run (artifact web-sourcemaps-amd64 of the
+      # images run that built it, chosen by the digest it was built as), downloaded with the job's token into the
+      # runner's temp directory for the scenario's step gitops-sourcemaps. A failure here does not stop the job: the
+      # scenario reports it there, and runs every step that needs no maps.
+      - name: Find the source maps of the web image
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: deploy/ci/gitops-sourcemaps.sh fetch
       - name: Scenario
-        timeout-minutes: 285
+        timeout-minutes: 175
         run: deploy/ci/verify-run.sh "$SCENARIO"
+      # On a run of main: the promote pull request waiting since before the run is merged while this step runs (the
+      # job's steps show it running), then the release is measured from its push to its pods Ready. The job's token is
+      # for make measure-gitops alone, which reads the push from GitHub's events. On a branch it prints why it skips.
+      # These are the scenario's targets wait-release and measure-gitops: the input targets chooses them as any other.
+      - name: Waiting for a release on main
+        if: ${{ !cancelled() && steps.ref.outcome == 'success' }}
+        timeout-minutes: 115
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash deploy/ci/verify/gitops.sh release
       - name: Stop the sampler
         if: always() && steps.ref.outcome == 'success'
         run: deploy/ci/verify-sample.sh stop

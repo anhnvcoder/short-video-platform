@@ -14,11 +14,22 @@ too, so both paths install the same charts, versions and values in the same orde
 - canaryRoute names the HTTPRoute of a release of chart svp-service with canary set in its values file (the gateway's
   api, the web client's web): such a release gets the ignoreDifferences below. The chart cannot read that values file
   from here, so the two are kept in step by hand, and deploy/k8s/install.sh refuses a release whose values set canary
-  without a canaryRoute here, or the reverse.
+  without a canaryRoute here, or the reverse;
+- archValues maps a node architecture to one more values file, read after values on a cluster whose nodes run it
+  (value nodeArch): Argo Rollouts' Gateway API plugin is a native binary that the controller downloads and runs, so the
+  nodes of a Linux x86_64 host need another file than those of a Mac. deploy/k8s/install.sh reads the same entry on the
+  dev path.
 Nothing here names the Secrets deploy/k8s/secrets.sh and deploy/k8s/glitchtip-init.sh make: no chart renders them, so
 no Application tracks them and pruning never deletes them.
 */}}
 {{- $components := (.Files.Get "components.json" | fromJson).components }}
+{{- /*
+The release images are built for linux/amd64 and linux/arm64 only, so no cluster of this project runs anything else;
+another value is a mistake that would deploy the arm64 plugin to nodes that cannot run it.
+*/}}
+{{- if not (has .Values.nodeArch (list "amd64" "arm64")) }}
+{{- fail (printf "nodeArch is %q: the nodes of a cluster of this project are amd64 or arm64" (toString .Values.nodeArch)) }}
+{{- end }}
 {{- /*
 The Collector reads ConfigMap otel-collector-config (chart svp-observability) only when it starts, and its own chart
 cannot checksum a ConfigMap it does not render: the checksum of the file that ConfigMap holds goes into the pod
@@ -65,6 +76,9 @@ spec:
         {{- if .values }}
         valueFiles:
           - $values/{{ .values }}
+          {{- with .archValues }}{{ with index . $.Values.nodeArch }}
+          - $values/{{ . }}
+          {{- end }}{{ end }}
         {{- end }}
         {{- if eq .name "otel-collector" }}
         parameters:

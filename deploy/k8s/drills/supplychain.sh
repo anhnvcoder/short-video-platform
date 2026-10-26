@@ -6,8 +6,12 @@
 # case b, which is a real Deployment:
 #   a  the image a pod of svp runs, a signed release on GHCR: admitted, twice in a row (the second answer comes from
 #      Kyverno's verification cache, the time of both is printed);
-#   b  SUPPLYCHAIN_UNSIGNED (drill-unsigned, pushed by CI without a signature) in a Deployment of svp: its ReplicaSet
-#      reports FailedCreate with the signature rule's message; the Deployment is deleted;
+#   b  SUPPLYCHAIN_UNSIGNED (drill-unsigned, pushed by CI without a signature; or the linux/amd64 manifest of a signed
+#      release's index, which the signature and the attestations do not name) in a Deployment of svp: its ReplicaSet
+#      reports FailedCreate with the signature rule's message; the Deployment is deleted. When Kyverno admits that
+#      image instead (its pod is created), a WARN line says so, and with SUPPLYCHAIN_UNSIGNED_FALLBACK set (the digest of
+#      drill-unsigned) the case is run again with that image, which then stands for "unsigned" in h and i too;
+#      without it the case fails;
 #   c  SUPPLYCHAIN_VULNERABLE (drill-vulnerable, signed and attested with CRITICAL vulnerabilities): refused with the
 #      CRITICAL rule's message. Kyverno stops at the first check that fails, and CRITICAL is checked before the age, so
 #      the drill image (never rescanned) is still refused with that message once its attestation is past the maximum
@@ -59,7 +63,8 @@
 # Results as JSON in .k8s/drills/supplychain-<time>.json. Calls no API of the gateway, so it deletes no rate limit key.
 #
 # Usage (from the repo root, cluster up): make drill-k8s-supplychain [SUPPLYCHAIN_UNSIGNED=ghcr.io/...@sha256:...]
-#   [SUPPLYCHAIN_VULNERABLE=ghcr.io/...@sha256:...] [SUPPLYCHAIN_ENFORCE_TMP=1].
+#   [SUPPLYCHAIN_UNSIGNED_FALLBACK=ghcr.io/...@sha256:...] [SUPPLYCHAIN_VULNERABLE=ghcr.io/...@sha256:...]
+#   [SUPPLYCHAIN_ENFORCE_TMP=1].
 set -euo pipefail
 
 # Only the cluster's API: deploy/compose/lib.sh (the gateway's API helpers, which delete rate limit keys) is left out.
@@ -90,11 +95,12 @@ case $max_age in
 esac
 psa_version=$(sed -n 's/^podSecurityVersion: *//p' "$repo_root/deploy/helm/svp-cluster/values.yaml")
 [[ $psa_version =~ ^v1\.[0-9]+$ ]] || fail "read podSecurityVersion of deploy/helm/svp-cluster/values.yaml (got '$psa_version')"
-for v in SUPPLYCHAIN_UNSIGNED SUPPLYCHAIN_VULNERABLE; do
+for v in SUPPLYCHAIN_UNSIGNED SUPPLYCHAIN_UNSIGNED_FALLBACK SUPPLYCHAIN_VULNERABLE; do
   [[ -z ${!v:-} || ${!v} =~ ^${prefix//./\\.}[a-z0-9._/-]+(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$ ]] ||
     fail "$v must be ${prefix}<name>@sha256:<64 hex> (got '${!v}')"
 done
 unsigned=${SUPPLYCHAIN_UNSIGNED:-}
+unsigned_fallback=${SUPPLYCHAIN_UNSIGNED_FALLBACK:-}
 vulnerable=${SUPPLYCHAIN_VULNERABLE:-}
 # Docker Hub's busybox 1.37.0 (multi-arch index), only ever named in a dry run.
 dockerhub=docker.io/library/busybox@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
@@ -526,7 +532,11 @@ else
 fi
 
 # --- b: unsigned, through a real Deployment.
-if [[ -n $unsigned ]]; then
+# unsigned_deployment IMAGE: Deployment $deploy_name of svp with IMAGE, read until its ReplicaSet reports FailedCreate
+# or a pod of it exists (90 s at most), then deleted with its ReplicaSet and pods (foreground: no pod of it is left to
+# count for the next image); sets msg (the FailedCreate message, empty without one) and pods (how many it had).
+unsigned_deployment() {
+  local deadline
   deploy_created=1
   {
     cat <<EOF
@@ -548,26 +558,41 @@ spec:
         app.kubernetes.io/name: $deploy_name
         app.kubernetes.io/managed-by: $owner
 EOF
-    pod_spec "$unsigned" | sed 's/^/    /'
+    pod_spec "$1" | sed 's/^/    /'
   } | kc apply -f - >/dev/null || fail "create deployment svp/$deploy_name"
   msg=
+  pods=0
   deadline=$((SECONDS + 90))
-  while [[ -z $msg ]] && ((SECONDS < deadline)); do
+  while [[ -z $msg && $pods == 0 ]] && ((SECONDS < deadline)); do
     sleep 3
     msg=$(kc -n svp get events --field-selector reason=FailedCreate -o json | jq -r --arg d "$deploy_name-" '
       [.items[] | select(.involvedObject.kind == "ReplicaSet" and (.involvedObject.name | startswith($d)))
        | .message] | last // empty')
+    pods=$(kc -n svp get pods -l "app.kubernetes.io/name=$deploy_name" -o name | wc -l | tr -d ' ')
   done
+  kc -n svp delete deployment "$deploy_name" --cascade=foreground --wait=true >/dev/null ||
+    fail "delete deployment svp/$deploy_name"
+  deploy_created=
+}
+if [[ -n $unsigned ]]; then
+  unsigned_deployment "$unsigned"
+  # The digest of a release's linux/amd64 manifest is not the index that was signed and attested, but Kyverno might
+  # still trace it back to that index: then it admits the pod, and the case says so and uses drill-unsigned instead.
+  if [[ -z $msg && $pods != 0 && -n $unsigned_fallback ]]; then
+    result b WARN "deployment svp/$deploy_name with $unsigned: Kyverno admitted it ($pods pod(s) created), so the case runs again with SUPPLYCHAIN_UNSIGNED_FALLBACK $unsigned_fallback, which also stands for the unsigned image in h and i"
+    unsigned=$unsigned_fallback bad=$unsigned_fallback
+    unsigned_deployment "$unsigned"
+  fi
   out=$msg rc=1 ms=
-  if [[ -z $msg ]]; then
+  if [[ -z $msg && $pods != 0 ]]; then
+    result b FAIL "deployment svp/$deploy_name with $unsigned: Kyverno admitted it ($pods pod(s) created)"
+  elif [[ -z $msg ]]; then
     result b FAIL "deployment svp/$deploy_name with $unsigned: no FailedCreate event of its ReplicaSet within 90 s"
   else
     refused b "image without a keyless signature by" "deployment svp/$deploy_name with $unsigned: ReplicaSet FailedCreate"
+    [[ $pods == 0 ]] && ok "deployment svp/$deploy_name has no pod" ||
+      result b FAIL "deployment svp/$deploy_name has no pod (got $pods)"
   fi
-  pods=$(kc -n svp get pods -l "app.kubernetes.io/name=$deploy_name" -o name | wc -l | tr -d ' ')
-  [[ $pods == 0 ]] && ok "deployment svp/$deploy_name has no pod" || result b FAIL "deployment svp/$deploy_name has no pod (got $pods)"
-  kc -n svp delete deployment "$deploy_name" --wait=true >/dev/null || fail "delete deployment svp/$deploy_name"
-  deploy_created=
 else
   result b SKIP "SUPPLYCHAIN_UNSIGNED is not set (digest of drill-unsigned, which CI pushes without a signature)"
 fi

@@ -8,9 +8,11 @@
 #      vuln attestation that is clean and at most 48 hours old (Kyverno refuses new pods at 72);
 #   2. the registry and the cluster (as `make k8s-up`); nothing is built here, the images come from GHCR;
 #   3. the Secrets from .env (deploy/k8s/secrets.sh), which never go to git;
-#   4. Argo CD (deploy/k8s/values/argo-cd.yaml) in namespace argocd with Pod Security "restricted", its repository
-#      Secret with the read-only deploy key, AppProject svp and the emptied AppProject default
-#      (deploy/argocd/project.yaml) and root Application svp-root (chart deploy/argocd/apps at the same revision);
+#   4. Argo CD (deploy/k8s/values/argo-cd.yaml) in namespace argocd with Pod Security "restricted", AppProject svp and
+#      the emptied AppProject default (deploy/argocd/project.yaml) and root Application svp-root (chart
+#      deploy/argocd/apps at the same revision, told the architecture of the nodes). No repository Secret: the
+#      repository is public and Argo CD reads it over HTTPS without credentials, so this path holds no key or token;
+#      a repository that turned private again would need a read-only credential here;
 #   5. a bounded wait until every Application is Synced and Healthy with its last sync Succeeded, with GlitchTip's DSN
 #      put into Secret svp/sentry once GlitchTip is up (deploy/k8s/glitchtip-init.sh), so the services report errors
 #      on this path too. An error Argo CD keeps reporting for 180 s stops the wait early.
@@ -18,9 +20,6 @@
 # is what Argo CD deploys.
 #
 # Environment (set by `make k8s-gitops-up`):
-#   ARGOCD_DEPLOY_KEY  path of the private half of a deploy key of the GitHub repository, made with "Allow write
-#                      access" left unticked (GitHub's side cannot be checked from here): Argo CD only reads git.
-#                      Read from its file into the Secret on stdin; never printed, copied or written anywhere else.
 #   GITOPS_REV         what Argo CD follows: a branch of origin (default main; its values are read from
 #                      refs/remotes/origin/<branch> as fetched last, without a fetch) or a full commit SHA.
 #   SVP_ATTEST_MAX_AGE drills only (never in .env): a shorter limit than 48h for the age of the vuln attestations.
@@ -44,22 +43,12 @@ set -euo pipefail
 # shellcheck source=deploy/ci/platform.sh
 . "$repo_root/deploy/ci/platform.sh"
 
-repo_url=git@github.com:anhnvcoder/short-video-platform.git
+# The same URL as repoURL of deploy/argocd/apps/values.yaml and sourceRepos of AppProject svp.
+repo_url=https://github.com/anhnvcoder/short-video-platform.git
 # renovate: datasource=helm depName=argo-cd registryUrl=https://argoproj.github.io/argo-helm
 argocd_chart_version=10.10.5
 rev=${GITOPS_REV:-main}
-key_file=${ARGOCD_DEPLOY_KEY:-}
 
-# --- the deploy key: a private key file only its owner can read, without a passphrase (Argo CD cannot enter one).
-[ -n "$key_file" ] || fail "ARGOCD_DEPLOY_KEY is not set: make k8s-gitops-up ARGOCD_DEPLOY_KEY=<private key file of a read-only deploy key>"
-[ -f "$key_file" ] && [ -s "$key_file" ] || fail "ARGOCD_DEPLOY_KEY: $key_file is not a non-empty file"
-# GNU stat (Linux, the CI runner) takes -c %a; BSD stat (macOS) takes -f %Lp and rejects -c, so it falls through.
-mode=$(stat -c %a "$key_file" 2>/dev/null || stat -f %Lp "$key_file") ||
-  fail "ARGOCD_DEPLOY_KEY: read the mode of $key_file"
-[ $((8#$mode & 8#077)) = 0 ] ||
-  fail "ARGOCD_DEPLOY_KEY: $key_file has mode $mode; a private key must be readable by its owner only (chmod 600 $key_file)"
-ssh-keygen -y -P '' -f "$key_file" >/dev/null 2>&1 ||
-  fail "ARGOCD_DEPLOY_KEY: $key_file is not an SSH private key without a passphrase"
 command -v jq >/dev/null || fail "jq is not installed (brew install jq): it reads components.json and Argo CD's status"
 
 # --- the revision and its release images, before anything is created.
@@ -126,6 +115,20 @@ fi
 ensure_registry
 ensure_cluster
 
+# The nodes' architecture, which the root hands to chart deploy/argocd/apps (value nodeArch): Argo Rollouts' traffic
+# router plugin is a native binary, and a component with archValues in components.json gets the values file of that
+# architecture (argo-rollouts-amd64.yaml on a Linux x86_64 host such as a CI runner). The first node's, and every
+# other node must run the same: one plugin binary serves the controller wherever it is scheduled.
+node_archs=$(kc get nodes -o jsonpath='{range .items[*]}{.metadata.labels.kubernetes\.io/arch}{"\n"}{end}') ||
+  fail "read the architecture of the nodes of svp"
+node_arch=$(head -n 1 <<<"$node_archs")
+[ -z "$(grep -vxF -- "$node_arch" <<<"$node_archs")" ] ||
+  fail "the nodes of svp run different architectures ($(sort -u <<<"$node_archs" | paste -sd ' ' -)): Argo Rollouts gets one plugin binary, built for one of them"
+case $node_arch in
+  amd64 | arm64) ok "nodes run $node_arch: the root Application gets nodeArch=$node_arch" ;;
+  *) fail "nodes of svp run '$node_arch': the release images and the plugin of Argo Rollouts exist for amd64 and arm64 only" ;;
+esac
+
 # --- the Secrets. Chart svp-cluster (wave 1) owns the project's namespaces, but two things need them earlier: the
 # Secrets, before the first pod that reads one (wave 2), and Envoy Gateway (wave 0), which binds a Role in each
 # namespace it watches (deploy/k8s/values/envoy-gateway.yaml) and cannot sync while one is missing. So the namespaces of
@@ -171,16 +174,8 @@ hc upgrade --install argocd argo-cd --repo https://argoproj.github.io/argo-helm 
   >/dev/null || fail "install Argo CD"
 ok "Argo CD installed"
 
-# The repository Secret: the key goes from its file into a shell variable and on stdin to kubectl,
-# never onto a command line, so it cannot show in a process list or a log. GitHub's host keys are in ConfigMap
-# argocd-ssh-known-hosts-cm, which the chart ships.
-deploy_key=$(<"$key_file")
-label='argocd.argoproj.io/secret-type: repository' secret argocd repo-short-video-platform Opaque \
-  type=git url="$repo_url" sshPrivateKey="$deploy_key"$'\n' |
-  kc apply --server-side --field-manager=svp-secrets --force-conflicts -f - >/dev/null ||
-  fail "apply Secret argocd/repo-short-video-platform"
-deploy_key=
-ok "Secret argocd/repo-short-video-platform: $repo_url over SSH with the deploy key"
+# No repository Secret: Argo CD reads $repo_url over HTTPS without credentials. The cluster is always new (above), so
+# no Secret of an earlier SSH setup (argocd/repo-short-video-platform with a deploy key) is left to remove.
 
 # --force-conflicts: argocd-server created AppProject default at its start and owns its fields until this apply
 # empties them.
@@ -190,10 +185,11 @@ ok "AppProject svp, AppProject default emptied"
 
 # The root follows $rev, and hands the same revision to every Application it makes (value targetRevision of chart
 # deploy/argocd/apps), so the releases checked above are the ones deployed. argocd_root_app (lib.sh) writes the revision
-# as a string whatever it looks like.
-argocd_root_app "$repo_url" "$rev" | kc apply --server-side --field-manager=svp-gitops -f - >/dev/null ||
+# as a string whatever it looks like; the nodes' architecture joins it in the root's values, a string too.
+argocd_root_app "$repo_url" "$rev" | jq --arg arch "$node_arch" '.spec.source.helm.valuesObject.nodeArch = $arch' |
+  kc apply --server-side --field-manager=svp-gitops -f - >/dev/null ||
   fail "apply Application svp-root"
-ok "Application svp-root follows $rev"
+ok "Application svp-root follows $rev of $repo_url (HTTPS, no credentials), nodeArch $node_arch"
 
 if [ -z "$has_apps" ]; then
   # Argo CD reports a ComparisonError on the root once the repo-server has tried the revision: its message tells a
@@ -273,7 +269,7 @@ while :; do
   if printf '%s\n' "$problems" | grep -q '^error '; then
     errors_since=${errors_since:-$SECONDS}
     ((SECONDS - errors_since < 180)) ||
-      fail "Argo CD has reported the errors above for 180s, so this script stops; fix their cause (the deploy key on GitHub, the revision, a chart), then make k8s-down && make k8s-gitops-up"
+      fail "Argo CD has reported the errors above for 180s, so this script stops; fix their cause (the repository must be public, Argo CD reads it without credentials; the revision; a chart), then make k8s-down && make k8s-gitops-up"
   else
     errors_since=
   fi
