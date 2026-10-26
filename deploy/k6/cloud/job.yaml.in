@@ -1,11 +1,15 @@
 # Template of the k6 Job of the cloud cluster, filled in by render.sh:
-# @K6_IMAGE@ (K6_IMAGE of the Makefile), @DOMAIN@, @ENVOY_IP@, @FORWARDED_FOR@ and @SCRIPT_ITEMS@. Not a manifest on its
-# own (hence .yaml.in, which make cloud-check does not read; it checks the output of render.sh).
+# @K6_IMAGE@ (K6_IMAGE of the Makefile), @DOMAIN@, @WEB_ORIGIN@, @ENVOY_IP@, @FORWARDED_FOR@, @SCRIPT_ITEMS@, @PODS@,
+# @DEADLINE@, @CPU_REQUEST@, @CPU_LIMIT@, @RAMP@ and @HOLD@. Not a manifest on its own (hence .yaml.in, which make cloud-check does
+# not read; it checks the output of render.sh).
 #
 # Namespace svp-load is outside svp, so Kyverno's image policy does not apply, and runs under PSA restricted. 20 pods of
 # one Indexed Job, each running its own execution segment of profile cloud: k6 splits the rates, and each pod registers
 # its own pool from its own pod IP (no rate limit key is ever deleted on the cloud). 20 is `pods` of profile cloud in
-# lib/config.js, which sizes VUs and pools per pod; setup() refuses a run with another number of segments. The pods
+# lib/config.js, which sizes VUs and pools per pod; setup() refuses a run with another number of segments. Fewer pods
+# (render.sh --pods) keep the lines marked @PODS@: SVP_K6_PODS tells the scripts the count, and the rates shrink with
+# it, each pod keeping the load of one pod of the design. The lines marked @RAMP@ and @HOLD@ stay only with
+# render.sh --ramp and --hold, @CPU_LIMIT@ only with --cpu-limit. The pods
 # call Envoy's Service inside the cluster: hostAliases point the public names at its ClusterIP, so TLS checks the real
 # certificate while the load never crosses the public load balancer or the internet.
 #
@@ -30,12 +34,14 @@ metadata:
   namespace: svp-load
 spec:
   completionMode: Indexed
-  completions: 20
-  parallelism: 20
+  completions: @PODS@
+  parallelism: @PODS@
   # A pod run again would register its pool again: a failed pod is a result to read, not to retry.
   backoffLimit: 0
-  # 10 min ramp + hold (10 min by default) + 1 min down + setup, with room; a stuck run ends here.
-  activeDeadlineSeconds: 3600
+  # The whole run with room, so that a stuck run ends here: by default 3600 s for the profile's 10 min ramp, 10 min
+  # hold and 1 min down; with render.sh --ramp or --hold, ramp + hold + 1 min down + 15 min for the pods to be pulled
+  # and scheduled, setup() (3 min at most) and the summary.
+  activeDeadlineSeconds: @DEADLINE@
   template:
     metadata:
       labels:
@@ -58,15 +64,15 @@ spec:
         - name: k6
           image: "@K6_IMAGE@"
           command: ["sh", "-c"]
-          # Pod i of 20 runs segment i/20:(i+1)/20 of an even sequence. $$ keeps Kubernetes from reading $(( )) as a
+          # Pod i of N runs segment i/N:(i+1)/N of an even sequence. $$ keeps Kubernetes from reading $(( )) as a
           # reference to a variable.
           args:
             - |
               i=$JOB_COMPLETION_INDEX
               seq=0; n=1
-              while [ "$n" -lt 20 ]; do seq="$seq,$n/20"; n=$$((n + 1)); done
+              while [ "$n" -lt @PODS@ ]; do seq="$seq,$n/@PODS@"; n=$$((n + 1)); done
               exec k6 run --quiet --include-system-env-vars \
-                --execution-segment "$i/20:$$((i + 1))/20" --execution-segment-sequence "$seq,1" /scripts/main.js
+                --execution-segment "$i/@PODS@:$$((i + 1))/@PODS@" --execution-segment-sequence "$seq,1" /scripts/main.js
           env:
             - name: SVP_K6_PROFILE
               value: cloud
@@ -75,7 +81,13 @@ spec:
             - name: SVP_WEB_URL
               value: "https://@DOMAIN@"
             - name: SVP_WEB_ORIGIN
-              value: "https://@DOMAIN@"
+              value: "@WEB_ORIGIN@"
+            - name: SVP_K6_PODS # @PODS@
+              value: "@PODS@" # @PODS@
+            - name: SVP_K6_RAMP # @RAMP@
+              value: "@RAMP@" # @RAMP@
+            - name: SVP_K6_HOLD # @HOLD@
+              value: "@HOLD@" # @HOLD@
             - name: SVP_K6_POD_IP
               valueFrom:
                 fieldRef:
@@ -91,9 +103,10 @@ spec:
               value: /etc/svp-k6-ca/ca.crt # @CA@
           resources:
             requests:
-              cpu: "1"
+              cpu: "@CPU_REQUEST@"
               memory: 256Mi
             limits:
+              cpu: "@CPU_LIMIT@" # @CPU_LIMIT@
               memory: 1Gi
           securityContext:
             allowPrivilegeEscalation: false
