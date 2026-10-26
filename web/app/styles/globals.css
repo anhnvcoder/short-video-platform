@@ -22,6 +22,17 @@
   }
 }
 
+/*
+ * Until the page has loaded and the fonts are in (data-web-fonts, set by app/styles/web-fonts.tsx), text uses only the
+ * size-adjusted fallback next/font generates for Be Vietnam Pro: no text names the web font, so the browser fetches
+ * none of its files before the page's largest paint. next/font names that fallback "<family> Fallback" after the
+ * `beVietnamPro` declaration of app/styles/fonts.ts. Outside any layer, like next/font's own rules (a layered rule
+ * loses to an unlayered one whatever its selector), and the selector outranks next/font's variable class on <html>.
+ */
+html:not([data-web-fonts]) {
+  --font-be-vietnam-pro: "beVietnamPro Fallback";
+}
+
 /* Reduced motion: no animation or transition anywhere (spinners stand still, video changes do not slide). */
 @media (prefers-reduced-motion: reduce) {
   *,

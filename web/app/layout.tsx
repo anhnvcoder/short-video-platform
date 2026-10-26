@@ -6,6 +6,7 @@ import { VitalsReporter } from "@/features/rum/vitals-reporter";
 import { Providers } from "./providers";
 import { beVietnamPro } from "./styles/fonts";
 import "./styles/globals.css";
+import { WebFonts } from "./styles/web-fonts";
 
 export async function generateMetadata(): Promise<Metadata> {
   const t = await getTranslations("common");
@@ -24,6 +25,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
           {children}
         </Providers>
         <VitalsReporter />
+        <WebFonts />
       </body>
     </html>
   );
