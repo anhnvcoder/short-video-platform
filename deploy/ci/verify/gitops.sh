@@ -178,10 +178,11 @@ scenario_targets() {
 #      Once it moved, the new commit is fetched; when it changes image.digest of a service in
 #      deploy/k8s/values/services/ against its first parent it is the release, otherwise it is named and the wait goes
 #      on from it. None within 90 min fails ("no release");
-#   3. make measure-gitops REV=<release>, again every 30 s while it exits 2 (not pushed, synced or Ready yet), for at
-#      most 20 min; its exit status is the step's. measure-gitops reads the push time from GitHub's events through
-#      ci_push_time, which needs the job's token: GH_TOKEN is given to that make alone, and taken out of the
-#      environment of everything else here (the drill traffic included).
+#   3. make measure-gitops REV=<release>, again every 30 s while it exits 2 (not pushed, synced or Ready yet) or
+#      exits 0 without the push time (GitHub's events do not list the push yet), for at most 20 min; then
+#      release_restarts (below) on what it wrote, and the step fails unless both pass. measure-gitops reads the push
+#      time from GitHub's events through ci_push_time, which needs the job's token: GH_TOKEN is given to that make
+#      alone, and taken out of the environment of everything else here (the drill traffic included).
 # Only the lines below reach the job's log; the targets' output goes to $SVP_VERIFY_OUT/logs/release-wait.log and
 # measure-gitops.log, which deploy/ci/verify-collect.sh copies into the artifact once they pass its scan. On a branch
 # other than main nothing is merged for this run to measure (Argo CD follows that branch), so it prints why and exits 0.
@@ -191,7 +192,7 @@ scenario_targets() {
 # the release that wait finds.
 release_wait() {
   local token=${GH_TOKEN:-} targets=${SVP_VERIFY_TARGETS:-} wait=1 measure=1 out base head rel= changed deadline rc svc \
-    new old
+    new old json no_push
   unset GH_TOKEN
   case $targets in
   *[!a-z0-9\ -]*)
@@ -270,25 +271,69 @@ release_wait() {
     return 0
   fi
   deadline=$((SECONDS + 20 * 60))
+  json=$gitops_repo/.k8s/drills/gitops-${rel:0:12}.json
   while :; do
-    rc=0
+    rc=0 no_push=
     if [ -n "$token" ]; then
       GH_TOKEN=$token make -C "$gitops_repo" measure-gitops REV="$rel" >>"$out/measure-gitops.log" 2>&1 || rc=$?
     else
       make -C "$gitops_repo" measure-gitops REV="$rel" >>"$out/measure-gitops.log" 2>&1 || rc=$?
     fi
+    # Measured, but without the push: GitHub's events list a push seconds to minutes after it, and the time from the
+    # push is the number this step is for. The sync and the pods are read after the fact, so measuring again later
+    # gives the same times, with the push once the events list it.
+    if [ "$rc" = 0 ] && [ "$(jq -r '.push // empty' "$json" 2>/dev/null)" = "" ]; then rc=2 no_push=1; fi
     [ "$rc" = 2 ] && [ "$SECONDS" -lt "$deadline" ] || break
     sleep 30
   done
   case $rc in
-  0) echo "make measure-gitops REV=${rel:0:12}: measured (measure-gitops.log, .k8s/drills/gitops-${rel:0:12}.json)" ;;
+  0)
+    echo "make measure-gitops REV=${rel:0:12}: measured (measure-gitops.log, .k8s/drills/gitops-${rel:0:12}.json)"
+    release_restarts "$json" || rc=1
+    ;;
   2)
-    echo "FAIL  make measure-gitops REV=${rel:0:12}: still not pushed, synced or Ready after 20 min (measure-gitops.log)"
+    if [ -n "$no_push" ]; then
+      echo "FAIL  make measure-gitops REV=${rel:0:12}: synced and Ready, but GitHub's events did not list its push within 20 min, so there is no time from the push (measure-gitops.log, .k8s/drills/gitops-${rel:0:12}.json)"
+    else
+      echo "FAIL  make measure-gitops REV=${rel:0:12}: still not pushed, synced or Ready after 20 min (measure-gitops.log)"
+    fi
     rc=1
     ;;
   *) echo "FAIL  make measure-gitops REV=${rel:0:12}: exit $rc (measure-gitops.log)" ;;
   esac
   return "$rc"
+}
+
+# release_restarts JSON: the verdict on the restarts measure-gitops wrote into JSON (its restarts list, one entry per
+# service the release changes). The release must change a service with a database (has_database: its values set
+# migrate: true), so that a migrate Job ran in the sync measured; every pod running the new digest and, for each
+# service with a database, every pod of its migrate Job must have run without a restart (the startup's retries of the
+# database connection, counted beside, are how a pod waits for Postgres instead), and that Job must be there, made
+# during the service's sync measured (of_rev_sync: a Job a later sync made in its place says nothing of this one) and
+# complete. One line per service, then ok or FAIL; exit 1 on a FAIL.
+release_restarts() {
+  local lines
+  lines=$(jq -r '
+    def db: if .db_retry_warnings == null then "log not read"
+      else "\(.db_retry_warnings) retry warning(s), \(.db_connected_after_retries) connected after retries" end;
+    (.restarts // [])[]
+    | "\(.service): \(.pods) pod(s), restartCount \(.pod_restarts), database \(db); "
+      + (if .migrate == null then (if .has_database then "no migrate Job, though its values set migrate: true" else "no database" end)
+         else . as $s | .migrate | "Job \(.job) \(if .complete then "complete" else "not complete" end)\(if .of_rev_sync then "" else " (created \(.created), not during the sync measured, \($s.sync_started) to \($s.sync_finished))" end), \(.pods) pod(s), restartCount \(.restarts), database \(db)" end)' "$1") || {
+    echo "FAIL  release restarts: read the restarts of $1"
+    return 1
+  }
+  printf '%s\n' "$lines" | sed 's/^/release     /'
+  if ! jq -e '(.restarts // []) | any(.has_database == true)' "$1" >/dev/null; then
+    echo "FAIL  release restarts: the release changes no service with a database, so it says nothing of a release of one"
+    return 1
+  fi
+  if ! jq -e '(.restarts // []) | all(.pod_restarts == 0 and (.has_database != true or (.migrate != null and
+      (.migrate | .of_rev_sync == true and .complete == true and .pods == 1 and .restarts == 0))))' "$1" >/dev/null; then
+    echo "FAIL  release restarts: a pod of the release or of its migrate Job restarted, or a service with a database has no Job made during the sync measured, complete, on one pod (above)"
+    return 1
+  fi
+  echo "ok    release restarts: the release's pods and its migrate Job ran without a restart"
 }
 
 # Run as a script by the job (see the header), not sourced by verify-run.sh.

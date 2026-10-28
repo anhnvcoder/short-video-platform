@@ -17,11 +17,20 @@
 #                  Pods that restarted since, or that were made outside the rollout (the HPA scaling out, a pod that
 #                  replaced an evicted one), no longer hold the time the rollout made them Ready: they are left out
 #                  and named.
+#   restarts       per service REV releases: the restarts of its pods running the new digest and, for a service with a
+#                  database (migrate: true in its values at REV), its migrate Job (the PreSync hook that migrates the
+#                  schema before the new pods start): whether it was made during the sync of REV measured above and is
+#                  complete, its pods and their restarts; for both, how often they retried the database connection at
+#                  startup (the log lines "database not reachable, retrying" and "database connected after retries",
+#                  counted, never printed: none of either is a connection at the first try). Reported, not judged
+#                  here: the verification run of the GitOps path fails a release whose pods or migrate Job restarted.
 # Prints a table and writes it as JSON to .k8s/drills/gitops-<commit>.json. A commit not pushed yet, not synced yet,
-# or whose pods are not all Ready yet is reported as such (exit 2), never as a number. A commit that can no longer be
-# measured is reported so (exit 1) instead of waiting for good: Argo CD went on to a later commit without syncing it
-# (pushed together with that commit, or replaced before Argo CD's next poll), a service it releases has synced a
-# later commit since, whose rollout may have replaced the pods to time, or every pod of such a service is left out.
+# or whose pods are not all Ready yet is reported as such (exit 2), never as a number; so is a service whose
+# Application runs a sync, or starts one while the pods and the Job are read: what was read may be that sync's. A
+# commit that can no longer be measured is reported so (exit 1) instead of waiting for good: Argo CD went on to a later
+# commit without syncing it (pushed together with that commit, or replaced before Argo CD's next poll), a service it
+# releases has synced a later commit since, whose rollout may have replaced the pods to time, or every pod of such a
+# service is left out.
 set -euo pipefail
 
 # shellcheck source=deploy/k8s/lib.sh
@@ -167,6 +176,31 @@ canary_steps_jq='
   [.spec.strategy.canary.steps[]? | step_secs] | add // 0'
 ready_times=()
 left_out=()
+service_json=()
+
+# db_retries POD...: prints "WARNINGS CONNECTED", the number of lines "database not reachable, retrying" and "database
+# connected after retries" in the logs of the pods of svp (every container), read through awk and never printed;
+# "null null" when a log cannot be read.
+db_retries() {
+  local pod counts w=0 c=0
+  for pod in "$@"; do
+    counts=$(kc -n svp logs "pod/$pod" --all-containers=true 2>/dev/null |
+      awk '/database not reachable, retrying/ { w++ } /database connected after retries/ { c++ } END { print w + 0, c + 0 }') || {
+      echo "null null"
+      return 0
+    }
+    w=$((w + ${counts% *}))
+    c=$((c + ${counts#* }))
+  done
+  echo "$w $c"
+}
+
+# app_state APPS APP: "started phase last" of Application APP in APPS (the Applications as JSON): the start and phase of
+# its last operation and the id of its last history entry, what changes as soon as it starts a sync and when that ends.
+app_state() {
+  jq -r --arg app "$2" '.items[] | select(.metadata.name == $app) | .status
+    | "\(.operationState.startedAt // "-") \(.operationState.phase // "-") \([.history[]?] | last | .id // "-")"' <<<"$1"
+}
 
 # time_rollout_pods START END GAP: reads on stdin the pods of one service ("name image created restarts ready-since",
 # oldest first), START and END being the epoch seconds of REV's sync of the service. Appends the Ready time of each pod
@@ -218,6 +252,10 @@ for image in "${changed[@]}"; do
     | "\(.deployStartedAt // .deployedAt) \(.deployedAt)"')
   [ -n "$deploy_window" ] || fail "Application $svc has no sync of $short in its history"
   read -r deploy_start deploy_end <<<"$deploy_window"
+  # A sync running now, of whatever revision, may be rolling the pods and has replaced the migrate Job (below).
+  read -r op_started op_phase _ <<<"$(app_state "$apps_json" "$svc")"
+  [ "$op_phase" != Running ] ||
+    waiting "Application $svc is running a sync (started $op_started): its pods and migrate Job may be that sync's"
   # Seconds the canary steps can hold the Rollout of the service (0 for a Deployment: no such object).
   rollout=$(kc -n svp get rollouts.argoproj.io "$svc" --ignore-not-found -o json) || fail "read Rollout $svc"
   templates='{"items": []}'
@@ -246,6 +284,56 @@ for image in "${changed[@]}"; do
   time_rollout_pods "$(epoch "$deploy_start")" "$(epoch "$deploy_end")" $((rollout_slack + steps_total)) < <(printf '%s\n' "$pods")
   [ "$timed" -gt 0 ] ||
     fail "$short cannot be measured: no pod of $svc kept the Ready time the rollout gave it ($(printf '%s; ' "${left_out[@]:$first_left}" | sed 's/; $//'))"
+  # The restarts (see the header). Every pod of the service runs the new digest by now (checked above).
+  pod_restarts=$(printf '%s\n' "$pods" | awk '{ s += $4 } END { print s + 0 }')
+  # shellcheck disable=SC2046 # pod names, split on whitespace
+  read -r pod_warnings pod_connected <<<"$(db_retries $(printf '%s\n' "$pods" | awk '{ print $1 }'))"
+  # The migrate Job, which the chart makes for a service whose values set migrate: true: before-hook-creation replaces
+  # it at each sync of the service's Application, so the one there now is the latest sync's. It is the Job of the sync
+  # of REV measured only when made during that sync (from deployStartedAt to deployedAt): made before, that sync ran no
+  # hook; made after, a later sync (of REV again or of another commit) replaced it, and the restarts of the Job of the
+  # sync measured are gone with it. Its pods carry the label of the Job's uid.
+  values=$(git -C "$repo_root" show "$sha:$values_dir/$svc.yaml")
+  has_database=false
+  if grep -Eq '^migrate:[[:space:]]*true[[:space:]]*(#.*)?$' <<<"$values"; then has_database=true; fi
+  job=$(kc -n svp get job "$svc-migrate" --ignore-not-found -o json) || fail "read Job $svc-migrate"
+  migrate=null
+  if [ -n "$job" ]; then
+    job_uid=$(jq -r '.metadata.uid' <<<"$job")
+    job_created=$(jq -r '.metadata.creationTimestamp' <<<"$job")
+    of_sync=false
+    if [ "$(epoch "$job_created")" -ge "$(epoch "$deploy_start")" ] &&
+      [ "$(epoch "$job_created")" -le "$(epoch "$deploy_end")" ]; then
+      of_sync=true
+    fi
+    # "name restarts" per pod of the Job.
+    job_pods=$(kc -n svp get pods -l "batch.kubernetes.io/controller-uid=$job_uid" -o json |
+      jq -r '.items[] | "\(.metadata.name) \([.status.containerStatuses[]?.restartCount] | add // 0)"') ||
+      fail "read the pods of Job $svc-migrate"
+    # shellcheck disable=SC2046 # pod names, split on whitespace
+    read -r job_warnings job_connected <<<"$(db_retries $(printf '%s\n' "$job_pods" | awk 'NF { print $1 }'))"
+    migrate=$(jq -c --arg created "$job_created" --argjson of_sync "$of_sync" \
+      --argjson pods "$(printf '%s\n' "$job_pods" | grep -c . || true)" \
+      --argjson restarts "$(printf '%s\n' "$job_pods" | awk '{ s += $2 } END { print s + 0 }')" \
+      --argjson warnings "$job_warnings" --argjson connected "$job_connected" '
+      {job: .metadata.name, created: $created, of_rev_sync: $of_sync,
+        complete: any(.status.conditions[]?; .type == "Complete" and .status == "True"),
+        pods: $pods, restarts: $restarts, db_retry_warnings: $warnings, db_connected_after_retries: $connected}' <<<"$job")
+  fi
+  service_json+=("$(jq -n -c --arg service "$svc" --arg digest "$digest" --arg started "$deploy_start" \
+    --arg finished "$deploy_end" --argjson has_database "$has_database" --argjson pods "$total" \
+    --argjson restarts "$pod_restarts" --argjson warnings "$pod_warnings" --argjson connected "$pod_connected" \
+    --argjson migrate "$migrate" '{service: $service, digest: $digest, sync_started: $started, sync_finished: $finished,
+      has_database: $has_database, pods: $pods, pod_restarts: $restarts, db_retry_warnings: $warnings,
+      db_connected_after_retries: $connected, migrate: $migrate}')")
+done
+# What was read must be of the syncs measured: a sync that a service's Application started meanwhile (its last
+# operation or history changed) may have rolled pods or replaced the migrate Job between two reads.
+apps_after=$(kc -n argocd get applications.argoproj.io -o json) || fail "read the Applications of namespace argocd again"
+for image in "${changed[@]}"; do
+  svc=${image%%@*}
+  [ "$(app_state "$apps_after" "$svc")" = "$(app_state "$apps_json" "$svc")" ] ||
+    waiting "Application $svc started a sync while $short was read: its pods and migrate Job may be that sync's"
 done
 first_ready=$(printf '%s\n' "${ready_times[@]}" | sort | head -1)
 last_ready=$(printf '%s\n' "${ready_times[@]}" | sort | tail -1)
@@ -267,6 +355,15 @@ printf '%-18s %s\n' "commit" "$short" "released" "${changed[*]}" \
   "first pod Ready" "$first_ready (+$(offset "$first_ready") s)" \
   "last pod Ready" "$last_ready (+$(offset "$last_ready") s)"
 for note in ${left_out[@]+"${left_out[@]}"}; do printf '%-18s %s\n' "left out" "$note"; done
+# connected: how a pod or the Job's pods reached the database, from the two counts of db_retries.
+printf '%s\n' "${service_json[@]}" | jq -r '
+  def connected: if .db_retry_warnings == null then "log not read"
+    elif .db_retry_warnings == 0 and .db_connected_after_retries == 0 then "connected at the first try"
+    else "\(.db_retry_warnings) retry warning(s), \(.db_connected_after_retries) connected after retries" end;
+  "restarts           \(.service): \(.pods) pod(s), restartCount \(.pod_restarts); database: \(connected)",
+  (. as $s | .migrate | if . == null then
+      "migrate            \($s.service): \(if $s.has_database then "no Job \($s.service)-migrate, though its values set migrate: true" else "no migrate Job (a service without a database)" end)"
+    else "migrate            \(.job) \(if .complete then "complete" else "not complete" end)\(if .of_rev_sync then "" else ", not of the sync measured (created \(.created), the sync ran \($s.sync_started) to \($s.sync_finished))" end), \(.pods) pod(s), restartCount \(.restarts); database: \(connected)" end)'
 
 mkdir -p "$repo_root/.k8s/drills"
 out="$repo_root/.k8s/drills/gitops-$short.json"
@@ -276,11 +373,12 @@ jq -n --arg commit "$sha" --arg released "${changed[*]}" --arg push "$push_at" -
   --arg left_out "$(printf '%s\n' ${left_out[@]+"${left_out[@]}"})" \
   --argjson s_sync_started "$(offset "$sync_start")" --argjson s_sync_finished "$(offset "$sync_end")" \
   --argjson s_first_ready "$(offset "$first_ready")" --argjson s_last_ready "$(offset "$last_ready")" \
+  --argjson services "$(printf '%s\n' "${service_json[@]}" | jq -s -c .)" \
   '{commit: $commit, released: ($released | split(" ")), push: (if $push == "" then null else $push end),
     push_source: $push_source, sync_apps: ($sync_apps | split(" ")), sync_started: $sync_started,
     sync_finished: $sync_finished, first_pod_ready: $first_ready, last_pod_ready: $last_ready,
     pods_left_out: ($left_out | split("\n") | map(select(. != ""))),
     seconds_from: (if $push == "" then "sync_started" else "push" end),
     seconds: {sync_started: $s_sync_started, sync_finished: $s_sync_finished, first_pod_ready: $s_first_ready,
-      last_pod_ready: $s_last_ready}}' >"$out"
+      last_pod_ready: $s_last_ready}, restarts: $services}' >"$out"
 ok "written to .k8s/drills/gitops-$short.json"
