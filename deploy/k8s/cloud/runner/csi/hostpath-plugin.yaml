@@ -11,11 +11,24 @@
 # images (external-attacher v4.13.0, external-provisioner v6.4.0, external-snapshotter v8.7.0) and bound to the
 # plugin's one ServiceAccount, as upstream's deploy script does; no csi-resizer, csi-external-health-monitor or
 # snapshot metadata sidecar, which the restore drill does not use; the hostpath image of the release (upstream's
-# manifest at v1.19.0 still names v1.18.0); every image pinned by digest.
+# manifest at v1.19.0 still names v1.18.0); every image pinned by digest; the sidecars unprivileged (upstream runs them
+# privileged), each container with resources, the pod with the runtime's default seccomp profile.
 #
-# Privileged containers, hostPath mounts of /var/lib/kubelet and /dev, mount propagation Bidirectional: what a node
-# plugin needs to mount volumes into pods, and why namespace csi-hostpath allows Pod Security "privileged". k3d makes
-# the node's root mount shared at start (its mount fix), which Bidirectional propagation requires.
+# The driver container privileged, hostPath mounts of /var/lib/kubelet and /dev, mount propagation Bidirectional: what
+# a node plugin needs to mount volumes into pods, and why namespace csi-hostpath allows Pod Security "privileged". k3d
+# makes the node's root mount shared at start (its mount fix), which Bidirectional propagation requires.
+#
+# Upstream runs the sidecars privileged for nodes with SELinux, where an unprivileged container cannot open the socket
+# the privileged driver container made. The runner's nodes have no SELinux (Ubuntu, AppArmor), so here each sidecar
+# runs with no capability, no privilege escalation and a read-only root filesystem. They stay root, the user of their
+# images: the driver (root) creates /csi/csi.sock with mode 0755, and connecting to a unix socket needs write
+# permission on it; the node-driver-registrar creates its registration socket in the kubelet's plugins_registry
+# directory, which belongs to root. The AWS EBS CSI driver's chart runs its node pod the same way: root, its
+# node-driver-registrar and liveness probe with no privilege escalation and a read-only root filesystem.
+#
+# Resources were not measured: requests as the default of the AWS EBS CSI driver chart's controller (10m, 40Mi), limits
+# only to stop a runaway container from starving the rest of the runner's cluster. The driver's limit is the larger:
+# it runs tar for each snapshot and restore.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -240,6 +253,10 @@ spec:
         app.kubernetes.io/name: csi-hostpathplugin
     spec:
       serviceAccountName: csi-hostpathplugin-sa
+      # For the sidecars: a privileged container always runs without a seccomp profile.
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: hostpath
           image: registry.k8s.io/sig-storage/hostpathplugin:v1.19.0@sha256:3af7d1b51d7af6e1858fcb0f08d87c89b4cc64cc709adfa9d75320da8f2f175c
@@ -258,6 +275,9 @@ spec:
                   fieldPath: spec.nodeName
           securityContext:
             privileged: true
+          resources:
+            requests: {cpu: 10m, memory: 40Mi}
+            limits: {cpu: "1", memory: 512Mi}
           ports:
             - containerPort: 9898
               name: healthz
@@ -290,10 +310,14 @@ spec:
             - --csi-address=/csi/csi.sock
             - --kubelet-registration-path=/var/lib/kubelet/plugins/csi-hostpath/csi.sock
             - --http-endpoint=:9809
-          # Privileged as upstream sets it: on a node with SELinux an unprivileged sidecar cannot open the socket the
-          # privileged driver container made. The same holds for the sidecars below.
           securityContext:
-            privileged: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 10m, memory: 40Mi}
+            limits: {cpu: 200m, memory: 256Mi}
           env:
             - name: KUBE_NODE_NAME
               valueFrom:
@@ -324,6 +348,14 @@ spec:
           args:
             - --csi-address=/csi/csi.sock
             - --health-port=9898
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 10m, memory: 40Mi}
+            limits: {cpu: 200m, memory: 256Mi}
           volumeMounts:
             - mountPath: /csi
               name: socket-dir
@@ -333,7 +365,13 @@ spec:
             - --v=5
             - --csi-address=/csi/csi.sock
           securityContext:
-            privileged: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 10m, memory: 40Mi}
+            limits: {cpu: 200m, memory: 256Mi}
           volumeMounts:
             - mountPath: /csi
               name: socket-dir
@@ -344,7 +382,13 @@ spec:
             - --csi-address=/csi/csi.sock
             - --feature-gates=Topology=true
           securityContext:
-            privileged: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 10m, memory: 40Mi}
+            limits: {cpu: 200m, memory: 256Mi}
           volumeMounts:
             - mountPath: /csi
               name: socket-dir
@@ -354,7 +398,13 @@ spec:
             - -v=5
             - --csi-address=/csi/csi.sock
           securityContext:
-            privileged: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 10m, memory: 40Mi}
+            limits: {cpu: 200m, memory: 256Mi}
           volumeMounts:
             - mountPath: /csi
               name: socket-dir

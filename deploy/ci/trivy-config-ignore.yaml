@@ -78,3 +78,101 @@ misconfigurations:
       RustFS's official image from Docker Hub, for the object store and its init Job, pinned by digest; a private
       registry mirror is for the cloud stage
     expired_at: 2027-01-22
+  # The CSI hostpath driver and snapshot controller run only on the k3d cluster of a CI runner, thrown away with the job
+  # (deploy/k8s/cloud/runner/csi/install.sh refuses any other machine), so Velero's CSI snapshots run there as they will
+  # on EBS. A node plugin mounts volumes into pods from the node, so its driver container is privileged and root, with
+  # hostPath mounts; the sidecars and the snapshot controller run without privilege, capability or escalation, with a
+  # read-only root filesystem.
+  - id: KSV-0017
+    paths:
+      - deploy/k8s/cloud/runner/csi/hostpath-plugin.yaml
+    statement: >-
+      the driver container mounts each volume into the pod's directory under /var/lib/kubelet/pods with Bidirectional
+      mount propagation, which only a privileged container may use; the sidecars are not privileged
+    expired_at: 2027-01-26
+  - id: KSV-0001
+    paths:
+      - deploy/k8s/cloud/runner/csi/hostpath-plugin.yaml
+    statement: >-
+      only the privileged driver container leaves it unset: the API refuses allowPrivilegeEscalation false on a
+      privileged container
+    expired_at: 2027-01-26
+  - id: KSV-0003
+    paths:
+      - deploy/k8s/cloud/runner/csi/hostpath-plugin.yaml
+    statement: >-
+      only the privileged driver container drops nothing: the runtime gives a privileged container every capability
+      whatever it drops; the sidecars drop ALL
+    expired_at: 2027-01-26
+  - id: KSV-0004
+    paths:
+      - deploy/k8s/cloud/runner/csi/hostpath-plugin.yaml
+    statement: >-
+      only the privileged driver container drops nothing: the runtime gives a privileged container every capability
+      whatever it drops; the sidecars drop ALL
+    expired_at: 2027-01-26
+  - id: KSV-0106
+    paths:
+      - deploy/k8s/cloud/runner/csi/hostpath-plugin.yaml
+    statement: >-
+      only the privileged driver container drops nothing: the runtime gives a privileged container every capability
+      whatever it drops; the sidecars drop ALL
+    expired_at: 2027-01-26
+  - id: KSV-0014
+    paths:
+      - deploy/k8s/cloud/runner/csi/hostpath-plugin.yaml
+    statement: >-
+      only the privileged driver container has a writable root filesystem: a privileged container can remount it
+      read-write, so read-only would bound nothing; the sidecars' is read-only
+    expired_at: 2027-01-26
+  - id: KSV-0012
+    paths:
+      - deploy/k8s/cloud/runner/csi/hostpath-plugin.yaml
+    statement: >-
+      every container of the plugin runs as root, the user of its image: the driver mounts volumes; it creates
+      /csi/csi.sock with mode 0755, and a sidecar needs write permission on it to connect; the node-driver-registrar
+      creates its socket in the kubelet's plugins_registry directory, which belongs to root
+    expired_at: 2027-01-26
+  - id: KSV-0020
+    paths:
+      - deploy/k8s/cloud/runner/csi/hostpath-plugin.yaml
+    statement: >-
+      every container of the plugin runs as root (user 0), for the driver's mounts and the sockets it shares with the
+      sidecars and the kubelet
+    expired_at: 2027-01-26
+  - id: KSV-0021
+    paths:
+      - deploy/k8s/cloud/runner/csi/hostpath-plugin.yaml
+    statement: >-
+      every container of the plugin runs as root (group 0), for the driver's mounts and the sockets it shares with the
+      sidecars and the kubelet
+    expired_at: 2027-01-26
+  - id: KSV-0023
+    paths:
+      - deploy/k8s/cloud/runner/csi/hostpath-plugin.yaml
+    statement: >-
+      a node plugin works in the kubelet's directories: its socket under plugins/, the registration socket in
+      plugins_registry/, the pods' volume mounts under pods/; the volumes and snapshots in a directory of the node, and
+      /dev for the loop devices of block volumes
+    expired_at: 2027-01-26
+  - id: KSV-0121
+    paths:
+      - deploy/k8s/cloud/runner/csi/hostpath-plugin.yaml
+    statement: >-
+      /dev of the node, as upstream mounts it: the driver attaches a loop device for each block volume, and a
+      privileged container already sees the node's devices, so the mount adds only those created after it starts
+    expired_at: 2027-01-26
+  - id: KSV-0125
+    paths:
+      - deploy/k8s/cloud/runner/csi/hostpath-plugin.yaml
+    statement: >-
+      the driver's and its sidecars' official images of Kubernetes SIG Storage from registry.k8s.io, pinned by digest,
+      used only on the CI runner's cluster
+    expired_at: 2027-01-26
+  - id: KSV-0125
+    paths:
+      - deploy/k8s/cloud/runner/csi/snapshot-controller.yaml
+    statement: >-
+      the snapshot controller's official image of Kubernetes SIG Storage from registry.k8s.io, pinned by digest, used
+      only on the CI runner's cluster
+    expired_at: 2027-01-26
