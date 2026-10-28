@@ -54,7 +54,7 @@
 # with that reason when none comes. Each wait, with the controller's pod and restarts, is in <experiment>.controller.
 # A controller the API server refuses a list exits once the 2 min it waits for its caches to sync are over, and starts
 # again, so chaos-mesh-install watches it for 150 s after its rollout (chaos_controller_stable): the same pod, no
-# restart, and no "is forbidden" in its log (each right refused listed in install.controller_stable), or the step fails,
+# restart, and no "is forbidden" in its log but for its own Events (each right refused listed in install.controller_stable), or the step fails,
 # with its diagnostics, and the experiments are skipped.
 #
 # Diagnostics: a step whose experiment failed (from its exit, before its k6 run's end is awaited), and the uninstall
@@ -787,7 +787,7 @@ chaos_controller_pods() {
 # G ..."). Prints one line and records controller_stable in the step's part of the results; false, with chaos_why, on
 # no pod, a restart or another pod, a list or log the API did not give, or a refusal. Each request bounded (10 s).
 chaos_controller_stable() {
-  local start t first now pod log logs= unread= lines refused
+  local start t first now pod log logs= unread= lines refused events
   start=$(date +%s)
   first=$(chaos_controller_pods)
   now=$first
@@ -804,13 +804,18 @@ chaos_controller_stable() {
       unread+=" $pod"
     fi
   done
-  lines=$(grep -c 'is forbidden' <<<"$logs")
-  refused=$(grep -oE 'cannot [a-z]+ resource \\?"?[a-z0-9.-]+\\?"? in API group \\?"?[a-z0-9.-]*\\?"?( at the cluster scope| in the namespace \\?"?[a-z0-9-]+\\?"?)?' \
-    <<<"$logs" | tr -d '\\"' | sort -u | jq -Rsc 'split("\n") | map(select(length > 0))')
+  # A refused Event is not counted: the chart grants the namespaced controller no right in its own namespace, so its
+  # Events there (leader election) are rejected, and client-go drops an Event it cannot write without retrying; the
+  # controller's work does not depend on them. They are recorded apart (events_refused).
+  events=$(grep 'is forbidden' <<<"$logs" | grep -cE 'cannot create resource \\?"?events\\?"? ')
+  lines=$(($(grep -c 'is forbidden' <<<"$logs") - events))
+  refused=$(grep 'is forbidden' <<<"$logs" | grep -vE 'cannot create resource \\?"?events\\?"? ' | grep -oE 'cannot [a-z]+ resource \\?"?[a-z0-9.-]+\\?"? in API group \\?"?[a-z0-9.-]*\\?"?( at the cluster scope| in the namespace \\?"?[a-z0-9-]+\\?"?)?' |
+    tr -d '\\"' | sort -u | jq -Rsc 'split("\n") | map(select(length > 0))')
   chaos_put "$chaos_key" "$(jq -nc --arg first "$first" --arg now "$now" --argjson s $((t - start)) --arg unread "$unread" \
-    --argjson lines "$lines" --argjson refused "$refused" '
+    --argjson lines "$lines" --argjson refused "$refused" --argjson events "$events" '
     {controller_stable: {watched_s: $s, pods_at_start: ($first | fromjson? // null), pods_at_end: ($now | fromjson? // null),
-      logs_unread: ($unread | split(" ") | map(select(length > 0))), forbidden_lines: $lines, refused: $refused}}')"
+      logs_unread: ($unread | split(" ") | map(select(length > 0))), forbidden_lines: $lines, refused: $refused,
+      events_refused: $events}}')"
   if [ "$(jq 'length' <<<"${first:-[]}")" -eq 0 ]; then
     chaos_why="the controller's pods $([ -n "$first" ] && echo "not there" || echo "unread (the API did not answer)") after its rollout"
   elif [ -z "$now" ]; then
@@ -2609,6 +2614,10 @@ EOJ
   same "install: a refusal of the API server in the controller's log fails the step, each right refused named" \
     'rc=1 elapsed=150 {"result":"fail","watched":150,"refused":["cannot list resource remoteclusters in API group chaos-mesh.org at the cluster scope"],"multi":[],"diagnostics":true} the API server refused the controller 1 time(s) in 150 s: cannot list resource remoteclusters in API group chaos-mesh.org at the cluster scope first-log-at=150' \
     "$(inst_log='2026-10-28T10:42:24.9Z	ERROR	controller-runtime.cache.UnhandledError	runtime/runtime.go:221	Failed to watch	{"type": "*v1alpha1.RemoteCluster", "error": "failed to list *v1alpha1.RemoteCluster: remoteclusters.chaos-mesh.org is forbidden: User \"system:serviceaccount:chaos-mesh:chaos-controller-manager\" cannot list resource \"remoteclusters\" in API group \"chaos-mesh.org\" at the cluster scope"}' install_case)"
+  # shellcheck disable=SC2016 # the client-go line of a rejected Event, its quotes escaped as it writes them
+  same "install: a refused Event of the controller in its own namespace does not fail the step" \
+    'rc=0 elapsed=150 {"result":"pass","watched":150,"refused":[],"multi":[],"diagnostics":false}  first-log-at=150' \
+    "$(inst_log='E1028 12:38:45.022295       1 event.go:359] "Server rejected event (will not retry!)" err="events is forbidden: User \"system:serviceaccount:chaos-mesh:chaos-controller-manager\" cannot create resource \"events\" in API group \"\" in the namespace \"chaos-mesh\""' install_case)"
   same "install: a multi-cluster controller on fails the step before the watch" \
     'rc=1 elapsed=0 {"result":"fail","watched":null,"refused":null,"multi":["remotecluster","podchaos-remote-apply"],"diagnostics":true} not as installed by design: chaos-daemon ready on 1 of 1 node(s), 2 CRDs, controller CLUSTER_SCOPED/TARGET_NAMESPACE '"'false svp'"' (false svp expected), multi-cluster controllers on: ["remotecluster","podchaos-remote-apply"] (none expected) first-log-at=0' \
     "$(inst_on=podchaos-records,remotecluster,podchaos-remote-apply install_case)"
