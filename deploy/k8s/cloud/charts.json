@@ -6,7 +6,8 @@
       "repo": "https://charts.chaos-mesh.org",
       "chart": "chaos-mesh",
       "version": "2.8.5",
-      "values": "deploy/k8s/cloud/values/chaos-mesh.yaml"
+      "values": "deploy/k8s/cloud/values/chaos-mesh.yaml",
+      "runnerValues": "deploy/k8s/cloud/runner/chaos-mesh/values.yaml"
     },
     {
       "name": "velero",

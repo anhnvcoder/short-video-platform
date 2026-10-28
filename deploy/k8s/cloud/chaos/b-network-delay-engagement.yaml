@@ -1,6 +1,6 @@
 # Experiment (b): 200 ms more on every packet engagement-service sends, so the gateway's gRPC calls to it slow down.
-# Cloud cluster only, Chaos Mesh installed with targetNamespace svp
-# (deploy/k8s/cloud/values/chaos-mesh.yaml). Apply this one file, never the folder.
+# Cloud cluster, or the k3d cluster of a CI runner (deploy/ci/verify/chaos.sh), Chaos Mesh installed with
+# targetNamespace svp (deploy/k8s/cloud/values/chaos-mesh.yaml). Apply this one file, never the folder.
 #
 # No `target`: a target needs iptables and ipset, and chaos-daemon forces iptables-legacy while the Amazon Linux 2023
 # nodes use iptables-nft; a delay without a target is plain `tc netem` on the pods' interface. Check first that the node

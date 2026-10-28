@@ -1,4 +1,5 @@
-# Experiment (c): Redpanda down for 5 minutes. Cloud cluster only.
+# Experiment (c): Redpanda down for 5 minutes. Cloud cluster, or the k3d cluster of a CI runner
+# (deploy/ci/verify/chaos.sh).
 # Chaos Mesh must target svp-data first:
 #
 #   helm --kube-context <ctx> upgrade chaos-mesh chaos-mesh --repo https://charts.chaos-mesh.org --version 2.8.5 \

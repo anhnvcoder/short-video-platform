@@ -1,0 +1,34 @@
+# Trial of experiment (b): the same 200 ms delay on one test pod of svp, before b-network-delay-engagement.yaml touches
+# a service. It shows the node kernel has sch_netem (tc netem, which the delay needs) and that the delay is removed
+# when the experiment goes. Chaos Mesh installed with targetNamespace svp (deploy/k8s/cloud/values/chaos-mesh.yaml).
+# Apply this one file, never the folder.
+#
+# The test pod: any pod of svp labelled app.kubernetes.io/name=chaos-probe with a shell and nc (the media-worker image
+# has both), Pod Security restricted, no service account token. svp denies all traffic but DNS, so the pod measures
+# the time of TCP connections to the cluster DNS Service on port 53: the delay holds back every packet the pod sends,
+# so each connection takes the delay more. On the CI runner deploy/ci/verify/chaos.sh makes the pod, runs 20
+# connections before, during and after, and deletes the pod.
+#
+# Pass: during, each connection takes at least 150 ms more than before; after, at most 50 ms more.
+#
+# Run:  kubectl --context <ctx> apply -f deploy/k8s/cloud/chaos/b-trial-network-delay-probe.yaml
+# End:  kubectl --context <ctx> -n svp delete networkchaos network-delay-trial, which removes the delay at once.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: network-delay-trial
+  namespace: svp
+spec:
+  action: delay
+  mode: all
+  direction: to
+  duration: 2m
+  delay:
+    latency: 200ms
+    jitter: 20ms
+    correlation: "0"
+  selector:
+    namespaces:
+      - svp
+    labelSelectors:
+      app.kubernetes.io/name: chaos-probe

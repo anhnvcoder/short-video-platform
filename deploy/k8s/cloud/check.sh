@@ -19,7 +19,9 @@
 #      too (DENY_ROOT_ADDITIONAL_PROPERTIES).
 #   4. What a schema cannot say: every Chaos Mesh experiment has a duration of at most 30 minutes and a selector bound
 #      to the one namespace it lives in (svp or svp-data, never kube-system or any other) with a label, expression or
-#      pod selector; every image in the rendered charts and the manifests is pinned by exactly one @sha256:<64 hex>.
+#      pod selector; Chaos Mesh's controller, in its cloud render and its runner render, is namespaced with svp as its
+#      one target and comes with no dashboard or DNS server; every image in the rendered charts and the manifests is
+#      pinned by exactly one @sha256:<64 hex>.
 #
 # Usage: deploy/k8s/cloud/check.sh [ROOT]
 #   ROOT: a directory laid out like this repository (default: the repository), from which deploy/k8s/cloud/ and
@@ -207,6 +209,32 @@ elif [ "$experiments" -eq 0 ]; then
   failed=1
 else
   echo "ok    $experiments Chaos Mesh experiments: duration <= 30m, selector bound to their own namespace"
+fi
+
+# Chaos Mesh's controller in each render of its chart (cloud values, and the runner's overlay after them): namespaced
+# (CLUSTER_SCOPED false) with svp as its one target, as experiments (a) and (b) need, and no dashboard or DNS server, so
+# that an overlay cannot widen what the controller reaches or open a UI.
+scope=$(jq -rs '
+  map(select(.file | test("^rendered__chaos-mesh(-runner)?\\.yaml$"))) | group_by(.file)[] | .[0].file as $f
+  | (map(.doc | select(.kind == "Deployment" and .metadata.name == "chaos-controller-manager"))) as $c
+  | ($c[0].spec.template.spec.containers[0].env // [] | map({(.name): .value}) | add // {}) as $env
+  | [
+      (if ($c | length) != 1 then "not exactly one Deployment chaos-controller-manager" else empty end),
+      (if $env.CLUSTER_SCOPED != "false" then "CLUSTER_SCOPED is \($env.CLUSTER_SCOPED | tojson), not \"false\"" else empty end),
+      (if $env.TARGET_NAMESPACE != "svp" then "TARGET_NAMESPACE is \($env.TARGET_NAMESPACE | tojson), not \"svp\"" else empty end),
+      (map(.doc | select(.kind == "Deployment" and (.metadata.name | test("dashboard|dns"))) | .metadata.name)[]
+        | "Deployment \(.) rendered")
+    ][] | "  \($f | gsub("__"; "/")): \(.)"
+' "$tmp/docs.jsonl") || fail "read the Chaos Mesh renders as JSON"
+renders=$(jq -r 'select(.file | test("^rendered__chaos-mesh(-runner)?\\.yaml$")) | .file' "$tmp/docs.jsonl" | sort -u | wc -l | tr -d ' ')
+if [ -n "$scope" ]; then
+  printf 'FAIL  Chaos Mesh controller not namespaced on svp alone, or a UI rendered:\n%s\n' "$scope" >&2
+  failed=1
+elif [ "$renders" -ne 2 ]; then
+  echo "FAIL  Chaos Mesh: $renders render(s) found, expected the cloud one and the runner's" >&2
+  failed=1
+else
+  echo "ok    Chaos Mesh controller namespaced on svp, no dashboard or DNS server (cloud and runner renders)"
 fi
 
 # Images: every string field named image, and every env value whose name has the word IMAGE (the pause image of

@@ -1,0 +1,23 @@
+# Chaos Mesh on the k3d cluster of a CI runner (scenario chaos of deploy/ci/verify-run.sh, steps in
+# deploy/ci/verify/chaos.sh): applied after deploy/k8s/cloud/values/chaos-mesh.yaml, whose pinned images, runtime
+# containerd, clusterScoped false, single target namespace (svp, then svp-data with --set), no dashboard, no DNS server
+# and no pprof it keeps. Nothing here may widen what the controller or the daemon reaches: `make cloud-check` renders
+# the chart with both files (runnerValues in deploy/k8s/cloud/charts.json) and fails unless the controller stays
+# namespaced on svp with no dashboard.
+#
+#   kubectl --context k3d-svp create namespace chaos-mesh
+#   kubectl --context k3d-svp label namespace chaos-mesh pod-security.kubernetes.io/enforce=privileged
+#   helm --kube-context k3d-svp upgrade --install chaos-mesh chaos-mesh --repo https://charts.chaos-mesh.org \
+#     --version 2.8.5 -n chaos-mesh -f deploy/k8s/cloud/values/chaos-mesh.yaml \
+#     -f deploy/k8s/cloud/runner/chaos-mesh/values.yaml
+#
+# The namespace label overrides the cluster's default Pod Security level (restricted,
+# deploy/k8s/pod-security-admission.yaml) for chaos-daemon alone, and the namespace lives only as long as the job's
+# cluster.
+
+chaosDaemon:
+  # Each k3d node is a container running k3s, whose embedded containerd listens here inside the node, not at the
+  # path of a stand-alone containerd. chaos-daemon mounts it from the node container. That container runs privileged,
+  # so chaos-daemon (privileged, hostPID, root) holds root over the runner's VM itself, its devices and kernel modules,
+  # not only over the node container: accepted because the VM serves this one job and is thrown away after it.
+  socketPath: /run/k3s/containerd/containerd.sock
