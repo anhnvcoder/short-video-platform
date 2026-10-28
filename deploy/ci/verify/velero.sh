@@ -227,7 +227,7 @@ velero_install() {
 
 # velero_bsl_available: true once BackupStorageLocation velero/default is Available.
 velero_bsl_available() {
-  [ "$(kc -n velero get backupstoragelocation default -o jsonpath='{.status.phase}' 2>/dev/null)" = Available ]
+  [ "$(kc -n velero get backupstoragelocations.velero.io default -o jsonpath='{.status.phase}' 2>/dev/null)" = Available ]
 }
 
 # velero_ready: step velero-ready.

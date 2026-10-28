@@ -68,14 +68,14 @@
 #      checks of step 5, a few rpk calls, are inside it). Then prints the checks left to the learner (counters and feed
 #      rows unchanged, the restored svp pods admitted by Kyverno).
 #
-# Watch: kubectl --context <ctx> -n velero get backups,restores -w; kubectl --context <ctx> -n <ns> get pods -w; the
+# Watch: kubectl --context <ctx> -n velero get backups.velero.io,restores.velero.io -w; kubectl --context <ctx> -n <ns> get pods -w; the
 # alerts KafkaConsumerLagHigh and KafkaDLQRecords.
 # Pass: every check of step 5 PASS, the smoke passed at T1 and the learner's checks hold; rto_seconds is the RTO the
 # drill measured (none when the smoke failed).
 # Stop early: Ctrl-C. Before T0 auto-sync is turned back on by the script; between T0 and the Restore's Completed it is
 # left off on purpose (an Application syncing into the half-restored namespace would make empty volumes) and the
 # commands to turn it back on are printed; from the Restore on it is on again. A backup or restore stuck in progress:
-# kubectl --context <ctx> -n velero delete backup|restore <name>.
+# kubectl --context <ctx> -n velero delete backups.velero.io|restores.velero.io <name>.
 #
 # Results: a summary on stdout and JSON in .k8s/drills/velero-restore-<time>.json. Written for bash 3.2 (macOS).
 set -euo pipefail
@@ -244,7 +244,8 @@ no_secret_in() {
   ! grep -Eq '(^|/)Secret$' "$work/resource-kinds"
 }
 
-# phase KIND NAME: status.phase of a Velero object ("" before the server sets it).
+# phase KIND NAME: status.phase of a Velero object ("" before the server sets it). KIND is always the full resource
+# name (backups.velero.io): CloudNativePG also defines a Backup kind, and a bare "backup" resolves to its group.
 phase() { kc -n velero get "$1" "$2" -o jsonpath='{.status.phase}' 2>/dev/null || true; }
 
 # wait_phase KIND NAME TIMEOUT_S: waits for Completed; dies on any final phase that is not.
@@ -271,7 +272,7 @@ cmd_check() {
   ok "Velero server ready"
   local hint="bucket, region and KMS key filled in, Pod Identity?"
   [ -z "$runner" ] || hint="bucket velero, user svp-velero, Secret velero/velero-s3, NetworkPolicy svp-data/velero-s3?"
-  [ "$(phase backupstoragelocation default)" = Available ] ||
+  [ "$(phase backupstoragelocations.velero.io default)" = Available ] ||
     die "BackupStorageLocation velero/default is not Available ($hint)"
   ok "BackupStorageLocation default Available"
   kc get crd volumesnapshots.snapshot.storage.k8s.io volumesnapshotcontents.snapshot.storage.k8s.io >/dev/null ||
@@ -522,10 +523,10 @@ $(awk '$1 == "T"' "$work/before" | wc -l | tr -d ' ') topic partitions recorded,
 
   echo "== 2. backup $backup"
   from_template "$backup_template" "$backup" | kc create -f - >/dev/null || die "create Backup $backup"
-  wait_phase backup "$backup" 1800
+  wait_phase backups.velero.io "$backup" 1800
   local attempted completed
-  attempted=$(kc -n velero get backup "$backup" -o jsonpath='{.status.csiVolumeSnapshotsAttempted}')
-  completed=$(kc -n velero get backup "$backup" -o jsonpath='{.status.csiVolumeSnapshotsCompleted}')
+  attempted=$(kc -n velero get backups.velero.io "$backup" -o jsonpath='{.status.csiVolumeSnapshotsAttempted}')
+  completed=$(kc -n velero get backups.velero.io "$backup" -o jsonpath='{.status.csiVolumeSnapshotsCompleted}')
   # Nothing is deleted yet: a backup without every volume's snapshot, or with a Secret, stops the drill here.
   [ "${attempted:-0}" -gt 0 ] && [ "${completed:-0}" = "$attempted" ] ||
     die "backup $backup has ${completed:-0} of ${attempted:-0} CSI snapshots completed: the volumes of $ns would be lost"
@@ -566,7 +567,7 @@ $(awk '$1 == "T"' "$work/before" | wc -l | tr -d ' ') topic partitions recorded,
     wait_for "the PersistentVolumes of Redpanda's PVCs ($(tr '\n' ' ' <"$work/pvs"))gone (StorageClass reclaim Delete)" 300 pvs_gone
     ok "StatefulSet, $(grep -c . "$work/pvs") PVC(s) with their volumes and the fixtures deleted after $(($(now) - t0)) s"
     from_template restore.yaml "$restore" "$backup" | kc create -f - >/dev/null || die "create Restore $restore"
-    wait_phase restore "$restore" 1800
+    wait_phase restores.velero.io "$restore" 1800
     ok "restore $restore Completed after $(($(now) - t0)) s"
   else
     echo "== 4. T0: delete namespace $ns, restore, auto-sync back on"
@@ -577,7 +578,7 @@ $(awk '$1 == "T"' "$work/before" | wc -l | tr -d ' ') topic partitions recorded,
     kc delete namespace "$ns" --wait=true --timeout=15m >/dev/null || die "delete namespace $ns"
     ok "namespace $ns deleted after $(($(now) - t0)) s"
     from_template restore.yaml "$restore" "$backup" | kc create -f - >/dev/null || die "create Restore $restore"
-    wait_phase restore "$restore" 1800
+    wait_phase restores.velero.io "$restore" 1800
     ok "restore $restore Completed after $(($(now) - t0)) s"
     # The PVCs (from their snapshots) and the StatefulSet are back, so self-heal can make no empty volume now; and the
     # Secrets the charts render, left out of the backup, come back only when Argo CD applies them again (Redpanda's
@@ -687,7 +688,7 @@ EOF
 # ours: "name phase" of every backup the drill or the Schedule svp-daily made (Velero labels a Schedule's backups with
 # velero.io/schedule-name); backups of anything else are left alone.
 ours() {
-  kc -n velero get backups -o json | jq -r '.items[]
+  kc -n velero get backups.velero.io -o json | jq -r '.items[]
     | select(.metadata.labels["svp-drill"] == "velero-restore" or .metadata.labels["velero.io/schedule-name"] == "svp-daily")
     | "\(.metadata.name) \(.status.phase // "New")"'
 }
@@ -707,7 +708,7 @@ cmd_sweep() {
   if [ -n "$runner" ] && ! kc get crd backups.velero.io >/dev/null 2>&1; then
     echo "skip  Velero not installed: no Schedule, backup or restore to delete"
   else
-    kc -n velero delete schedule svp-daily --ignore-not-found >/dev/null || die "delete Schedule velero/svp-daily"
+    kc -n velero delete schedules.velero.io svp-daily --ignore-not-found >/dev/null || die "delete Schedule velero/svp-daily"
     ok "Schedule svp-daily deleted: no new backup"
     wait_for "the backups in progress to end" 1800 none_running
     local b
@@ -724,7 +725,7 @@ cmd_sweep() {
     }
     [ "$n" -eq 0 ] || wait_for "Velero to delete the backups and their snapshots (errors: kubectl --context $ctx -n velero \
 get deletebackuprequests -o jsonpath='{..status.errors}')" 900 gone
-    kc -n velero delete restores -l svp-drill=velero-restore --ignore-not-found >/dev/null
+    kc -n velero delete restores.velero.io -l svp-drill=velero-restore --ignore-not-found >/dev/null
     kc -n velero delete deletebackuprequests -l svp-drill=velero-restore --ignore-not-found >/dev/null
     ok "$n backups deleted (drill and svp-daily); drill restores removed"
   fi
