@@ -11,7 +11,8 @@
 #      (the dev path's tag; Kyverno's policy is Audit there). B with A's image ID fails here, before any canary.
 #   1. good revision: image B. The clients start on stable A, the first of them an old tab that opens /me before the
 #      upgrade and keeps sending its form. The canary must go through 25%, 50%, the gate and 100% and be promoted, both
-#      AnalysisRuns Successful with every metric measured and none failed, inconclusive or in error.
+#      AnalysisRuns Successful with every metric measured; the gate with no measurement failed, inconclusive or in
+#      error, the background run with no more of them than the limits of its own spec allow (each one printed).
 #   2. bad revision: GATEWAY_URL to a Service that does not exist (gateway-missing). The canary pod is ready (/healthz
 #      reads no backend) and so is /login, which never calls the gateway; the BFF's GET /api/feed/explore, which the
 #      clients send every second, answers 502 there: that is the route the bad revision really breaks. The
@@ -36,10 +37,11 @@
 # routes and the clients' API requests) answered 401 or 429 in a canary's window makes the drill inconclusive.
 # Table on the terminal, JSON in .k8s/drills/web-canary-<time>.json (counts, times and route names only).
 #
-# A drill that fails or is interrupted (Ctrl-C, or SIGTERM from a job's timeout) puts GATEWAY_URL back, then build A
-# back: the release's image to tag A, which ends any canary in progress, at once when A is still the stable revision
-# (its template is the stable one again); once B was promoted, A is promoted in full right away (no steps, no
-# analysis: it is the build the drill started from), so no canary stays paused or aborted and HTTPRoute web is 100/0.
+# A drill that fails or is interrupted (Ctrl-C, or SIGTERM from a job's timeout) puts GATEWAY_URL back, then, once the
+# release reads it back as http://gateway:8080, build A back: the release's image to tag A, which ends any canary in
+# progress, at once when A is still the stable revision (its template is the stable one again); once B was promoted,
+# A is promoted in full right away (no steps, no analysis: it is the build the drill started from), so no canary stays
+# paused or aborted and HTTPRoute web is 100/0. When GATEWAY_URL does not read back, it prints what to run by hand.
 # The clients and the drill traffic it started are stopped by their pids.
 #
 # Usage: through make (SVP_STACK=k3d, CURL_CA_BUNDLE, NODE_EXTRA_CA_CERTS, Node of web/ first on PATH). About 20
@@ -86,11 +88,21 @@ clients_pid=
 # (the lab pins no plugin), which also clears an abort and an inconclusive pause and skips the steps and the analysis.
 # Safe for A, the build the release ran before the drill; and the controller goes on with it if this trap is killed
 # (the job's timeout gives it 120 s) before the wait ends. Prints how to finish by hand and returns 1 when it cannot.
+# Only once GATEWAY_URL is http://gateway:8080 again, read back from the release: --reuse-values would carry a
+# broken one into A's template, and a full promotion would then make the bad revision stable without any analysis.
+# The upgrade also sets that URL itself: --reuse-values takes the last deployed revision's values, which can still
+# hold the broken URL when the revision that put it back was recorded but failed, and helm get values reads that one.
 put_a_back() {
-  local deadline=$((SECONDS + 60)) state gen obs current stable phase patched=
+  local deadline=$((SECONDS + 60)) state gen obs current stable phase patched= url
+  url=$(hc get values "$rollout" --namespace "$ns" --all -o json | jq -r '.env.GATEWAY_URL // "-"') || url="(not readable)"
+  if [ "$url" != http://gateway:8080 ]; then
+    echo "FAIL  GATEWAY_URL of release $rollout is $url, not http://gateway:8080: build A not put back (its upgrade would keep that URL);" \
+      "by hand: make k8s-up, which puts the values of the working tree and its build back through a canary" >&2
+    return 1
+  fi
   echo "note  putting the image of release $rollout back to $tag_a (build A, the one the drill started from)" >&2
   if ! hc upgrade "$rollout" "$chart" --namespace "$ns" --reuse-values --server-side=false \
-    --set-string "image.tag=$tag_a" >/dev/null; then
+    --set-string "image.tag=$tag_a" --set-string env.GATEWAY_URL=http://gateway:8080 >/dev/null; then
     echo "FAIL  helm upgrade $rollout back to image $tag_a; run make k8s-up, which puts the working tree's build back" >&2
     return 1
   fi
@@ -284,32 +296,75 @@ steps_json() {
     + (.[1:] | map(split("=") | {(.[0]): .[1]}) | add))' "$work/steps-$1"
 }
 
+# run_verdict: jq program over one AnalysisRun of a good revision ($gate true for the gate run, false for the
+# background run). It must be Successful with every metric of its spec measured successfully at least once. The gate
+# measures each metric once, so none of its measurements may be failed, inconclusive or in error. The background run
+# measures every 30 s and may miss as the controller itself allows, read from each metric of the run's own spec
+# (Argo Rollouts' defaults when a limit is not set): failed at most failureLimit (default 0), inconclusive at most
+# inconclusiveLimit (default 0), and no streak of errors longer than consecutiveErrorLimit (default 4; the longest
+# streak among the measurements the run keeps, or the streak the controller counts now). Prints
+# {name, phase, metrics, measured, pass, reasons, misses}; misses lists every measurement that was not Successful.
+# shellcheck disable=SC2016
+run_verdict='
+  def streak: reduce .[] as $p ({cur: 0, max: 0};
+    if $p == "Error" then .cur += 1 | .max = ([.max, .cur] | max) else .cur = 0 end) | .max;
+  .metadata.name as $run | (.status.phase // "-") as $phase | [.status.metricResults[]?] as $results
+  | [.spec.metrics[] | .name as $n | ([$results[] | select(.name == $n)][0] // {}) as $r
+      | {name: $n, successful: ($r.successful // 0), failed: ($r.failed // 0),
+         inconclusive: ($r.inconclusive // 0), error: ($r.error // 0),
+         error_streak: ([([$r.measurements[]?] | sort_by(.startedAt) | map(.phase) | streak),
+           ($r.consecutiveError // 0)] | max),
+         failure_limit: (.failureLimit // 0 | tonumber), inconclusive_limit: (.inconclusiveLimit // 0 | tonumber),
+         error_limit: (.consecutiveErrorLimit // 4 | tonumber)}] as $m
+  | ([$m[] | select(.successful >= 1)] | length) as $measured
+  | ([if $phase != "Successful" then "phase \($phase)" else empty end,
+      if $measured != ($m | length) then "\($measured) of \($m | length) metrics measured successfully" else empty end]
+     + [$m[]
+        | if $gate then
+            (if .failed + .inconclusive + .error > 0
+             then "\(.name): \(.failed) failed, \(.inconclusive) inconclusive, \(.error) in error (the gate allows none)"
+             else empty end)
+          else
+            (if .failed > .failure_limit then "\(.name): \(.failed) failed (failureLimit \(.failure_limit))" else empty end),
+            (if .inconclusive > .inconclusive_limit
+             then "\(.name): \(.inconclusive) inconclusive (inconclusiveLimit \(.inconclusive_limit))" else empty end),
+            (if .error_streak > .error_limit
+             then "\(.name): \(.error_streak) errors in a row (consecutiveErrorLimit \(.error_limit))" else empty end)
+          end]) as $reasons
+  | {name: $run, phase: $phase, metrics: ($m | length), measured: $measured, pass: ($reasons | length == 0),
+     reasons: $reasons,
+     misses: [$results[] | .name as $n | .measurements[]? | select(.phase != "Successful")
+       | {run: $run, metric: $n, phase, value: (.value // null), message: (.message // null),
+          startedAt: (.startedAt // null)}]}'
+
 # check_good_runs HASH: both AnalysisRuns of the promoted revision HASH, told apart by the label rollout-type Argo
-# Rollouts gives each run (Background, and Step for the gate): the newest of each must be Successful, with every
-# metric of its spec measured successfully at least once and no measurement failed, inconclusive or in error. The
-# phase alone proves nothing for the background run, which the promotion terminates whatever it measured; each run
-# gets up to 60 s to end, as the controller marks it after the Rollout is already Healthy (canary.sh says more).
-# Sets good_runs to "<background run> <gate run>".
+# Rollouts gives each run (Background, and Step for the gate): the newest of each must pass run_verdict. The phase
+# alone proves nothing for the background run, which the promotion terminates whatever it measured; each run gets up
+# to 60 s to end, as the controller marks it after the Rollout is already Healthy (canary.sh says more). Prints a note
+# for every measurement that was not Successful (why it missed: a p99 over the limit, or no number from Prometheus).
+# Sets good_runs to "<background run> <gate run>" and good_misses to those measurements as a JSON array.
 check_good_runs() {
-  local deadline=$((SECONDS + 60)) runs type label run name phase metrics measured bad
-  good_runs=
+  local deadline=$((SECONDS + 60)) runs type label gate run verdict name phase
+  good_runs= good_misses='[]'
   for type in Background Step; do
-    if [ "$type" = Background ]; then label=background; else label=gate; fi
+    if [ "$type" = Background ]; then label=background gate=false; else label=gate gate=true; fi
     while :; do
       runs=$(kc -n "$ns" get analysisruns -l "rollouts-pod-template-hash=$1" -o json) ||
         fail "list the AnalysisRuns of revision $1"
       run=$(jq -c --arg t "$type" '[.items[] | select(.metadata.labels["rollout-type"] == $t)]
         | sort_by(.metadata.creationTimestamp) | last' <<<"$runs")
       [ "$run" != null ] || fail "good revision: no $label AnalysisRun (rollout-type=$type) of revision $1"
-      IFS=$'\t' read -r name phase metrics measured bad <<<"$(jq -r '[.metadata.name, (.status.phase // "-"),
-        (.spec.metrics | length), ([.status.metricResults[]? | select((.successful // 0) >= 1)] | length),
-        ([.status.metricResults[]? | (.failed // 0) + (.inconclusive // 0) + (.error // 0)] | add // 0)] | @tsv' <<<"$run")"
+      verdict=$(jq -c --argjson gate "$gate" "$run_verdict" <<<"$run") || fail "read $label AnalysisRun of revision $1"
+      IFS=$'\t' read -r name phase <<<"$(jq -r '[.name, .phase] | @tsv' <<<"$verdict")"
       case $phase in Successful | Failed | Error | Inconclusive) break ;; esac
       ((SECONDS < deadline)) || fail "good revision: $label AnalysisRun $name still $phase 60s after the promotion"
       sleep 2
     done
-    [ "$phase" = Successful ] && [ "$measured" = "$metrics" ] && [ "$bad" = 0 ] ||
-      fail "good revision $1: $label AnalysisRun $name $phase, $measured of $metrics metrics measured successfully, failed/inconclusive/error $bad"
+    jq -r --arg l "$label" '.misses[] | "note  \($l) AnalysisRun \(.run) metric \(.metric): \(.phase), value \(.value // "-"),"
+      + " message \(.message // "-"), started \(.startedAt // "-")"' <<<"$verdict"
+    good_misses=$(jq -c --argjson v "$verdict" '. + $v.misses' <<<"$good_misses")
+    [ "$(jq -r '.pass' <<<"$verdict")" = true ] ||
+      fail "good revision $1: $label AnalysisRun $name: $(jq -r '.reasons | join("; ")' <<<"$verdict")"
     good_runs="${good_runs:+$good_runs }$name"
   done
 }
@@ -400,7 +455,7 @@ good_canary() {
   [ "$outcome" = promoted ] || fail "$label: expected promoted, got $outcome"
   good_hash=$target
   check_good_runs "$good_hash"
-  ok "$label: revision $good_hash promoted $(secs $(($(now_ms) - t0))) s after the upgrade; AnalysisRuns ${good_runs% *} (background) and ${good_runs#* } (gate) Successful, every metric measured"
+  ok "$label: revision $good_hash promoted $(secs $(($(now_ms) - t0))) s after the upgrade; AnalysisRuns ${good_runs% *} (background) and ${good_runs#* } (gate) Successful, every metric measured, $(jq length <<<"$good_misses") measurements not Successful (within the run's limits)"
   # The old ReplicaSet is scaled down 30 s after the promotion: skew lasts until then.
   wait_until 120 "$label: old pods of $old gone after the promotion" test_output "" \
     kc -n "$ns" get pods -l "app.kubernetes.io/name=$rollout,rollouts-pod-template-hash=$old" -o name
@@ -412,9 +467,9 @@ good_canary() {
   clients_table "$label"
   weights=$(steps_json "$label")
   jq -n --arg label "$label" --arg tag "$tag" --arg hash "$good_hash" --arg runs "$good_runs" --argjson t0 "$t0" --argjson tend "$t_end" \
-    --argjson steps "$weights" --slurpfile w "$work/window-$label.json" --slurpfile c "$work/clients-$label/clients.json" '{
+    --argjson steps "$weights" --argjson misses "$good_misses" --slurpfile w "$work/window-$label.json" --slurpfile c "$work/clients-$label/clients.json" '{
       label: $label, image_tag: $tag, template_hash: $hash, outcome: "promoted",
-      analysis_runs: {background: ($runs | split(" ")[0]), gate: ($runs | split(" ")[1])},
+      analysis_runs: {background: ($runs | split(" ")[0]), gate: ($runs | split(" ")[1])}, analysis_misses: $misses,
       upgrade_at_ms: $t0, window_end_ms: $tend, steps: $steps,
       first_at_weight_ms: ([25, 50] | map(tostring as $w | {key: $w, value: ([$steps[] | select((.weight | tostring) == $w)][0].at_ms // null)})
         | from_entries),
