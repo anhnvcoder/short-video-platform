@@ -55,11 +55,11 @@ Sổ lệnh đầy đủ (kiểm tra, diễn tập, k3d, cloud, CI) nằm ở [`
 | `deploy/docker/` | Dockerfile của service Go, media-worker và web. |
 | `deploy/postgres/`, `deploy/redpanda/`, `deploy/s3/` | Bootstrap database, topic Kafka (compose), bucket, user, policy và CORS của object storage (RustFS, service `s3`). ACL Kafka của cluster k3d nằm trong chart Helm. |
 | `deploy/observability/` | Collector, Prometheus và rule SLO, Alertmanager, Grafana LGTM, GlitchTip, Elastic (so sánh). |
-| `deploy/k8s/` | Cluster k3d: script `install.sh`, `k8s.mk`, values, PSA, và thư mục `drills/` (diễn tập), `cloud/` (manifest cho cluster đo thật). |
+| `deploy/k8s/` | Cluster k3d: script `install.sh`, `k8s.mk`, values, PSA, và thư mục `envs/` (overlay của môi trường stg, prd), `drills/` (diễn tập), `cloud/` (manifest cho cluster đo thật, phủ chỉ cho runner ở `cloud/runner/`). |
 | `deploy/helm/` | Chart Helm: `svp-service` (chung cho mọi service), `svp-cluster`, `svp-data`, `svp-observability`, `svp-policy` (Kyverno). |
 | `deploy/argocd/` | Application và AppProject của Argo CD cho đường GitOps. |
 | `deploy/k6/` | Kịch bản tải k6 theo SLO, chạy bằng image ghim. |
-| `deploy/ci/` | Script của pipeline: build, quét, ký, attest, promote image. Phần lớn logic CI nằm ở đây, không nằm trong YAML. |
+| `deploy/ci/` | Script của pipeline: build, quét, ký, attest, promote image; `verify/` là trình tự từng kịch bản của `verify.yml`. Phần lớn logic CI nằm ở đây, không nằm trong YAML. |
 | `.githooks/` | Git hook `pre-commit` (gofmt, golangci-lint, buf lint, gitleaks); bật một lần bằng `make hooks`. |
 | `.github/rulesets/` | Ruleset của nhánh `main` (check bắt buộc `ci-ok`, `images-ok`). |
 | `.github/workflows/` | `ci.yml` (kiểm tra và stack), `images.yml` (image và chuỗi cung ứng), `verify.yml` (kiểm chứng dồn trên runner, chạy tay và hằng tuần). |
@@ -95,5 +95,5 @@ Bảng service: database và Redis db của từng service nằm ở `CLAUDE.md`
 | 5b | Web client Next.js (BFF, session, hồ sơ, upload từ trình duyệt, web trên k3d) | [0016](docs/adr/0016-web-client.md), [0018](docs/adr/0018-web-profiles-public-video-upload.md), [0019](docs/adr/0019-web-k3d-supply-chain-observability.md) |
 | 6 | Độ tin cậy: k6 theo SLO, SLO web, backup và phục hồi Postgres, runbook, game day | [0020](docs/adr/0020-reliability-stage6.md) |
 
-Các ADR sau giai đoạn 6 (kiểm chứng dồn trên runner, object store của đường local, CI trung lập nền tảng) có trong
-[`docs/adr/`](docs/adr/).
+Các ADR sau giai đoạn 6 (kiểm chứng dồn trên runner, object store của đường local, CI trung lập nền tảng, nhiều môi trường
+dev, stg, prd) có trong [`docs/adr/`](docs/adr/).

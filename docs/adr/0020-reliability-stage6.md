@@ -4,8 +4,12 @@
   thật chia giai đoạn 6b "Kiểm chứng dồn" (không cần dịch vụ AWS/GCP) và giai đoạn 7 (dịch vụ cloud), mục 1. Ghi chú 2026-10-25:
   phần 1 của giai đoạn 6b đã chạy trên runner ([0021](0021-deferred-verification-stage6b.md), mục Kết quả): job `stack`, canary
   gateway dưới probe mới, RAM plugin, hai lượt backup trên runner, điều kiện mới của `RateLimitFallbackActive` đạt; LCP `/` (và
-  `/v/{id}` ở lượt cuối) chưa đạt; k6 tải lớn, Chaos Mesh, Velero, hai media-worker trên cluster GitOps ở phần sau của giai đoạn 6b. §2 (`render.sh` nhận số
-  pod), §6, §7 (Velero, Chaos Mesh trên k3d của runner) sẽ chỉnh bởi 0021 khi hiện thực phần đó; quyết định giữ `Suspense` của
+  `/v/{id}` ở lượt cuối) chưa đạt; k6 tải lớn, Chaos Mesh, Velero, hai media-worker trên cluster GitOps ở phần sau của giai đoạn 6b.
+  Ghi chú 2026-10-28: phần 3 của giai đoạn 6b đã chạy trên runner (ADR-0021, mục "Phần 3 theo dòng dời"): k6 thu nhỏ (mức cao nhất
+  đạt 2 pod), Velero đích RustFS trong cluster (RTO 58 s, offset giữ), hai media-worker trên cluster GitOps đạt; Chaos Mesh trên runner: (c) và (a)
+  gateway đạt, (a) feed-service và (b) là phát hiện (Kết quả "Chaos Mesh trên runner"); LCP vẫn chưa đạt ổn định. §2 (`render.sh --pods`, `--ramp`, `--hold`; chế độ runner của `run.sh`), §6
+  (Velero trên k3d của runner: driver CSI hostpath, đích RustFS, chế độ runner của `drill-restore.sh`), §7 (Chaos Mesh trên k3d
+  của runner, mỗi thí nghiệm một lượt k6) chỉnh bởi 0021; quyết định giữ `Suspense` của
   feed (Kết quả "LCP") đảo theo D17 của 0021 (đòn bẩy (a) đã làm, LCP `/` vẫn chưa đạt). Đích MinIO của backup (§5, Tên chốt:
   user, policy, `endpointURL`) và việc tồn "Thay MinIO" (§16) bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md) (RustFS, `s3.svp-data:9000`;
   bucket, user `svp-pg-backup`, policy giữ nguyên; backup hai chế độ kiểm lại trên RustFS ngày 2026-10-25)
@@ -165,6 +169,11 @@ bằng ADR của giai đoạn 6b. Phần đo thật vì vậy chia hai:
 Các mục dưới giữ thiết kế đã viết cho cluster cloud; phần nào đổi cho nơi chạy của giai đoạn 6b ghi ở ADR của giai đoạn đó.
 
 ## 2. k6: image ghim, kịch bản theo SLO, ba profile, user và rate limit
+
+Chỉnh 2026-10-28 ([ADR-0021](0021-deferred-verification-stage6b.md) §7, §8): `deploy/k6/cloud/render.sh` nhận `--pods N` (mặc
+định 20; pod i chạy segment i/N, giữ đúng phần tải mỗi pod của thiết kế 20 pod), `--ramp`, `--hold` (hạn Job tính theo thời lượng
+cả lượt khi đặt); không tham số thì manifest như thiết kế cloud bên dưới. `run.sh` nhận context `k3d-svp` chỉ trên runner do nền
+tảng CI cấp (chế độ runner).
 
 ### Các lựa chọn
 
@@ -449,6 +458,11 @@ và quá 50 ms.
 
 ## 6. Velero (chỉ cluster cloud)
 
+Chỉnh 2026-10-28 ([ADR-0021](0021-deferred-verification-stage6b.md) §7): diễn tập chạy thêm trên k3d của runner với driver CSI
+hostpath (`deploy/k8s/cloud/runner/csi/`), đích object store trong cluster (bucket `velero`, user `svp-velero`) và chế độ runner
+của `drill-restore.sh` (chỉ Redpanda của `svp-data`, không xoá namespace); thiết kế cho cloud bên dưới không đổi. Kết quả ở mục
+Kết quả "Velero trên runner".
+
 Ở giai đoạn 7 dữ liệu nằm ở dịch vụ managed (RDS, ElastiCache, S3) có backup riêng, và trạng thái cluster nằm trong git (Argo
 CD). Thứ Velero còn bảo vệ: **PV trong cluster**, trước hết của Redpanda nếu giai đoạn 7 còn chạy Redpanda trong cluster (topic,
 offset của consumer group); và việc dựng lại một namespace bị xoá nhầm kèm dữ liệu PV, đo được RTO. Secret không cần ở backup:
@@ -514,6 +528,14 @@ không tạo lại được từ nguồn là lỗi thiết kế cần sửa ở 
 
 ## 7. Chaos Mesh (chỉ cluster cloud)
 
+Chỉnh 2026-10-28 ([ADR-0021](0021-deferred-verification-stage6b.md) §7): ba thí nghiệm chạy thêm trên k3d của runner với values
+phủ `deploy/k8s/cloud/runner/chaos-mesh/values.yaml` (socket containerd của k3s), mỗi thí nghiệm một lượt k6 riêng có cửa sổ
+ổn định 5 phút riêng (thay một lượt k6 chạy suốt; mỗi lượt dưới 55 phút vì token truy cập sống 1 giờ), (c) xét lag về 0 theo từng
+consumer group. Cũng ngày đó, values chung (cloud và runner) chỉ bật controller không multi-cluster
+(`controllerManager.enabledControllers`): ở chế độ `clusterScoped: false` chart không cấp quyền đọc `RemoteCluster` (kind cấp
+cluster), nên với mặc định `*` controller 2.8.5 khởi động lại liên tục và không thí nghiệm nào được thực hiện; pod-kill chọn pod theo
+`app.kubernetes.io/component: server` để không trúng pod Job migrate. Kết quả trên runner: mục Kết quả "Chaos Mesh trên runner".
+
 ### Các lựa chọn
 
 | Lựa chọn | Được | Mất |
@@ -561,7 +583,7 @@ không tạo lại được từ nguồn là lỗi thiết kế cần sửa ở 
   cuối buổi `helm --kube-context <ctx> uninstall chaos-mesh -n chaos-mesh`, xoá namespace và CRD `chaos-mesh.org`.
 - **Dừng sớm:** xoá object thí nghiệm (`kubectl --context <ctx> delete podchaos|networkchaos <tên> -n <ns>`) là hồi ngay; dừng khi
   feed 5xx quá 5% hơn 1 phút hay có node NotReady.
-- **Không cài trên k3d** ở giai đoạn này (ADR-0017).
+- **Không cài trên k3d của máy 16 GB** (ADR-0017); k3d của runner dùng một lần thì được (chỉnh ở đầu mục).
 
 ## 8. Kiểm tĩnh manifest cloud bằng kubeconform
 
@@ -794,11 +816,11 @@ cuối khi đã kiểm.
 | `runbook_url` có trên mọi rule page; thông báo page có link | `make slo-check`; đọc template Telegram | **Đạt** (2026-10-24): đọc mọi rule `severity=page` của `svp-alerts.yaml` và `slo-generated.yaml` (15 rule: 10 viết tay gồm `PostgresWALArchivingFailing`, 5 SLO), mỗi rule có `runbook_url` đúng tiền tố và file runbook có trong repo; `make slo-check` sạch; template mặc định của receiver Telegram (Alertmanager v0.34.1) in mọi annotation nên thông báo page có link, không phải sửa template |
 | `CircuitBreakerOpen` cháy dưới tải nền khi engagement-service tắt; stack về sạch sau buổi | `make gameday` | **Đạt** (2026-10-24): cảnh báo có trong Alertmanager 75 s sau T0 (mục Kết quả, "Game day"); sau buổi mọi service của stack chạy lại, tải k6 đã dừng |
 | Mỗi pod k6 trên cloud là một khoá rate limit (1 hop; 2 hop với `X-Forwarded-For` tự ghi) | Giai đoạn 7 (EKS), người học: sau `setup()`, `redis-cli --scan --pattern 'svp:gw:rl:register:*'` trên ElastiCache đếm được 20 khoá | Chưa kiểm |
-| 20 pod k6 giữ được tốc độ 1 250 req/s | Giai đoạn 7 (EKS): `dropped_iterations` = 0 mọi pod; giai đoạn 6b chạy bản thu nhỏ của profile `cloud` | Chưa kiểm; bản thu nhỏ: phần sau của giai đoạn 6b ([ADR-0021](0021-deferred-verification-stage6b.md) mục 5, kịch bản `k6-cloud-mini`) |
-| Chaos Mesh 2.8.5 và Velero 1.18.4 chạy trên version EKS chọn (CI của cả hai tới 1.35); kernel AL2023 có `sch_netem` | Giai đoạn 6b: cài, chạy ba thí nghiệm và diễn tập Velero (đích MinIO) trên cluster của nơi chạy 6b, thí nghiệm (b) trên một pod thử trước; giai đoạn 7: version EKS, kernel AL2023 | Chưa kiểm; giai đoạn 6b: phần sau của giai đoạn 6b ([ADR-0021](0021-deferred-verification-stage6b.md) mục 5, kịch bản `chaos`, `velero`) |
+| 20 pod k6 giữ được tốc độ 1 250 req/s | Giai đoạn 7 (EKS): `dropped_iterations` = 0 mọi pod; giai đoạn 6b chạy bản thu nhỏ của profile `cloud` | Chưa kiểm ở 20 pod (giai đoạn 7). Bản thu nhỏ trên runner 4 vCPU (2026-10-28, [40620333867](https://github.com/anhnvcoder/short-video-platform/actions/runs/40620333867), [ADR-0021](0021-deferred-verification-stage6b.md) D11): mức 1 pod 55,2 req/s và 2 pod 110,5 req/s đạt mọi threshold, `dropped_iterations` 0; mức 4 pod trượt (3 `dropped_iterations`, Tempo OOMKilled ở limit riêng); đó là giới hạn của runner chung cả hệ thống, không phải năng lực hệ thống |
+| Chaos Mesh 2.8.5 và Velero 1.18.4 chạy trên version EKS chọn (CI của cả hai tới 1.35); kernel AL2023 có `sch_netem` | Giai đoạn 6b: cài, chạy ba thí nghiệm và diễn tập Velero (đích MinIO) trên cluster của nơi chạy 6b, thí nghiệm (b) trên một pod thử trước; giai đoạn 7: version EKS, kernel AL2023 | Velero 1.18.4 trên k3s 1.36 của runner: đạt (2026-10-28, [40620319661](https://github.com/anhnvcoder/short-video-platform/actions/runs/40620319661), [40626700272](https://github.com/anhnvcoder/short-video-platform/actions/runs/40626700272); đích RustFS thay MinIO theo [ADR-0022](0022-local-object-store-minio-replacement.md)), không lỗi version. Chaos Mesh 2.8.5 trên k3s v1.36.5 của runner: đạt (2026-10-28, [40691107770](https://github.com/anhnvcoder/short-video-platform/actions/runs/40691107770), [40712072895](https://github.com/anhnvcoder/short-video-platform/actions/runs/40712072895)): 2/2 chaos-daemon, 23 CRD, NetworkChaos thử `injected`, `sch_netem` có sẵn trên kernel runner; không lỗi version. Version EKS, kernel AL2023: giai đoạn 7 |
 | Plugin AWS của Velero nhận credential từ Pod Identity | Giai đoạn 7 (EKS): BackupStorageLocation `default` Available (`drill-restore.sh check`), backup Completed | Chưa kiểm |
-| Restore namespace có Redpanda giữ offset đã commit, pod `svp` phục hồi qua Kyverno | `drill-restore.sh`: giai đoạn 6b (đích MinIO), giai đoạn 7 (S3, snapshot EBS) | Chưa kiểm; giai đoạn 6b: phần sau của giai đoạn 6b ([ADR-0021](0021-deferred-verification-stage6b.md) mục 5, kịch bản `velero`) |
-| Hai media-worker cùng transcode trên node pool riêng không làm node NotReady | Giai đoạn 6b: `make drill-k8s-keda N=9` trên node đủ CPU của nơi chạy 6b ([ADR-0017](0017-gitops-capacity-media-worker-max2.md)); node pool riêng ở giai đoạn 7 | Giai đoạn 6b, đường dev trên runner 4 vCPU ([ADR-0021](0021-deferred-verification-stage6b.md) D1, 2026-10-25): `make drill-k8s-keda N=9` PASS hai lượt có hai worker cùng transcode (137 s, khoảng 80 s), không node `NotReady`, k3s server không restart ([40145677985](https://github.com/anhnvcoder/short-video-platform/actions/runs/40145677985), [40151447243](https://github.com/anhnvcoder/short-video-platform/actions/runs/40151447243)); lượt thứ ba PASS nhưng không có khoảng hai worker cùng transcode (cách chia partition, [40160414327](https://github.com/anhnvcoder/short-video-platform/actions/runs/40160414327)). Đường GitOps: phần sau của giai đoạn 6b ([ADR-0021](0021-deferred-verification-stage6b.md) mục 5, kịch bản `gitops`); node pool riêng: giai đoạn 7 |
+| Restore namespace có Redpanda giữ offset đã commit, pod `svp` phục hồi qua Kyverno | `drill-restore.sh`: giai đoạn 6b (đích MinIO), giai đoạn 7 (S3, snapshot EBS) | Offset: đạt trên runner (2026-10-28, [40620319661](https://github.com/anhnvcoder/short-video-platform/actions/runs/40620319661), [40626700272](https://github.com/anhnvcoder/short-video-platform/actions/runs/40626700272), ADR-0021 D13): restore StatefulSet và PVC của Redpanda từ snapshot CSI, offset đã commit bằng lúc backup ở 5 group-partition, lag 0, DLQ không đổi, smoke qua, RTO 58 s / 57 s. Phạm vi runner chỉ Redpanda của `svp-data`, không xoá cả namespace; "pod `svp` phục hồi qua Kyverno" và snapshot EBS: giai đoạn 7 |
+| Hai media-worker cùng transcode trên node pool riêng không làm node NotReady | Giai đoạn 6b: `make drill-k8s-keda N=9` trên node đủ CPU của nơi chạy 6b ([ADR-0017](0017-gitops-capacity-media-worker-max2.md)); node pool riêng ở giai đoạn 7 | Giai đoạn 6b, đường dev trên runner 4 vCPU ([ADR-0021](0021-deferred-verification-stage6b.md) D1, 2026-10-25): `make drill-k8s-keda N=9` PASS hai lượt có hai worker cùng transcode (137 s, khoảng 80 s), không node `NotReady`, k3s server không restart ([40145677985](https://github.com/anhnvcoder/short-video-platform/actions/runs/40145677985), [40151447243](https://github.com/anhnvcoder/short-video-platform/actions/runs/40151447243)); lượt thứ ba PASS nhưng không có khoảng hai worker cùng transcode (cách chia partition, [40160414327](https://github.com/anhnvcoder/short-video-platform/actions/runs/40160414327)). Đường GitOps (2026-10-28, [40620627534](https://github.com/anhnvcoder/short-video-platform/actions/runs/40620627534), ADR-0021 D1): hai lượt PASS, hai pod cùng transcode 60 / 63 s, chuỗi dài nhất 7 / 14 mẫu liền, không node `NotReady`, k3s server không restart; node pool riêng: giai đoạn 7 |
 
 ## Kết quả
 
@@ -817,7 +839,7 @@ Phần local đóng ngày 2026-10-24. Chi tiết và số đo ở các tiểu m�
 | Game day | Đạt: một buổi dưới tải k6, TTD 75 s, hồi phục T0 + 184 s, postmortem từ mốc thật ("Game day") |
 | RFC | Đạt: `docs/rfc/0001-reliability.md` |
 | Stack trong CI | **Đạt** (2026-10-24, lượt PR [40133806424](https://github.com/anhnvcoder/short-video-platform/actions/runs/40133806424), ba lần chạy liền xanh; mục Kiểm chứng sau) |
-| LCP | **Chưa đạt** theo số Lighthouse mô phỏng (median `/` 3 666 ms, `/v/{id}` 2 688 ms); quyết định giữ `Suspense`, xem lại ở giai đoạn 6b ("LCP"). Giai đoạn 6b trên runner: `/` vẫn **chưa đạt** sau khi bỏ `Suspense` (median 3 253 ms trước, kịch bản `compose-obs`; 3 144 ms sau, job `stack`), `/v/{id}` đạt (median 2 182 và 2 360 ms), TBT trên 200 ms; sau các sửa cuối của phần 1 (`3f0d4cc`, phần tử LCP là ảnh ở cả hai trang) `/` 2 582 và 3 055 ms, `/v/{id}` 2 917 và 3 130 ms, TBT 303–408 ms: **chưa đạt** cả hai trang, LCP quan sát 174–234 ms, đòn bẩy còn lại là việc riêng ở phần sau ("LCP", đoạn "Giai đoạn 6b") |
+| LCP | **Chưa đạt** theo số Lighthouse mô phỏng (median `/` 3 666 ms, `/v/{id}` 2 688 ms); quyết định giữ `Suspense`, xem lại ở giai đoạn 6b ("LCP"). Giai đoạn 6b trên runner: `/` vẫn **chưa đạt** sau khi bỏ `Suspense` (median 3 253 ms trước, kịch bản `compose-obs`; 3 144 ms sau, job `stack`), `/v/{id}` đạt (median 2 182 và 2 360 ms), TBT trên 200 ms; sau các sửa cuối của phần 1 (`3f0d4cc`, phần tử LCP là ảnh ở cả hai trang) `/` 2 582 và 3 055 ms, `/v/{id}` 2 917 và 3 130 ms, TBT 303–408 ms: **chưa đạt** cả hai trang, LCP quan sát 174–234 ms, đòn bẩy còn lại là việc riêng ở phần sau ("LCP", đoạn "Giai đoạn 6b"). Phần 3 (2026-10-26, ADR-0021 D17): font sau `load` và `messages.precompile` giữ; sáu mẫu median `/` khoảng 2 548 ms, `/v/{id}` khoảng 2 488 ms, TBT 147–443 ms: sát ngưỡng, **chưa đạt ổn định**; người học chốt Lighthouse là tín hiệu hồi quy, chuẩn là RUM p75 |
 | Kiểm tĩnh phần cloud | Đạt: `make cloud-check` sạch (49/49 valid), ca cố ý hỏng FAIL |
 
 Kiểm toàn repo trên working tree cuối của giai đoạn (2026-10-24, trên máy): `make check`, thêm hai lượt
@@ -1042,6 +1064,53 @@ những request đó vào mô hình mô phỏng của Lighthouse (Lantern), nên
   nén brotli và HTTP/2 ở trước web (compose phục vụ thẳng từ server standalone của Next: gzip, HTTP/1.1, mỗi kết nối mới chịu slow
   start trong mô hình Lantern). Đổi cách chấm cổng (số thực địa RUM thay Lantern) là một quyết
   định riêng, không làm ở đây vì không nới ngưỡng. Số thực địa vẫn là RUM (LCP p75 0,57 s trên cluster dev của runner, ADR-0021).
+- **Phần 3 của giai đoạn 6b** (2026-10-26, kịch bản `compose-obs` chỉ bước Lighthouse; ADR-0021 D17): hai vòng chỉnh, mỗi vòng ba
+  lượt Lighthouse. Vòng 1 giữ: font nạp sau `load` với font dự phòng chỉnh cỡ, `messages.precompile` của next-intl
+  ([40328971601](https://github.com/anhnvcoder/short-video-platform/actions/runs/40328971601): `/` LCP 2 473 · 2 313 · 2 771 ms, `/v/{id}` 1 510 · 2 739 · 2 094 ms, TBT 266–443 ms). Vòng 2 (hydrate không
+  dựng formatter Intl) bỏ vì không có bằng chứng giúp ([40335702467](https://github.com/anhnvcoder/short-video-platform/actions/runs/40335702467), [40341024107](https://github.com/anhnvcoder/short-video-platform/actions/runs/40341024107): `/` median khoảng 2 555 ms, TBT
+  khoảng 454 ms). Xác nhận vòng 1 ([40344795348](https://github.com/anhnvcoder/short-video-platform/actions/runs/40344795348)): `/` 2 749 · 2 200 · 2 622 ms, `/v/{id}` 2 464 · 2 513 · 2 645 ms, TBT
+  147–220 ms. Sáu mẫu của vòng 1: median `/` khoảng 2 548, `/v/{id}` khoảng 2 488 ms; CLS ≤ 0,001; TBT dao động 147–443 ms giữa
+  các lượt cùng code. **Chưa đạt ổn định.** Đòn bẩy còn lại lớn nhất là bỏ hls.js khi trình duyệt có HLS native, trái
+  [ADR-0016](0016-web-client.md) §8; người học giữ một đường phát hls.js, và chốt Lighthouse mô phỏng là tín hiệu hồi quy, chuẩn
+  chất lượng là RUM p75 (cluster GitOps của runner: LCP p75 641 ms, ADR-0021 D17). Brotli/HTTP/2 trước web vẫn là việc riêng.
+
+### k6 thu nhỏ trên runner (giai đoạn 6b)
+
+Kịch bản `k6-cloud-mini` của [ADR-0021](0021-deferred-verification-stage6b.md) (2026-10-28, [40620333867](https://github.com/anhnvcoder/short-video-platform/actions/runs/40620333867); số của runner 4 vCPU
+amd64 chung cả hệ thống, không so với máy): mức cao nhất đạt **2 pod** (110,5 req/s, 11/11 threshold, `dropped_iterations` 0, 429
+0; k6 p99 explore 12,3, following 7,8, web `/` 60,2, `/v/[id]` 55,3 ms; p99 upstream của Envoy cho web 50 ms). Mức 4 trượt: 3
+`dropped_iterations`, Tempo OOMKilled ở limit 768 Mi rồi `CrashLoopBackOff` (sampling 100 % với metrics-generator trong một tiến
+trình): phát hiện cho giai đoạn 7 (chính sách sampling của lượt tải, cỡ Tempo; ADR-0021 Hệ quả). Theo quy tắc ADR-0021 §8:
+`canaryLimits.p99Ms` của web 500 → 250 ms, không thêm HPA (CPU web 8,2 % limit, p99 không tăng gấp đôi), `resources` giữ. Mỗi
+pod k6 một khoá rate limit đăng ký ở mọi mức (1, 2, 4).
+
+### Velero trên runner (giai đoạn 6b)
+
+Kịch bản `velero` của ADR-0021 (2026-10-28, [40620319661](https://github.com/anhnvcoder/short-video-platform/actions/runs/40620319661), [40626700272](https://github.com/anhnvcoder/short-video-platform/actions/runs/40626700272)): backup `svp-data` theo nhãn của Redpanda và fixture, có
+VolumeSnapshot CSI, không Secret; xoá StatefulSet, PVC và fixture của Redpanda, restore; offset đã commit bằng lúc backup, lag 0,
+DLQ không đổi, sha256 fixture khớp, smoke qua; **RTO 58 s / 57 s** (T0 lúc bắt đầu xoá, T1 khi smoke qua). Plugin AWS ghi tarball
+14,8 MB multipart với CRC32 vào RustFS không lỗi. Gỡ sạch như buổi cloud. RTO của runner không thay RTO của giai đoạn 7 (snapshot
+EBS, xoá cả namespace).
+
+### Chaos Mesh trên runner (giai đoạn 6b)
+
+Kịch bản `chaos` của ADR-0021 (2026-10-28, [40691107770](https://github.com/anhnvcoder/short-video-platform/actions/runs/40691107770) cho (c) và gỡ, [40712072895](https://github.com/anhnvcoder/short-video-platform/actions/runs/40712072895) cho (a), (b); mỗi thí nghiệm một
+lượt k6 1 pod; bảng đủ ở ADR-0021 mục "Thí nghiệm `chaos`"):
+
+- **(a) gateway: đạt.** 2 replica Ready lúc kill, pod thay Ready sau 1 s, feed 5xx 0, p99 9,4 → 9,6 ms, không page.
+- **(a) feed-service: phát hiện** (như giả thuyết đã đặt cho `minReplicas: 1`): 1 replica, pod thay Ready sau 2 s, feed 5xx 0,28 %
+  trong 10 phút (trên ngưỡng 0,1 %): thử lại của gateway khi `UNAVAILABLE` chờ tổng không quá 0,15 s, ngắn hơn 2 s không có pod nào Ready.
+- **(b): phát hiện.** Feed giữ: 200, bỏ `stats`, 5xx 0, p99 149,1 ms (sát 150); breaker không mở, `CircuitBreakerOpen` không cháy.
+  Nhưng 556 / 2 149 request like + view trả 5xx (like lỗi 18,5 %, p99 3 004 ms bằng hạn 3 s của gateway; view 0 lỗi): giả thuyết
+  "200 ms dưới hạn 3 s" tính một lần trễ cho cả call, trong khi `delay` không `target` trễ cả mọi round trip tới Postgres của
+  transaction like (3–4 lần nối tiếp). Phần còn lại tới 3 s nghi do pool pgx 4 kết nối dùng chung với `GetStats` hết hạn 100 ms
+  (chưa đo).
+- **(c): đạt.** Upload init 5xx 0, feed 5xx 0, p99 9,7 ms, view lỗi khoảng 1 134 (đếm riêng); broker về sau 7 s, 3 video `READY` ngay,
+  mỗi video đúng một lần, lag về mức ổn định sau 1–39 s, DLQ không đổi.
+- **Gỡ sạch**, không thêm quyền RBAC nào ngoài của chart. Runner `no_oom=false` ở cả hai lượt chỉ vì Tempo OOMKilled ở limit 768 Mi
+  (cùng phát hiện với k6 thu nhỏ); `MemAvailable` thấp nhất 6,4 GiB.
+- Việc trước buổi chaos của giai đoạn 7 (ADR-0021 Hệ quả "Xem lại khi"): feed-service tối thiểu 2 replica kèm PDB; engagement chịu
+  trễ database (pool, timeout, breaker), đo `pgxpool.*` trước; cỡ Tempo.
 
 ### Game day
 
@@ -1154,6 +1223,8 @@ trước mục tiêu) ([40145677985](https://github.com/anhnvcoder/short-video-p
   - Một pod k6 không giữ được tốc độ đặt (`dropped_iterations` > 0): thêm pod hay xét k6-operator.
   - 20 lượt `stack` liên tiếp xanh: đưa vào `ci-ok`.
   - Giai đoạn 7 giữ Redpanda trong cluster: độ bền event bằng replication hay Kafka managed, không bằng Velero.
+  - Trước buổi chaos của giai đoạn 7: sửa hai phát hiện của Chaos Mesh trên runner (feed-service một replica; like của
+    engagement-service hết hạn khi trễ mạng, Kết quả "Chaos Mesh trên runner") rồi chạy lại kịch bản `chaos` của ADR-0021.
 
 ## Hiện thực ở
 

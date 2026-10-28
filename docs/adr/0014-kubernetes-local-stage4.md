@@ -8,9 +8,9 @@
   §10 (`timeoutSeconds` của probe) và §12 (`WATCH_NAMESPACE` của CloudNativePG thêm `cnpg-system`; Role của operator ở
   `cnpg-system` thu hẹp còn đọc, ghi Secret, event, Lease; ValidatingAdmissionPolicy `svp-cnpg-operator-secrets` chỉ cho operator
   tạo, sửa Secret PKI của nó ở đó) chỉnh bởi [0020](0020-reliability-stage6.md); §3 (uid/gid Valkey `10999`), §4 (Redpanda
-  `--reserve-memory=128M`) và §13 (đường dev chọn asset plugin theo kiến trúc node) chỉnh bởi
-  [0021](0021-deferred-verification-stage6b.md); §12 (Argo CD đọc repo qua HTTPS ẩn danh thay deploy key SSH) sẽ chỉnh bởi
-  0021 khi hiện thực phần 3 của giai đoạn 6b; MinIO ở §1 (image), §2 và §10 (RAM), §4 (StatefulSet `minio`, `deploy/minio/init.sh`
+  `--reserve-memory=128M`), §12 (Argo CD đọc repo qua HTTPS ẩn danh thay deploy key SSH, từ 2026-10-28) và §13 (cả đường dev lẫn
+  đường GitOps chọn asset plugin theo kiến trúc node) chỉnh bởi [0021](0021-deferred-verification-stage6b.md); §12 (overlay
+  môi trường `deploy/k8s/envs/`, cluster GitOps đóng vai stg) chỉnh bởi [0024](0024-multi-environment.md); MinIO ở §1 (image), §2 và §10 (RAM), §4 (StatefulSet `minio`, `deploy/minio/init.sh`
   với `mc`), §7 (symlink), §8 (Secret `minio-root`, `minio-users`) và §9 (đích của HTTPRoute `s3`) bị thay một phần bởi
   [0022](0022-local-object-store-minio-replacement.md) (RustFS, StatefulSet, Service và Job `s3`, `s3-init`, Secret `s3-root`, `s3-users`, CORS theo bucket; giới
   hạn 512 MiB, uid 10001)
@@ -797,7 +797,7 @@ CD và root app. **Sửa 2026-10-19:** trước ghi "chạy trước `install.sh
 | `svp-obs` | `glitchtip-env` | `SECRET_KEY`, `DATABASE_URL`, `MAINTENANCE_DATABASE_URL` | `GLITCHTIP_SECRET_KEY`, mật khẩu hai role `svp_glitchtip_*` | GlitchTip, Job init |
 | `svp-obs` | `glitchtip-admin` | `GLITCHTIP_ADMIN_EMAIL`, `GLITCHTIP_ADMIN_PASSWORD` | cùng tên | Job init GlitchTip |
 | `svp-obs` | `glitchtip-api` | `SENTRY_AUTH_TOKEN` | do `k8s-glitchtip-init` ghi, không vào `.env` | Diễn tập |
-| `argocd` | `repo-short-video-platform` (label `argocd.argoproj.io/secret-type: repository`) | `type` (= `git`), `url`, `sshPrivateKey` | file deploy key truyền vào make target, không phải `.env` | Argo CD repo-server |
+| `argocd` | `repo-short-video-platform` (label `argocd.argoproj.io/secret-type: repository`; **bỏ từ 2026-10-28**: Argo CD đọc repo qua HTTPS ẩn danh, §12) | `type` (= `git`), `url`, `sshPrivateKey` | file deploy key truyền vào make target, không phải `.env` | Argo CD repo-server |
 
 - Chuỗi kết nối: `postgres://<role>:<pw>@svp-pg-rw.svp-data:5432/svp_<db>?sslmode=require`. Mật khẩu hex nên không cần
   mã hoá URL.
@@ -1208,9 +1208,12 @@ giá: không phát hiện được Valkey treo mà cổng vẫn mở, lab chấp
     có thể đọc ref do Application khác lấy tới 60 s trước. Vì vậy push → Argo CD thấy commit **thường ≤ 60 s, tệ nhất
     ~120 s**; diễn tập GitOps so số đo với cận này. Giảm `timeout.reconciliation` thì cả hai cận giảm theo, đổi lấy thêm
     `ls-remote` tới GitHub.
-- **Repo:** `git@github.com:anhnvcoder/short-video-platform.git` qua SSH bằng **deploy key chỉ đọc do người học tạo**,
-  đường dẫn file truyền vào `make k8s-gitops-up ARGOCD_DEPLOY_KEY=<file>` (không vào repo, không in); `known_hosts` của
-  GitHub có sẵn trong `argocd-ssh-known-hosts-cm`.
+- **Repo:** `https://github.com/anhnvcoder/short-video-platform.git` qua **HTTPS ẩn danh** (sửa 2026-10-28,
+  [ADR-0021](0021-deferred-verification-stage6b.md) §6): repo public từ giai đoạn 5 nên đọc không cần credential; `gitops.sh`
+  không tạo Secret repo, `make k8s-gitops-up` không nhận deploy key; cùng một URL ở `repoURL` của `deploy/argocd/apps/values.yaml`,
+  `sourceRepos` của AppProject `svp` và `repo_url` của `gitops.sh`. Trước đó: `git@github.com:…` qua SSH bằng deploy key chỉ đọc
+  do người học tạo, truyền bằng `ARGOCD_DEPLOY_KEY=<file>`; người học xoá deploy key đó trên GitHub. Repo thành private thì quay
+  lại khoá chỉ đọc (ADR-0021, Hệ quả "Xem lại khi").
 - **`AppProject` `svp`:** `sourceRepos` = repo trên + đúng các repo chart ở bảng mục 1 (`https://charts.jetstack.io`,
   `docker.io/envoyproxy` (OCI), `https://cloudnative-pg.github.io/charts`, `https://charts.redpanda.com`,
   `https://kedacore.github.io/charts`, `https://prometheus-community.github.io/helm-charts`,
@@ -1257,8 +1260,8 @@ giá: không phát hiện được Valkey treo mà cổng vẫn mở, lab chấp
     Bỏ `secrets` khỏi ClusterRole của server mà giữ `patch` Deployment thì vẫn đọc được qua sửa pod rồi đọc log; bỏ hết
     thì mất nút restart, xoá, xem manifest sống trên UI.
   - **Phạm vi được bảo vệ bằng:** không Service nào ra ngoài cluster (`argocd-server` ClusterIP, chỉ port-forward
-    `127.0.0.1:8081`, đăng nhập admin, OPS-2); không SSO, không notifications; deploy key chỉ đọc nên Argo CD không ghi được
-    repo; AppProject `svp` giới hạn nguồn, đích, kind cluster-scope cho mọi Application, kể cả Application thử ngoài danh
+    `127.0.0.1:8081`, đăng nhập admin, OPS-2); không SSO, không notifications; Argo CD đọc repo ẩn danh (trước 2026-10-28:
+    deploy key chỉ đọc) nên không ghi được repo; AppProject `svp` giới hạn nguồn, đích, kind cluster-scope cho mọi Application, kể cả Application thử ngoài danh
     sách (bị từ chối `InvalidSpecError`). AppProject `default` (argocd-server tạo khi thiếu, mở mọi nguồn, đích, kind;
     Application khai `project: default` hay không khai project thì thoát giới hạn của `svp`) bị **khoá** bằng chính
     `deploy/argocd/project.yaml`: `sourceRepos`, `sourceNamespaces`, `destinations`, `clusterResourceWhitelist` rỗng,
@@ -1453,7 +1456,7 @@ giá: không phát hiện được Valkey treo mà cổng vẫn mở, lab chấp
   khi tạo cluster. Image thiếu trong registry dựng lại bằng `build_release_image` (mục 6). Khi Application GlitchTip Healthy,
   chạy cùng bước `k8s-glitchtip-init` như đường dev để DSN có trong Secret. Vòng chờ cuối coi một Application xong khi
   `Synced`, Healthy **và** sync cuối `Succeeded` (cùng tiêu chí với health check ở trên); condition loại `*Error`
-  (`ComparisonError` khi deploy key chưa thêm trên GitHub hay revision không có...) hay sync `Failed` được in ngay khi xuất
+  (`ComparisonError` khi revision không có, overlay môi trường lỗi...) hay sync `Failed` được in ngay khi xuất
   hiện, và còn nguyên sau 180 s (ba lần poll, không phải lỗi thoáng qua) thì script dừng, không chờ hết 1800 s.
   **Sửa 2026-10-18.**
 - **Đo push → pod mới Ready:** giờ push từ reflog `refs/remotes/origin/main` (người học push từ máy này); không có thì
@@ -1501,7 +1504,7 @@ giá: không phát hiện được Valkey treo mà cổng vẫn mở, lab chấp
   | Asset | URL | sha256 |
   | --- | --- | --- |
   | `gatewayapi-plugin-linux-arm64` (node arm64, dùng; ghim ở `deploy/k8s/values/argo-rollouts.yaml`) | `https://github.com/argoproj-labs/rollouts-plugin-trafficrouter-gatewayapi/releases/download/v0.17.0/gatewayapi-plugin-linux-arm64` | `5221279f7bf2c9b2c0ff6ed7ff12718ecce1d4892f1ff5e5224bb723cfd0fd92` |
-  | `gatewayapi-plugin-linux-amd64` (node amd64, dùng từ 2026-10-24: `rollouts_plugin_sets` của `deploy/k8s/install.sh` đọc kiến trúc node, truyền `--set-json controller.trafficRouterPlugins` ở đường dev; [ADR-0021](0021-deferred-verification-stage6b.md), Kết quả `dev-k3d` lượt 3) | `.../v0.17.0/gatewayapi-plugin-linux-amd64` | `1904ca787d33107c140521899d61fff030ee75d99908bd175fca5a4647759061` |
+  | `gatewayapi-plugin-linux-amd64` (node amd64, dùng từ 2026-10-24 ở đường dev; [ADR-0021](0021-deferred-verification-stage6b.md), Kết quả `dev-k3d` lượt 3. Từ phần 3 của giai đoạn 6b một nguồn ghim cho cả hai đường: file `deploy/k8s/values/argo-rollouts-amd64.yaml` cùng release; `deploy/k8s/install.sh` thêm file đó khi node là amd64, đường GitOps chọn bằng `nodeArch` (do `gitops.sh` đọc từ node, từ chối cluster lẫn kiến trúc) và `archValues` của chart `deploy/argocd/apps`; chạy trên cluster GitOps amd64 của runner ngày 2026-10-28) | `.../v0.17.0/gatewayapi-plugin-linux-amd64` | `1904ca787d33107c140521899d61fff030ee75d99908bd175fca5a4647759061` |
 
   Release không có file checksum; sha256 tính bằng `shasum -a 256` trên file tải về, khớp digest asset của GitHub. Controller
   tải plugin từ GitHub lúc khởi động (namespace `argo-rollouts` không chặn egress). Plugin build với Gateway API v1.4.0, dùng
@@ -1907,7 +1910,8 @@ thái các dòng "Chưa kiểm" của đường GitOps:
 - **Phải trả:**
   - Hai đường cài (dev và GitOps) phải giữ khớp qua `components.json` và wave; thêm thành phần là sửa một file nhưng phải
     xếp đúng wave để policy có trước luồng.
-  - Secret nằm ngoài GitOps: đường GitOps vẫn cần `secrets.sh` chạy từ máy có `.env`; deploy key do người học tạo và giữ;
+  - Secret nằm ngoài GitOps: đường GitOps vẫn cần `secrets.sh` chạy từ máy có `.env` (deploy key của Argo CD bỏ từ 2026-10-28,
+    đọc repo qua HTTPS ẩn danh);
     Argo CD poll 60 s không jitter, nhưng cache ref của repo-server làm push tới lúc thấy commit trễ thường ≤ 60 s, tệ nhất
     ~120 s.
   - AppProject `svp` được ghi vào `kube-system` (RoleBinding bắt buộc của KEDA); Alertmanager ra được mọi địa chỉ công khai

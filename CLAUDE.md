@@ -364,20 +364,24 @@ liệt kê target):
   `promote` ghi `image.repository`, `image.tag`, `image.digest` vào `deploy/k8s/values/services/<svc>.yaml` trên nhánh
   `bot/promote` và mở hay cập nhật một PR cuộn; người học duyệt lượt chạy của PR ("Approve workflows to run") rồi merge.
   Đường dev `make k8s-up` giữ registry k3d và tag dev (chỉ `--set`).
-- `make k8s-gitops-up ARGOCD_DEPLOY_KEY=<file> [GITOPS_REV=main]`, `make measure-gitops REV=<commit>`: đường GitOps
-  (ADR-0014 §12, ADR-0015 §9), tạo cluster `svp` **mới** mà Argo CD dựng từ GitHub, kéo image từ GHCR theo digest, ẩn
-  danh. Trước khi tạo gì, kiểm ở đúng revision (`origin/<nhánh>` như lần fetch cuối, không `git fetch`) cả 7 file values
+- `make k8s-gitops-up [GITOPS_REV=main]`, `make measure-gitops REV=<commit>`: đường GitOps (ADR-0014 §12, ADR-0015 §9),
+  tạo cluster `svp` **mới** đóng vai stg ([ADR-0024](docs/adr/0024-multi-environment.md): values gốc cộng overlay
+  `deploy/k8s/envs/stg/`, `gitops.sh` luôn đặt `env=stg` cho root, không có biến chọn env) mà Argo CD dựng từ GitHub qua
+  HTTPS ẩn danh (không deploy key, không Secret repo; [ADR-0021](docs/adr/0021-deferred-verification-stage6b.md) §6), kéo
+  image từ GHCR theo digest, ẩn danh. Trước khi tạo gì, kiểm ở đúng revision (`origin/<nhánh>` như lần fetch cuối, không `git fetch`) cả 7 file values
   (trước lần phát hành web đầu tiên `web.yaml` chưa có digest nên dừng ở đây):
   có digest (PR promote đã merge), repository `ghcr.io/anhnvcoder/short-video-platform/<svc>`, manifest kéo ẩn danh được
   (package GHCR đã public), chữ ký và attestation `vuln` đúng identity, không CRITICAL, không quá 48 giờ
   (`deploy/ci/verify-release.sh` bằng `cosign` trên PATH, không có thì `COSIGN_IMAGE`; quá hạn thì in lệnh dispatch rescan
   với `values_ref=<revision>`);
   thiếu một điều là dừng, không tạo gì. Rồi tạo namespace và Secret từ `.env`, cài Argo CD (namespace `argocd`, PSA
-  `restricted`), Secret repo bằng deploy key **chỉ đọc** do người học tạo trên GitHub (file mode 600, không passphrase;
-  không in, không chép), AppProject `svp` và `default` đã khoá, root `svp-root`; chờ mọi Application `Synced`, Healthy,
-  sync cuối `Succeeded` (lỗi còn sau 180 s thì dừng). `measure-gitops` đo commit phát hành (merge của PR promote) từ lúc
-  push (reflog `origin/main`, không có thì PushEvent qua `gh api`, chỉ đọc) qua sync của Argo CD tới pod đầu và cuối Ready
-  với digest mới; chỉ đọc, JSON ở `.k8s/drills/`. Với image GHCR cả hai target **kiểm sau push**.
+  `restricted`) với plugin Gateway API của Argo Rollouts theo kiến trúc node (`nodeArch` đọc từ node, cluster lẫn kiến trúc
+  thì dừng; bản amd64 ở `deploy/k8s/values/argo-rollouts-amd64.yaml`, cùng file `install.sh` của đường dev đọc), AppProject
+  `svp` và `default` đã khoá, root `svp-root` (`env=stg`; revision chưa có overlay thì bỏ qua env); chờ mọi Application
+  `Synced`, Healthy, sync cuối `Succeeded` (lỗi còn sau 180 s thì dừng). `measure-gitops` đo commit phát hành (merge của PR
+  promote) từ lúc push (reflog `origin/main`, không có thì PushEvent qua `gh api`, chỉ đọc) qua sync của Argo CD tới pod đầu
+  và cuối Ready với digest mới; service có `migrate: true` ở revision đó thì Job migrate phải tạo trong cửa sổ của đúng sync
+  đã đo và `restartCount` 0 (thiếu Job là FAIL, sync đang chạy là exit 2: đo lại); chỉ đọc, JSON ở `.k8s/drills/`. Với image GHCR cả hai target **kiểm sau push**.
 - `make k8s-traffic-start` / `make k8s-traffic-stop`: traffic diễn tập chạy nền, 4 user, ~10 request/s vào
   `GET /feed/explore`, `/feed/following` qua `https://api.svp.localhost:8443` và ~4 request/s vào web
   `https://svp.localhost:8443` (`GET /login`, một asset `/_next/static/...`; dòng log `web-login`, `web-asset`), mỗi
@@ -388,7 +392,9 @@ liệt kê target):
 - `make k8s-smoke`, `make drill-k8s-keda N=9`, `make drill-k8s-pdb`, `make drill-k8s-canary`, `make measure-canary`,
   `make drill-k8s-threats`: trên cluster đang chạy, qua Envoy với `.k8s/ca.crt` (thiếu thì chạy `make k8s-ca`), script ở
   `deploy/k8s/drills/` (`k8s-smoke` dùng `deploy/compose/smoke.sh`). Lần lượt: luồng đầu-cuối như `make smoke`; N (mặc
-  định 9, 6–12) video 60 s 1080p cùng lúc, đo KEDA scale media-worker lên tối đa 2 replica và về 1, lag đỉnh, mỗi
+  định 9; chỉ 6, 9 hay 12) video 60 s 1080p, dàn đều đúng N/3 video mỗi partition (video tạo thừa để `UPLOADING`, job dọn
+  upload xử lý sau 1 giờ), chờ tới 240 s cho tới khi mọi pod worker cùng có job liền 60 s trước khi ghim (không có thì FAIL
+  riêng, không phải lỗi KEDA), đo KEDA scale media-worker lên tối đa 2 replica và về 1, lag đỉnh, mỗi
   `READY`, CPU/RAM, scale down một pod đang transcode (ghim `paused-replicas` của KEDA thấp hơn một, pod tắt êm) rồi kiểm
   mọi video transcode đúng một lần, và k3s server không restart suốt diễn tập (`RestartCount`, `StartedAt` của container
   `k3d-svp-server-0`, [ADR-0017](docs/adr/0017-gitops-capacity-media-worker-max2.md)); cordon node và evict lần lượt hai pod gateway như drain: PDB cho pod đầu (201), từ chối
@@ -440,22 +446,46 @@ liệt kê target):
 - `make k8s-web-sourcemaps`, `make k8s-web-e2e`, `make drill-k8s-web-obs` (giai đoạn 5b phần C,
   [ADR-0019](docs/adr/0019-web-k3d-supply-chain-observability.md)), trên
   cluster dev: `k8s-web-sourcemaps` như `web-sourcemaps` với bản build mà cluster chạy (`web_build_id`) và token của Secret
-  `svp-obs/glitchtip-sourcemaps`, qua port-forward riêng `127.0.0.1:8000`; `k8s-web-e2e` chạy e2e của web vào
+  `svp-obs/glitchtip-sourcemaps`, qua port-forward riêng `127.0.0.1:8000`; `SOURCEMAPS_DIR=<thư mục tuyệt đối>` tải chunk và
+  map của thư mục đó thay vì build (artifact `web-sourcemaps-amd64` của CI cho image mà cluster GitOps chạy, kịch bản `gitops`),
+  vẫn kiểm mọi chunk `/login` đang phục vụ có debug ID trong bộ map; `k8s-web-e2e` chạy e2e của web vào
   `https://svp.localhost:8443` (`web/e2e/k3d-e2e.sh`: `SVP_STACK=k3d`, CA `.k8s/ca.crt`, cookie `__Host-Http-svp_sid` +
   `Secure`), `SVP_E2E_GLITCHTIP=1` đọc token chỉ đọc của Secret `svp-obs/glitchtip-api` vào môi trường của lượt chạy và tự mở
   forward `127.0.0.1:8000`, `SVP_E2E_EVIDENCE` như `web-e2e`; `drill-k8s-web-obs` (chỉ đọc, sau `k8s-web-e2e`) kiểm Tempo có
   trace với span của `web` và gateway, Prometheus có histogram RUM LCP, CLS (INP khi có tương tác) với nhãn route đóng và
-  in p75, event GlitchTip của lượt `SVP_E2E_GLITCHTIP=1` có frame đã map; forward riêng `127.0.0.1:13200` (Tempo), `19090`
+  in p75, event GlitchTip của lượt `SVP_E2E_GLITCHTIP=1` có frame đã map (`SVP_WEB_OBS_SKIP_ERRORS=<lý do>` bỏ riêng phép kiểm
+  này, in `SKIP  errors (<lý do>)`; rỗng hay chỉ khoảng trắng bị từ chối; chỉ kịch bản `gitops` trên nhánh đặt); forward riêng `127.0.0.1:13200` (Tempo), `19090`
   (Prometheus), `8000` (GlitchTip), cổng bị chiếm thì dừng. **LOCAL LAB ONLY:** `k8s-web-e2e` xoá khoá
   `svp:gw:rl:register:*` ở Valkey db 10 của cluster.
+- `make drill-k8s-web-canary` (giai đoạn 6b phần 3, script `deploy/k8s/drills/web-canary.sh`, client trình duyệt
+  `web/e2e/canary/clients.ts` chạy bằng Node 26 và Playwright của `web/`; chỉ trên runner, không chạy trên máy 16 GB): trên
+  cluster dev, build lại web từ working tree với `SVP_BUILD_ID` khác (`build_image` của `deploy/k8s/lib.sh`, image khác bản đang
+  chạy thì mới đi tiếp) làm canary 25 %, 50 %, 100 % dưới traffic diễn tập và bốn client trình duyệt (một tab cũ mở trước canary
+  gửi Server Action đều đặn), phải promote; bản lỗi (`GATEWAY_URL` trỏ Service không có, `/api/feed/explore` 502) phải bị phân
+  tích abort, route về 100/0, pod stable không đổi; rồi trả build cũ bằng canary thứ hai. AnalysisRun nền đạt khi trong giới
+  hạn khai ở chính spec của nó, mỗi lần đo trượt in một dòng `note`. Đếm mỗi client số lần tải lại theo nguyên nhân (action 409,
+  chunk 404), điều hướng toàn trang do lệch `deploymentId`, tỷ lệ Server Action 409 (> 10 % in dòng `TASK`), 404 của
+  `web-asset`, restart pod web; không tín hiệu lệch bản nào là "inconclusive" (exit 1). Trap trả `GATEWAY_URL` và build cũ (chỉ
+  khi `GATEWAY_URL` đã về), dừng client và traffic đúng pid. JSON ở `.k8s/drills/web-canary-<time>.json`. **LOCAL LAB ONLY:**
+  xoá khoá `svp:gw:rl:register:*` ở Valkey db 10 của cluster.
 - `make cloud-check` (giai đoạn 6, ADR-0020 §8, script `deploy/k8s/cloud/check.sh`): kiểm tĩnh manifest viết sẵn cho cluster
   đo thật (giai đoạn 6b, 7) không cần cluster hay `.env`: `helm template` chart của `deploy/k8s/cloud/charts.json` (Chaos
   Mesh, Velero), manifest của `deploy/k8s/cloud/chaos/`, `velero/`, Job k6 do `deploy/k6/cloud/render.sh` in, rồi
   kubeconform `-strict` (`KUBECONFORM_IMAGE` ghim; schema Kubernetes `CLOUD_K8S_VERSION` của `deploy/k8s/k8s.mk` ở commit
   ghim, schema CRD sinh từ CRD của đúng bản chart ghim; kind không có schema là FAIL); mọi thí nghiệm Chaos Mesh có
-  `duration` và chỉ chọn pod của namespace của nó, mọi image ghim `@sha256:`. Cần mạng (repo chart, GitHub). Lệnh chạy thật
-  (`deploy/k6/cloud/run.sh`, `deploy/k8s/cloud/velero/drill-restore.sh`, `helm`, `kubectl apply` của Chaos Mesh) do người học
-  chạy với context của cluster đo ghi trong lệnh; script từ chối context `k3d-*` và context rỗng.
+  `duration` và chỉ chọn pod của namespace của nó, mọi image ghim `@sha256:`; render cả bản có values phủ chỉ cho runner
+  (`runnerValues` của `charts.json`: `deploy/k8s/cloud/runner/chaos-mesh/`, `velero/`) và manifest `deploy/k8s/cloud/runner/csi/`
+  (driver CSI hostpath, external-snapshotter, schema CRD của bản ghim), kiểm controller Chaos Mesh chỉ có quyền ở namespace đích.
+  Cần mạng (repo chart, GitHub). `deploy/k6/cloud/render.sh --pods N` (mặc định 20, pod i chạy segment i/N, giữ phần tải mỗi
+  pod của thiết kế 20 pod), `--ramp`, `--hold` (cú pháp `SVP_K6_HOLD`; hạn Job tính theo cả lượt khi đặt), `run.sh --pods N
+  [--ramp D] [--hold D] start`. Lệnh chạy thật (`deploy/k6/cloud/run.sh`, `deploy/k8s/cloud/velero/drill-restore.sh`, `helm`,
+  `kubectl apply` của Chaos Mesh) do người học chạy với context của cluster đo ghi trong lệnh; script từ chối context `k3d-*` và
+  context rỗng, trừ **chế độ runner**: context đúng `k3d-svp` khi `ci_hosted_runner` của `deploy/ci/platform.sh` exit 0 (job trên
+  runner dùng một lần do nền tảng CI cấp) và `uname -s` là `Linux`, kiểm trước mọi `kubectl` (chặn tai nạn cho máy, không phải
+  ranh giới bảo mật). Ở chế độ đó `run.sh` thêm CA `.k8s/ca.crt`, origin web `https://svp.localhost:8443`, request CPU 250m và
+  limit 1 CPU cho pod k6; `drill-restore.sh` backup `svp-data` theo nhãn của Redpanda và fixture, chỉ xoá StatefulSet, PVC của
+  Redpanda và ConfigMap fixture, bỏ bước Argo CD khi cluster không có Argo CD, tự chạy `make k8s-smoke`. `SVP_K8S_RUNNER_CSI=1`
+  (chỉ kịch bản `velero`, chỉ mở ở chế độ runner) cho `make k8s-up` cài driver CSI hostpath ngay trước release `redpanda`.
 - `make hooks`: bật git hook ở `.githooks/` một lần cho mỗi clone. `pre-commit` chạy `gofmt` trên file Go đã stage,
   `golangci-lint run`, `buf lint` và `gitleaks` trên thay đổi đã stage.
 - Giai đoạn 5, CI trên GitHub Actions ([ADR-0015](docs/adr/0015-cicd-devsecops-stage5.md)); từ giai đoạn 6b thêm workflow
@@ -515,17 +545,39 @@ liệt kê target):
     smoke` trên RustFS) và `dev-k3d` (job `k3d`, hạn 330
     phút: `make k8s-up`, `make k8s-smoke`, RAM nghỉ, `make drill-k8s-threats`, `make drill-k8s-pdb`, `make drill-k8s-canary`,
     `make k8s-web-sourcemaps`, `SVP_E2E_GLITCHTIP=1 make k8s-web-e2e`, `make drill-k8s-web-obs`, `make drill-k8s-keda N=9` và
-    RAM đỉnh, `make drill-k8s-backup` rồi `MODE=pitr`, RAM nghỉ cuối). Dispatch và đọc kết quả (AI được chạy, chỉ khi người
-    học giao): `gh workflow run verify.yml --ref <main|feat/stage6b-…> -f scenario=<compose-obs|dev-k3d> [-f
-    targets='<bước> …']` (`targets` rỗng là mọi bước, bước dựng luôn chạy; tên bước ở `results.tsv`), `gh run view <id>
-    --log`, `gh run download <id> -n verify-<kịch bản>`. Mỗi job chỉ `contents: read`, không secret, không environment;
-    `concurrency` một lượt mỗi kịch bản. Script `deploy/ci/verify-*.sh` (chạy được trên VM Linux thay runner):
-    `verify-host.sh` (cổng đĩa, `/etc/hosts` cho ba tên `*.svp.localhost`, lệch version kubectl, hạn chế AppArmor),
-    `verify-run.sh` (trình tự, hạn mỗi target, output mỗi target vào file thay vì log job, dừng sớm khi bước dựng đỏ),
+    RAM đỉnh, `make drill-k8s-backup` rồi `MODE=pitr`, RAM nghỉ cuối). Phần 3 (chỉ dispatch, không vào lịch): `gitops` (job
+    `gitops`, hạn 330 phút: bước `Find the source maps of the web image`, rồi bước kịch bản 175 phút: `make k8s-gitops-up`
+    (vai stg), `gitops-env` (overlay stg có trên pod gateway), `make k8s-smoke`, RAM nghỉ, `make drill-k8s-supplychain` (ca
+    chưa ký là manifest con `linux/amd64` của digest web đang chạy), `make drill-k8s-threats`, source map của image CI
+    (`deploy/ci/gitops-sourcemaps.sh` chọn lượt `images.yml` có `image-digest` bằng manifest con đó; trên nhánh `feat/stage6b-*`
+    không có thì `skipped`, e2e không GlitchTip, `drill-k8s-web-obs` bỏ riêng `errors`; trên `main` thì FAIL), `make
+    k8s-web-e2e`, `make drill-k8s-web-obs`, `make drill-k8s-keda N=9` hai lần mỗi lần kèm RAM đỉnh, RAM nghỉ cuối; rồi bước
+    `Waiting for a release on main` 115 phút: trên `main` bật traffic diễn tập, chờ tối đa 90 phút một commit đổi đúng một
+    digest phát hành (người học merge PR promote của một service có Postgres lúc bước này đang chạy), `make measure-gitops`;
+    trên nhánh thì `skipped`), `web-canary` (`make k8s-up`, `make k8s-smoke`, `make drill-k8s-web-canary`), `k6-cloud-mini`
+    (`make k8s-up`, seed ≥ 30 video `READY`, Job k6 profile `cloud` 1, 2, 4, 8 pod qua `run.sh --pods N`, mỗi mức lên 2 phút,
+    giữ 10, xuống 1, dừng ở mức đầu tiên trượt; mỗi mức ghi số k6, khoá rate limit bằng số pod, p95/p99 phía server, CPU,
+    throttle, working set của web; **LOCAL LAB ONLY:** xoá khoá đăng ký giữa hai mức), `chaos` (`make k8s-up`, seed, cài Chaos
+    Mesh với values phủ của runner (chỉ controller không multi-cluster; controller phải giữ cùng pod, 0 restart, không dòng
+    `is forbidden` trong 150 s), bản thử NetworkChaos trên pod thử (nạp `sch_netem`, thiếu thì cài `linux-modules-extra-<kernel>`;
+    không nạp được thì FAIL và (b) không chạy), thí nghiệm (a), (b), (c) (mỗi `apply` chờ webhook có endpoint Ready),
+    mỗi thí nghiệm một lượt k6 1 pod riêng dưới 55 phút có cửa sổ ổn định 5 phút riêng, gỡ bằng lệnh của buổi cloud và kiểm không
+    còn gì), `velero` (`SVP_K8S_RUNNER_CSI=1 make k8s-up`, bucket và user `svp-velero`, cài Velero, kiểm NetworkPolicy, seed bằng
+    smoke và fixture, `drill-restore.sh` chế độ runner, sweep, gỡ). Dispatch và đọc kết quả (AI được chạy, chỉ khi người
+    học giao): `gh workflow run verify.yml --ref <main|feat/stage6b-…> -f
+    scenario=<compose-obs|dev-k3d|gitops|web-canary|k6-cloud-mini|chaos|velero> [-f targets='<bước> …']` (`targets` rỗng là mọi
+    bước, bước dựng luôn chạy; tên bước ở `results.tsv`), `gh run view <id> --log`, `gh run download <id> -n verify-<kịch
+    bản>`. Job `compose`, `k3d` chỉ `contents: read`; job `gitops` thêm `actions: read`, `GH_TOKEN` chỉ ở bước tìm source map và
+    bước chờ phát hành; không secret, không environment; `concurrency` một lượt mỗi kịch bản. Trình tự mỗi kịch bản ở
+    `deploy/ci/verify/<kịch bản>.sh` (bước dựng, hạn job mặc định, danh sách bước). Script `deploy/ci/verify-*.sh` (chạy được
+    trên VM Linux thay runner):
+    `verify-host.sh` (cổng đĩa, `/etc/hosts` cho ba tên `*.svp.localhost`, lệch version kubectl, hạn chế AppArmor, `sudo
+    modprobe sch_netem` cho `chaos`), `verify-run.sh` (nạp trình tự của kịch bản, hạn mỗi target, output mỗi target vào file thay
+    vì log job, dừng sớm khi bước dựng đỏ),
     `verify-sample.sh` (mẫu RAM, CPU, đĩa, `docker stats`, `memory.stat` của node, số pod media-worker đang chạy `ffmpeg`,
-    số restart của từng container compose;
+    số restart của từng container compose, `cpu.stat` của pod k6 trong cửa sổ giữ ghi ở `k6-windows.tsv`;
     `runner.json`, `runner.txt` "runner đủ"), `verify-mask.sh` (`::add-mask::` giá trị bí mật của `.env` sau mỗi target và
-    của Secret trong cluster), `verify-collect.sh` (artifact `verify-<kịch bản>`, giữ 30 ngày: chỉ file theo danh sách cho
+    của Secret trong cluster, gồm `chaos-mesh`, `svp-load`, `velero`), `verify-collect.sh` (artifact `verify-<kịch bản>`, giữ 30 ngày: chỉ file theo danh sách cho
     phép, quét theo giá trị bí mật đã biết và theo mẫu, file nghi bị bỏ kèm `::warning::`, `files.txt` liệt kê file giữ và
     bỏ; đầu ra target bỏ dòng log JSON, access log và dòng log container `    [<namespace>] …` ngoài `log_tail_namespaces` của
     `deploy/k8s/lib.sh`: chỉ đuôi log hạ tầng bên thứ ba mà `make k8s-up` in khi release không Ready, không bao giờ `svp`).
@@ -548,8 +600,10 @@ liệt kê target):
     đường dẫn trên đĩa (`/…`, `./…`, `../…`, `file://…`); origin mạng thì dừng, trừ khi `PROMOTE_DRY_RUN=1` (in lệnh push
     thay vì push).
   - `make helm-check`: `helm lint` và `helm template` mọi chart của repo với values đường GitOps (`HELM_*_HOME` trong
-    thư mục tạm). `deploy/k8s/check-image-digests.sh`: `helm template` mọi chart bên thứ ba với đúng values, mọi image
-    (ngoài 7 image của project) phải ghim `@sha256:`. `make trivy-config`: trivy quét cấu hình Dockerfile, chart, chỉ báo,
+    thư mục tạm), cộng overlay của từng môi trường `deploy/k8s/envs/<stg|prd>/` ([ADR-0024](docs/adr/0024-multi-environment.md);
+    prd chỉ render, render prd không được còn `svp.localhost`) và root chart `deploy/argocd/apps` theo env × kiến trúc node.
+    `deploy/k8s/check-image-digests.sh`: `helm template` mọi chart bên thứ ba với đúng values, mọi image (ngoài 7 image của
+    project) phải ghim `@sha256:`; image của render có overlay phải bằng render gốc. `make trivy-config`: trivy quét cấu hình Dockerfile, chart, chỉ báo,
     trừ các mục của `deploy/ci/trivy-config-ignore.yaml` (dưới đây). `make web-lockfile-scan`: trivy `fs` bằng `TRIVY_IMAGE`
     trên `web/pnpm-lock.yaml` (gồm dev dependency, chỉ mount lockfile), `.trivyignore.yaml` như cổng image, rồi
     `scan-gate.sh --fs`: CRITICAL chặn (cả chưa có bản vá), HIGH trở xuống chỉ đếm; báo lỗi khi trivy đọc được 0 gói npm;

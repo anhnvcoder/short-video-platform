@@ -11,7 +11,9 @@
 > [ADR-0020](adr/0020-reliability-stage6.md), [§5.4](#54-reliability-giai-đoạn-6)): phần local (k6 theo SLO, SLO web, backup và
 > diễn tập phục hồi Postgres trên k3d, runbook, game day, RFC) đã kiểm trên máy ngày 2026-10-24; phần đo thật dời giai đoạn 6b
 > và 7; giai đoạn 6b phần 2 (2026-10-25) đổi object store local từ MinIO sang RustFS
-> ([ADR-0022](adr/0022-local-object-store-minio-replacement.md)). ADR 0001–0020, contract ở [`proto/`](../proto/)
+> ([ADR-0022](adr/0022-local-object-store-minio-replacement.md)); giai đoạn 6b phần 3 (2026-10-26 đến 2026-10-28) chạy đường
+> GitOps (vai stg, [ADR-0024](adr/0024-multi-environment.md)), canary web, k6 thu nhỏ, Velero và Chaos Mesh trên runner
+> ([ADR-0021](adr/0021-deferred-verification-stage6b.md)). ADR 0001–0020, contract ở [`proto/`](../proto/)
 > ([§8](#8-contract)), threat model ở [`threat-model.md`](threat-model.md). `make up` chạy luồng đồng bộ (đăng ký, đăng
 > nhập, tạo và đọc video, follow), luồng upload bất đồng bộ (presigned POST lên object store, outbox → Redpanda, media-worker
 > transcode ra HLS, video `READY` hoặc `FAILED`, job dọn upload bỏ dở), luồng feed (follow qua outbox, feed-service
@@ -351,9 +353,11 @@ flowchart LR
 - **Cài đặt và GitOps** (ADR-0014 §7, §12): `deploy/argocd/apps/components.json` liệt kê 23 thành phần theo wave 0–7
   (cert-manager và Envoy Gateway; namespace, CA, policy; operator và Kyverno; backend dữ liệu, observability và policy
   image `svp-policy`; chart dữ liệu; chart observability; Collector; 6 service và web, web đứng sau gateway). Đường dev `make k8s-up` cài file đó bằng
-  Helm, image tag `dev-<image ID>` build từ working tree vào registry k3d; đường GitOps `make k8s-gitops-up` dựng cluster
-  mới mà Argo CD (app-of-apps, root `svp-root`, AppProject `svp`) đồng bộ từ GitHub, image kéo từ GHCR theo digest mà PR
-  promote ghi vào values (giai đoạn 5, [§5.2](#52-cicd-và-chuỗi-cung-ứng-giai-đoạn-5)).
+  Helm, image tag `dev-<image ID>` build từ working tree vào registry k3d (môi trường dev, values gốc); đường GitOps
+  `make k8s-gitops-up` dựng cluster mới đóng vai stg (values gốc cộng overlay `deploy/k8s/envs/stg/`,
+  [ADR-0024](adr/0024-multi-environment.md)) mà Argo CD (app-of-apps, root `svp-root` với giá trị `env`, AppProject `svp`)
+  đồng bộ từ GitHub qua HTTPS ẩn danh (không deploy key, từ 2026-10-28), image kéo từ GHCR theo digest mà PR promote ghi vào
+  values (giai đoạn 5, [§5.2](#52-cicd-và-chuỗi-cung-ứng-giai-đoạn-5)); overlay prd chỉ render và kiểm tĩnh tới giai đoạn 7.
 - **Canary của gateway** (ADR-0014 §13): Argo Rollouts đổi trọng số HTTPRoute `api` qua plugin Gateway API: 25% → 60 s →
   50% → 60 s → bước phân tích chặn → 100%. Phân tích đọc metric Envoy của backend canary trong Prometheus: tỉ lệ 5xx < 1%
   và p99 < 150 ms (SLO feed), cần ít nhất 30 response không phải 4xx mỗi phút; hỏng hay Prometheus không trả lời thì
@@ -539,19 +543,26 @@ giai đoạn 6b (runner CI 16 GB hay VM thuê theo giờ, không dịch vụ AWS
   (chạy đủ bước và xanh lần đầu ngày 2026-10-24).
 - **Kiểm chứng trên runner** (giai đoạn 6b, [ADR-0021](adr/0021-deferred-verification-stage6b.md)): những gì máy 16 GB không
   chạy nổi (k3d nặng, stack có observability dưới tải, diễn tập đầy đủ) chạy trên runner GitHub `ubuntu-24.04` (4 vCPU, 16 GB,
-  amd64, VM mới mỗi job) bằng workflow `verify.yml`: dispatch tay một kịch bản (`compose-obs`, `dev-k3d`) và lịch hằng tuần trên
-  `main` chạy cả hai, mỗi kịch bản dựng bằng đúng target `make` của máy. Không secret; mỗi lượt có tiêu chí "runner đủ" đo được
+  amd64, VM mới mỗi job) bằng workflow `verify.yml`: dispatch tay một kịch bản (`compose-obs`, `dev-k3d`; từ phần 3 thêm
+  `gitops`, `web-canary`, `k6-cloud-mini`, `chaos`, `velero`) và lịch hằng tuần trên `main` chạy `compose-obs`, `dev-k3d`, mỗi kịch bản dựng bằng đúng target `make` của máy. Không secret; mỗi lượt có tiêu chí "runner đủ" đo được
   (đĩa, `MemAvailable`, OOM, restart của k3s server) để tách lỗi code với giới hạn runner, VM thuê theo giờ chỉ khi runner trượt
   hai lượt liền vì tài nguyên; artifact chỉ theo danh sách cho phép, quét giá trị bí mật. Số của runner (amd64, không VM) chỉ so
   với ngân sách và ngưỡng, không thay số của máy. Phần 1 (2026-10-24 đến 2026-10-25): diễn tập threat model compose và k3d, canary
   gateway, backup hai chế độ, KEDA hai worker, RAM nghỉ (b) của đường dev đạt; RAM đỉnh (a) của đường dev vượt ngân sách của
-  laptop, chấp nhận; LCP `/` chưa đạt.
-- **Dời:** phần sau của giai đoạn 6b: đường GitOps trên runner (image web đã ký, Kyverno, source map của image CI, hai worker và
-  RAM nghỉ), canary web dưới traffic, k6 thu nhỏ, ba thí nghiệm Chaos Mesh (kill pod, chậm mạng, tắt Redpanda), Velero với đích
-  object store trong cluster, ngưỡng canary và HPA của web theo số đo, Velero trên RustFS (mục 12 của ADR-0022). Giai đoạn 7: k6 1 000 req/s, diễn
-  tập phục hồi RDS, Velero với S3 và snapshot EBS, hạn 50 ms của Redis trên ElastiCache. Manifest của phần đo thật kiểm schema
-  bằng `make cloud-check`; LCP mobile mô phỏng: `/v/{id}` đạt 2,5 s trên runner, `/` chưa đạt cả sau khi trang đầu của feed nằm
-  trong HTML (ADR-0020, Kết quả "LCP").
+  laptop, chấp nhận; LCP `/` chưa đạt. Phần 3 (2026-10-26 đến 2026-10-28): cluster GitOps vai stg với image đã ký (Kyverno từ
+  chối manifest con chưa ký của web, threats 16/16, KEDA hai worker cùng transcode hai lượt), RAM nghỉ (b) của đường GitOps
+  **không đạt** (7 510 MiB ở 60 s, phần chênh phần lớn là Argo CD; cắt hay ghi nhận chờ người học), canary web promote và abort
+  đúng với hai bản build thật (Server Action 409 22,6 %, mở việc xét khoá cố định), k6 thu nhỏ đạt tới 2 pod (110 req/s; mức 4
+  trượt, Tempo OOM), ngưỡng p99 canary của web 250 ms, Velero đích RustFS (RTO 58 s, offset giữ), Chaos Mesh: tắt Redpanda 5 phút và
+  kill pod gateway giữ SLO, hai phát hiện (feed-service một replica: feed 5xx 0,28 % khi mất pod; engagement-service chậm 200 ms:
+  18,5 % like hết hạn 3 s vì mỗi round trip Postgres của transaction cũng chậm), sửa trước buổi chaos của giai đoạn 7; LCP sát ngưỡng, chưa ổn định,
+  chuẩn là RUM p75.
+- **Dời:** phần còn lại của giai đoạn 6b:
+  source map của image CI và đo phát hành service có Postgres (`measure-gitops`) ở lượt `gitops` trên `main` sau merge; phần 4
+  (repo GitOps riêng). Giai đoạn 7: k6 1 000 req/s, Chaos Mesh trên EKS (sau khi sửa hai phát hiện),
+  diễn tập phục hồi RDS, Velero với S3 và snapshot EBS, hạn 50 ms của Redis trên ElastiCache. Manifest của phần đo thật kiểm schema
+  bằng `make cloud-check`; LCP mobile mô phỏng sát ngưỡng 2,5 s trên runner mà chưa ổn định, Lighthouse là tín hiệu hồi quy,
+  chuẩn là RUM p75 (ADR-0020, Kết quả "LCP").
 
 ## 6. Sở hữu dữ liệu và event
 
