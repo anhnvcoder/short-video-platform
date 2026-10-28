@@ -6,7 +6,9 @@
 #      BuildKit provenance or SBOM so the image is one plain manifest;
 #   2. `docker save` to OUT/image.tar; trivy reads that very tar (read-only mount), so what is scanned is what step 4
 #      pushes, compared by config digest;
-#   3. scan-gate.sh on the report. A blocked image exits non-zero and nothing after it runs.
+#   3. scan-gate.sh on the report, then grype on the SBOM syft writes of the same tar and scan-gate.sh --grype on its
+#      report. A blocked image (by either gate: both always run, so the summary shows both) exits non-zero and nothing
+#      after it runs.
 # IMAGE is one of the seven services, or drill-vulnerable / drill-unsigned (images built only to drill admission, never
 # run). The web image builds from the context web/ (build_context of deploy/k8s/lib.sh) with SVP_BUILD_ID set to the
 # first 12 hex digits of the commit, the image's tag: both architectures of a commit get the same id, which Next uses
@@ -14,9 +16,9 @@
 # trivy then reads the package.json of every package in the image's node_modules, so npm packages go
 # through the same CRITICAL and secret gate, and syft lists them in the SBOM. ARCH (amd64, arm64) must be this host's
 # architecture. OUT receives:
-#   image.tar, local-tag, platform, config-digest, trivy.json, trivy.sarif, sbom.spdx.json, scan-started,
-#   scan-finished, db-updated-at, and, for web only, sourcemaps/ (below).
-# Only drill-vulnerable passes --allow-critical to the gate; the secret gate holds for every image.
+#   image.tar, local-tag, platform, config-digest, trivy.json, trivy.sarif, sbom.spdx.json, grype.json, grype.sarif,
+#   scan-started, scan-finished, db-updated-at, and, for web only, sourcemaps/ (below).
+# Only drill-vulnerable passes --allow-critical to the gates; the secret gate holds for every image.
 #
 # Web source maps. The image serves its browser chunks without their maps; stage `sourcemaps` of the web Dockerfile
 # holds them. Right after the image, the same builder builds that stage with the same context and build argument into
@@ -167,6 +169,14 @@ docker_ run --rm --network none --user "$(id -u):$(id -g)" --tmpfs /tmp:mode=177
   docker-archive:/image.tar -o spdx-json=/out/sbom.spdx.json -q || fail "write the SBOM of $image"
 jq -e '.spdxVersion' "$out/sbom.spdx.json" >/dev/null 2>&1 || fail "syft wrote no SPDX document for $image"
 
+# grype on that SBOM: a second matcher and DB, and it sees what syft found outside any package manager (the node binary
+# of the web image), which trivy does not list. A DB that cannot be fetched fails the leg, as for trivy.
+started=$SECONDS
+grype_sbom "$out" || fail "scan the SBOM of $image with grype"
+jq -e '.descriptor.name == "grype"' "$out/grype.json" >/dev/null 2>&1 || fail "grype wrote no report for $image"
+binaries=$(sbom_binaries "$out/sbom.spdx.json")
+echo "grype scanned the SBOM of $image in $((SECONDS - started)) s; binaries outside a package manager: ${binaries:-none}"
+
 # SARIF for the Security tab (HIGH and CRITICAL; convert applies the scan's own filters), one category per image and
 # architecture, written into the file so one upload carries every category. Written before the gate decides, so a
 # blocked image still shows its findings on main.
@@ -174,7 +184,11 @@ trivy_ convert --format sarif --severity HIGH,CRITICAL --output /out/trivy.sarif
   fail "convert the report of $image to SARIF"
 jq --arg c "trivy-image-$image-$arch/" '.runs[].automationDetails.id = $c' "$out/trivy.sarif.tmp" >"$out/trivy.sarif"
 rm -f "$out/trivy.sarif.tmp"
+grype_sarif "$out" "grype-image-$image-$arch/"
 
 gate=()
 [ "$image" = drill-vulnerable ] && gate=(--allow-critical)
-"$ci_dir/scan-gate.sh" ${gate[@]+"${gate[@]}"} "$image linux/$arch" "$out/trivy.json"
+blocked=0
+"$ci_dir/scan-gate.sh" ${gate[@]+"${gate[@]}"} "$image linux/$arch" "$out/trivy.json" || blocked=1
+"$ci_dir/scan-gate.sh" ${gate[@]+"${gate[@]}"} --grype "$image linux/$arch" "$out/grype.json" || blocked=1
+exit "$blocked"

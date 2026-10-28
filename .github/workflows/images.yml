@@ -1,6 +1,6 @@
 # Images of the seven services: build only what changed,
-# on native amd64 and arm64 runners; scan the local image with trivy and block secrets and CRITICAL vulnerabilities
-# BEFORE anything is pushed; push exactly what was scanned; join a multi-arch index; sign it keyless with cosign and
+# on native amd64 and arm64 runners; scan the local image with trivy, and its SBOM with grype, and block secrets and
+# CRITICAL vulnerabilities BEFORE anything is pushed; push exactly what was scanned; join a multi-arch index; sign it keyless with cosign and
 # attest the SBOM (syft) and the scan result; promote the signed digests through a pull request; rescan released
 # digests daily. The logic lives in deploy/ci/*.sh, which also run on a machine; this file wires jobs, permissions and
 # artifacts.
@@ -151,12 +151,22 @@ jobs:
           path: ${{ runner.temp }}/trivy-cache/db
           key: trivy-db-${{ steps.day.outputs.day }}
           restore-keys: trivy-db-
+      - &grype-cache
+        # The grype DB, the same way: one entry per day (about 200 MB to download, 3 GB unpacked). grype checks for a
+        # newer DB on every scan that has not checked in the last two hours, and refuses one built more than five days
+        # ago.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/grype-cache
+          key: grype-db-${{ steps.day.outputs.day }}
+          restore-keys: grype-db-
       - &build-scan-gate
         name: Build, scan and gate
         env:
           IMAGE: ${{ matrix.image }}
           ARCH: ${{ matrix.arch }}
           SVP_TRIVY_CACHE: ${{ runner.temp }}/trivy-cache
+          SVP_GRYPE_CACHE: ${{ runner.temp }}/grype-cache
         run: deploy/ci/build-image.sh "$IMAGE" "$ARCH" "$RUNNER_TEMP/leg"
 
   values-check:
@@ -215,6 +225,7 @@ jobs:
       - *checkout
       - *day
       - *trivy-cache
+      - *grype-cache
       - *build-scan-gate
       - name: Push the scanned image, compare its config digest
         env:
@@ -257,7 +268,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sarif-${{ matrix.image }}-${{ matrix.arch }}
-          path: ${{ runner.temp }}/leg/trivy.sarif
+          path: |
+            ${{ runner.temp }}/leg/trivy.sarif
+            ${{ runner.temp }}/leg/grype.sarif
           if-no-files-found: ignore
           retention-days: 7
 

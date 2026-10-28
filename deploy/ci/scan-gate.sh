@@ -6,6 +6,14 @@
 # web image shows trivy only the few npm packages left in its node_modules, since the bundler folds the server's
 # dependencies into its chunks, so the lockfile is where every npm package and its version can still be seen. A
 # blocked lockfile fails the check that ran it; there is no push to stop.
+# scan-gate.sh [--allow-critical] --grype LABEL REPORT: the same gate for the JSON of grype run on the SBOM syft wrote
+# for the image (build-image.sh). syft finds what was installed without a package manager, such as the node binary of
+# the web image, which trivy does not list, so grype sees it through syft's SBOM. Same rules: any Critical match left
+# after .trivyignore.yaml blocks (--allow-critical lets it through), High and below are only counted. grype has no
+# ignore file of its own: an entry of .trivyignore.yaml covers a match when its id is the match's vulnerability or one
+# of its related vulnerabilities, and one of its purls is the match's package (grype_ignore_jq of common.sh). Stricter
+# than for trivy, which leaves an expired entry out and scans on: here an expired entry fails the gate (the file, not
+# a vulnerability), so the date is dealt with before anything ships.
 # scan-gate.sh --check-ignorefile: checks only the rules of .trivyignore.yaml (below), with no image and no report, and
 # those of deploy/ci/trivy-config-ignore.yaml, the misconfigurations make trivy-config leaves out.
 # Job config of ci.yml runs it on every pull request and
@@ -21,7 +29,7 @@
 #     through (only for the drill image drill-vulnerable and for the daily rescan, which records the real result); it
 #     never lets a secret through.
 # HIGH and below are only reported: counts in the job summary, details in the SARIF.
-# Also blocks when .trivyignore.yaml breaks its rules (below). Exit 2: REPORT is not a trivy report.
+# Also blocks when .trivyignore.yaml breaks its rules (below). Exit 2: REPORT is not a report of the expected kind.
 #
 # Prints counts and, for findings that block, rule or vulnerability ID, package or file, line: never the matched
 # text (trivy masks secrets in its findings anyway; the raw report is never printed).
@@ -37,14 +45,21 @@ artifact=image
 if [ "${1:-}" = --check-ignorefile ]; then
   [ $# -eq 1 ] || fail "usage: scan-gate.sh --check-ignorefile"
   check_only=true
-elif [ "${1:-}" = --allow-critical ]; then
-  allow_critical=true
-  shift
 elif [ "${1:-}" = --fs ]; then
   artifact=fs
   shift
+else
+  if [ "${1:-}" = --allow-critical ]; then
+    allow_critical=true
+    shift
+  fi
+  if [ "${1:-}" = --grype ]; then
+    artifact=grype
+    shift
+  fi
 fi
-[ "$check_only" = true ] || [ $# -eq 2 ] || fail "usage: scan-gate.sh [--allow-critical | --fs] LABEL REPORT"
+[ "$check_only" = true ] || [ $# -eq 2 ] ||
+  fail "usage: scan-gate.sh [--allow-critical] [--grype] LABEL REPORT | --fs LABEL REPORT | --check-ignorefile"
 label=${1:-} report=${2:-}
 
 # statement_awk: the awk function both checks below read a statement line with (sq is the single quote, passed with -v).
@@ -85,11 +100,14 @@ statement_awk='
 #       expired_at: 2026-11-19
 #       purls:
 #         - pkg:apk/alpine/ffmpeg
+# check_ignorefile [--expired]: with --expired (the grype gate), an entry whose expired_at is today or earlier breaks
+# the rules too.
 check_ignorefile() {
   [ -f "$trivyignore" ] || return 0
-  local limit
+  local limit today=
   limit=$(date -u -d '+30 days' +%F 2>/dev/null || date -u -v+30d +%F)
-  awk -v limit="$limit" -v sq="'" "$statement_awk"'
+  [ "${1:-}" != --expired ] || today=$(date -u +%F)
+  awk -v limit="$limit" -v today="$today" -v sq="'" "$statement_awk"'
     function bad_at(line, msg) { printf "FAIL  .trivyignore.yaml:%d: %s\n", line, msg; failed = 1 }
     function bad(msg) { bad_at(NR, msg) }
     function close_item() {
@@ -99,6 +117,8 @@ check_ignorefile() {
         bad_at(start, "entry " id " has no expired_at yyyy-mm-dd")
       else if (expired > limit)
         bad_at(start, "entry " id " expires " expired ", more than 30 days from today (" limit ")")
+      else if (today != "" && expired <= today)
+        bad_at(start, "entry " id " expired on " expired ": renew it with a reason, or remove it")
     }
     /^[ ]*(#.*)?$/ { next }
     /^vulnerabilities:[ ]*$/ { if (root++) bad("vulnerabilities: twice"); next }
@@ -207,6 +227,53 @@ if [ "$check_only" = true ]; then
   else checked=1; fi
   [ "$checked" -eq 0 ] || fail "an ignore file breaks its rules"
   exit 0
+fi
+
+# grype: its own report, its own exceptions; the rest of the script reads trivy reports only.
+if [ "$artifact" = grype ]; then
+  jq -e '.descriptor.name == "grype" and (.matches | type == "array")' "$report" >/dev/null 2>&1 ||
+    {
+      echo "FAIL  $label: $report is not a grype JSON report (descriptor.name grype, a matches array)" >&2
+      exit 2
+    }
+  blocked=0
+  if ! check_ignorefile --expired; then
+    echo "FAIL  .trivyignore.yaml breaks its rules: fix it before anything is pushed" >&2
+    blocked=1
+  fi
+  # kept: the matches no live entry covers, with the count of those it does.
+  kept=$(jq -c --argjson entries "$(trivyignore_json)" --arg today "$(date -u +%F)" "$grype_ignore_jq"'
+    ($entries | live($today)) as $live
+    | {kept: [.matches[] | select(ignored($live) | not)], ignored: [.matches[] | select(ignored($live))] | length}' \
+    "$report")
+  counts=$(jq -r '[.kept[].vulnerability.severity] as $s
+    | [("Critical", "High", "Medium", "Low", "Negligible", "Unknown") as $l | [$s[] | select(. == $l)] | length]
+    + [.ignored] | @tsv' <<<"$kept")
+  read -r critical high medium low negligible unknown ignored <<<"$counts"
+  row="$label (grype)"
+  ci_summary "| Image | CRITICAL | HIGH | MEDIUM | LOW | NEGLIGIBLE | UNKNOWN | Excepted |" \
+    "| --- | --- | --- | --- | --- | --- | --- | --- |" \
+    "| $row | $critical | $high | $medium | $low | $negligible | $unknown | $ignored |" ""
+  if ci_has_summary; then
+    echo "$row: CRITICAL $critical, HIGH $high, MEDIUM $medium, LOW $low, NEGLIGIBLE $negligible, UNKNOWN $unknown," \
+      "excepted $ignored"
+  fi
+  if [ "$critical" -gt 0 ]; then
+    jq -r '.kept[] | select(.vulnerability.severity == "Critical")
+      | ([.relatedVulnerabilities[]?.id | select(. != "")] | unique | join(", ")) as $rel
+      | (.vulnerability.fix.versions // [] | join(", ")) as $fix
+      | "critical  \(.vulnerability.id)\(if $rel != "" then " (\($rel))" else "" end) \(.artifact.name)@\(.artifact.version)"
+        + " \(.artifact.purl // "no purl") (fixed: \(if $fix != "" then $fix else "none" end))"' <<<"$kept" |
+      ci_summary_tee >&2
+    if [ "$allow_critical" = true ]; then
+      echo "note  $row: $critical Critical vulnerabilities let through (--allow-critical)" >&2
+    else
+      echo "FAIL  $row: $critical Critical vulnerabilities; nothing is pushed, signed or attested" >&2
+      blocked=1
+    fi
+  fi
+  [ "$blocked" -eq 0 ] && echo "ok    $row passes the scan gate"
+  exit "$blocked"
 fi
 
 # Each mode takes only its own kind of report, so an image report cut short (no ImageID) never passes as a lockfile's.

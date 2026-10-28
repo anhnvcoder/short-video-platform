@@ -63,9 +63,9 @@ paths:
                     $ref: "#/components/schemas/Id"
         "400":
           description: |
-            A body that is not one JSON object with known fields (`INVALID_JSON`), or an invalid
-            `email` (`INVALID_EMAIL`), `password` (`INVALID_PASSWORD`), `handle` (`INVALID_HANDLE`)
-            or `display_name` (`INVALID_DISPLAY_NAME`), checked in that order.
+            A body that is not one JSON object with known, non-null fields (`INVALID_JSON`), or an
+            invalid `email` (`INVALID_EMAIL`), `password` (`INVALID_PASSWORD`), `handle`
+            (`INVALID_HANDLE`) or `display_name` (`INVALID_DISPLAY_NAME`), checked in that order.
           content:
             application/problem+json:
               schema:
@@ -325,7 +325,7 @@ paths:
                 $ref: "#/components/schemas/Profile"
         "400":
           description: |
-            A body that is not one JSON object with known fields (`INVALID_JSON`), or a
+            A body that is not one JSON object with known, non-null fields (`INVALID_JSON`), or a
             `display_name` that breaks its rules (`INVALID_DISPLAY_NAME`).
           content:
             application/problem+json:
@@ -1119,9 +1119,11 @@ components:
     RefreshTokenRequest:
       type: object
       additionalProperties: false
-      required: [refresh_token]
       properties:
         refresh_token:
+          description: |
+            A missing or empty `refresh_token` is not a 400: it is answered like any other token
+            that cannot be used (401 on refresh, 204 on logout).
           type: string
 
     Video:
@@ -1352,9 +1354,9 @@ components:
             $ref: "#/components/schemas/Status"
     BadRequest:
       description: |
-        Invalid request: a body that is not one JSON object with known fields (`INVALID_JSON`), a
-        path or query that is not valid UTF-8 (`INVALID_UTF8`), or an argument the service rejects
-        (its reason, for example `INVALID_TITLE`).
+        Invalid request: a body that is not one JSON object with known, non-null fields
+        (`INVALID_JSON`), a path or query that is not valid UTF-8 (`INVALID_UTF8`), or an argument the
+        service rejects (its reason, for example `INVALID_TITLE`).
       content:
         application/problem+json:
           schema:

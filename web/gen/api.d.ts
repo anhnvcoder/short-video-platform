@@ -544,7 +544,11 @@ export interface components {
             refresh_expires_at: string;
         };
         RefreshTokenRequest: {
-            refresh_token: string;
+            /**
+             * @description A missing or empty `refresh_token` is not a 400: it is answered like any other token
+             *     that cannot be used (401 on refresh, 204 on logout).
+             */
+            refresh_token?: string;
         };
         Video: {
             video_id: components["schemas"]["Id"];
@@ -726,9 +730,9 @@ export interface components {
             };
         };
         /**
-         * @description Invalid request: a body that is not one JSON object with known fields (`INVALID_JSON`), a
-         *     path or query that is not valid UTF-8 (`INVALID_UTF8`), or an argument the service rejects
-         *     (its reason, for example `INVALID_TITLE`).
+         * @description Invalid request: a body that is not one JSON object with known, non-null fields
+         *     (`INVALID_JSON`), a path or query that is not valid UTF-8 (`INVALID_UTF8`), or an argument the
+         *     service rejects (its reason, for example `INVALID_TITLE`).
          */
         BadRequest: {
             headers: {
@@ -869,9 +873,9 @@ export interface operations {
                 };
             };
             /**
-             * @description A body that is not one JSON object with known fields (`INVALID_JSON`), or an invalid
-             *     `email` (`INVALID_EMAIL`), `password` (`INVALID_PASSWORD`), `handle` (`INVALID_HANDLE`)
-             *     or `display_name` (`INVALID_DISPLAY_NAME`), checked in that order.
+             * @description A body that is not one JSON object with known, non-null fields (`INVALID_JSON`), or an
+             *     invalid `email` (`INVALID_EMAIL`), `password` (`INVALID_PASSWORD`), `handle`
+             *     (`INVALID_HANDLE`) or `display_name` (`INVALID_DISPLAY_NAME`), checked in that order.
              */
             400: {
                 headers: {
@@ -1127,7 +1131,7 @@ export interface operations {
                 };
             };
             /**
-             * @description A body that is not one JSON object with known fields (`INVALID_JSON`), or a
+             * @description A body that is not one JSON object with known, non-null fields (`INVALID_JSON`), or a
              *     `display_name` that breaks its rules (`INVALID_DISPLAY_NAME`).
              */
             400: {
