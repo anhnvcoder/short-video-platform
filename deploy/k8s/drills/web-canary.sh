@@ -416,9 +416,9 @@ good_canary() {
       label: $label, image_tag: $tag, template_hash: $hash, outcome: "promoted",
       analysis_runs: {background: ($runs | split(" ")[0]), gate: ($runs | split(" ")[1])},
       upgrade_at_ms: $t0, window_end_ms: $tend, steps: $steps,
-      first_at_weight_ms: ([25, 50] | map(tostring as $w | {key: $w, value: ([$steps[] | select(.weight == $w)][0].at_ms // null)})
+      first_at_weight_ms: ([25, 50] | map(tostring as $w | {key: $w, value: ([$steps[] | select((.weight | tostring) == $w)][0].at_ms // null)})
         | from_entries),
-      promoted_after_s: (([$steps[] | select(.phase == "Healthy")] | .[0].at_ms // $tend) - $t0) / 1000,
+      promoted_after_s: ((([$steps[] | select(.phase == "Healthy")] | .[0].at_ms // $tend) - $t0) / 1000),
       requests: $w[0], clients: $c[0]}' >"$work/phase-$label.json"
 }
 
