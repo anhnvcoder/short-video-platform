@@ -196,9 +196,10 @@ global:
   image:
     repository: quay.io/argoproj/argocd
     tag: v3.5.5@sha256:13db7b10db23283b1b36f855046602e18539a8a8204c9f6f039e8896c8897518
-# The chart's Redis, from its default registry (Amazon ECR Public's mirror of Docker Hub's library/redis, the same
-# digest as docker.io/library/redis:8.6.4-alpine).
+# The chart's Redis from Docker Hub rather than the chart's default registry (Amazon ECR Public's mirror of the same
+# library/redis, same digest): anonymous pulls from ECR Public answered 429 Too Many Requests on a shared CI runner
+# address for the whole install, while the Docker Hub images of the other charts pulled there.
 redis:
   image:
-    repository: ecr-public.aws.com/docker/library/redis
+    repository: docker.io/library/redis
     tag: 8.6.4-alpine@sha256:2cc044fc5a07c9b701f8f1255a309ae9ad7856e694ac03513bf3648c01e40763
