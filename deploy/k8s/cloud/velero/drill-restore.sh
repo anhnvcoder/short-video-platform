@@ -235,10 +235,10 @@ from_template() {
 no_secret_in() {
   local req=$1-list url
   from_template download-request.yaml "$req" "$1" | kc apply -f - >/dev/null || die "create DownloadRequest $req"
-  has_url() { [ -n "$(kc -n velero get downloadrequest "$req" -o jsonpath='{.status.downloadURL}' 2>/dev/null)" ]; }
+  has_url() { [ -n "$(kc -n velero get downloadrequests.velero.io "$req" -o jsonpath='{.status.downloadURL}' 2>/dev/null)" ]; }
   wait_for "the signed URL of DownloadRequest $req" 120 has_url
-  url=$(kc -n velero get downloadrequest "$req" -o jsonpath='{.status.downloadURL}')
-  kc -n velero delete downloadrequest "$req" --ignore-not-found >/dev/null
+  url=$(kc -n velero get downloadrequests.velero.io "$req" -o jsonpath='{.status.downloadURL}')
+  kc -n velero delete downloadrequests.velero.io "$req" --ignore-not-found >/dev/null
   curl -fsS "$url" | gunzip >"$work/resources.json" || die "download the resource list of backup $1"
   jq -r 'keys[]' "$work/resources.json" >"$work/resource-kinds"
   ! grep -Eq '(^|/)Secret$' "$work/resource-kinds"
@@ -724,9 +724,9 @@ cmd_sweep() {
       [ -z "$list" ]
     }
     [ "$n" -eq 0 ] || wait_for "Velero to delete the backups and their snapshots (errors: kubectl --context $ctx -n velero \
-get deletebackuprequests -o jsonpath='{..status.errors}')" 900 gone
+get deletebackuprequests.velero.io -o jsonpath='{..status.errors}')" 900 gone
     kc -n velero delete restores.velero.io -l svp-drill=velero-restore --ignore-not-found >/dev/null
-    kc -n velero delete deletebackuprequests -l svp-drill=velero-restore --ignore-not-found >/dev/null
+    kc -n velero delete deletebackuprequests.velero.io -l svp-drill=velero-restore --ignore-not-found >/dev/null
     ok "$n backups deleted (drill and svp-daily); drill restores removed"
   fi
   local left

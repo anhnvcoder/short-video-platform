@@ -244,7 +244,7 @@ velero_ready() {
   local deadline=$((SECONDS + 300))
   until velero_bsl_available; do
     if [ "$SECONDS" -ge "$deadline" ]; then
-      kc -n velero describe backupstoragelocation default || true
+      kc -n velero describe backupstoragelocations.velero.io default || true
       fail "BackupStorageLocation velero/default Available within 300 s (status above: the login of Secret velero/velero-s3, bucket velero, NetworkPolicy svp-data/velero-s3)"
     fi
     sleep 5
