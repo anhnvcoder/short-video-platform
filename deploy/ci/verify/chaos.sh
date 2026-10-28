@@ -11,10 +11,11 @@
 #                         deploy/k8s/cloud/runner/chaos-mesh/values.yaml (the socket of k3s's containerd); then the
 #                         controller and a chaos-daemon on every node ready, the CRDs there, the controller namespaced
 #                         on svp alone
-#   chaos-b-trial         a test pod chaos-probe in svp (the media-worker image: a shell and nc); under the step's k6
-#                         run, 20 TCP connections in a row to the cluster DNS Service before (its baseline), during and
-#                         after deploy/k8s/cloud/chaos/b-trial-network-delay-probe.yaml; passes when each connection took
-#                         at least 150 ms more during and at most 50 ms more after
+#   chaos-b-trial         the kernel module sch_netem loaded on the runner (see Kernel module below); a test pod
+#                         chaos-probe in svp (the media-worker image: a shell and nc); under the step's k6 run, 20 TCP
+#                         connections in a row to the cluster DNS Service before (its baseline), during and after
+#                         deploy/k8s/cloud/chaos/b-trial-network-delay-probe.yaml; passes when each connection took at
+#                         least 150 ms more during and at most 50 ms more after
 #   chaos-a               under the step's k6 run: 5 min steady state; a gateway pod killed (a-pod-kill-gateway.yaml)
 #                         and 5 min after the kill; a feed-service pod killed (a-pod-kill-feed-service.yaml) and 5 min
 #                         after; the window after the gateway kill, from 30 s on, is the steady state the second kill
@@ -27,18 +28,39 @@
 #                         videos are uploaded through the API; its return (the broker Ready again); the 3 videos READY
 #                         within 15 min, each transcoded and announced once; the lag of every consumer group back (see
 #                         Lag below) and the dead-letter topics unchanged 10 min after the return
-#   chaos-mesh-uninstall  every experiment deleted and gone first; then the commands of the end of a cloud session: helm
-#                         uninstall, namespace chaos-mesh deleted, the CRDs *.chaos-mesh.org deleted; then nothing of
-#                         Chaos Mesh left: no experiment, CRD, webhook configuration, ClusterRole, ClusterRoleBinding,
-#                         Role or RoleBinding of the release, no namespace; a k6 Job a step cut short left behind is
-#                         deleted too
+#   chaos-mesh-uninstall  its diagnostics (see Diagnostics below); every experiment deleted and gone first; then the
+#                         commands of the end of a cloud session: helm uninstall, namespace chaos-mesh deleted, the
+#                         CRDs *.chaos-mesh.org deleted; then nothing of Chaos Mesh left: no experiment, CRD, webhook
+#                         configuration, ClusterRole, ClusterRoleBinding, Role or RoleBinding of the release, no
+#                         namespace; a k6 Job a step cut short left behind is deleted too
 #
-# chaos-b-trial and chaos-b need the kernel module sch_netem (the k3d nodes share the runner's kernel):
-# deploy/ci/verify-host.sh writes loaded or absent to $SVP_VERIFY_OUT/sch-netem, and without it both are skipped with
-# that reason. chaos-b is skipped too when the trial did not pass. When seed-videos or chaos-mesh-install did not pass,
-# the experiments are skipped. An experiment that cannot start, or a step whose stop leaves the cluster unsteady,
-# writes a stop mark ($SVP_VERIFY_OUT/chaos-state/stop): the later experiments are skipped with its reason.
-# chaos-mesh-uninstall always runs.
+# Kernel module: the network delay of chaos-b-trial and chaos-b is a netem qdisc that chaos-daemon adds in the target
+# pod's network namespace, so the kernel module sch_netem must be there (the k3d nodes share the runner's kernel). The
+# trial checks it first (chaos_netem): loaded or built in, else loaded with modprobe; when the modules of the running
+# kernel do not have it, linux-modules-extra-<kernel> (where Ubuntu's cloud kernels keep it) is installed first, on a
+# runner's VM that serves this one job. The delay shapes only the egress of the target pods (direction to, no target),
+# so ifb, which shaping of ingress would need, is not. sch_netem not loaded at the end fails the trial with that reason
+# (trial.kernel in the results); chaos-b is skipped whenever the trial did not pass, with the trial's reason. When
+# seed-videos or chaos-mesh-install did not pass, the experiments are skipped. An experiment that cannot start, or a
+# step whose stop leaves the cluster unsteady, writes a stop mark ($SVP_VERIFY_OUT/chaos-state/stop): the later
+# experiments are skipped with its reason. chaos-mesh-uninstall always runs.
+#
+# The controller's webhook: every experiment is admitted through the webhooks of Chaos Mesh's controller, which the
+# API server calls at Service chaos-mesh-controller-manager, and the controller has no readiness probe: its endpoint is
+# Ready while its container runs, missing while it crashes or restarts (a helm upgrade that changes its target
+# namespace restarts it). Before each apply, and after the helm upgrade of chaos-c, the step waits at most 120 s for a
+# Ready endpoint of that Service (chaos_controller_ready; the wait counts in the hold as part controller), and fails
+# with that reason when none comes. Each wait, with the controller's pod and restarts, is in <experiment>.controller.
+#
+# Diagnostics: a step whose experiment failed (from its exit, before its k6 run's end is awaited), and the uninstall
+# whatever its result, write .k8s/drills/chaos-<time>-diagnostics-<step>.json beside the results (chaos_diag): Chaos
+# Mesh's pods (node, IP, each container's state, restarts and how its last run ended), the Ready endpoints of the
+# webhook, the leader lease, the events of namespace chaos-mesh, the status of each experiment of the step (conditions,
+# the record of each target container with its events) as read just before it was deleted, and the last 200 lines of
+# the log (and of the run before, after a restart) of the controller and of chaos-daemon on the node of the step's
+# target. deploy/ci/verify-collect.sh keeps .k8s/drills/*.json, scanned for every secret value; these come apart from
+# the results so that a scan that drops one leaves the results in the artifact. Chaos Mesh is a third-party component
+# outside namespace svp, and no Secret is read.
 #
 # The load: each experiment runs under a k6 run of its own, started at the beginning of its step (chaos_k6_begin:
 # setup(), the ramp, then the experiment's own steady state) and ended at its end, however the experiment ended
@@ -90,8 +112,8 @@
 # checks at its ends, each experiment's numbers, findings and result, its baseline (the part of its own results its
 # hypothesis is held against: <experiment>.k6.baseline), its k6 run (<experiment>.k6: level, the hold's arithmetic,
 # the hold window; <experiment>.k6_end: the summaries, the runner's checks over the hold window), what the uninstall
-# left. Each run's hold window also goes to $SVP_VERIFY_OUT/k6-windows.tsv (label chaos-<experiment>), for the
-# throttle criterion of deploy/ci/verify-sample.sh.
+# left, and the name of each diagnostics file (<step>.diagnostics). Each run's hold window also goes to
+# $SVP_VERIFY_OUT/k6-windows.tsv (label chaos-<experiment>), for the throttle criterion of deploy/ci/verify-sample.sh.
 #
 # Stopped by a signal (the run cancelled, or a step's limit reached, which verify-run.sh turns into TERM with 120 s
 # before KILL): the step deletes the experiments and waits up to 40 s for them to be gone. Chaos Mesh's finalizer lets
@@ -100,7 +122,7 @@
 # back (chaos-mesh-uninstall, which always runs, waits longer). Then it deletes the k6 Job (run.sh delete), its
 # summaries unread: the later experiments are skipped. The stop mark is written first; each request is bounded (5 s,
 # helm uninstall 20 s, run.sh delete 25 s), which fits those 120 s while the API answers, and a KILL that comes first
-# still leaves the mark and chaos-mesh-uninstall to follow.
+# still leaves the mark and chaos-mesh-uninstall to follow. It writes no diagnostics: chaos-mesh-uninstall does.
 #
 # A step that ends otherwise before its k6 run's end (an early stop, k6 not holding its load, no steady state, a
 # failed request) still ends that run on its exit as the step's end does (chaos_k6_finish), once the run has reached
@@ -132,22 +154,24 @@ chaos_config() {
   # Profile cloud ramps down over 1 min after its hold (deploy/k6/lib/config.js).
   chaos_ramp_down_s=60
   # The hold of each experiment's k6 run, its parts in seconds, each at its longest; run.sh --hold is their sum
-  # rounded up to whole minutes, the Job's deadline 2 + hold + 1 + 15 min (render.sh):
-  #   trial  window 240 (20 connections before, the delay injected (60), 20 during, the experiment deleted (60), up
-  #          to three runs after over 30 s), margin 120: 360 s, --hold 6m
-  #   a      steady 300, settle 30 (Prometheus has a window's last samples 30 s after it closed), gateway 360 (the
-  #          kill seen (60) and the 300 s after it), settle 30, feed-service 360, settle 30, margin 120: 1230 s, 21m
-  #   b      steady 300, settle 30, delay 420 (injected (60), 300 delayed, deleted (60)), recovery 120, settle 30,
-  #          margin 120: 1020 s, 17m
-  #   c      steady 300, settle 30, outage 480 (injected (60), 300 down, deleted (120)), broker 120 (Ready again),
-  #          videos 900 (READY; the lag and the dead-letter topics within it), topics 60, settle 30, margin 120:
-  #          2040 s, 34m
+  # rounded up to whole minutes, the Job's deadline 2 + hold + 1 + 15 min (render.sh). controller is the wait for the
+  # webhook's endpoint before an apply (chaos_controller_ready, 120 s at most):
+  #   trial  controller 120, window 240 (20 connections before, the delay injected (60), 20 during, the experiment
+  #          deleted (60), up to three runs after over 30 s), margin 120: 480 s, --hold 8m
+  #   a      steady 300, settle 30 (Prometheus has a window's last samples 30 s after it closed), controller 120,
+  #          gateway 360 (the kill seen (60) and the 300 s after it), settle 30, controller 120, feed-service 360,
+  #          settle 30, margin 120: 1470 s, 25m
+  #   b      steady 300, settle 30, controller 120, delay 420 (injected (60), 300 delayed, deleted (60)), recovery
+  #          120, settle 30, margin 120: 1140 s, 19m
+  #   c      steady 300, settle 30, controller 120, outage 480 (injected (60), 300 down, deleted (120)), broker 120
+  #          (Ready again), videos 900 (READY; the lag and the dead-letter topics within it), topics 60, settle 30,
+  #          margin 120: 2160 s, 36m
   # The longest, c, with setup() at its limit (15 min, the image pull included), the ramp and the ramp down: 15 + 2 +
-  # 34 + 1 = 52 min, within chaos_access_s.
-  chaos_hold_trial='window:240 margin:120'
-  chaos_hold_a='steady:300 settle:30 gateway:360 settle:30 feed-service:360 settle:30 margin:120'
-  chaos_hold_b='steady:300 settle:30 delay:420 recovery:120 settle:30 margin:120'
-  chaos_hold_c='steady:300 settle:30 outage:480 broker:120 videos:900 topics:60 settle:30 margin:120'
+  # 36 + 1 = 54 min, within chaos_access_s.
+  chaos_hold_trial='controller:120 window:240 margin:120'
+  chaos_hold_a='steady:300 settle:30 controller:120 gateway:360 settle:30 controller:120 feed-service:360 settle:30 margin:120'
+  chaos_hold_b='steady:300 settle:30 controller:120 delay:420 recovery:120 settle:30 margin:120'
+  chaos_hold_c='steady:300 settle:30 controller:120 outage:480 broker:120 videos:900 topics:60 settle:30 margin:120'
   # How long after its Job's start a k6 run may last: the pool's access tokens are issued in setup(), after that
   # start, and live an hour; the 5 min left are a margin.
   chaos_access_s=3300
@@ -165,6 +189,9 @@ chaos_config() {
     svp:networkchaos:network-delay-engagement svp-data:podchaos:redpanda-failure'
   chaos_feed_sel='service_name="gateway",http_request_method="GET",http_route=~"/feed/following|/feed/explore"'
   chaos_written= chaos_key= chaos_step= chaos_why= chaos_high_since= chaos_watched_at= chaos_watch_unread=0 prom_pid=
+  # The pods the step's experiment targets, "NAMESPACE APP" (label app.kubernetes.io/name), whose nodes' chaos-daemon
+  # logs go into the step's diagnostics (chaos_diag); and whether the step wrote them.
+  chaos_target= chaos_diag_done=
   # What the step's exit does with a k6 run it started and has not finished (chaos_on_exit): delete, or finish once
   # the run has reached its hold within the pool's access (chaos_k6_begin).
   chaos_k6_live=
@@ -279,9 +306,9 @@ chaos_teardown() {
 }
 
 # chaos_guard STEP KEY: the step's traps; KEY is its part of the results file. On exit: the port-forward stopped, the
-# work directory of the API helpers removed, a fail result when the step wrote none, then a k6 run the step started
-# and did not finish: finished as the step's end would have (chaos_k6_finish) once it reached its hold, deleted
-# otherwise. On INT or TERM: see the header.
+# work directory of the API helpers removed, a fail result when the step wrote none, the diagnostics of a failed step
+# (chaos_diag_failed), then a k6 run the step started and did not finish: finished as the step's end would have
+# (chaos_k6_finish) once it reached its hold, deleted otherwise. On INT or TERM: see the header.
 chaos_guard() {
   chaos_step=$1 chaos_key=$2
   trap 'chaos_on_exit' EXIT
@@ -293,6 +320,7 @@ chaos_on_exit() {
   if [ -z "$chaos_written" ] && [ -n "$chaos_key" ]; then
     chaos_fail "$chaos_key" "the step $chaos_step stopped before its result (see its log)"
   fi
+  chaos_diag_failed
   case $chaos_k6_live in
     finish)
       echo "chaos: $chaos_step ended before its k6 run: its Job's end awaited and its summaries read before it is deleted"
@@ -314,7 +342,9 @@ chaos_on_signal() {
     chaos_mark_stop "$stopped; an experiment was not gone within $chaos_trap_wait_s s, so Chaos Mesh was left for its controller to take the fault back; the k6 Job deleted"
   fi
   timeout 25 "${chaos_k6_run[@]}" delete || echo "chaos: run.sh delete failed"
-  chaos_k6_live=
+  # No diagnostics on the way out: their requests would not fit the time left before KILL, and chaos-mesh-uninstall
+  # writes them.
+  chaos_k6_live= chaos_diag_done=1
   exit 143
 }
 
@@ -442,9 +472,11 @@ chaos_k6_begin() {
 # (an early stop, k6 not holding its load, no steady state), from its exit: waits for the Job to end (the rest of its
 # hold and its ramp down; 5 min past the hold window at most), reads each pod's summary (run.sh logs), deletes the
 # Job; the hold window into $SVP_VERIFY_OUT/k6-windows.tsv and the runner's checks over it (k6mini_runner). KEY's
-# k6_end part of the results file; true when the summary was read and the runner was enough.
+# k6_end part of the results file; true when the summary was read and the runner was enough. A failed experiment's
+# diagnostics come first (chaos_diag_failed): the logs they keep are those of the failure, not of the minutes after.
 chaos_k6_finish() {
   local key=$1 from to deadline ended oom out dir runner end rc=0
+  chaos_diag_failed
   read -r from to < <(jq -r '"\(.hold_from) \(.hold_to)"' "$chaos_state/k6.json")
   deadline=$((to + 300))
   ended=$(k6mini_job_ended)
@@ -679,9 +711,16 @@ chaos_injected() {
 # chaos_delete_watched NAMESPACE KIND NAME SECONDS: deletes the experiment and waits at most SECONDS for it to be gone
 # (Chaos Mesh's finalizer lets it go once its fault is taken back), the early stop checked meanwhile: a stop it calls
 # for is logged, the experiment being on its way out already, and the recovery's checks that follow see it again while
-# it lasts. False when the experiment is not gone in time.
+# it lasts. Its status is read first, for the step's diagnostics (chaos_diag_object). False when the experiment is not
+# gone in time.
 chaos_delete_watched() {
-  local deadline=$(($(date +%s) + $4)) out
+  local deadline out
+  # The two reads of the diagnostics take up to 5 s each: with the watch due every 15 s and checked again right after
+  # them, no more than 25 s pass between two checks of the early stop.
+  chaos_watch_due || echo "early stop called for before $2 $3 is deleted: $chaos_why"
+  chaos_diag_object "$1" "$2" "$3"
+  chaos_watch_due || echo "early stop called for before $2 $3 is deleted: $chaos_why"
+  deadline=$(($(date +%s) + $4))
   kc -n "$1" delete "$2" "$3" --ignore-not-found --wait=false >/dev/null || echo "delete $2 $3 failed"
   while [ "$(date +%s)" -lt "$deadline" ]; do
     chaos_watch_due || echo "early stop called for while $2 $3 is being deleted: $chaos_why"
@@ -691,6 +730,207 @@ chaos_delete_watched() {
     sleep 2
   done
   echo "$2 $3 not gone within $4 s of its deletion"
+  return 1
+}
+
+# --- Chaos Mesh itself: its webhook before an apply, the diagnostics, the kernel module of the delay.
+
+# chaos_controller_ready WHEN: waits at most 120 s for a Ready endpoint of Service chaos-mesh-controller-manager (see
+# The controller's webhook in the header), polling its EndpointSlices every 5 s; WHEN names the moment. Prints one line
+# and records the wait, the endpoints and the controller's pods (node, restarts) as controller.WHEN of the step's part
+# of the results file; false, with chaos_why, when no endpoint was Ready in time. No fault is applied while it waits.
+chaos_controller_ready() {
+  local start t n pods
+  start=$(date +%s)
+  while :; do
+    n=$(kc --request-timeout=10s -n chaos-mesh get endpointslices -l kubernetes.io/service-name=chaos-mesh-controller-manager \
+      -o json 2>/dev/null | jq '[.items[].endpoints[]?
+        | select(.conditions.ready != false and .conditions.terminating != true) | .addresses[]] | length' 2>/dev/null)
+    t=$(date +%s)
+    [[ ${n:-} =~ ^[1-9] ]] && break
+    [ $((t - start)) -lt 120 ] || break
+    sleep 5
+  done
+  [[ ${n:-} =~ ^[0-9]+$ ]] || n=null
+  pods=$(kc --request-timeout=10s -n chaos-mesh get pods -l app.kubernetes.io/component=controller-manager -o json 2>/dev/null |
+    jq -c '[.items[] | {pod: .metadata.name, node: .spec.nodeName,
+      restarts: ([.status.containerStatuses[]?.restartCount] | add // 0)}]' 2>/dev/null)
+  [ -n "$pods" ] || pods=null
+  chaos_put "$chaos_key" "$(jq -nc --arg w "$1" --argjson n "$n" --argjson s $((t - start)) --argjson p "$pods" '
+    {controller: {($w): {ready_endpoints: $n, waited_s: $s, ready: ($n != null and $n > 0), pods: $p}}}')"
+  if [[ $n =~ ^[1-9] ]]; then
+    echo "controller: the webhook's endpoint Ready after $((t - start)) s ($1; pods: $(jq -r 'if . == null then "unread"
+      elif length == 0 then "none" else map("\(.pod) on \(.node), \(.restarts) restart(s)") | join("; ") end' <<<"$pods"))"
+    return 0
+  fi
+  chaos_why="the controller's webhook (Service chaos-mesh-controller-manager) had no Ready endpoint within 120 s"
+  chaos_why+=" ($1; pods: $(jq -r 'if . == null then "unread" elif length == 0 then "none"
+    else map("\(.pod), \(.restarts) restart(s)") | join("; ") end' <<<"$pods"))"
+  echo "FAIL  $chaos_why"
+  return 1
+}
+
+# chaos_diag_object NAMESPACE KIND NAME: the experiment's status (its conditions; the record of each target container,
+# with its events) and the Kubernetes events about it, read just before it is deleted, into the state directory for the
+# step's diagnostics (chaos_diag); an experiment the API did not answer for is recorded as unread.
+chaos_diag_object() {
+  local obj ev
+  mkdir -p "$chaos_state"
+  obj=$(kc --request-timeout=5s -n "$1" get "$2" "$3" --ignore-not-found -o json 2>/dev/null) || obj=unread
+  ev=$(kc --request-timeout=5s -n "$1" get events --field-selector "involvedObject.name=$3" -o json 2>/dev/null |
+    jq -c '[.items[] | {type, reason, message, count, last: (.lastTimestamp // .eventTime)}]' 2>/dev/null)
+  [ -n "$ev" ] || ev=null
+  jq -nc --arg ns "$1" --arg kind "$2" --arg name "$3" --arg obj "$obj" --argjson ev "$ev" --argjson t "$(date +%s)" '
+    {namespace: $ns, kind: $kind, name: $name, read_at: ($t | todate),
+     status: (if $obj == "unread" then "unread (the API did not answer)" elif $obj == "" then "not there"
+       else ($obj | fromjson? | .status) // "unread (not JSON)" end),
+     events: $ev}' >"$chaos_state/object-$chaos_key-$3.json"
+}
+
+# chaos_diag KEY WHY: the diagnostics of KEY (see Diagnostics in the header) into chaos-<time>-diagnostics-<KEY>.json
+# beside the results file, and its name into KEY's part of the results (diagnostics). The chaos-daemon logs are those
+# of the nodes of chaos_target's pods, of every chaos-daemon when it has none (no target, or its pods gone). Each
+# request bounded (10 s); a list the API did not answer is null.
+chaos_diag() {
+  local key=$1 why=$2 results file tmp pods nodes= tns tapp e ns kind name pod container node restarts run f prev
+  results=$(cat "$chaos_state/json-path" 2>/dev/null)
+  if [ -z "$results" ] || [ ! -f "$results" ]; then
+    chaos_put "$key" '{}'
+    results=$(cat "$chaos_state/json-path")
+  fi
+  file=${results%.json}-diagnostics-$key.json
+  tmp=$(mktemp -d)
+  # Experiments still there: their status now.
+  for e in $(chaos_experiments_left 2>/dev/null); do
+    IFS=/ read -r ns kind name <<<"$e"
+    chaos_diag_object "$ns" "$kind" "$name"
+  done
+  pods=$(kc --request-timeout=10s -n chaos-mesh get pods -o json 2>/dev/null)
+  jq -e '.items' >/dev/null 2>&1 <<<"$pods" || pods='{"items": null}'
+  if [ -n "$chaos_target" ]; then
+    read -r tns tapp <<<"$chaos_target"
+    nodes=$(kc --request-timeout=10s -n "$tns" get pods -l "app.kubernetes.io/name=$tapp" -o json 2>/dev/null |
+      jq -r '.items[].spec.nodeName // empty' 2>/dev/null | sort -u)
+  fi
+  : >"$tmp/logs.jsonl"
+  # The controller's pods, and chaos-daemon's on the target's nodes (all of them without one): name, container, node,
+  # restarts; the log of the run before only after a restart.
+  jq -r --arg nodes "$nodes" '($nodes | split("\n") | map(select(length > 0))) as $n
+    | .items[]? | (.metadata.labels["app.kubernetes.io/component"] // "") as $c | (.spec.nodeName // "-") as $node
+    | select($c == "controller-manager" or ($c == "chaos-daemon" and (($n | length) == 0 or ($n | index([$node])) != null)))
+    | [.metadata.name, .spec.containers[0].name, $node, ([.status.containerStatuses[]?.restartCount] | add // 0)]
+    | @tsv' <<<"$pods" |
+    while IFS=$'\t' read -r pod container node restarts; do
+      for run in current previous; do
+        prev=()
+        if [ "$run" = previous ]; then
+          [ "$restarts" != 0 ] || continue
+          prev=(--previous)
+        fi
+        kc --request-timeout=10s -n chaos-mesh logs "$pod" -c "$container" --tail=200 ${prev[@]+"${prev[@]}"} </dev/null 2>&1 |
+          jq -R . | jq -sc --arg pod "$pod" --arg c "$container" --arg node "$node" --arg run "$run" \
+            '{pod: $pod, container: $c, node: $node, run: $run, lines: .}' >>"$tmp/logs.jsonl"
+      done
+    done
+  kc --request-timeout=10s -n chaos-mesh get endpointslices -l kubernetes.io/service-name=chaos-mesh-controller-manager \
+    -o json 2>/dev/null | jq -c '[.items[].endpoints[]? | {addresses, ready: .conditions.ready,
+      terminating: .conditions.terminating, pod: .targetRef.name}]' >"$tmp/endpoints" 2>/dev/null
+  kc --request-timeout=10s -n chaos-mesh get leases -o json 2>/dev/null | jq -c '[.items[] | {name: .metadata.name,
+    holder: .spec.holderIdentity, renewed: .spec.renewTime, lease_s: .spec.leaseDurationSeconds,
+    transitions: .spec.leaseTransitions}]' >"$tmp/leases" 2>/dev/null
+  kc --request-timeout=10s -n chaos-mesh get events -o json 2>/dev/null | jq -c '[.items
+    | sort_by(.lastTimestamp // .eventTime // "") | .[-50:][] | {type, reason, object: "\(.involvedObject.kind)/\(.involvedObject.name)",
+      message, count, last: (.lastTimestamp // .eventTime)}]' >"$tmp/events" 2>/dev/null
+  for f in endpoints leases events; do [ -s "$tmp/$f" ] || echo null >"$tmp/$f"; done
+  cat "$chaos_state"/object-"$key"-*.json >"$tmp/objects.jsonl" 2>/dev/null || :
+  jq -n --arg key "$key" --arg step "$chaos_step" --arg why "$why" --arg target "$chaos_target" --arg nodes "$nodes" \
+    --argjson t "$(date +%s)" --argjson pods "$pods" --slurpfile logs "$tmp/logs.jsonl" \
+    --slurpfile objects "$tmp/objects.jsonl" --slurpfile endpoints "$tmp/endpoints" --slurpfile leases "$tmp/leases" \
+    --slurpfile events "$tmp/events" '
+    {step: $step, key: $key, why: $why, at: ($t | todate),
+     target: (if $target == "" then null else $target end),
+     target_nodes: ($nodes | split("\n") | map(select(length > 0))),
+     chaos_mesh_pods: ($pods.items | if . == null then null else map({name: .metadata.name,
+       component: .metadata.labels["app.kubernetes.io/component"], node: .spec.nodeName, ip: .status.podIP,
+       phase: .status.phase, deleting: (.metadata.deletionTimestamp != null),
+       containers: [.status.containerStatuses[]? | {name, ready, restarts: .restartCount,
+         state: (.state // {} | to_entries[0] // {key: "unknown", value: {}}
+           | "\(.key)\(if .value.reason then " " + .value.reason else "" end)"),
+         last_terminated: (.lastState.terminated | if . then {reason, exitCode, signal, startedAt, finishedAt} else null end)}]})
+       end),
+     webhook_endpoints: $endpoints[0], leases: $leases[0], events: $events[0],
+     experiments: $objects, logs: $logs}' >"$tmp/diag.json" && mv "$tmp/diag.json" "$file"
+  rm -rf "$tmp"
+  if [ -f "$file" ]; then
+    chaos_put "$key" "$(jq -nc --arg f "$(basename "$file")" '{diagnostics: $f}')"
+    echo "diagnostics: $(basename "$file") ($(jq -r '"\(.chaos_mesh_pods // [] | length) pod(s) of Chaos Mesh," +
+      " \(.logs | length) log tail(s), \(.experiments | length) experiment(s)"' "$file"))"
+  else
+    echo "diagnostics: $(basename "$file") not written"
+  fi
+}
+
+# chaos_diag_failed: chaos_diag of the current step, once, when its result is fail.
+chaos_diag_failed() {
+  local results
+  [ -z "$chaos_diag_done" ] && [ -n "$chaos_key" ] || return 0
+  results=$(cat "$chaos_state/json-path" 2>/dev/null)
+  [ "$(jq -r --arg k "$chaos_key" '.[$k].result // empty' "$results" 2>/dev/null)" = fail ] || return 0
+  chaos_diag_done=1
+  chaos_diag "$chaos_key" "$(jq -r --arg k "$chaos_key" '.[$k].reason // "fail"' "$results")"
+}
+
+# chaos_module NAME: the kernel module NAME of the running kernel: loaded (lsmod lists it), builtin (the kernel's
+# modules.builtin lists it), available (modprobe -n finds it) or absent.
+chaos_module() {
+  if lsmod 2>/dev/null | awk -v m="$1" '$1 == m { f = 1 } END { exit !f }'; then
+    echo loaded
+  elif grep -qE "/$1\.ko(\.[a-z]+)?$" "/lib/modules/$(uname -r)/modules.builtin" 2>/dev/null; then
+    echo builtin
+  elif modprobe -n -q "$1" 2>/dev/null; then
+    echo available
+  else
+    echo absent
+  fi
+}
+
+# chaos_netem: sch_netem on the runner (see Kernel module in the header): loaded with modprobe unless loaded or built
+# in already, after installing linux-modules-extra-<kernel> when the kernel's modules lack it. Prints one line and
+# records what it found and did as kernel of the trial's results; false, with chaos_why, when sch_netem is not loaded
+# at the end.
+chaos_netem() {
+  local kernel pkg before after install= done
+  kernel=$(uname -r)
+  pkg=linux-modules-extra-$kernel
+  before=$(chaos_module sch_netem)
+  if [ "$before" = absent ]; then
+    # DPkg::Lock::Timeout: the runner's own apt jobs may hold the lock for a while; the package lists are fetched only
+    # when the install cannot find the package without them.
+    if sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y -q "$pkg" >/dev/null 2>&1 ||
+      { sudo apt-get -o DPkg::Lock::Timeout=120 update -q >/dev/null 2>&1 &&
+        sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y -q "$pkg" >/dev/null 2>&1; }; then
+      install=installed
+    else
+      install=failed
+    fi
+  fi
+  case $before in loaded | builtin) ;; *) sudo modprobe sch_netem >/dev/null 2>&1 || : ;; esac
+  after=$(chaos_module sch_netem)
+  chaos_put trial "$(jq -nc --arg k "$kernel" --arg pkg "$pkg" --arg b "$before" --arg i "$install" --arg a "$after" \
+    --arg dir "$([ -d "/lib/modules/$kernel" ] && echo true || echo false)" \
+    --arg host "$(cat "$SVP_VERIFY_OUT/sch-netem" 2>/dev/null)" '
+    {kernel: {release: $k, modules_dir: ($dir == "true"), host_check: (if $host == "" then null else $host end),
+      sch_netem: {before: $b, package: (if $i == "" then null else {name: $pkg, result: $i} end), after: $a},
+      ifb: "not used: the delay shapes the egress of the target pods only (direction to, no target)"}}')"
+  done=${install:+, $pkg $install}
+  case $after in
+    loaded | builtin)
+      echo "netem: sch_netem $after on kernel $kernel (before: $before$done)"
+      return 0
+      ;;
+  esac
+  chaos_why="sch_netem $after on kernel $kernel (before: $before$done): no network delay possible"
+  echo "FAIL  netem: $chaos_why"
   return 1
 }
 
@@ -749,7 +989,9 @@ chaos_rtt() {
 chaos_trial() {
   chaos_config
   chaos_guard chaos-b-trial trial
+  chaos_target='svp chaos-probe'
   local image dns before during after injected i held=true r
+  chaos_netem || { chaos_fail trial "$chaos_why"; return 1; }
   image=$(kc -n svp get deployment media-worker -o jsonpath='{.spec.template.spec.containers[0].image}')
   dns=$(kc -n kube-system get service kube-dns -o jsonpath='{.spec.clusterIP}')
   [ -n "$image" ] && [ -n "$dns" ] || { chaos_fail trial "read the media-worker image and the DNS Service's address"; return 1; }
@@ -768,12 +1010,14 @@ chaos_trial() {
     { chaos_fail trial "pod svp/chaos-probe Ready within 120 s"; return 1; }
   chaos_k6_begin trial "$chaos_hold_trial" "trial.ms_for_20_before: the 20 connections before the delay, in this window" ||
     { chaos_fail trial "k6 not holding its load: $chaos_why"; return 1; }
+  chaos_controller_ready trial || { chaos_fail trial "$chaos_why"; return 1; }
   chaos_open trial 240 || { chaos_fail trial "k6 not holding its load: $chaos_why"; return 1; }
   before=$(chaos_rtt "$dns")
   kc apply -f "$chaos_files/b-trial-network-delay-probe.yaml" || { chaos_fail trial "apply the trial"; return 1; }
   injected=false
   chaos_injected svp networkchaos network-delay-trial && injected=true
   during=$(chaos_rtt "$dns")
+  chaos_diag_object svp networkchaos network-delay-trial
   kc -n svp delete networkchaos network-delay-trial --timeout=60s || echo "delete networkchaos network-delay-trial failed"
   # The delay goes with the object; three tries over 30 s for the last packets held back.
   for i in 1 2 3; do
@@ -795,7 +1039,13 @@ chaos_trial() {
         then "fail"
         elif .injected and .extra_ms_per_connection_during >= 150 and .extra_ms_per_connection_after <= 50 then "pass"
         else "fail" end)
-    | if $held then . else .reason = "k6 not holding its load at the end of the trial: \($why)" end')"
+    | if ($held | not) then .reason = "k6 not holding its load at the end of the trial: \($why)"
+      elif .result == "pass" then .
+      elif .extra_ms_per_connection_during == null or .extra_ms_per_connection_after == null then
+        .reason = "a run of 20 connections failed"
+      elif (.injected | not) then .reason = "the delay was not injected within 60 s"
+      else .reason = "per connection +\(.extra_ms_per_connection_during) ms during (at least 150), +\(.extra_ms_per_connection_after) ms after (at most 50)"
+      end')"
   jq -r '.trial | "trial: \(.result)\(if .reason then " (\(.reason))" else "" end); 20 connections \(.ms_for_20_before) ms before, \(.ms_for_20_during) ms during, \(.ms_for_20_after) ms after (per connection +\(.extra_ms_per_connection_during) / +\(.extra_ms_per_connection_after) ms)"' \
     "$(cat "$chaos_state/json-path")"
   chaos_k6_finish trial
@@ -805,8 +1055,9 @@ chaos_trial() {
 
 # chaos_kill FILE APP: applies the PodChaos of FILE (one pod of APP in svp killed), then sets chaos_killed_at (when a
 # pod that was Ready went), chaos_replicas (the Ready pods before) and chaos_ready_s (the kill to as many Ready pods
-# again, one of them new; empty when not within 180 s); deletes the experiment. The early stop is checked every 15 s
-# all along (chaos_watch_due). Returns 1 when no pod went within 60 s (chaos_why says why), 2 on an early stop.
+# again, one of them new; empty when not within 180 s); deletes the experiment, its status read first for the step's
+# diagnostics (chaos_diag_object). The early stop is checked every 15 s all along (chaos_watch_due). Returns 1 when no
+# pod went within 60 s (chaos_why says why), 2 on an early stop.
 chaos_kill() {
   local before t deadline now rc=0
   chaos_killed_at= chaos_ready_s= chaos_watched_at=
@@ -823,6 +1074,7 @@ chaos_kill() {
     [ -n "$chaos_killed_at" ] || sleep 1
   done
   if [ "$rc" = 0 ] && [ -z "$chaos_killed_at" ]; then
+    chaos_diag_object svp podchaos "pod-kill-$2"
     kc delete -f "$1" --ignore-not-found
     chaos_why="no pod of $2 killed within 60 s of applying $(basename "$1")"
     return 1
@@ -845,6 +1097,7 @@ chaos_kill() {
       echo "$2: not as many pods Ready again within 180 s of the kill"
     fi
   fi
+  chaos_diag_object svp podchaos "pod-kill-$2"
   kc delete -f "$1" --ignore-not-found
   return "$rc"
 }
@@ -912,6 +1165,8 @@ chaos_a() {
   chaos_put a "$(jq -nc --argjson s "$steady" '{steady: $s}')"
   for app in gateway feed-service; do
     file=$chaos_files/a-pod-kill-$app.yaml
+    chaos_target="svp $app"
+    chaos_controller_ready "kill-$app" || { chaos_fail a "$chaos_why"; return 1; }
     chaos_open "kill-$app" 400 || { chaos_fail a "k6 not holding its load before the $app kill: $chaos_why"; return 1; }
     chaos_watch_unread=0
     chaos_kill "$file" "$app"
@@ -969,6 +1224,7 @@ chaos_explore_stats() {
 chaos_b() {
   chaos_config
   chaos_guard chaos-b b
+  chaos_target='svp engagement-service'
   chaos_api
   prometheus_forward
   local t0 t1 t_end steady base_feed during_feed back_s r ratio p99 lv5 lv breaker cbo
@@ -991,6 +1247,7 @@ chaos_b() {
   fi
   chaos_put b "$(jq -nc --argjson s "$steady" --argjson br "$breaker" --arg f "$base_feed" \
     '{steady: ($s + {breaker_max: $br, explore_status_items_with_stats: $f})}')"
+  chaos_controller_ready delay || { chaos_fail b "$chaos_why"; return 1; }
   chaos_open delay 480 || { chaos_fail b "k6 not holding its load for the delay: $chaos_why"; return 1; }
   chaos_watch_unread=0 chaos_watched_at=
   kc apply -f "$chaos_files/b-network-delay-engagement.yaml" || { chaos_fail b "apply the delay"; return 1; }
@@ -1182,6 +1439,7 @@ chaos_uploads_result() {
 chaos_c() {
   chaos_config
   chaos_guard chaos-c c
+  chaos_target='svp-data redpanda'
   chaos_api
   local t0 t1 t_end t_back steady target id st uploads lag lags deadline ready_at transcoded announced once='[]'
   local dlq_same ratio p99 post5 views5 r
@@ -1192,6 +1450,8 @@ chaos_c() {
   [ "$target" = svp-data ] || { chaos_fail c "the controller targets '$target' after the upgrade, not svp-data"; return 1; }
   kc -n chaos-mesh rollout status deployment/chaos-controller-manager --timeout=180s ||
     { chaos_fail c "the controller not ready after the upgrade"; return 1; }
+  # The new target restarted the controller: its webhook is back before anything else.
+  chaos_controller_ready upgrade || { chaos_fail c "$chaos_why"; return 1; }
   prometheus_forward
   make_video "$work/clip.mp4" 2 320x240
   new_user chaos
@@ -1211,6 +1471,7 @@ chaos_c() {
     return 1
   fi
   chaos_put c "$(jq -nc --argjson s "$steady" --argjson l "$lag" '{steady: ($s + {lag: $l})}')"
+  chaos_controller_ready outage || { chaos_fail c "$chaos_why"; return 1; }
   # The outage does not start unless k6 holds its load for its recovery as well: injected (60), 300 down, deleted
   # (120), 120 for the broker, 900 for the videos, 60 to read the topics.
   chaos_open outage 1560 || { chaos_fail c "k6 not holding its load for the outage and its recovery: $chaos_why"; return 1; }
@@ -1360,6 +1621,9 @@ chaos_uninstall() {
   chaos_config
   chaos_guard chaos-mesh-uninstall uninstall
   local left gone=true
+  # Whatever the experiments gave: the controller's restarts and logs of the whole scenario, before they go.
+  chaos_diag_done=1
+  chaos_diag uninstall "the state of Chaos Mesh at the end of the scenario, before its uninstall"
   chaos_delete_experiments
   kc -n svp delete pod chaos-probe --ignore-not-found --wait=false
   if chaos_experiments_gone 180; then
@@ -1386,47 +1650,47 @@ export -f chaos_config chaos_helm chaos_upgrade chaos_put chaos_fail chaos_mark_
   chaos_k6_holding chaos_k6_begin chaos_k6_finish chaos_open chaos_close chaos_record_window \
   chaos_wait_until chaos_q chaos_n chaos_n5 chaos_ratio_query chaos_p99_query chaos_envoy_query \
   chaos_pages_query chaos_steady chaos_watch chaos_watch_due chaos_ready chaos_alive chaos_recovered \
-  chaos_stopped_early chaos_injected chaos_delete_watched chaos_install chaos_rtt chaos_trial chaos_kill \
+  chaos_stopped_early chaos_injected chaos_delete_watched chaos_controller_ready chaos_diag_object chaos_diag \
+  chaos_diag_failed chaos_module chaos_netem chaos_install chaos_rtt chaos_trial chaos_kill \
   chaos_kill_numbers chaos_report chaos_a chaos_explore_stats chaos_b chaos_rpk chaos_lag chaos_sample_lag \
   chaos_lag_targets chaos_lag_steady_holds chaos_lag_read chaos_lag_back chaos_dlq chaos_uploads_start \
   chaos_uploads_watch chaos_uploads_result chaos_c chaos_left chaos_uninstall
 
 scenario_targets() {
-  local chaos_off= chaos_netem chaos_stop_file=$SVP_VERIFY_OUT/chaos-state/stop
-  chaos_netem=$(cat "$SVP_VERIFY_OUT/sch-netem" 2>/dev/null)
+  local chaos_off= chaos_stop_file=$SVP_VERIFY_OUT/chaos-state/stop chaos_trial_why
   step k8s-up 60 make k8s-up
   step seed-videos 40 bash -c 'k6mini_seed'
   case $last_status in fail | timeout) chaos_off="seed-videos did not pass" ;; esac
   step chaos-mesh-install 20 bash -c 'chaos_install'
   case $last_status in fail | timeout) chaos_off=${chaos_off:-"Chaos Mesh not installed"} ;; esac
   # Each experiment's limit: its k6 run's setup (15 min at most) and ramp (2), its hold (chaos_config), the Job's end
-  # and its summary (5), what comes before the run (the probe pod, the helm upgrade of c), and a margin.
+  # and its summary (5), what comes before the run (the kernel module and the probe pod of the trial, the helm upgrade
+  # of c), and a margin.
   if [ -n "$chaos_off" ]; then
     skip chaos-b-trial "$chaos_off"
-  elif [ "$chaos_netem" != loaded ]; then
-    skip chaos-b-trial "sch_netem ${chaos_netem:-unknown} on the runner: no network delay"
   else
-    step chaos-b-trial 30 bash -c 'chaos_trial'
+    step chaos-b-trial 35 bash -c 'chaos_trial'
   fi
   local chaos_trial_status=$last_status
+  # The trial's reason (sch_netem not loaded, the delay not injected, ...) on one line, for chaos-b's note.
+  chaos_trial_why=$(jq -j '.trial.reason // empty' "$(cat "$SVP_VERIFY_OUT/chaos-state/json-path" 2>/dev/null)" 2>/dev/null |
+    tr '\t\n' '  ')
   if [ -n "$chaos_off" ] || [ -s "$chaos_stop_file" ]; then
     skip chaos-a "${chaos_off:-$(cat "$chaos_stop_file")}"
   else
-    step chaos-a 45 bash -c 'chaos_a'
+    step chaos-a 50 bash -c 'chaos_a'
   fi
   if [ -n "$chaos_off" ] || [ -s "$chaos_stop_file" ]; then
     skip chaos-b "${chaos_off:-$(cat "$chaos_stop_file")}"
-  elif [ "$chaos_netem" != loaded ]; then
-    skip chaos-b "sch_netem ${chaos_netem:-unknown} on the runner: no network delay"
   elif [ "$chaos_trial_status" != ok ]; then
-    skip chaos-b "the trial of the network delay did not pass"
+    skip chaos-b "the trial of the network delay did not pass${chaos_trial_why:+: $chaos_trial_why}"
   else
     step chaos-b 40 bash -c 'chaos_b'
   fi
   if [ -n "$chaos_off" ] || [ -s "$chaos_stop_file" ]; then
     skip chaos-c "${chaos_off:-$(cat "$chaos_stop_file")}"
   else
-    step chaos-c 70 bash -c 'chaos_c'
+    step chaos-c 75 bash -c 'chaos_c'
   fi
   step chaos-mesh-uninstall 15 bash -c 'chaos_uninstall'
 }
@@ -1453,18 +1717,37 @@ chaos_test() {
   }
   same() { if [ "$2" = "$3" ]; then ok "$1"; else fail "$1: expected '$2', got '$3'"; fi; }
   # kubectl: logs each call; fails every call while $FAKE_DIR/api-down exists; get job prints $FAKE_DIR/job.json (exit
-  # 1 when absent), get pods prints pods.json, get nodes one Ready node, get crd lists the CRDs of the two kinds of
-  # experiment, get of an experiment prints it while $FAKE_DIR/linger counts down (one per call), get deployment and get
-  # service print an image and an address, apply of a file adds "<clock> apply <file>" to $FAKE_DIR/events; anything
-  # else succeeds silently. run.sh logs each call, and adds "<clock> k6-<command>" to events; its logs writes
-  # $FAKE_DIR/summary.json as the one pod's summary.
+  # 1 when absent); get endpointslices adds "<clock> endpoints" to $FAKE_DIR/events and prints endpoints.json, one
+  # Ready endpoint without it, an endpoint not Ready while $FAKE_DIR/endpoints-wait counts down (one per call); logs in chaos-mesh prints one line naming its arguments; get pods prints cm-pods.json in
+  # chaos-mesh (no pod without it), pods.json elsewhere; get nodes one Ready node; get crd lists the CRDs of the two
+  # kinds of experiment; get of an experiment -o json prints object.json, -o name prints it while $FAKE_DIR/linger
+  # counts down (one per call); get secrets prints secrets.json (none without it); get deployment and get service print
+  # an image and an address; apply of a file adds "<clock> apply <file>" to events; anything else succeeds silently.
+  # run.sh logs each call, and adds "<clock> k6-<command>" to events; its logs writes $FAKE_DIR/summary.json as the
+  # one pod's summary.
   cat >"$work/bin/kubectl" <<'EOS'
 #!/usr/bin/env bash
 echo "kubectl $*" >>"$FAKE_LOG"
 [ ! -f "$FAKE_DIR/api-down" ] || exit 1
 case " $* " in
   *" get job "*) [ -f "$FAKE_DIR/job.json" ] && cat "$FAKE_DIR/job.json" || exit 1 ;;
+  *" get endpointslices "*)
+    echo "$(cat "$FAKE_DIR/clock" 2>/dev/null || echo 0) endpoints" >>"$FAKE_DIR/events"
+    n=$(cat "$FAKE_DIR/endpoints-wait" 2>/dev/null || echo 0)
+    if [ "$n" -gt 0 ]; then
+      echo "$((n - 1))" >"$FAKE_DIR/endpoints-wait"
+      echo '{"items": [{"endpoints": [{"addresses": ["10.42.0.9"], "conditions": {"ready": false}}]}]}'
+    elif [ -f "$FAKE_DIR/endpoints.json" ]; then
+      cat "$FAKE_DIR/endpoints.json"
+    else
+      echo '{"items": [{"endpoints": [{"addresses": ["10.42.0.9"], "conditions": {"ready": true}}]}]}'
+    fi
+    ;;
+  *" -n chaos-mesh logs "*) echo "log of $*" ;;
+  *" -n chaos-mesh get pods "*) cat "$FAKE_DIR/cm-pods.json" 2>/dev/null || echo '{"items": []}' ;;
   *" get pods "*) cat "$FAKE_DIR/pods.json" ;;
+  *" get podchaos "*" -o json "* | *" get networkchaos "*" -o json "*) cat "$FAKE_DIR/object.json" 2>/dev/null ;;
+  *" get secrets "*) cat "$FAKE_DIR/secrets.json" 2>/dev/null || echo '{"items": []}' ;;
   *" get nodes "*) echo '{"items": [{"status": {"conditions": [{"type": "Ready", "status": "True"}]}}]}' ;;
   *" get crd "*)
     echo customresourcedefinition.apiextensions.k8s.io/networkchaos.chaos-mesh.org
@@ -1484,6 +1767,30 @@ case " $* " in
 esac
 EOS
   printf '#!/usr/bin/env bash\necho "helm $*" >>"$FAKE_LOG"\n' >"$work/bin/helm"
+  # The kernel module of the delay (chaos_netem), never the machine's own sudo, apt-get or modprobe: lsmod lists
+  # sch_netem while $FAKE_DIR/netem-loaded exists; modprobe -n finds it while netem-available or netem-loaded exists,
+  # and modprobe loads it then; apt-get logs its call and, unless $FAKE_DIR/apt-fails exists, makes it available
+  # (install), or does nothing (update); sudo runs its command (env takes the VAR=value before it).
+  cat >"$work/bin/lsmod" <<'EOS'
+#!/usr/bin/env bash
+echo "Module                  Size  Used by"
+[ ! -f "$FAKE_DIR/netem-loaded" ] || echo "sch_netem              24576  0"
+EOS
+  cat >"$work/bin/modprobe" <<'EOS'
+#!/usr/bin/env bash
+echo "modprobe $*" >>"$FAKE_LOG"
+[ -f "$FAKE_DIR/netem-available" ] || [ -f "$FAKE_DIR/netem-loaded" ] || exit 1
+[ "$1" = -n ] || touch "$FAKE_DIR/netem-loaded"
+EOS
+  cat >"$work/bin/apt-get" <<'EOS'
+#!/usr/bin/env bash
+echo "apt-get $*" >>"$FAKE_LOG"
+[ ! -f "$FAKE_DIR/apt-fails" ] || exit 100
+case " $* " in *" install "*) touch "$FAKE_DIR/netem-available" ;; esac
+EOS
+  printf '#!/usr/bin/env bash\necho "sudo $*" >>"$FAKE_LOG"\nexec env "$@"\n' >"$work/bin/sudo"
+  chmod +x "$work/bin/lsmod" "$work/bin/modprobe" "$work/bin/apt-get" "$work/bin/sudo"
+  touch "$work/netem-loaded"
   cat >"$work/repo/deploy/k6/cloud/run.sh" <<'EOS'
 #!/usr/bin/env bash
 echo "run.sh $*" >>"$FAKE_LOG"
@@ -1579,10 +1886,10 @@ EOS
     "rc=1 elapsed=0 setup() ended in 0 of 1 pod(s) within 15 min; the Job ended (Failed) deletes=2 logs=0 " "$begin_out"
   begin_out=$(begin_setup=1 begin_access=2000 begin_case | tr '\n' ' ')
   same "begin: a run that would end past the pool's access: fail before its hold, the run deleted on exit" \
-    "rc=1 elapsed=0 the run would end 2220 s after its Job's start, past the 2000 s the pool's access allows deletes=2 logs=0 " \
+    "rc=1 elapsed=0 the run would end 2340 s after its Job's start, past the 2000 s the pool's access allows deletes=2 logs=0 " \
     "$begin_out"
   begin_out=$(begin_setup=1 begin_case | tr '\n' ' ')
-  same "begin: c's run (34 min hold) within the pool's access: holds at the start of its hold; finished on exit" \
+  same "begin: c's run (36 min hold) within the pool's access: holds at the start of its hold; finished on exit" \
     "rc=0 elapsed=130  deletes=2 logs=1 " "$begin_out"
 
   # Each experiment on the fake clock, its k6 run real (chaos_k6_begin, chaos_k6_finish over the fake run.sh) and the
@@ -1660,6 +1967,8 @@ EOS
       | ([$e[] | select(.[1] == "k6-start") | .[0] | tonumber]) as $starts
       | ([$e[] | select(.[1] == "apply") | .[0] | tonumber] | first) as $apply
       | ([$e[] | select(.[1] == "k6-delete") | .[0] | tonumber] | last) as $deleted
+      | ([$e | to_entries[] | select(.value[1] == "apply") | .key]) as $applies
+      | ([$e | to_entries[] | select(.value[1] == "endpoints") | .key]) as $checks
       | ([.windows[] | select(.step == "chaos-\(if $key == "trial" then "b-trial" else $key end)" and .window == $steady)]
          | first) as $w
       | "runs=\($starts | length)",
@@ -1667,6 +1976,9 @@ EOS
           elif ($w.from | fromdate) >= $starts[0] and ($w.to | fromdate) <= $apply and $w.k6_holding_at_open
             and $w.k6_holding_at_close then "after-its-run-start-before-apply" else "wrong \($w)" end)",
         "deleted=\(if $deleted != null and $apply != null and $deleted >= $apply then "after-apply" else "no" end)",
+        "webhook=\(if ($applies | length) > 0 and ([range(0; $applies | length) as $i
+            | ($applies[$i]) as $a | (if $i == 0 then -1 else $applies[$i - 1] end) as $p
+            | any($checks[]; . > $p and . < $a)] | all) then "checked-before-each-apply" else "unchecked" end)",
         "baseline=\(if (.[$key].k6.baseline // "") != "" and (.[$key].k6.run // "") == "chaos-\($key), its own: started in this step, ended (k6_end) before the next experiment" then "recorded" else "missing" end)",
         "hold=\(.[$key].k6.hold_m)m",
         "k6=\([$e[] | select(.[1] | startswith("k6-")) | .[1][3:]] | join(","))",
@@ -1674,35 +1986,74 @@ EOS
         "tsv=\($tsv | split("\n") | map(select(length > 0) | split("\t")[0]) | join(","))"' \
       "$(cat "$chaos_state/json-path")" | tr '\n' ' ' | sed 's/ $//'
   }
-  # early_out KEY: the exit status and the result of the step experiment_case just ran.
+  # early_out KEY: the exit status and the result of the step experiment_case just ran, and its diagnostics: written
+  # (the file beside the results, named in them, its reason the step's) or none.
   early_out() {
-    jq -r --arg key "$1" --arg rc "$(cat "$work/rc")" '"rc=\($rc) \(.[$key].result): \(.[$key].reason)"' \
-      "$(cat "$chaos_state/json-path")"
+    local res d diag
+    res=$(cat "$chaos_state/json-path")
+    d=$(jq -r --arg key "$1" '.[$key].diagnostics // empty' "$res")
+    diag=${d:-none}
+    [ -n "$d" ] && [ -f "$(dirname "$res")/$d" ] &&
+      [ "$(jq -r .why "$(dirname "$res")/$d")" = "$(jq -r --arg key "$1" '.[$key].reason' "$res")" ] && diag=written
+    jq -r --arg key "$1" --arg rc "$(cat "$work/rc")" --arg d "$diag" \
+      '"rc=\($rc) \(.[$key].result): \(.[$key].reason) diagnostics=\($d)"' "$res"
   }
-  local run_ok='runs=1 steady=after-its-run-start-before-apply deleted=after-apply baseline=recorded'
+  local run_ok='runs=1 steady=after-its-run-start-before-apply deleted=after-apply webhook=checked-before-each-apply baseline=recorded'
   local run_end='k6=delete,start,logs,delete k6_end=pass,1-summary'
   same "trial: its own k6 run, its window (the baseline before the delay) before the delay" \
-    "$run_ok hold=6m $run_end tsv=chaos-trial" "$(experiment_case trial chaos_trial trial)"
+    "$run_ok hold=8m $run_end tsv=chaos-trial" "$(experiment_case trial chaos_trial trial)"
+  same "trial: passed, so no diagnostics" "pass none" \
+    "$(jq -r '"\(.trial.result) \(.trial.diagnostics // "none")"' "$(cat "$chaos_state/json-path")")"
   same "a: its own k6 run, its 5 min steady state before the gateway kill" \
-    "$run_ok hold=21m $run_end tsv=chaos-a" "$(experiment_case a chaos_a steady)"
+    "$run_ok hold=25m $run_end tsv=chaos-a" "$(experiment_case a chaos_a steady)"
   same "b: its own k6 run, its 5 min steady state before the delay" \
-    "$run_ok hold=17m $run_end tsv=chaos-b" "$(experiment_case b chaos_b steady)"
+    "$run_ok hold=19m $run_end tsv=chaos-b" "$(experiment_case b chaos_b steady)"
   same "c: its own k6 run, its 5 min steady state before Redpanda's failure; ended by the step's exit" \
-    "$run_ok hold=34m $run_end tsv=chaos-c" "$(experiment_case c chaos_c steady)"
+    "$run_ok hold=36m $run_end tsv=chaos-c" "$(experiment_case c chaos_c steady)"
   same "a, stopped early at the gateway kill: its run still ended, its summary read, its window recorded" \
-    "$run_ok hold=21m $run_end tsv=chaos-a" "$(exp_stop=1 experiment_case a chaos_a steady)"
+    "$run_ok hold=25m $run_end tsv=chaos-a" "$(exp_stop=1 experiment_case a chaos_a steady)"
   same "a, stopped early: the step fails with the early stop" \
-    "rc=1 fail: stopped early after the gateway kill (the feed's 5xx above 5% for more than a minute (0.2)); back to steady state" \
+    "rc=1 fail: stopped early after the gateway kill (the feed's 5xx above 5% for more than a minute (0.2)); back to steady state diagnostics=written" \
     "$(early_out a)"
+  same "a, stopped early: its diagnostics written before its k6 run's end is awaited" diagnostics-first \
+    "$(awk '/ -n chaos-mesh get pods -o json/ && !d { d = NR } /^run\.sh .* logs$/ && !l { l = NR }
+      END { print (d && l && d < l) ? "diagnostics-first" : "d=" d " l=" l }' "$work/calls")"
   same "b, stopped early while the delay is injected: its run still ended, its summary read, its window recorded" \
-    "$run_ok hold=17m $run_end tsv=chaos-b" "$(exp_stop=1 experiment_case b chaos_b steady)"
+    "$run_ok hold=19m $run_end tsv=chaos-b" "$(exp_stop=1 experiment_case b chaos_b steady)"
   same "b, stopped early: the step fails with the early stop" \
-    "rc=1 fail: stopped early while the delay was injected (1 node(s) NotReady); back to steady state" "$(early_out b)"
+    "rc=1 fail: stopped early while the delay was injected (1 node(s) NotReady); back to steady state diagnostics=written" \
+    "$(early_out b)"
   same "c, stopped early while Redpanda's failure is injected: its run still ended, its summary read, its window recorded" \
-    "$run_ok hold=34m $run_end tsv=chaos-c" "$(exp_stop=1 experiment_case c chaos_c steady)"
+    "$run_ok hold=36m $run_end tsv=chaos-c" "$(exp_stop=1 experiment_case c chaos_c steady)"
   same "c, stopped early: the step fails with the early stop" \
-    "rc=1 fail: stopped early while Redpanda's failure was injected (1 node(s) NotReady); back to steady state" \
+    "rc=1 fail: stopped early while Redpanda's failure was injected (1 node(s) NotReady); back to steady state diagnostics=written" \
     "$(early_out c)"
+
+  # The controller's webhook without a Ready endpoint: a checks it every 5 s for 120 s, then fails with that reason
+  # before any apply; its run still ended and read, its diagnostics written. Back after 3 checks: a waits 15 s for it,
+  # then applies. c checks it after its helm upgrade, before its k6 run.
+  echo '{"items": [{"endpoints": [{"addresses": ["10.42.0.9"], "conditions": {"ready": false}}]}]}' >"$work/endpoints.json"
+  local wh_out
+  wh_out=$(experiment_case a chaos_a steady)
+  case $wh_out in *" webhook=unchecked "*" $run_end "*) ok "webhook: no Ready endpoint: no apply; the run still ended and read" ;;
+    *) fail "webhook: no Ready endpoint: got '$wh_out'" ;; esac
+  # 25 checks in the wait (0, 5, ..., 120 s), the 26th the diagnostics' own read of the endpoints.
+  same "webhook: no Ready endpoint: 25 checks over 120 s, no apply" "checks=26 applies=0" \
+    "checks=$(grep -c ' endpoints$' "$work/events") applies=$(grep -c ' apply ' "$work/events")"
+  same "webhook: no Ready endpoint: the step fails with that reason" \
+    "rc=1 fail: the controller's webhook (Service chaos-mesh-controller-manager) had no Ready endpoint within 120 s (kill-gateway; pods: none) diagnostics=written" \
+    "$(early_out a)"
+  rm -f "$work/endpoints.json"
+  echo 3 >"$work/endpoints-wait"
+  same "webhook: back after 3 checks: a waits for it, then applies" "$run_ok hold=25m $run_end tsv=chaos-a" \
+    "$(experiment_case a chaos_a steady)"
+  same "webhook: the wait recorded" '{"ready_endpoints":1,"waited_s":15,"ready":true}' \
+    "$(jq -c '.a.controller["kill-gateway"] | {ready_endpoints, waited_s, ready}' "$(cat "$chaos_state/json-path")")"
+  rm -f "$work/endpoints-wait"
+  experiment_case c chaos_c steady >/dev/null
+  same "webhook: c checks it after its helm upgrade, before its k6 run" "upgrade-before-k6 true" \
+    "$(awk '$2 == "endpoints" && !e { e = NR } $2 == "k6-start" && !k { k = NR }
+      END { print (e && k && e < k) ? "upgrade-before-k6" : "e=" e " k=" k }' "$work/events") $(jq -r '.c.controller.upgrade.ready' "$(cat "$chaos_state/json-path")")"
   rm -rf "$work/step-work"
   printf '%s' "$running_job" >"$work/job.json"
   printf '{"items": [{"metadata": {}, "status": {"phase": "Running"}}]}' >"$work/pods.json"
@@ -1787,6 +2138,9 @@ EOS
   [ "${kill_out##*elapsed=}" -le 20 ] && ok "kill: the stop came within 15 s of the kill, not after 180 s" ||
     fail "kill: the stop came after ${kill_out##*elapsed=} s"
   same "kill: the experiment deleted after the early stop" 1 "$(grep -c ' delete -f .*a-pod-kill-gateway.yaml' "$FAKE_LOG")"
+  same "kill: its status read for the diagnostics before its deletion" read-before-delete \
+    "$(awk '/ get podchaos pod-kill-gateway .*-o json/ && !g { g = NR } / delete -f .*a-pod-kill-gateway.yaml/ && !d { d = NR }
+      END { print (g && d && g < d) ? "read-before-delete" : "g=" g " d=" d }' "$FAKE_LOG")"
   # The watch never stops: 180 s awaited, checked every 15 s.
   : >"$FAKE_LOG"
   : >"$work/watch"
@@ -1901,6 +2255,8 @@ EOS
   # and end are stubbed: the hold window is set here.
   trial_case() {
     (
+      # Only the case's line on stdout (fd 3): the step's own output and its exit's go nowhere.
+      exec 3>&1 >/dev/null 2>&1
       work=
       rm -rf "$chaos_state"
       mkdir -p "$chaos_state"
@@ -1920,8 +2276,8 @@ EOS
           echo 100
         fi
       }
-      chaos_trial >/dev/null
-      echo "rc=$? $(jq -c '{result: .trial.result, reason: .trial.reason, windows: [.windows[] | [.window, .k6_holding_at_open, .k6_holding_at_close]]}' "$(cat "$chaos_state/json-path")")"
+      chaos_trial
+      echo "rc=$? $(jq -c '{result: .trial.result, reason: .trial.reason, windows: [.windows[] | [.window, .k6_holding_at_open, .k6_holding_at_close]]}' "$(cat "$chaos_state/json-path")")" >&3
     )
   }
   local trial_out
@@ -1941,6 +2297,186 @@ EOS
     'rc=1 {"result":"fail","reason":"k6 not holding its load at the end of the trial: Job svp-load/svp-k6 ended (Failed)","windows":[["trial",true,false]]}' \
     "$trial_out"
   printf '%s' "$running_job" >"$work/job.json"
+
+  # The diagnostics: Chaos Mesh's pods with how their last run ended, the experiment's status as read before its
+  # deletion, the logs of the controller and of chaos-daemon on the target's node only, each with the run before after a
+  # restart; every chaos-daemon's when the target has no pod.
+  cat >"$work/cm-pods.json" <<'EOJ'
+{"items": [
+  {"metadata": {"name": "chaos-controller-manager-1", "labels": {"app.kubernetes.io/component": "controller-manager"}},
+   "spec": {"nodeName": "node-1", "containers": [{"name": "chaos-mesh"}]},
+   "status": {"phase": "Running", "podIP": "10.42.0.9", "containerStatuses": [{"name": "chaos-mesh", "ready": true,
+     "restartCount": 2, "state": {"running": {}}, "lastState": {"terminated": {"reason": "Error", "exitCode": 1}}}]}},
+  {"metadata": {"name": "chaos-daemon-a", "labels": {"app.kubernetes.io/component": "chaos-daemon"}},
+   "spec": {"nodeName": "node-1", "containers": [{"name": "chaos-daemon"}]},
+   "status": {"phase": "Running", "containerStatuses": [{"name": "chaos-daemon", "ready": true, "restartCount": 0,
+     "state": {"running": {}}, "lastState": {}}]}},
+  {"metadata": {"name": "chaos-daemon-b", "labels": {"app.kubernetes.io/component": "chaos-daemon"}},
+   "spec": {"nodeName": "node-2", "containers": [{"name": "chaos-daemon"}]},
+   "status": {"phase": "Running", "containerStatuses": [{"name": "chaos-daemon", "ready": true, "restartCount": 1,
+     "state": {"running": {}}, "lastState": {"terminated": {"reason": "OOMKilled", "exitCode": 137}}}]}}]}
+EOJ
+  echo '{"status": {"conditions": [{"type": "AllInjected", "status": "False"}], "experiment": {"desiredPhase": "Run",
+    "containerRecords": [{"id": "svp/engagement-service-1", "phase": "Not Injected",
+      "events": [{"type": "Failed", "operation": "Apply", "message": "rpc error: tc failed"}]}]}}}' >"$work/object.json"
+  printf '{"items": [{"metadata": {}, "spec": {"nodeName": "node-2"}, "status": {"phase": "Running"}}]}' >"$work/pods.json"
+  diag_case() { (
+    exec 3>&1 >/dev/null 2>&1
+    work=
+    rm -rf "$chaos_state"
+    mkdir -p "$chaos_state"
+    : >"$FAKE_LOG"
+    chaos_step=chaos-b chaos_key=b chaos_target=$1 chaos_diag_done=
+    chaos_diag_object svp networkchaos network-delay-engagement
+    chaos_diag b "the delay was not injected within 60 s"
+    res=$(cat "$chaos_state/json-path")
+    d=$(dirname "$res")/$(jq -r .b.diagnostics "$res")
+    {
+      echo "file=$(basename "$d" | sed 's/^chaos-[0-9TZ]*-//')"
+      jq -r '"why=\(.why)", "nodes=\(.target_nodes | join(","))",
+        "last=\([.chaos_mesh_pods[] | .containers[0] | "\(.restarts):\(.last_terminated.reason // "-")"] | join(","))",
+        "status=\(.experiments[0].status.experiment.containerRecords[0].events[0].message)",
+        "logs=\(.logs | map("\(.pod)/\(.run)") | join(","))"' "$d"
+      echo "requested=$(grep -c ' -n chaos-mesh logs ' "$FAKE_LOG") previous=$(grep -c ' -n chaos-mesh logs .* --previous' "$FAKE_LOG")"
+    } | tr '\n' ' ' | sed 's/ $//' >&3
+  ); }
+  local cm='chaos-controller-manager-1/current,chaos-controller-manager-1/previous'
+  same "diagnostics: the controller's and the target node's chaos-daemon, each run before after a restart" \
+    "file=diagnostics-b.json why=the delay was not injected within 60 s nodes=node-2 last=2:Error,0:-,1:OOMKilled status=rpc error: tc failed logs=$cm,chaos-daemon-b/current,chaos-daemon-b/previous requested=4 previous=2" \
+    "$(diag_case 'svp engagement-service')"
+  same "diagnostics: no target, every chaos-daemon" \
+    "file=diagnostics-b.json why=the delay was not injected within 60 s nodes= last=2:Error,0:-,1:OOMKilled status=rpc error: tc failed logs=$cm,chaos-daemon-a/current,chaos-daemon-b/current,chaos-daemon-b/previous requested=5 previous=2" \
+    "$(diag_case '')"
+
+  # The artifact keeps the diagnostics beside the results (.k8s/drills/*.json of deploy/ci/verify-collect.sh), and
+  # drops that file alone when it holds a secret value: the filter of this checkout over a tree of its own
+  # (SVP_VERIFY_REPO), with a fake .env and a fake Secret of chaos-mesh, both made here.
+  local real crepo res diagf csecret
+  real=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+  res=$(cat "$chaos_state/json-path")
+  diagf=$(dirname "$res")/$(jq -r .b.diagnostics "$res")
+  crepo=$work/collect
+  mkdir -p "$crepo/.k8s/drills" "$work/collect-out"
+  echo chaos >"$work/collect-out/scenario"
+  csecret=$(openssl rand -hex 12)
+  printf 'SVP_FAKE_PASSWORD=%s\n' "$(openssl rand -hex 12)" >"$crepo/.env"
+  jq -n --arg v "$(printf '%s' "$csecret" | base64)" '{items: [{type: "Opaque", data: {"tls.key": $v}}]}' >"$work/secrets.json"
+  cp "$res" "$diagf" "$crepo/.k8s/drills/"
+  # collect: the verdict of files.txt on each file of .k8s/drills, its time stamp left out.
+  collect() {
+    rm -rf "$work/art"
+    SVP_VERIFY_REPO=$crepo SVP_VERIFY_OUT=$work/collect-out SVP_VERIFY_ARTIFACT=$work/art SVP_VERIFY_SECRETS=$work/sec \
+      "$real/deploy/ci/verify-collect.sh" >/dev/null 2>&1
+    awk -F '\t' '$2 ~ /^\.k8s\/drills\// { f = $2; sub(/.*\//, "", f); sub(/^chaos-[0-9TZ]*/, "chaos", f)
+      print $1, f ($1 == "dropped" ? " " $3 : "") }' "$work/art/files.txt" 2>/dev/null | sort | tr '\n' ';'
+  }
+  same "artifact: the diagnostics kept beside the results" "kept chaos-diagnostics-b.json;kept chaos.json;" "$(collect)"
+  jq --arg s "$csecret" '.logs[0].lines += ["a line that quotes \($s)"]' "$diagf" >"$crepo/.k8s/drills/$(basename "$diagf")"
+  same "artifact: diagnostics that hold a secret value dropped, the results kept" \
+    "dropped chaos-diagnostics-b.json secret-value;kept chaos.json;" "$(collect)"
+  rm -f "$work/secrets.json" "$work/object.json" "$work/cm-pods.json"
+  printf '{"items": [{"metadata": {}, "status": {"phase": "Running"}}]}' >"$work/pods.json"
+
+  # An experiment deleted with the early stop watched (b, c) has its status read first, for the step's diagnostics.
+  local dw_out
+  dw_out=$( (
+    exec 3>&1 >/dev/null 2>&1
+    work=
+    rm -rf "$chaos_state"
+    mkdir -p "$chaos_state"
+    : >"$FAKE_LOG"
+    echo '{"status": {"conditions": [{"type": "AllInjected", "status": "False"}]}}' >"$FAKE_DIR/object.json"
+    chaos_key=c
+    chaos_watch_due() { :; }
+    chaos_delete_watched svp-data podchaos redpanda-failure 10
+    echo "rc=$? $(jq -c '.status.conditions[0].status' "$chaos_state/object-c-redpanda-failure.json") $(awk '
+      / get podchaos redpanda-failure .*-o json/ && !g { g = NR } / delete podchaos redpanda-failure / && !d { d = NR }
+      END { print (g && d && g < d) ? "read-before-delete" : "g=" g " d=" d }' "$FAKE_LOG")" >&3
+  ) )
+  rm -f "$work/object.json"
+  same "delete: the experiment's status read before its deletion" 'rc=0 "False" read-before-delete' "$dw_out"
+
+  # The uninstall writes its diagnostics whatever comes after, before any experiment is deleted.
+  local un_out
+  un_out=$( (
+    exec 3>&1 >/dev/null 2>&1
+    work=
+    rm -rf "$chaos_state"
+    mkdir -p "$chaos_state"
+    : >"$FAKE_LOG"
+    chaos_uninstall
+    res=$(cat "$chaos_state/json-path")
+    echo "$(jq -r '.uninstall.diagnostics // "none"' "$res" | sed 's/^chaos-[0-9TZ]*-//') $(awk '
+      / -n chaos-mesh get pods -o json/ && !d { d = NR } / delete (podchaos|networkchaos) / && !e { e = NR }
+      END { print (d && e && d < e) ? "before-the-deletions" : "d=" d " e=" e }' "$FAKE_LOG")" >&3
+  ) )
+  same "uninstall: its diagnostics first" "diagnostics-uninstall.json before-the-deletions" "$un_out"
+
+  # The kernel module of the delay: loaded already, loaded with modprobe, linux-modules-extra installed first, or not to
+  # be had (the install fails): then the trial fails with that reason before its probe pod and k6 run.
+  local kernel
+  kernel=$(uname -r)
+  netem_case() { (
+    exec 3>&1 >/dev/null 2>&1
+    work=
+    rm -rf "$chaos_state"
+    mkdir -p "$chaos_state"
+    : >"$FAKE_LOG"
+    chaos_key=trial
+    chaos_netem
+    echo "rc=$? $(jq -c '.trial.kernel.sch_netem' "$(cat "$chaos_state/json-path")") apt=$(grep -c '^apt-get ' "$FAKE_LOG") load=$(grep -c '^modprobe sch_netem' "$FAKE_LOG")" >&3
+  ); }
+  same "netem: loaded already" 'rc=0 {"before":"loaded","package":null,"after":"loaded"} apt=0 load=0' "$(netem_case)"
+  rm -f "$work/netem-loaded"
+  touch "$work/netem-available"
+  same "netem: loaded with modprobe" 'rc=0 {"before":"available","package":null,"after":"loaded"} apt=0 load=1' "$(netem_case)"
+  rm -f "$work/netem-loaded" "$work/netem-available"
+  same "netem: absent, linux-modules-extra installed, then loaded" \
+    "rc=0 {\"before\":\"absent\",\"package\":{\"name\":\"linux-modules-extra-$kernel\",\"result\":\"installed\"},\"after\":\"loaded\"} apt=1 load=1" \
+    "$(netem_case)"
+  rm -f "$work/netem-loaded" "$work/netem-available"
+  touch "$work/apt-fails"
+  same "netem: absent and its package not installed (install, update)" \
+    "rc=1 {\"before\":\"absent\",\"package\":{\"name\":\"linux-modules-extra-$kernel\",\"result\":\"failed\"},\"after\":\"absent\"} apt=2 load=1" \
+    "$(netem_case)"
+  local tn_out
+  tn_out=$( (
+    exec 3>&1 >/dev/null 2>&1
+    work=
+    rm -rf "$chaos_state"
+    mkdir -p "$chaos_state"
+    : >"$FAKE_LOG"
+    chaos_trial
+    echo "rc=$? $(jq -r '"\(.trial.result): \(.trial.reason)"' "$(cat "$chaos_state/json-path")") probe=$(grep -c ' apply -f - ' "$FAKE_LOG") k6=$(grep -c '^run\.sh ' "$FAKE_LOG")" >&3
+  ) )
+  same "netem: not to be had: the trial fails with it, no probe pod, no k6 run" \
+    "rc=1 fail: sch_netem absent on kernel $kernel (before: absent, linux-modules-extra-$kernel failed): no network delay possible probe=0 k6=0" \
+    "$tn_out"
+  # The scenario: the trial runs whatever verify-host.sh found (it loads the module itself); chaos-b is skipped with the
+  # trial's own reason when the trial did not pass.
+  local st_out
+  st_out=$( (
+    exec 3>&1 >/dev/null 2>&1
+    echo absent >"$SVP_VERIFY_OUT/sch-netem"
+    rm -f "$chaos_state/stop"
+    step() {
+      echo "step $1" >&3
+      last_status=ok
+      [ "$1" = chaos-b-trial ] || return 0
+      last_status=fail
+      chaos_put trial '{"result": "fail", "reason": "sch_netem absent on kernel k: no network delay possible"}'
+    }
+    skip() {
+      echo "skip $1: $2" >&3
+      last_status=skipped
+    }
+    scenario_targets
+  ) | tr '\n' ';')
+  same "scenario: the trial runs with sch_netem absent on the host; chaos-b skipped with the trial's reason" \
+    "step k8s-up;step seed-videos;step chaos-mesh-install;step chaos-b-trial;step chaos-a;skip chaos-b: the trial of the network delay did not pass: sch_netem absent on kernel k: no network delay possible;step chaos-c;step chaos-mesh-uninstall;" \
+    "$st_out"
+  rm -f "$work/apt-fails" "$SVP_VERIFY_OUT/sch-netem"
+  touch "$work/netem-loaded"
 
   # The uninstall's lists: one the API did not answer is listed as unread, never as nothing left.
   touch "$work/api-down"
