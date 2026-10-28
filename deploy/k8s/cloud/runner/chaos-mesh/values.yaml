@@ -3,7 +3,7 @@
 # containerd, clusterScoped false, single target namespace (svp, then svp-data with --set), no dashboard, no DNS server
 # and no pprof it keeps. Nothing here may widen what the controller or the daemon reaches: `make cloud-check` renders
 # the chart with both files (runnerValues in deploy/k8s/cloud/charts.json) and fails unless the controller stays
-# namespaced on svp with no dashboard.
+# namespaced on svp with no dashboard, and with the controllers listed below.
 #
 #   kubectl --context k3d-svp create namespace chaos-mesh
 #   kubectl --context k3d-svp label namespace chaos-mesh pod-security.kubernetes.io/enforce=privileged
@@ -14,6 +14,44 @@
 # The namespace label overrides the cluster's default Pod Security level (restricted,
 # deploy/k8s/pod-security-admission.yaml) for chaos-daemon alone, and the namespace lives only as long as the job's
 # cluster.
+
+controllerManager:
+  # Every controller of Chaos Mesh 2.8.5 (the chart's default is "*", all of them) but the multi-cluster ones,
+  # remotecluster and <kind>-remote-apply. remotecluster watches RemoteCluster, a cluster-scoped kind, and a controller
+  # namespaced on its one target (clusterScoped false) has no right to list it at the cluster scope: that cache never
+  # syncs, so the manager exits ("timed out waiting for cache to be synced") 2 min after each start, over and over, and
+  # its webhooks have no endpoint while it restarts. With it off, the controller needs no cluster-scoped right more than
+  # the chart gives. The names are those the controller's source spells at v2.8.5 (ShouldSpawnController): five for each
+  # chaos kind (its pipeline, <kind>-records, and the pipeline's four steps), the controllers of the kinds the network,
+  # IO and HTTP faults go through (pod*chaos), workflow, statuscheck and the four of Schedule. Every kind's pipeline is
+  # listed, those no experiment here uses too: the controller stops setting up pipelines at the first kind it does not
+  # find here, in an order that changes at each start. A new version of the chart has this list read again against its
+  # source; `make cloud-check` checks it against the chart's CRDs (five names for each chaos kind, none multi-cluster).
+  enabledControllers: [
+    awschaos-records, awschaos-initFinalizers, awschaos-desiredphase, awschaos-condition, awschaos-cleanFinalizers,
+    azurechaos-records, azurechaos-initFinalizers, azurechaos-desiredphase, azurechaos-condition,
+    azurechaos-cleanFinalizers,
+    blockchaos-records, blockchaos-initFinalizers, blockchaos-desiredphase, blockchaos-condition,
+    blockchaos-cleanFinalizers,
+    dnschaos-records, dnschaos-initFinalizers, dnschaos-desiredphase, dnschaos-condition, dnschaos-cleanFinalizers,
+    gcpchaos-records, gcpchaos-initFinalizers, gcpchaos-desiredphase, gcpchaos-condition, gcpchaos-cleanFinalizers,
+    httpchaos-records, httpchaos-initFinalizers, httpchaos-desiredphase, httpchaos-condition, httpchaos-cleanFinalizers,
+    iochaos-records, iochaos-initFinalizers, iochaos-desiredphase, iochaos-condition, iochaos-cleanFinalizers,
+    jvmchaos-records, jvmchaos-initFinalizers, jvmchaos-desiredphase, jvmchaos-condition, jvmchaos-cleanFinalizers,
+    kernelchaos-records, kernelchaos-initFinalizers, kernelchaos-desiredphase, kernelchaos-condition,
+    kernelchaos-cleanFinalizers,
+    networkchaos-records, networkchaos-initFinalizers, networkchaos-desiredphase, networkchaos-condition,
+    networkchaos-cleanFinalizers,
+    physicalmachinechaos-records, physicalmachinechaos-initFinalizers, physicalmachinechaos-desiredphase,
+    physicalmachinechaos-condition, physicalmachinechaos-cleanFinalizers,
+    podchaos-records, podchaos-initFinalizers, podchaos-desiredphase, podchaos-condition, podchaos-cleanFinalizers,
+    stresschaos-records, stresschaos-initFinalizers, stresschaos-desiredphase, stresschaos-condition,
+    stresschaos-cleanFinalizers,
+    timechaos-records, timechaos-initFinalizers, timechaos-desiredphase, timechaos-condition, timechaos-cleanFinalizers,
+    podhttpchaos, podiochaos, podnetworkchaos,
+    workflow, statuscheck,
+    schedule-active, schedule-cron, schedule-gc, schedule-pause
+  ]
 
 chaosDaemon:
   # Each k3d node is a container running k3s, whose embedded containerd listens here inside the node, not at the

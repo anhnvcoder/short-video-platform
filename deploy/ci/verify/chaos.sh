@@ -8,9 +8,10 @@
 #   chaos-mesh-install    the install commands of a cloud session, with the runner's overlay: namespace chaos-mesh
 #                         labelled Pod Security privileged, helm upgrade --install of the chart of
 #                         deploy/k8s/cloud/charts.json with deploy/k8s/cloud/values/chaos-mesh.yaml then
-#                         deploy/k8s/cloud/runner/chaos-mesh/values.yaml (the socket of k3s's containerd); then the
-#                         controller and a chaos-daemon on every node ready, the CRDs there, the controller namespaced
-#                         on svp alone
+#                         deploy/k8s/cloud/runner/chaos-mesh/values.yaml (the socket of k3s's containerd, the
+#                         controller's list of controllers); then the controller and a chaos-daemon on every node
+#                         ready, the CRDs there, the controller namespaced on svp alone without a multi-cluster
+#                         controller; then the controller still running 150 s on (see The controller's webhook below)
 #   chaos-b-trial         the kernel module sch_netem loaded on the runner (see Kernel module below); a test pod
 #                         chaos-probe in svp (the media-worker image: a shell and nc); under the step's k6 run, 20 TCP
 #                         connections in a row to the cluster DNS Service before (its baseline), during and after
@@ -51,6 +52,10 @@
 # namespace restarts it). Before each apply, and after the helm upgrade of chaos-c, the step waits at most 120 s for a
 # Ready endpoint of that Service (chaos_controller_ready; the wait counts in the hold as part controller), and fails
 # with that reason when none comes. Each wait, with the controller's pod and restarts, is in <experiment>.controller.
+# A controller the API server refuses a list exits once the 2 min it waits for its caches to sync are over, and starts
+# again, so chaos-mesh-install watches it for 150 s after its rollout (chaos_controller_stable): the same pod, no
+# restart, and no "is forbidden" in its log (each right refused listed in install.controller_stable), or the step fails,
+# with its diagnostics, and the experiments are skipped.
 #
 # Diagnostics: a step whose experiment failed (from its exit, before its k6 run's end is awaited), and the uninstall
 # whatever its result, write .k8s/drills/chaos-<time>-diagnostics-<step>.json beside the results (chaos_diag): Chaos
@@ -752,9 +757,7 @@ chaos_controller_ready() {
     sleep 5
   done
   [[ ${n:-} =~ ^[0-9]+$ ]] || n=null
-  pods=$(kc --request-timeout=10s -n chaos-mesh get pods -l app.kubernetes.io/component=controller-manager -o json 2>/dev/null |
-    jq -c '[.items[] | {pod: .metadata.name, node: .spec.nodeName,
-      restarts: ([.status.containerStatuses[]?.restartCount] | add // 0)}]' 2>/dev/null)
+  pods=$(chaos_controller_pods)
   [ -n "$pods" ] || pods=null
   chaos_put "$chaos_key" "$(jq -nc --arg w "$1" --argjson n "$n" --argjson s $((t - start)) --argjson p "$pods" '
     {controller: {($w): {ready_endpoints: $n, waited_s: $s, ready: ($n != null and $n > 0), pods: $p}}}')"
@@ -766,6 +769,66 @@ chaos_controller_ready() {
   chaos_why="the controller's webhook (Service chaos-mesh-controller-manager) had no Ready endpoint within 120 s"
   chaos_why+=" ($1; pods: $(jq -r 'if . == null then "unread" elif length == 0 then "none"
     else map("\(.pod), \(.restarts) restart(s)") | join("; ") end' <<<"$pods"))"
+  echo "FAIL  $chaos_why"
+  return 1
+}
+
+# chaos_controller_pods: the controller's pods as [{pod, node, restarts}] on one line, nothing when the API did not
+# answer.
+chaos_controller_pods() {
+  kc --request-timeout=10s -n chaos-mesh get pods -l app.kubernetes.io/component=controller-manager -o json 2>/dev/null |
+    jq -c '[.items[] | {pod: .metadata.name, node: .spec.nodeName,
+      restarts: ([.status.containerStatuses[]?.restartCount] | add // 0)}]' 2>/dev/null
+}
+
+# chaos_controller_stable SECONDS: the controller still runs SECONDS after its rollout (see The controller's webhook in
+# the header): its pods and their restarts, read every 10 s, the same as at the start, then the log of each of those
+# pods read for a refusal of the API server ("is forbidden"; each right refused as "cannot VERB resource R in API group
+# G ..."). Prints one line and records controller_stable in the step's part of the results; false, with chaos_why, on
+# no pod, a restart or another pod, a list or log the API did not give, or a refusal. Each request bounded (10 s).
+chaos_controller_stable() {
+  local start t first now pod log logs= unread= lines refused
+  start=$(date +%s)
+  first=$(chaos_controller_pods)
+  now=$first
+  while [ "$(jq 'length' <<<"${first:-[]}")" -gt 0 ] && [ "$now" = "$first" ]; do
+    [ $(($(date +%s) - start)) -lt "$1" ] || break
+    sleep 10
+    now=$(chaos_controller_pods)
+  done
+  t=$(date +%s)
+  for pod in $(jq -r '.[]?.pod' <<<"${first:-[]}"); do
+    if log=$(kc --request-timeout=10s -n chaos-mesh logs "$pod" 2>/dev/null); then
+      logs+=$log$'\n'
+    else
+      unread+=" $pod"
+    fi
+  done
+  lines=$(grep -c 'is forbidden' <<<"$logs")
+  refused=$(grep -oE 'cannot [a-z]+ resource \\?"?[a-z0-9.-]+\\?"? in API group \\?"?[a-z0-9.-]*\\?"?( at the cluster scope| in the namespace \\?"?[a-z0-9-]+\\?"?)?' \
+    <<<"$logs" | tr -d '\\"' | sort -u | jq -Rsc 'split("\n") | map(select(length > 0))')
+  chaos_put "$chaos_key" "$(jq -nc --arg first "$first" --arg now "$now" --argjson s $((t - start)) --arg unread "$unread" \
+    --argjson lines "$lines" --argjson refused "$refused" '
+    {controller_stable: {watched_s: $s, pods_at_start: ($first | fromjson? // null), pods_at_end: ($now | fromjson? // null),
+      logs_unread: ($unread | split(" ") | map(select(length > 0))), forbidden_lines: $lines, refused: $refused}}')"
+  if [ "$(jq 'length' <<<"${first:-[]}")" -eq 0 ]; then
+    chaos_why="the controller's pods $([ -n "$first" ] && echo "not there" || echo "unread (the API did not answer)") after its rollout"
+  elif [ -z "$now" ]; then
+    chaos_why="the controller's pods unread (the API did not answer) $((t - start)) s after its rollout"
+  elif [ "$now" != "$first" ]; then
+    chaos_why="the controller restarted, or its pod changed, within $((t - start)) s of its rollout"
+    chaos_why+=" (pods: $(jq -r 'map("\(.pod), \(.restarts) restart(s)") | join("; ")' <<<"$first") at the start;"
+    chaos_why+=" $(jq -r 'map("\(.pod), \(.restarts) restart(s)") | join("; ")' <<<"$now") then)"
+  elif [ -n "$unread" ]; then
+    chaos_why="the controller's log unread (the API did not answer) for:$unread"
+  elif [ "$lines" -gt 0 ]; then
+    chaos_why="the API server refused the controller $lines time(s) in $((t - start)) s: $(jq -r 'if length == 0 then
+      "rights not named in the log" else join("; ") end' <<<"$refused")"
+  else
+    echo "controller: running $((t - start)) s after its rollout, no restart, no refusal in its log ($(jq -r \
+      'map("\(.pod) on \(.node)") | join("; ")' <<<"$first"))"
+    return 0
+  fi
   echo "FAIL  $chaos_why"
   return 1
 }
@@ -943,7 +1006,7 @@ chaos_install() {
   mkdir -p "$chaos_state"
   : >"$chaos_state/windows.jsonl"
   chaos_guard chaos-mesh-install install
-  local started k8s nodes daemons crds scope
+  local started k8s nodes daemons crds env scope multi
   started=$(date +%s)
   k8s=$(kc version -o json | jq -r '.serverVersion.gitVersion')
   # The commands of a cloud session (deploy/k8s/cloud/values/chaos-mesh.yaml), with the runner's overlay.
@@ -957,19 +1020,31 @@ chaos_install() {
   nodes=$(kc get nodes -o name | grep -c .)
   daemons=$(kc -n chaos-mesh get daemonset chaos-daemon -o jsonpath='{.status.numberReady}')
   crds=$(kc get crd -o name | grep -c '\.chaos-mesh\.org$')
-  scope=$(kc -n chaos-mesh get deployment chaos-controller-manager -o json |
-    jq -r '.spec.template.spec.containers[0].env | map({(.name): .value}) | add | "\(.CLUSTER_SCOPED) \(.TARGET_NAMESPACE)"')
+  env=$(kc -n chaos-mesh get deployment chaos-controller-manager -o json |
+    jq -c '.spec.template.spec.containers[0].env | map({(.name): .value}) | add')
+  scope=$(jq -r '"\(.CLUSTER_SCOPED) \(.TARGET_NAMESPACE)"' <<<"$env")
+  # The multi-cluster controllers, which the runner's overlay leaves out of the controller's list (its comment says
+  # why): one of them on, or all of them ("*", the controller's default), and the controller exits 2 min after each
+  # start.
+  multi=$(jq -c '(.ENABLED_CONTROLLERS // "*") | split(",")
+    | map(select(. == "*" or . == "remotecluster" or endswith("-remote-apply")))' <<<"$env")
   chaos_put install "$(jq -nc --arg k8s "$k8s" --argjson nodes "$nodes" --argjson daemons "${daemons:-0}" \
-    --argjson crds "$crds" --arg scope "$scope" --argjson s $(($(date +%s) - started)) '
+    --argjson crds "$crds" --arg scope "$scope" --argjson multi "${multi:-null}" --argjson s $(($(date +%s) - started)) '
     {kubernetes: $k8s, chart: "chaos-mesh 2.8.5", chart_tested_up_to: "Kubernetes 1.35 (its CI)",
      kyverno: "Audit on the dev path: a pod-failure in svp would not be refused; (c) stays in svp-data as designed",
      nodes: $nodes, chaos_daemons_ready: $daemons, crds: $crds,
-     cluster_scoped: ($scope | split(" ")[0]), target_namespace: ($scope | split(" ")[1]), seconds: $s}
-    | .result = (if .chaos_daemons_ready == .nodes and .crds > 0 and .cluster_scoped == "false"
-        and .target_namespace == "svp" then "pass" else "fail" end)')"
+     cluster_scoped: ($scope | split(" ")[0]), target_namespace: ($scope | split(" ")[1]),
+     multicluster_controllers_on: $multi, seconds: $s}')"
   echo "Chaos Mesh 2.8.5 on Kubernetes $k8s: chaos-daemon ready on $daemons of $nodes node(s), $crds CRDs, controller" \
-    "CLUSTER_SCOPED/TARGET_NAMESPACE $scope"
-  [ "$daemons" = "$nodes" ] && [ "$crds" -gt 0 ] && [ "$scope" = "false svp" ]
+    "CLUSTER_SCOPED/TARGET_NAMESPACE $scope, multi-cluster controllers on: ${multi:-unread}"
+  if ! { [ "$daemons" = "$nodes" ] && [ "$crds" -gt 0 ] && [ "$scope" = "false svp" ] && [ "$multi" = "[]" ]; }; then
+    chaos_fail install "not as installed by design: chaos-daemon ready on ${daemons:-0} of $nodes node(s), $crds CRDs, controller CLUSTER_SCOPED/TARGET_NAMESPACE '$scope' (false svp expected), multi-cluster controllers on: ${multi:-unread} (none expected)"
+    return 1
+  fi
+  # Past the 2 min the controller waits for its caches to sync, after which a controller refused a list exits: the
+  # trial comes only after.
+  chaos_controller_stable 150 || { chaos_fail install "$chaos_why"; return 1; }
+  chaos_put install '{"result": "pass"}'
 }
 
 # chaos_rtt: milliseconds that 20 TCP connections in a row from the test pod to the cluster DNS (port 53) take, as the
@@ -1097,7 +1172,11 @@ chaos_kill() {
       echo "$2: not as many pods Ready again within 180 s of the kill"
     fi
   fi
+  # As in chaos_delete_watched: the early stop is checked around the two bounded reads of the diagnostics, so that no
+  # more than 25 s pass between two checks while the pods come back.
+  if [ "$rc" = 0 ] && ! chaos_watch_due; then rc=2; fi
   chaos_diag_object svp podchaos "pod-kill-$2"
+  if [ "$rc" = 0 ] && ! chaos_watch_due; then rc=2; fi
   kc delete -f "$1" --ignore-not-found
   return "$rc"
 }
@@ -1650,7 +1729,8 @@ export -f chaos_config chaos_helm chaos_upgrade chaos_put chaos_fail chaos_mark_
   chaos_k6_holding chaos_k6_begin chaos_k6_finish chaos_open chaos_close chaos_record_window \
   chaos_wait_until chaos_q chaos_n chaos_n5 chaos_ratio_query chaos_p99_query chaos_envoy_query \
   chaos_pages_query chaos_steady chaos_watch chaos_watch_due chaos_ready chaos_alive chaos_recovered \
-  chaos_stopped_early chaos_injected chaos_delete_watched chaos_controller_ready chaos_diag_object chaos_diag \
+  chaos_stopped_early chaos_injected chaos_delete_watched chaos_controller_ready chaos_controller_pods \
+  chaos_controller_stable chaos_diag_object chaos_diag \
   chaos_diag_failed chaos_module chaos_netem chaos_install chaos_rtt chaos_trial chaos_kill \
   chaos_kill_numbers chaos_report chaos_a chaos_explore_stats chaos_b chaos_rpk chaos_lag chaos_sample_lag \
   chaos_lag_targets chaos_lag_steady_holds chaos_lag_read chaos_lag_back chaos_dlq chaos_uploads_start \
@@ -2477,6 +2557,81 @@ EOJ
     "$st_out"
   rm -f "$work/apt-fails" "$SVP_VERIFY_OUT/sch-netem"
   touch "$work/netem-loaded"
+
+  # The install on the fake clock: the step passes only once the controller has run 150 s after its rollout (past its
+  # caches' 2 min) with the same pod, no restart and no refusal in its log. A restart within them (inst_restart_at, in
+  # seconds after the rollout), a refusal (inst_log, a line as the controller of 2.8.5 logs it), or a multi-cluster
+  # controller on (inst_on, its ENABLED_CONTROLLERS) fails the step with its reason and its diagnostics.
+  install_case() { (
+    exec 3>&1 >/dev/null 2>&1
+    work=
+    fake_clock
+    : >"$FAKE_LOG"
+    chaos_upgrade() { echo "helm upgrade" >>"$FAKE_LOG"; }
+    kc() {
+      local r=0
+      case "$*" in
+        *"version -o json"*) echo '{"serverVersion": {"gitVersion": "v1.35.1+k3s1"}}' ;;
+        *"get nodes -o name"*) echo node/k3d-svp-server-0 ;;
+        *"get daemonset chaos-daemon"*) echo 1 ;;
+        *"get deployment chaos-controller-manager"*)
+          jq -nc --arg on "${inst_on:-podchaos-records,networkchaos-records,podnetworkchaos}" '{spec: {template: {spec:
+            {containers: [{env: [{name: "CLUSTER_SCOPED", value: "false"}, {name: "TARGET_NAMESPACE", value: "svp"},
+              {name: "ENABLED_CONTROLLERS", value: $on}]}]}}}}'
+          ;;
+        *"-n chaos-mesh get pods"*)
+          [ -z "${inst_restart_at:-}" ] || [ "$(cat "$FAKE_DIR/clock")" -lt $((1000000 + inst_restart_at)) ] || r=1
+          jq -nc --argjson r "$r" '{items: [{metadata: {name: "chaos-controller-manager-0",
+            labels: {"app.kubernetes.io/component": "controller-manager"}}, spec: {nodeName: "k3d-svp-server-0",
+            containers: [{name: "chaos-mesh"}]}, status: {containerStatuses: [{restartCount: $r}]}}]}'
+          ;;
+        *"-n chaos-mesh logs "*)
+          echo "$(cat "$FAKE_DIR/clock") logs" >>"$FAKE_LOG"
+          printf '%s\n' "INFO setup starting manager" ${inst_log:+"$inst_log"}
+          ;;
+        *) kubectl --context k3d-svp "$@" ;;
+      esac
+    }
+    # In a bash of its own as verify-run.sh runs a step, so that its exit (the diagnostics) comes before the line.
+    (chaos_install)
+    echo "rc=$? elapsed=$(($(cat "$FAKE_DIR/clock") - 1000000)) $(jq -c '.install | {result, watched:
+      .controller_stable.watched_s, refused: .controller_stable.refused, multi: .multicluster_controllers_on,
+      diagnostics: (.diagnostics != null)}' "$(cat "$chaos_state/json-path")") $(jq -r '.install.reason // ""' \
+      "$(cat "$chaos_state/json-path")") first-log-at=$(awk '/ logs$/ { print $1 - 1000000; exit }' "$FAKE_LOG")" >&3
+  ); }
+  same "install: passes once the controller ran 150 s after its rollout, its log read then" \
+    'rc=0 elapsed=150 {"result":"pass","watched":150,"refused":[],"multi":[],"diagnostics":false}  first-log-at=150' \
+    "$(install_case)"
+  same "install: a restart 130 s after the rollout fails the step, with its diagnostics" \
+    'rc=1 elapsed=130 {"result":"fail","watched":130,"refused":[],"multi":[],"diagnostics":true} the controller restarted, or its pod changed, within 130 s of its rollout (pods: chaos-controller-manager-0, 0 restart(s) at the start; chaos-controller-manager-0, 1 restart(s) then) first-log-at=130' \
+    "$(inst_restart_at=130 install_case)"
+  # shellcheck disable=SC2016 # the controller's log line, its quotes escaped as it writes them
+  same "install: a refusal of the API server in the controller's log fails the step, each right refused named" \
+    'rc=1 elapsed=150 {"result":"fail","watched":150,"refused":["cannot list resource remoteclusters in API group chaos-mesh.org at the cluster scope"],"multi":[],"diagnostics":true} the API server refused the controller 1 time(s) in 150 s: cannot list resource remoteclusters in API group chaos-mesh.org at the cluster scope first-log-at=150' \
+    "$(inst_log='2026-10-28T10:42:24.9Z	ERROR	controller-runtime.cache.UnhandledError	runtime/runtime.go:221	Failed to watch	{"type": "*v1alpha1.RemoteCluster", "error": "failed to list *v1alpha1.RemoteCluster: remoteclusters.chaos-mesh.org is forbidden: User \"system:serviceaccount:chaos-mesh:chaos-controller-manager\" cannot list resource \"remoteclusters\" in API group \"chaos-mesh.org\" at the cluster scope"}' install_case)"
+  same "install: a multi-cluster controller on fails the step before the watch" \
+    'rc=1 elapsed=0 {"result":"fail","watched":null,"refused":null,"multi":["remotecluster","podchaos-remote-apply"],"diagnostics":true} not as installed by design: chaos-daemon ready on 1 of 1 node(s), 2 CRDs, controller CLUSTER_SCOPED/TARGET_NAMESPACE '"'false svp'"' (false svp expected), multi-cluster controllers on: ["remotecluster","podchaos-remote-apply"] (none expected) first-log-at=0' \
+    "$(inst_on=podchaos-records,remotecluster,podchaos-remote-apply install_case)"
+  same "install: all controllers on (\"*\") fails the step the same way" \
+    'rc=1 ["*"]' "$(inst_on='*' install_case | sed -E 's/^(rc=[0-9]).*"multi":(\[[^]]*\]).*/\1 \2/')"
+  # The scenario: no experiment when the install did not pass; the uninstall still runs.
+  local si_out
+  si_out=$( (
+    exec 3>&1 >/dev/null 2>&1
+    step() {
+      echo "step $1" >&3
+      last_status=ok
+      [ "$1" != chaos-mesh-install ] || last_status=fail
+    }
+    skip() {
+      echo "skip $1: $2" >&3
+      last_status=skipped
+    }
+    scenario_targets
+  ) | tr '\n' ';')
+  same "scenario: the install failed: every experiment skipped, the uninstall run" \
+    "step k8s-up;step seed-videos;step chaos-mesh-install;skip chaos-b-trial: Chaos Mesh not installed;skip chaos-a: Chaos Mesh not installed;skip chaos-b: Chaos Mesh not installed;skip chaos-c: Chaos Mesh not installed;step chaos-mesh-uninstall;" \
+    "$si_out"
 
   # The uninstall's lists: one the API did not answer is listed as unread, never as nothing left.
   touch "$work/api-down"

@@ -20,8 +20,11 @@
 #   4. What a schema cannot say: every Chaos Mesh experiment has a duration of at most 30 minutes and a selector bound
 #      to the one namespace it lives in (svp or svp-data, never kube-system or any other) with a label, expression or
 #      pod selector; Chaos Mesh's controller, in its cloud render and its runner render, is namespaced with svp as its
-#      one target and comes with no dashboard or DNS server; every image in the rendered charts and the manifests is
-#      pinned by exactly one @sha256:<64 hex>.
+#      one target and comes with no dashboard or DNS server; in the runner render its ENABLED_CONTROLLERS has no
+#      multi-cluster controller (remotecluster, <kind>-remote-apply) and no "*", and has the five controllers of each
+#      chaos kind of the pinned chart's CRDs (<kind>-records, -initFinalizers, -desiredphase, -condition,
+#      -cleanFinalizers) and the one of each child kind (podhttpchaos, podiochaos, podnetworkchaos); every image in the
+#      rendered charts and the manifests is pinned by exactly one @sha256:<64 hex>.
 #
 # Usage: deploy/k8s/cloud/check.sh [ROOT]
 #   ROOT: a directory laid out like this repository (default: the repository), from which deploy/k8s/cloud/ and
@@ -213,28 +216,46 @@ fi
 
 # Chaos Mesh's controller in each render of its chart (cloud values, and the runner's overlay after them): namespaced
 # (CLUSTER_SCOPED false) with svp as its one target, as experiments (a) and (b) need, and no dashboard or DNS server, so
-# that an overlay cannot widen what the controller reaches or open a UI.
-scope=$(jq -rs '
-  map(select(.file | test("^rendered__chaos-mesh(-runner)?\\.yaml$"))) | group_by(.file)[] | .[0].file as $f
+# that an overlay cannot widen what the controller reaches or open a UI. In the runner render, its controllers
+# (ENABLED_CONTROLLERS) are listed one by one without the multi-cluster ones: remotecluster lists a cluster-scoped kind
+# a namespaced controller may not, and its cache never syncing makes the manager exit. The controller stops setting up
+# pipelines at the first chaos kind it does not find in the list, so every chaos kind of the chart's CRDs has its five.
+chaos_kinds=$(grep -h -A3 '^  names:' "$tmp/charts/chaos-mesh/chaos-mesh/crds"/*.yaml | sed -n 's/^    kind: //p' |
+  grep 'Chaos$' | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)') || fail "read the kinds of the Chaos Mesh CRDs"
+[ "$(jq length <<<"$chaos_kinds")" -gt 0 ] || fail "no chaos kind in the CRDs of the Chaos Mesh chart"
+scope=$(jq -rs --argjson kinds "$chaos_kinds" '
+  ($kinds | map(select(test("^pod.+chaos$")))) as $children
+  | ([$kinds[] | select(test("^pod.+chaos$") | not) as $k
+      | ("records", "initFinalizers", "desiredphase", "condition", "cleanFinalizers") | "\($k)-\(.)"] + $children) as $want
+  | map(select(.file | test("^rendered__chaos-mesh(-runner)?\\.yaml$"))) | group_by(.file)[] | .[0].file as $f
   | (map(.doc | select(.kind == "Deployment" and .metadata.name == "chaos-controller-manager"))) as $c
   | ($c[0].spec.template.spec.containers[0].env // [] | map({(.name): .value}) | add // {}) as $env
+  | ($env.ENABLED_CONTROLLERS // "" | split(",")) as $on
   | [
       (if ($c | length) != 1 then "not exactly one Deployment chaos-controller-manager" else empty end),
       (if $env.CLUSTER_SCOPED != "false" then "CLUSTER_SCOPED is \($env.CLUSTER_SCOPED | tojson), not \"false\"" else empty end),
       (if $env.TARGET_NAMESPACE != "svp" then "TARGET_NAMESPACE is \($env.TARGET_NAMESPACE | tojson), not \"svp\"" else empty end),
       (map(.doc | select(.kind == "Deployment" and (.metadata.name | test("dashboard|dns"))) | .metadata.name)[]
-        | "Deployment \(.) rendered")
+        | "Deployment \(.) rendered"),
+      (if $f != "rendered__chaos-mesh-runner.yaml" then empty
+       else
+         ($on | map(select(. == "*" or . == "remotecluster" or endswith("-remote-apply")))
+           | if length > 0 then "ENABLED_CONTROLLERS turns on \(join(", ")): a multi-cluster controller, or all of them"
+             else empty end),
+         ($want - $on | if length > 0 then "ENABLED_CONTROLLERS lacks \(join(", "))" else empty end)
+       end)
     ][] | "  \($f | gsub("__"; "/")): \(.)"
 ' "$tmp/docs.jsonl") || fail "read the Chaos Mesh renders as JSON"
 renders=$(jq -r 'select(.file | test("^rendered__chaos-mesh(-runner)?\\.yaml$")) | .file' "$tmp/docs.jsonl" | sort -u | wc -l | tr -d ' ')
 if [ -n "$scope" ]; then
-  printf 'FAIL  Chaos Mesh controller not namespaced on svp alone, or a UI rendered:\n%s\n' "$scope" >&2
+  printf 'FAIL  Chaos Mesh controller not namespaced on svp alone, a UI rendered, or its controllers wrong:\n%s\n' "$scope" >&2
   failed=1
 elif [ "$renders" -ne 2 ]; then
   echo "FAIL  Chaos Mesh: $renders render(s) found, expected the cloud one and the runner's" >&2
   failed=1
 else
-  echo "ok    Chaos Mesh controller namespaced on svp, no dashboard or DNS server (cloud and runner renders)"
+  echo "ok    Chaos Mesh controller namespaced on svp, no dashboard or DNS server (cloud and runner renders);" \
+    "runner: $(jq length <<<"$chaos_kinds") chaos kinds' controllers listed, no multi-cluster one"
 fi
 
 # Images: every string field named image, and every env value whose name has the word IMAGE (the pause image of
