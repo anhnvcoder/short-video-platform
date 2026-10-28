@@ -2,6 +2,11 @@
 // picked with SVP_K6_PROFILE; every rate below is per minute, so a route of less than one request a second (POST
 // /videos) needs no fractional rate. Cloud rates are the totals of the whole Job: k6 splits them across the `pods`
 // processes by --execution-segment, while each pod registers its own pool in setup() (one pool per source address).
+//
+// SVP_K6_PODS (profile cloud only, 1 to 20) runs the Job at fewer pods than the design's 20, each pod keeping the load of
+// one pod of the design: every rate becomes its design total times SVP_K6_PODS / 20, so the pool sizes and per-user
+// rates below hold unchanged. SVP_K6_RAMP and SVP_K6_HOLD set how long the rate ramps up and holds (profiles with a
+// ramp; a whole number of s, m or h).
 
 const holdPattern = /^[1-9][0-9]*[smh]$/;
 
@@ -47,8 +52,8 @@ const profiles = {
     perMinute: { explore: 60, following: 60, like: 30, view: 30, upload: 2, home: 60, video: 30, login: 30 },
     latencyThresholds: false,
   },
-  // The Job of deploy/k6/cloud/ (stage 7): 20 pods (completions of job.yaml.in), 12 users and 2 web sessions each;
-  // 1 000 feed requests a second.
+  // The Job of deploy/k6/cloud/ (stage 7): 20 pods (completions of job.yaml.in; render.sh --pods and SVP_K6_PODS for
+  // fewer), 12 users and 2 web sessions each; 1 000 feed requests a second at 20 pods.
   cloud: {
     executor: "ramping-arrival-rate",
     ramp: "10m",
@@ -79,16 +84,47 @@ const profileName = env("SVP_K6_PROFILE");
 if (!Object.prototype.hasOwnProperty.call(profiles, profileName)) {
   throw new Error(`SVP_K6_PROFILE must be one of ${Object.keys(profiles).join(", ")} (got "${profileName}")`);
 }
-const hold = env("SVP_K6_HOLD") || profiles[profileName].hold;
+const base = profiles[profileName];
+const hold = env("SVP_K6_HOLD") || base.hold;
 if (!holdPattern.test(hold)) {
   throw new Error(`SVP_K6_HOLD must be a whole number of s, m or h, like 5m (got "${hold}")`);
 }
+const rampEnv = env("SVP_K6_RAMP");
+if (rampEnv !== "" && !base.ramp) {
+  throw new Error(`SVP_K6_RAMP is for a profile that ramps up, not ${profileName}`);
+}
+const ramp = rampEnv || base.ramp;
+if (ramp && !holdPattern.test(ramp)) {
+  throw new Error(`SVP_K6_RAMP must be a whole number of s, m or h, like 2m (got "${ramp}")`);
+}
+const podsEnv = env("SVP_K6_PODS");
+if (podsEnv !== "" && profileName !== "cloud") {
+  throw new Error(`SVP_K6_PODS is for profile cloud only, not ${profileName}`);
+}
+if (podsEnv !== "" && !(/^[1-9][0-9]*$/.test(podsEnv) && Number(podsEnv) <= base.pods)) {
+  throw new Error(`SVP_K6_PODS must be a whole number from 1 to ${base.pods} (got "${podsEnv}")`);
+}
+const pods = podsEnv === "" ? base.pods : Number(podsEnv);
 const forwardedFor = env("SVP_K6_FORWARDED_FOR");
 if (forwardedFor !== "" && !/^[0-9a-f.:]+$/i.test(forwardedFor)) {
   throw new Error(`SVP_K6_FORWARDED_FOR must be an IP address (got "${forwardedFor}")`);
 }
 
-export const profile = { name: profileName, ...profiles[profileName], hold };
+function gcd(a, b) {
+  return b === 0 ? a : gcd(b, a % b);
+}
+
+// Each scenario's rate as k6 takes it, a whole number of iterations per timeUnit: the design total times pods / (the
+// design's pods), over the fewest whole minutes that keep it whole (POST /videos at 1 pod of 20: 3 per 2 minutes).
+// With the design's pods every timeUnit is 1m and every rate the total above.
+const rates = {};
+for (const [key, total] of Object.entries(base.perMinute)) {
+  const d = gcd(total * pods, base.pods);
+  rates[key] = { rate: (total * pods) / d, minutes: base.pods / d };
+}
+const perMinute = Object.fromEntries(Object.entries(rates).map(([k, r]) => [k, r.rate / r.minutes]));
+
+export const profile = { name: profileName, ...base, ramp, hold, pods, perMinute };
 
 // Targets, read in setup() rather than here so that `k6 inspect` (make k6-check) needs none of them.
 export function targets() {
@@ -130,24 +166,24 @@ function vus(perMinute) {
 
 export function scenarios(execNames) {
   const out = {};
-  for (const [key, perMinute] of Object.entries(profile.perMinute)) {
-    const base = {
+  for (const [key, { rate, minutes }] of Object.entries(rates)) {
+    const common = {
       exec: execNames[key],
-      timeUnit: "1m",
-      ...vus(perMinute),
+      timeUnit: `${minutes}m`,
+      ...vus(profile.perMinute[key]),
       tags: { phase: "load", app: routes[key].app },
     };
     if (profile.executor === "constant-arrival-rate") {
-      out[key] = { ...base, executor: "constant-arrival-rate", rate: perMinute, duration: profile.hold };
+      out[key] = { ...common, executor: "constant-arrival-rate", rate, duration: profile.hold };
     } else {
       const stages = [
-        { duration: profile.ramp, target: perMinute },
-        { duration: profile.hold, target: perMinute },
+        { duration: profile.ramp, target: rate },
+        { duration: profile.hold, target: rate },
       ];
       if (profile.rampDown) {
         stages.push({ duration: profile.rampDown, target: 0 });
       }
-      out[key] = { ...base, executor: "ramping-arrival-rate", startRate: 0, stages };
+      out[key] = { ...common, executor: "ramping-arrival-rate", startRate: 0, stages };
     }
   }
   return out;

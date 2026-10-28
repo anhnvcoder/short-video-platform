@@ -15,12 +15,27 @@
 # Each check prints PASS, FAIL (or SKIP for INP) and the table at the end; a FAIL does not stop the next check. Exit 1
 # when any check failed.
 #
+# SVP_WEB_OBS_SKIP_ERRORS=<reason> leaves check 3 out: it prints "SKIP  errors (<reason>)" in its place, which is not a
+# failure, and checks 1 and 2 run as always. Only for a run that has no browser error to look for on purpose (the
+# verification run of the GitOps path on a branch whose web image CI built without source maps, so the e2e run sent
+# none); unset, check 3 is required. Set but empty or blank, the script refuses to run: a check is never left out
+# without a reason.
+#
 # Tempo, Prometheus and GlitchTip have no address on the host: each is reached through a port-forward of its own on
 # 127.0.0.1 (13200, 19090, 8000), opened before the checks and stopped by its pid when the script ends; a port that
 # is taken stops the script, naming it. GlitchTip's read-only API token (event:read, project:read) is read from Secret
 # svp-obs/glitchtip-api into a shell variable and goes to curl on stdin only, never printed or on a command line.
 # Nothing is written to the cluster and no rate limit key is touched.
 set -euo pipefail
+
+skip_errors=
+if [ -n "${SVP_WEB_OBS_SKIP_ERRORS+set}" ]; then
+  skip_errors=$(printf '%s' "$SVP_WEB_OBS_SKIP_ERRORS" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+  if [ -z "$skip_errors" ]; then
+    echo "FAIL  SVP_WEB_OBS_SKIP_ERRORS is set but blank: give the reason the GlitchTip check is left out, or unset it" >&2
+    exit 1
+  fi
+fi
 
 # Read only: deploy/k8s/drills/lib.sh then leaves out deploy/compose/lib.sh, which deletes rate limit keys.
 drill_read_only=1
@@ -185,7 +200,13 @@ run_check() {
 
 run_check trace check_trace
 run_check rum check_rum
-run_check errors check_errors
+if [ -n "$skip_errors" ]; then
+  echo "--- errors"
+  echo "SKIP  errors ($skip_errors)"
+  results+=("SKIP  errors ($skip_errors)")
+else
+  run_check errors check_errors
+fi
 
 echo "drill-k8s-web-obs:"
 failed=0

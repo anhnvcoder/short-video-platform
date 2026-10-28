@@ -60,8 +60,8 @@ controller:
     # analysis here uses a Job; the informers then watch argo-rollouts, where the chart's Role covers them.
     - name: ARGO_ROLLOUTS_ANALYSIS_JOB_NAMESPACE
       value: argo-rollouts
-  # Traffic router plugin Gateway API v0.17.0, the binary for the nodes' arm64 (amd64:
-  # .../v0.17.0/gatewayapi-plugin-linux-amd64, sha256 1904ca787d33107c140521899d61fff030ee75d99908bd175fca5a4647759061).
+  # Traffic router plugin Gateway API v0.17.0, the binary for arm64 nodes (a Mac); on amd64 nodes
+  # argo-rollouts-amd64.yaml replaces this list with the asset of the same release built for amd64.
   # The controller downloads it from GitHub when it starts (namespace argo-rollouts denies no egress) and refuses a file
   # whose sha256 differs; the release publishes no checksum file, so the value was computed on the downloaded asset and
   # matches the asset digest GitHub shows. It runs as a child process of the controller, with the

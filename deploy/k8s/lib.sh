@@ -229,9 +229,10 @@ secret() {
   done
 }
 
-# argocd_root_app REPO_URL REVISION: prints the root Application svp-root of the GitOps path, as JSON for
+# argocd_root_app REPO_URL REVISION ENV: prints the root Application svp-root of the GitOps path, as JSON for
 # `kc apply -f -`: chart deploy/argocd/apps of REPO_URL at REVISION, which hands the same revision to every Application
-# it makes (its value targetRevision). Built by jq from --arg values, so the revision is always a JSON string: a
+# it makes (its value targetRevision) and adds the overlays of environment ENV (its value env, a directory of
+# deploy/k8s/envs). Built by jq from --arg values, so the revision and the environment are always JSON strings: a
 # branch named 2026, true or 1e3 written into YAML as it is would be read as a number or a boolean, which the
 # Application CRD refuses (targetRevision is a string).
 #
@@ -244,7 +245,7 @@ secret() {
 # kubectl.kubernetes.io/last-applied-configuration annotation of a client-side apply and sees the deletion. The
 # children apply their own objects server-side (ServerSideApply=true), for which the server-side diff is right.
 argocd_root_app() {
-  jq -n --arg repo "$1" --arg rev "$2" '{
+  jq -n --arg repo "$1" --arg rev "$2" --arg env "$3" '{
     apiVersion: "argoproj.io/v1alpha1",
     kind: "Application",
     metadata: {
@@ -258,7 +259,7 @@ argocd_root_app() {
         repoURL: $repo,
         targetRevision: $rev,
         path: "deploy/argocd/apps",
-        helm: {valuesObject: {targetRevision: $rev}}
+        helm: {valuesObject: {targetRevision: $rev, env: $env}}
       },
       destination: {server: "https://kubernetes.default.svc", namespace: "argocd"},
       syncPolicy: {
@@ -535,15 +536,17 @@ web_build_id() {
   echo "dev-$(printf '%s\n' "$list" | shasum -a 256 | cut -c1-12)"
 }
 
-# build_image SERVICE CONTEXT: builds SERVICE's image from the source tree CONTEXT (native architecture, the
-# Dockerfiles compose uses) and sets image_id to its ID, without the sha256: prefix. The web image gets SVP_BUILD_ID
-# from web_build_id, which reads the working tree: build_dev_images passes that tree as CONTEXT.
+# build_image SERVICE CONTEXT [WEB_BUILD_ID]: builds SERVICE's image from the source tree CONTEXT (native architecture,
+# the Dockerfiles compose uses) and sets image_id to its ID, without the sha256: prefix. The web image gets SVP_BUILD_ID
+# from web_build_id, which reads the working tree: build_dev_images passes that tree as CONTEXT. WEB_BUILD_ID replaces
+# it for a second build of the same source (make drill-k8s-web-canary): next build runs again with that id, so the
+# image is another build, with its own deploymentId and Server Action ids.
 build_image() {
   local args=(--file "$2/$(dockerfile "$1")") id
   case $1 in
   media-worker) ;;
   web)
-    id=$(web_build_id) || return 1
+    id=${3:-$(web_build_id)} || return 1
     args+=(--build-arg "SVP_BUILD_ID=$id")
     ;;
   *) args+=(--build-arg "SERVICE=$1") ;;

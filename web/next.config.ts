@@ -1,8 +1,15 @@
 import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
+import { locales } from "./i18n/config";
 
-// Locale and messages per request, read from i18n/request.ts (no locale prefix in the URL).
-const withNextIntl = createNextIntlPlugin("./i18n/request.ts");
+// Locale and messages per request, read from i18n/request.ts (no locale prefix in the URL). Every message file under
+// messages/ is compiled at build time, so neither the server nor the browser parses ICU syntax at run time: the
+// browser bundle carries a small formatter instead of the ICU parser (about 8 kB gzip less on every page, all of it
+// loaded before the page's first paint). Unit tests import the JSON files as they are and format them the usual way.
+const withNextIntl = createNextIntlPlugin({
+  requestConfig: "./i18n/request.ts",
+  experimental: { messages: { path: "./messages", format: "json", locales, precompile: true } },
+});
 
 // The build id of the image (build arg SVP_BUILD_ID of deploy/docker/web.Dockerfile): the first 12 hex digits of the
 // commit in CI, a hash of the build context on the dev path of k3d. Empty for `next build` of make web-check, next dev

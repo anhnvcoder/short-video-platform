@@ -7,12 +7,14 @@
 #                            $SVP_VERIFY_OUT/sampler.pid; refuses to start a second one
 #   verify-sample.sh stop    stops the process of that pid (only when its command line is this script's loop), then
 #                            writes the summary below and prints runner.txt
-#   verify-sample.sh peak START END
-#                            ram-peak.json and ram-peak.txt from the docker.tsv samples between START and END (seconds
-#                            since the epoch; deploy/ci/verify-run.sh gives the start and end of drill-k8s-keda): the
-#                            highest median of 6 samples in a row that each saw 2 workers transcoding (the cluster's
-#                            peak), with the same median of MEM USAGE minus active_file, the
-#                            longest run of such samples, and the highest sample; also on macOS (awk and jq only)
+#   verify-sample.sh peak START END [LABEL]
+#                            ram-peak.json and ram-peak.txt (ram-peak-LABEL.* with a LABEL of a-z, 0-9 and -: a
+#                            scenario that runs the drill twice) from the docker.tsv samples between START and END
+#                            (seconds since the epoch; deploy/ci/verify-run.sh gives the start and end of the
+#                            drill-k8s-keda right before): the highest median of 6 samples in a row that each saw 2
+#                            workers transcoding (the cluster's peak), with the same median of MEM USAGE minus
+#                            active_file, the longest run of such samples, and the highest sample; also on macOS (awk
+#                            and jq only)
 #   verify-sample.sh s3-peak START END
 #                            ram-s3-upload.json and ram-s3-upload.txt from the compose.tsv samples of container svp-s3-1
 #                            (the object store) between START and END (deploy/ci/verify-run.sh gives the start and end
@@ -20,8 +22,14 @@
 #                            taken, and the last sample before START (the store before the upload); exits 1 when no
 #                            sample of the window saw the container, or the highest is not under its 512 MiB
 #                            mem_limit; also on macOS (awk and jq only)
-#   verify-sample.sh sample  takes one docker.tsv, compose.tsv and restarts.tsv sample now, as the loop does every
-#                            10 s (deploy/ci/verify-collect-test.sh runs it with a fake docker, kubectl and pgrep;
+#                            Both wait first, while the sampler runs, for its first docker.tsv sample after END (60 s at
+#                            most; a line saying so when none came): a sample is timed when it starts and written once
+#                            docker stats and the cluster answered, seconds later, so the samples of the window's last
+#                            seconds may still be on their way when the target that END closes has ended. The loop
+#                            writes compose.tsv before docker.tsv in each sample and samples one after the other, so a
+#                            docker.tsv line after END means every sample up to END is written.
+#   verify-sample.sh sample  takes one docker.tsv, compose.tsv, restarts.tsv and k6.tsv sample now, as the loop does
+#                            every 10 s (deploy/ci/verify-collect-test.sh runs it with a fake docker, kubectl and pgrep;
 #                            deploy/ci/verify-run.sh just before it removes the compose containers)
 #
 # Samples, in $SVP_VERIFY_OUT/samples/ (one line each, seconds since the epoch first):
@@ -56,6 +64,12 @@
 #                                keeps an event for an hour only (k3s's default --event-ttl), so a run of several hours
 #                                is read all along, not once at the end
 #   event-polls.tsv  every 60 s  ok or fail: whether that read of the events worked
+#   k6.tsv           every 10 s  for each pod of namespace svp-load (the k6 Job of deploy/k6/cloud/run.sh) that runs a
+#                                k6 process now: pod UID, nr_periods and nr_throttled of cpu.stat (counters since the
+#                                container started) of the cgroup that process is in, the k6 container of the pod, where
+#                                its CPU limit is enforced, and the quota of that cgroup's cpu.max ("max": no CPU limit,
+#                                so the kernel never throttles it and both counters stay 0; "-" when not read); found
+#                                like the workers' ffmpeg (below), read on the runner under /sys/fs/cgroup
 # The summary: runner.json and runner.txt (lowest MemAvailable, highest swap and CPU, lowest free disk, containers
 # OOMKilled, OOM lines of the kernel, compose containers that restarted (from restarts.tsv and a last reading: every
 # container the samples saw, also one removed since, as make down and a drill that recreates a service do; a new
@@ -77,6 +91,26 @@
 # metrics-server, so it lags the start and end of a transcode by up to a scrape, which is a sample or two of the
 # 6 in a row the peak needs, and it needs a threshold of its own.
 #
+# The criteria of the k3d scenarios beyond those of every scenario:
+#   every k3d scenario       k3d_server_kept, k3d_nodes_ready, k3d_no_eviction (below)
+#   gitops                   gitops_keda_two_transcoding: each drill-k8s-keda-<n> that ran (results.tsv: not skipped)
+#                            had at least 6 docker.tsv samples in a row with 2 workers transcoding within its own start
+#                            and end; "unmeasured" when none ran
+#   k6-cloud-mini, chaos     k6_cpu_throttle_5pct: in each window of $SVP_VERIFY_OUT/k6-windows.tsv, no k6 pod had more
+#                            than 5% of its CPU periods throttled (the growth of nr_throttled over that of nr_periods,
+#                            from its first to its last k6.tsv sample in the window, compared as counts, never as a
+#                            rounded share; a pod with no period in the window, as one without a CPU limit, had none
+#                            throttled). false when a pod measured is over 5%; otherwise "unmeasured" when the file is
+#                            missing or empty, has a line not of the format below, or a window is not measured: a pod
+#                            seen in it has a single sample there (it ended or started within the window, so part of
+#                            its load went unseen), or fewer pods have two samples there than the window's pods. k6
+#                            short of CPU drops iterations by itself, which says nothing of the system under load
+# The windows file is written by the scenario's k6 step, one line per window whose load counts (k6-cloud-mini: the
+# hold of each level it counts; chaos: the hold under the experiments): label (a-z, 0-9, -), start, end, in seconds
+# since the epoch, and the number of k6 pods the step ran in it (1 or more), tab separated. runner.json lists each
+# window with its pods seen and measured, those without a CPU limit, and the highest throttled share, rounded up to
+# 0.01% so that a share over 5% never reads as 5.
+#
 # Of the k3d criteria, a sample the cluster could not answer counts against the runner, never for it: from the first
 # sample of a running k3s server on, every sample must see it running with the same RestartCount and StartedAt; from
 # the first sample with every node Ready on (before it the cluster is still being made), every sample must read the
@@ -94,8 +128,11 @@ samples=$out/samples
 pidfile=$out/sampler.pid
 gib=$((1024 * 1024 * 1024))
 worker_selector=app.kubernetes.io/name=media-worker,app.kubernetes.io/component=server
-# Where ffmpeg_pods reads the processes' cgroups; deploy/ci/verify-collect-test.sh points it at a fixture.
+# Where ffmpeg_pods and k6_sample read the processes' cgroups, and where k6_sample reads a cgroup's cpu.stat;
+# deploy/ci/verify-collect-test.sh points them at fixtures.
 proc=${SVP_VERIFY_PROC:-/proc}
+cgroup_root=${SVP_VERIFY_CGROUP:-/sys/fs/cgroup}
+pod_uid_re='pod\([0-9a-f]\{8\}[-_][0-9a-f]\{4\}[-_][0-9a-f]\{4\}[-_][0-9a-f]\{4\}[-_][0-9a-f]\{12\}\)'
 
 fail() {
   echo "FAIL  verify-sample: $1" >&2
@@ -131,9 +168,27 @@ awk_mem='function mib(s,   n, u) {
 ffmpeg_pods() {
   local pid
   for pid in $(pgrep -x ffmpeg); do
-    sed -n 's/.*pod\([0-9a-f]\{8\}[-_][0-9a-f]\{4\}[-_][0-9a-f]\{4\}[-_][0-9a-f]\{4\}[-_][0-9a-f]\{12\}\).*/\1/p' \
-      "$proc/$pid/cgroup" 2>/dev/null
+    sed -n "s/.*$pod_uid_re.*/\\1/p" "$proc/$pid/cgroup" 2>/dev/null
   done | tr _ - | sort -u
+}
+
+# k6_sample T: one k6.tsv line per pod of namespace svp-load that runs a k6 process now (see k6.tsv above).
+k6_sample() {
+  local t=$1 pids uids pid path uid stat quota
+  pids=$(pgrep -x k6) || return 0
+  uids=$(kc -n svp-load get pods -o jsonpath='{range .items[*]}{.metadata.uid}{"\n"}{end}' 2>/dev/null) || return 0
+  [ -n "$uids" ] || return 0
+  for pid in $pids; do
+    # cgroup v2: one line "0::<path>", the path from the root of the runner's hierarchy.
+    path=$(sed -n 's/^0:://p' "$proc/$pid/cgroup" 2>/dev/null)
+    uid=$(printf '%s\n' "$path" | sed -n "s/.*$pod_uid_re.*/\\1/p" | tr _ -)
+    [ -n "$uid" ] && printf '%s\n' "$uids" | grep -qxF -- "$uid" || continue
+    stat=$(awk '$1 == "nr_periods" { p = $2 } $1 == "nr_throttled" { n = $2 } END { if (p != "" && n != "") print p "\t" n }' \
+      "$cgroup_root$path/cpu.stat" 2>/dev/null) || continue
+    # cpu.max: "<quota> <period>", the quota "max" without a CPU limit.
+    quota=$(awk '{ print $1; exit }' "$cgroup_root$path/cpu.max" 2>/dev/null)
+    [ -n "$stat" ] && printf '%s\t%s\t%s\t%s\n' "$t" "$uid" "$stat" "${quota:--}"
+  done | sort -u -t "$(printf '\t')" -k 2,2 >>"$samples/k6.tsv"
 }
 
 # node_memstat: anon, active_file and kernel of memory.stat summed over the two k3d nodes, in MiB, tab separated;
@@ -235,6 +290,7 @@ loop() {
     [ $((tick % 2)) = 0 ] && docker_sample "$t"
     [ $((tick % 6)) = 0 ] && disk_sample "$t"
     if cluster_up; then
+      [ $((tick % 2)) = 0 ] && k6_sample "$t"
       [ $((tick % 6)) = 0 ] && pods_sample "$t"
       [ $((tick % 12)) = 0 ] && events_sample "$t"
     fi
@@ -285,8 +341,9 @@ summary() {
 
   jq -n --rawfile host "$samples/host.tsv" --rawfile docker "$samples/docker.tsv" --rawfile disk "$samples/disk.tsv" \
     --rawfile pods "$samples/pods.tsv" --rawfile compose "$samples/compose.tsv" --rawfile events "$samples/events.tsv" \
-    --rawfile polls "$samples/event-polls.tsv" \
-    --rawfile results "$results" --argjson results_read "$results_read" --argjson run_ended "$run_ended" \
+    --rawfile polls "$samples/event-polls.tsv" --rawfile k6 <(cat "$samples/k6.tsv" 2>/dev/null) \
+    --rawfile windows <(cat "$out/k6-windows.tsv" 2>/dev/null) --rawfile results "$results" \
+    --argjson results_read "$results_read" --argjson run_ended "$run_ended" \
     --arg scenario "$scenario" --arg oom "$oom" --arg kernel_oom "$kernel_oom" --arg restarted "$restarted" \
     --argjson logs429 "$logs429" '
     def rows($s): $s | split("\n") | map(select(length > 0) | split("\t"));
@@ -295,6 +352,16 @@ summary() {
     def from_first(f): . as $a | ([range(0; length) | select($a[.] | f)] | first) as $i | if $i then $a[$i:] else [] end;
     (rows($host)) as $h | (rows($docker)) as $d | (rows($disk)) as $k | (rows($pods)) as $p | (rows($compose)) as $c |
     (rows($events) | unique_by(.[1])) as $e | (rows($polls)) as $q |
+    def at($a; $b): map(select((.[0] | tonumber) >= $a and (.[0] | tonumber) <= $b));
+    # The longest run of docker.tsv rows in a row that saw 2 workers transcoding.
+    def longest_two: reduce .[] as $x ({n: 0, best: 0};
+      if ($x[10] // "-") == "2" then .n += 1 | .best = ([.best, .n] | max) else .n = 0 end) | .best;
+    def window_line: length == 4 and (.[0] | test("^[a-z0-9-]+$")) and (.[1] | test("^[0-9]+$"))
+      and (.[2] | test("^[0-9]+$")) and (.[3] | test("^[1-9][0-9]*$"));
+    (rows($windows) | map(select(window_line)
+      | {label: .[0], from: (.[1] | tonumber), to: (.[2] | tonumber), pods: (.[3] | tonumber)})) as $win |
+    (rows($windows) | map(select(window_line | not)) | length) as $win_bad |
+    (rows($k6) | map(select(length == 5 and all(.[0], .[2], .[3]; test("^[0-9]+$"))))) as $k6rows |
     ($d | from_first(.[7] == "running")) as $up |
     ($d | from_first(.[6] == "0")) as $ready |
     {
@@ -329,6 +396,26 @@ summary() {
       compose_restarts: ($restarted | split(" ") | map(select(length > 0))),
       results_read: $results_read,
       run_ended: $run_ended,
+      # Each drill-k8s-keda that ran, with the longest run of samples within its own start and end that saw 2 workers
+      # transcoding.
+      keda_runs: (rows($results) | .[1:] | map(select((.[1] | test("^drill-k8s-keda(-[0-9]+)?$")) and .[2] != "skipped")
+        | (.[4] | tonumber) as $a | (.[5] | tonumber) as $b
+        | {name: .[1], from: ($a | todate), to: ($b | todate), longest_run_with_2_transcoding: ($d | at($a; $b) | longest_two)})),
+      # Each window of k6-windows.tsv: per pod with two samples in the window, the growth of nr_throttled over that of
+      # nr_periods between its first and last one; the window is measured when every pod seen in it has two samples
+      # and they are at least the pods the window ran.
+      k6_windows: ($win | map(. as $w | ($k6rows | at($w.from; $w.to) | group_by(.[1])
+        | map(sort_by(.[0] | tonumber) | {samples: length, no_limit: all(.[]; .[4] == "max"),
+          periods: ((.[-1][2] | tonumber) - (.[0][2] | tonumber)),
+          throttled: ((.[-1][3] | tonumber) - (.[0][3] | tonumber))})) as $seen
+        | ($seen | map(select(.samples >= 2))) as $m
+        | {label: $w.label, from: ($w.from | todate), to: ($w.to | todate), pods: $w.pods,
+          pods_seen: ($seen | length), pods_measured: ($m | length),
+          pods_without_cpu_limit: ($m | map(select(.no_limit)) | length),
+          throttled_pct_max: ($m | map(if .periods > 0 then .throttled * 10000 / .periods | ceil / 100 else 0 end) | max),
+          over_5pct: any($m[]; .throttled * 20 > .periods)}
+        | .measured = (.pods_seen == .pods_measured and .pods_measured >= .pods))),
+      k6_windows_malformed_lines: $win_bad,
       # A target stopped by its own limit or by the deadline, one cancelled when the step ended, one never started
       # for the deadline: each means the scenario did not fit the time of the job.
       targets_cut: (rows($results) | .[1:] | map(select(.[2] == "timeout" or .[2] == "cancelled"
@@ -340,10 +427,17 @@ summary() {
       disk: (.disk_low_seen | not)
     } + if $scenario == "compose-obs" then {
       compose_no_restart: ((.compose_restarts | length) == 0)
-    } elif $scenario == "dev-k3d" then {
+    } elif $scenario | IN("dev-k3d", "gitops", "web-canary", "k6-cloud-mini", "chaos", "velero") then {
       k3d_server_kept: (.k3d_server_seen and .k3d_server_states == 1 and .k3d_server_not_running_samples == 0),
       k3d_nodes_ready: (.nodes_all_ready_seen and .nodes_not_ready_samples == 0 and .nodes_unanswered_samples == 0),
       k3d_no_eviction: (.event_polls.ok > 0 and .evictions == 0)
+    } else {} end + if $scenario == "gitops" then {
+      gitops_keda_two_transcoding: (if (.keda_runs | length) == 0 then "unmeasured"
+        else all(.keda_runs[]; .longest_run_with_2_transcoding >= 6) end)
+    } else {} end + if $scenario | IN("k6-cloud-mini", "chaos") then {
+      k6_cpu_throttle_5pct: (if any(.k6_windows[]; .over_5pct) then false
+        elif (.k6_windows | length) == 0 or .k6_windows_malformed_lines > 0 or any(.k6_windows[]; .measured | not)
+        then "unmeasured" else true end)
     } else {} end)' >"$out/runner.json" || { echo "verify-sample: summary not written" >&2; return 1; }
   jq -r '"runner (\(.scenario)): MemAvailable min \(.mem_available_min_mib) MiB, swap max \(.swap_used_max_mib) MiB, CPU busy max \(.cpu_busy_max_pct)%",
     "runner: disk free min \(.disk_free_min_gib) GiB (low seen: \(.disk_low_seen)), k3d MEM USAGE max \(.k3d_mem_usage_max_mib) MiB, compose \(.compose_mem_usage_max_mib) MiB",
@@ -351,15 +445,38 @@ summary() {
     "runner: k3s server states \(.k3d_server_states), samples with it not running \(.k3d_server_not_running_samples); nodes not Ready in \(.nodes_not_ready_samples) sample(s), not answering in \(.nodes_unanswered_samples)",
     "runner: events read \(.event_polls.ok) time(s) (\(.event_polls.failed) failed), evictions \(.evictions), pulls refused 429 \(.image_pulls_429), target outputs with a 429 \(.target_outputs_with_429)",
     "runner: results.tsv read \(.results_read), verify-run.sh reached its end \(.run_ended), targets cut short [\(.targets_cut | join(" "))]",
+    (if (.keda_runs | length) > 0 then "runner: drill-k8s-keda, longest run of samples with 2 workers transcoding: " +
+      (.keda_runs | map("\(.name)=\(.longest_run_with_2_transcoding)") | join(" ")) else empty end),
+    (if (.k6_windows | length) > 0 then "runner: k6 windows, highest share of CPU periods throttled in a pod: " +
+      (.k6_windows | map("\(.label)=\(if .pods_measured > 0 then "\(.throttled_pct_max)%" else "-" end)" +
+        "\(if .measured then "" else " unmeasured" end) (\(.pods_measured) of \(.pods) pod(s) measured, \(.pods_seen) seen," +
+        " \(.pods_without_cpu_limit) without a CPU limit)") | join(" ")) else empty end),
+    (if .k6_windows_malformed_lines > 0 then "runner: k6-windows.tsv, lines not label, start, end, pods: \(.k6_windows_malformed_lines)"
+      else empty end),
     "runner enough: " + (.runner_enough | to_entries | map("\(.key)=\(.value)") | join(" "))' "$out/runner.json" |
     tee "$out/runner.txt"
 }
 
-# peak START END: see verify-sample.sh peak in the header.
+# await_sample_after END: see "Both wait first" under s3-peak in the header.
+await_sample_after() {
+  local deadline=$(($(date +%s) + 60))
+  running || return 0
+  until awk -F '\t' -v e="$1" '$1 > e { found = 1; exit } END { exit !found }' "$samples/docker.tsv" 2>/dev/null; do
+    if [ "$(date +%s)" -ge "$deadline" ] || ! running; then
+      echo "verify-sample: no sample after the window's end within 60 s; its last seconds may lack a sample"
+      return 0
+    fi
+    sleep 2
+  done
+}
+
+# peak START END [LABEL]: see verify-sample.sh peak in the header.
 peak() {
-  local file=$out/ram-peak
-  case $1$2 in '' | *[!0-9]*) fail "usage: verify-sample.sh peak START END (seconds since the epoch)" ;; esac
-  [ -n "$1" ] && [ -n "$2" ] || fail "usage: verify-sample.sh peak START END (seconds since the epoch)"
+  local file=$out/ram-peak${3:+-$3}
+  case $1$2 in '' | *[!0-9]*) fail "usage: verify-sample.sh peak START END [LABEL] (seconds since the epoch)" ;; esac
+  [ -n "$1" ] && [ -n "$2" ] || fail "usage: verify-sample.sh peak START END [LABEL] (seconds since the epoch)"
+  case ${3-x} in '' | *[!a-z0-9-]*) fail "verify-sample.sh peak: LABEL holds a-z, 0-9 and - only" ;; esac
+  await_sample_after "$2"
   awk -F '\t' -v a="$1" -v b="$2" '$1 >= a && $1 <= b' "$samples/docker.tsv" |
     jq -R -s --argjson start "$1" --argjson end "$2" '
     def median: sort | if length == 0 then null elif length % 2 == 1 then .[length / 2 | floor]
@@ -400,6 +517,7 @@ s3_peak() {
   local file=$out/ram-s3-upload limit=512
   case $1$2 in '' | *[!0-9]*) fail "usage: verify-sample.sh s3-peak START END (seconds since the epoch)" ;; esac
   [ -n "$1" ] && [ -n "$2" ] || fail "usage: verify-sample.sh s3-peak START END (seconds since the epoch)"
+  await_sample_after "$2"
   awk -F '\t' '$2 == "svp-s3-1"' "$samples/compose.tsv" |
     jq -R -s --argjson start "$1" --argjson end "$2" --argjson limit "$limit" '
     split("\n") | map(select(length > 0) | split("\t") | {t: (.[0] | tonumber), mib: (.[2] | tonumber)}) as $all |
@@ -422,7 +540,7 @@ case ${1:-} in
   start)
     running && fail "a sampler already runs (pid $pid)"
     mkdir -p "$samples"
-    for f in host docker compose restarts pods disk events event-polls; do : >"$samples/$f.tsv"; done
+    for f in host docker compose restarts pods disk events event-polls k6; do : >"$samples/$f.tsv"; done
     {
       echo "kernel: $(uname -r)  cpus: $(nproc)"
       free -m
@@ -449,16 +567,18 @@ case ${1:-} in
     summary
     ;;
   peak)
-    peak "${2:-}" "${3:-}"
+    peak "${2:-}" "${3:-}" ${4+"$4"}
     ;;
   s3-peak)
     s3_peak "${2:-}" "${3:-}"
     ;;
   sample)
     mkdir -p "$samples"
-    docker_sample "$(date +%s)"
+    t=$(date +%s)
+    docker_sample "$t"
+    k6_sample "$t"
     ;;
   *)
-    fail "usage: verify-sample.sh start|stop|peak START END|s3-peak START END|sample"
+    fail "usage: verify-sample.sh start|stop|peak START END [LABEL]|s3-peak START END|sample"
     ;;
 esac

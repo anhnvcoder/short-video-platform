@@ -1,0 +1,9 @@
+# Production, rendered and checked only until a production cluster exists. Errors carry environment prd. A service on
+# the request path keeps serving through a node loss or a drain: two replicas on two nodes, at most one taken down at a
+# time. A floor of policy, not a measured size: resources wait for a load test.
+env:
+  SENTRY_ENVIRONMENT: prd
+replicas: 2
+pdb:
+  minAvailable: 1
+spreadAcrossNodes: true

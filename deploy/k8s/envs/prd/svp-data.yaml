@@ -1,0 +1,6 @@
+# Production, rendered and checked only until a production cluster exists. The object store's public name and the web
+# client's origin its buckets accept are placeholders under the reserved .example TLD, which never resolves; the real
+# names come with the cloud cluster. Commas without spaces between origins.
+s3:
+  host: s3.svp.example
+  corsAllowedOrigins: https://svp.example

@@ -1,0 +1,5 @@
+# Production, rendered and checked only until a production cluster exists. The hostnames of Gateway svp's two HTTPS
+# listeners and their certificates are placeholders under the reserved .example TLD, which never resolves, so the
+# render proves the k3d names (svp.localhost) can be overridden here; the real names come with the cloud cluster.
+wildcardHost: "*.svp.example"
+apexHost: svp.example

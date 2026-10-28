@@ -1,0 +1,27 @@
+# The StorageClass Redpanda's volume uses on the k3d cluster of a CI runner (deploy/k8s/install.sh sets it on release
+# redpanda when SVP_K8S_RUNNER_CSI=1), and the VolumeSnapshotClass Velero picks for it: Velero's CSI support takes the
+# class of the volume's driver that carries the label below. Retain keeps the snapshot when its VolumeSnapshotContent
+# goes away, as on EBS (deploy/k8s/cloud/velero/volumesnapshotclass.yaml); Velero deletes the snapshots of a backup it
+# deletes (deploy/k8s/cloud/velero/drill-restore.sh sweep).
+#
+# Immediate binding: the driver runs on one node (deploy/k8s/cloud/runner/csi/hostpath-plugin.yaml), so the
+# provisioner places every volume there at once and the PersistentVolume's node affinity brings the pod to it. With
+# WaitForFirstConsumer the scheduler could pick the other node first, which the driver cannot serve. Delete: a PVC the
+# drill deletes takes its volume with it, so the restore cannot find the old data behind its back.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: csi-hostpath
+provisioner: hostpath.csi.k8s.io
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+allowVolumeExpansion: false
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: csi-hostpath-velero
+  labels:
+    velero.io/csi-volumesnapshot-class: "true"
+driver: hostpath.csi.k8s.io
+deletionPolicy: Retain

@@ -1,0 +1,11 @@
+# Production, rendered and checked only until a production cluster exists. Errors carry environment prd. The origins
+# are placeholders under the reserved .example TLD, which never resolves, so the render proves every k3d name
+# (svp.localhost, port 8443) can be overridden here; the real names come with the cloud cluster. Two replicas spread
+# over the nodes with a disruption budget are already the base's.
+env:
+  APP_ORIGIN: https://svp.example
+  MEDIA_ORIGIN: https://s3.svp.example
+  UPLOAD_ORIGIN: https://s3.svp.example
+  SENTRY_ENVIRONMENT: prd
+httpRoute:
+  host: svp.example

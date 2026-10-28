@@ -49,7 +49,10 @@
       "repo": "https://argoproj.github.io/argo-helm",
       "chart": "argo-rollouts",
       "version": "2.43.8",
-      "values": "deploy/k8s/values/argo-rollouts.yaml"
+      "values": "deploy/k8s/values/argo-rollouts.yaml",
+      "archValues": {
+        "amd64": "deploy/k8s/values/argo-rollouts-amd64.yaml"
+      }
     },
     {
       "name": "kyverno",

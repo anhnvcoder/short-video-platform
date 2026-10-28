@@ -236,32 +236,29 @@ pg_backup_sets() {
     fail "Cluster svp-data/svp-pg is missing while Backups of it remain (${backups% }): it was deleted after it had data, a restore drill stopped half way? Installing svp-data would create an empty database in its place. Finish the restore as docs/runbooks/postgres-restore.md says (make drill-k8s-backup printed its commands), or start over with no data: make k8s-down && make k8s-up"
 }
 
-# rollouts_plugin_sets: sets the array rollouts_sets to the flag that gives Argo Rollouts its Gateway API traffic router
-# plugin built for the nodes' architecture. The plugin is a native binary: the controller downloads it when it starts
-# and executes it at the first reconcile of a Rollout with a canary. deploy/k8s/values/argo-rollouts.yaml pins the
-# linux-arm64 asset, for the nodes of a Mac, and the GitOps path installs that file as it is. On amd64 nodes (a Linux
+# rollouts_plugin_check: Argo Rollouts' Gateway API traffic router plugin is a native binary, which the controller
+# downloads when it starts and executes at the first reconcile of a Rollout with a canary. Its values file
+# deploy/k8s/values/argo-rollouts.yaml pins the linux-arm64 asset, for the nodes of a Mac; on amd64 nodes (a Linux
 # x86_64 host, such as a CI runner) that binary cannot run: the controller fails to start the plugin on every reconcile,
-# before it scales the Rollout's ReplicaSet, so the gateway never gets a pod. There the asset of the same release built
-# for amd64 is passed with --set-json, pinned here by its sha256 (computed on the downloaded file, equal to the digest
-# GitHub shows for the asset). The values file must name the same release, so a new release cannot update one pin and
-# leave the other behind. arm64 nodes get no flag: the release is upgraded exactly as before.
-rollouts_plugin_release=https://github.com/argoproj-labs/rollouts-plugin-trafficrouter-gatewayapi/releases/download/v0.17.0
-rollouts_plugin_sets() {
-  local archs
-  rollouts_sets=()
-  grep -qxF "      location: $rollouts_plugin_release/gatewayapi-plugin-linux-arm64" \
-    "$repo_root/deploy/k8s/values/argo-rollouts.yaml" ||
-    fail "deploy/k8s/values/argo-rollouts.yaml does not pin $rollouts_plugin_release/gatewayapi-plugin-linux-arm64: when the plugin's release changes, change the amd64 pin of rollouts_plugin_sets in deploy/k8s/install.sh with it"
-  archs=$(kc get nodes -o jsonpath='{range .items[*]}{.metadata.labels.kubernetes\.io/arch}{"\n"}{end}' | sort -u) ||
-    fail "read the architecture of the nodes of svp"
-  case $archs in
-    arm64) ;;
-    amd64)
-      rollouts_sets=(--set-json "controller.trafficRouterPlugins=[{\"name\":\"argoproj-labs/gatewayAPI\",\"location\":\"$rollouts_plugin_release/gatewayapi-plugin-linux-amd64\",\"sha256\":\"1904ca787d33107c140521899d61fff030ee75d99908bd175fca5a4647759061\"}]")
-      ok "Argo Rollouts gets the Gateway API plugin built for amd64 nodes"
-      ;;
-    *) fail "nodes of svp run '$archs': no Gateway API plugin of Argo Rollouts is pinned for that architecture" ;;
-  esac
+# before it scales the Rollout's ReplicaSet, so the gateway never gets a pod. There the file archValues of
+# components.json names for amd64 is read after it, as on the GitOps path, and replaces the plugin with the asset of
+# the same release built for amd64. Both files must name one release, so a new release cannot update one pin and leave
+# the other behind: each holds exactly one plugin location, and the locations differ only in the asset's name.
+rollouts_plugin_check() {
+  local file loc release= all
+  all=$(jq -r '.components[] | select(.name == "argo-rollouts") | .values, ((.archValues // {})[])' "$components") ||
+    fail "read the values files of argo-rollouts in $components"
+  for file in $all; do
+    loc=$(sed -n 's/^ *location: *//p' "$repo_root/$file")
+    [[ $loc =~ ^https://[^[:space:]]+/[^/[:space:]]+$ ]] ||
+      fail "$file pins no single plugin location (got '$loc')"
+    if [ -z "$release" ]; then
+      release=${loc%/*}
+    elif [ "${loc%/*}" != "$release" ]; then
+      fail "$file pins the plugin of ${loc%/*}, the other values files of argo-rollouts that of $release: change every pin to one release"
+    fi
+  done
+  ok "Argo Rollouts gets the Gateway API plugin built for $node_arch nodes (release ${release##*/})"
 }
 
 # pg_base_backup: after chart svp-data, that Postgres svp-pg archives its WAL and that its archive generation has a base
@@ -464,14 +461,25 @@ hc template svp-cluster "$repo_root/deploy/helm/svp-cluster" --show-only templat
   fail "create and label the namespaces of wave 0 and the project's with Pod Security restricted"
 ok "namespaces of wave 0 ($(jq -r 'map(.name) | join(", ")' <<<"$wave0")) and the project's enforce Pod Security restricted"
 
+# The architecture of the nodes, which ensure_cluster has checked all run the host's: a component with archValues in
+# components.json gets the values file named there for it after its values, as the GitOps path does
+# (deploy/argocd/apps; rollouts_plugin_check says why).
+node_arch=$(kc get nodes -o jsonpath='{.items[0].metadata.labels.kubernetes\.io/arch}') ||
+  fail "read the architecture of the nodes of svp"
+case $node_arch in
+  amd64 | arm64) ;;
+  *) fail "nodes of svp run '$node_arch': the release images and the plugin of Argo Rollouts exist for amd64 and arm64 only" ;;
+esac
+
 # One line per component, fields separated by the ASCII unit separator: empty fields (no path, no values) must survive
 # `read`, which collapses runs of whitespace separators such as tabs.
 sep=$'\x1f'
-lines=$(jq -r '.components | sort_by(.wave) | .[]
+lines=$(jq -r --arg arch "$node_arch" '.components | sort_by(.wave) | .[]
   | [.name, .namespace, (.wave | tostring), (.path // ""), (.repo // ""), (.chart // ""), (.version // ""),
-     (.values // ""), (.canaryRoute // "")] | join("\u001f")' "$components") || fail "read $components"
+     (.values // ""), (.canaryRoute // ""), ((.archValues // {})[$arch] // "")] | join("\u001f")' "$components") ||
+  fail "read $components"
 
-while IFS=$sep read -r name namespace wave path repo chart version values canary_route; do
+while IFS=$sep read -r name namespace wave path repo chart version values canary_route arch_values; do
   args=(upgrade --install "$name")
   helm_wait=--wait
   if [ -n "$path" ]; then
@@ -482,13 +490,30 @@ while IFS=$sep read -r name namespace wave path repo chart version values canary
     args+=("$chart" --repo "$repo" --version "$version")
   fi
   if [ -n "$values" ]; then args+=(--values "$repo_root/$values"); fi
+  if [ -n "$arch_values" ]; then args+=(--values "$repo_root/$arch_values"); fi
   if [ "$name" = svp-data ]; then
     pg_backup_sets
     args+=(${pg_sets[@]+"${pg_sets[@]}"})
   fi
-  if [ "$name" = argo-rollouts ]; then
-    rollouts_plugin_sets
-    args+=(${rollouts_sets[@]+"${rollouts_sets[@]}"})
+  if [ "$name" = argo-rollouts ]; then rollouts_plugin_check; fi
+  # A CI runner's job only (scenario velero of deploy/ci/verify-run.sh sets SVP_K8S_RUNNER_CSI=1): Redpanda's volume on
+  # the StorageClass of the CSI hostpath driver, whose snapshots Velero takes. The driver goes in right before this
+  # release, whose --wait needs the PVC bound; deploy/k8s/cloud/runner/csi/install.sh refuses any machine but such a
+  # runner, and fails before Redpanda is installed when the driver or the StorageClass is not ready. Unset, nothing here
+  # runs and the values of the dev and GitOps paths are untouched.
+  if [ "$name" = redpanda ] && [ -n "${SVP_K8S_RUNNER_CSI:-}" ]; then
+    [ "$SVP_K8S_RUNNER_CSI" = 1 ] || fail "SVP_K8S_RUNNER_CSI is 1 or unset"
+    # A PVC's StorageClass cannot change, and a StatefulSet's volumeClaimTemplates neither: a Redpanda installed
+    # without the variable keeps its volume, so the cluster is made again (always the case on a runner, whose cluster
+    # is new).
+    rp_class=$(kc -n "$namespace" get pvc datadir-redpanda-0 --ignore-not-found -o jsonpath='{.spec.storageClassName}') ||
+      fail "read PVC $namespace/datadir-redpanda-0"
+    if [ -n "$rp_class" ] && [ "$rp_class" != csi-hostpath ]; then
+      fail "Redpanda's volume is on StorageClass $rp_class, which cannot change to csi-hostpath in place: start over with make k8s-down && SVP_K8S_RUNNER_CSI=1 make k8s-up"
+    fi
+    "$repo_root/deploy/k8s/cloud/runner/csi/install.sh" ||
+      fail "the CSI hostpath driver is not ready (deploy/k8s/cloud/runner/csi/install.sh): Redpanda is not installed"
+    args+=(--set storage.persistentVolume.storageClass=csi-hostpath)
   fi
   watcher=
   # The Collector mounts ConfigMap otel-collector-config of chart svp-observability, which its own chart cannot

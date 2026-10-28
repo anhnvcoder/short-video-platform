@@ -1,0 +1,5 @@
+# Staging: the GitOps cluster runs as stg. Only the name its errors carry differs from the base values (k3d there, the
+# dev path's): every event in GlitchTip says which environment it came from. Domains, replicas and resources stay as in
+# the base so measurements of this cluster compare with earlier runs.
+env:
+  SENTRY_ENVIRONMENT: stg

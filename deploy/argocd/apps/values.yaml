@@ -2,7 +2,19 @@
 # and values from this repository at this revision; upstream charts come from the repositories pinned in components.json.
 # Root Application svp-root (deploy/k8s/gitops.sh) sets targetRevision to the revision it follows itself, the one whose
 # release tags the bootstrap has checked.
-repoURL: git@github.com:anhnvcoder/short-video-platform.git
+# The repository is public and Argo CD reads it over HTTPS without credentials: no repository Secret, no key anywhere.
+# The same URL is in sourceRepos of AppProject svp (deploy/argocd/project.yaml) and in deploy/k8s/gitops.sh.
+repoURL: https://github.com/anhnvcoder/short-video-platform.git
 targetRevision: main
 # AppProject that limits the sources, destinations and cluster-scoped kinds of every Application.
 project: svp
+# The architecture of the cluster's nodes, amd64 or arm64: a component of components.json with archValues gets the
+# values file named there for it on top of its values (Argo Rollouts' traffic router plugin is a native binary, one
+# per architecture). deploy/k8s/gitops.sh sets it from the nodes it created; arm64, the nodes of a Mac, otherwise.
+nodeArch: arm64
+# The environment this cluster runs, the name of a directory of deploy/k8s/envs (files/envs is a symlink to it): an
+# Application whose component has a file <name>.yaml there reads it after its other values files. Required, no default:
+# a cluster that forgot it would otherwise run another environment's settings without a word. deploy/k8s/gitops.sh
+# sets stg, the only environment a lab cluster runs; prd is rendered by make helm-check only. The dev path
+# (deploy/k8s/install.sh) does not use this chart and reads the base values alone.
+env: ""

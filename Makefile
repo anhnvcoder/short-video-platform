@@ -199,13 +199,24 @@ check-go: fmt-check vet lint actionlint buf-lint test ## Run the Go, workflow an
 # of svp-service whose values carry no image.digest yet (none before the first promotion) gets an all-zero digest, so it
 # goes down the digest branch of the GitOps path instead of failing on the dev tag the dev path passes. Helm's cache,
 # config and data live in a scratch directory, never in .k8s/helm.
+# Each environment of deploy/k8s/envs too: a chart with an overlay there is linted and rendered again with the overlay
+# after its values, as Argo CD reads them, and the app-of-apps chart is rendered with value env set to each (it refuses
+# an overlay that names no component, or that sets an image or the canary of a service). Production is never deployed by
+# this lab, so its render is held to having overridden every k3d name: no svp.localhost anywhere in it.
+# The app-of-apps chart is rendered once per node architecture (value nodeArch, which deploy/k8s/gitops.sh sets from
+# the nodes): Argo Rollouts' Gateway API plugin is a native binary, so Application argo-rollouts names one more values
+# file on amd64 nodes (archValues of components.json). The plugin each architecture gets is read back by merging the
+# values files that Application names, in its order, with Helm itself (a scratch chart that prints only the plugin list;
+# no upstream chart is fetched): exactly one plugin, the asset built for that architecture, both of the same plugin
+# and release, as deploy/k8s/install.sh checks on the dev path.
 ZERO_DIGEST := sha256:0000000000000000000000000000000000000000000000000000000000000000
-helm-check: ## helm lint and helm template every chart of the repository with the values of the GitOps path
+helm-check: ## helm lint and helm template every chart of the repository with the values of the GitOps path, alone and with the overlays of each environment of deploy/k8s/envs (prd without svp.localhost), the app-of-apps chart for each environment on amd64 and arm64 nodes, each with the plugin of Argo Rollouts built for it
 	@tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
 	export HELM_CACHE_HOME="$$tmp/cache" HELM_CONFIG_HOME="$$tmp/config" HELM_DATA_HOME="$$tmp/data"; \
-	{ jq -r '.components[] | select(.path) | [.name, .namespace, .path, (.values // "")] | @tsv' \
-		deploy/argocd/apps/components.json && printf 'svp-root\targocd\tdeploy/argocd/apps\t\n'; } > "$$tmp/charts" \
-		|| exit 1; \
+	envs=; for d in deploy/k8s/envs/*/; do [ -d "$$d" ] && envs="$$envs $$(basename "$$d")"; done; \
+	[ -n "$$envs" ] || { echo "helm-check: deploy/k8s/envs holds no environment" >&2; exit 1; }; \
+	jq -r '.components[] | select(.path) | [.name, .namespace, .path, (.values // "")] | @tsv' \
+		deploy/argocd/apps/components.json > "$$tmp/charts" || exit 1; \
 	tab=$$(printf '\t'); \
 	while IFS="$$tab" read -r name ns path values; do \
 	  set --; \
@@ -214,8 +225,52 @@ helm-check: ## helm lint and helm template every chart of the repository with th
 	    set -- "$$@" --set image.digest=$(ZERO_DIGEST); fi; \
 	  echo "helm lint and template: $$name ($$path $$*)"; \
 	  helm lint --quiet --namespace "$$ns" "$$path" "$$@" || exit 1; \
-	  helm template "$$name" "$$path" --namespace "$$ns" "$$@" > /dev/null || exit 1; \
-	done < "$$tmp/charts"
+	  helm template "$$name" "$$path" --namespace "$$ns" "$$@" > "$$tmp/base-$$name.yaml" || exit 1; \
+	  for env in $$envs; do \
+	    overlay=deploy/k8s/envs/$$env/$$name.yaml; \
+	    if [ -f "$$overlay" ]; then \
+	      echo "helm lint and template: $$name in $$env (-f $$overlay)"; \
+	      helm lint --quiet --namespace "$$ns" "$$path" "$$@" -f "$$overlay" || exit 1; \
+	      helm template "$$name" "$$path" --namespace "$$ns" "$$@" -f "$$overlay" > "$$tmp/$$env-$$name.yaml" || exit 1; \
+	    else cp "$$tmp/base-$$name.yaml" "$$tmp/$$env-$$name.yaml" || exit 1; fi; \
+	  done; \
+	done < "$$tmp/charts"; \
+	mkdir -p "$$tmp/plugins/templates" || exit 1; \
+	printf 'apiVersion: v2\nname: plugins\nversion: 0.1.0\n' > "$$tmp/plugins/Chart.yaml" || exit 1; \
+	printf '%s\n' '{{- range .Values.controller.trafficRouterPlugins }}' \
+		'# plugin {{ .name }} {{ .location }} {{ .sha256 }}' '{{- end }}' > "$$tmp/plugins/templates/plugins.yaml" || exit 1; \
+	for env in $$envs; do \
+	  for arch in arm64 amd64; do \
+	    echo "helm lint and template: svp-root (deploy/argocd/apps --set env=$$env --set nodeArch=$$arch)"; \
+	    helm lint --quiet --namespace argocd deploy/argocd/apps --set-string env=$$env --set nodeArch=$$arch || exit 1; \
+	    helm template svp-root deploy/argocd/apps --namespace argocd --set-string env=$$env --set nodeArch=$$arch \
+		> "$$tmp/root-$$env-$$arch.yaml" || exit 1; \
+	    set --; \
+	    for f in $$(awk '/^---/ { app = 0 } /^  name: argo-rollouts$$/ { app = 1 } \
+		app && /^ *- \$$values\// { sub(/^ *- \$$values\//, ""); print }' "$$tmp/root-$$env-$$arch.yaml"); do \
+	      set -- "$$@" -f "$$f"; done; \
+	    [ $$# -gt 0 ] || { echo "helm-check: Application argo-rollouts names no values file on $$arch nodes in $$env" >&2; \
+		exit 1; }; \
+	    helm template plugins "$$tmp/plugins" "$$@" | sed -n 's/^# plugin //p' > "$$tmp/plugin-$$arch" || exit 1; \
+	    echo "  argo-rollouts on $$arch nodes ($$*): $$(cat "$$tmp/plugin-$$arch")"; \
+	    [ "$$(grep -c . "$$tmp/plugin-$$arch")" = 1 ] && \
+		grep -Eq "^[^ ]+ https://[^ ]+/[^ /]+-linux-$$arch [0-9a-f]{64}$$" "$$tmp/plugin-$$arch" || \
+		{ echo "helm-check: Argo Rollouts on $$arch nodes must get exactly one plugin, the asset built for linux-$$arch" >&2; \
+		exit 1; }; \
+	  done; \
+	  read -r arm_name arm_loc arm_sum < "$$tmp/plugin-arm64"; read -r amd_name amd_loc amd_sum < "$$tmp/plugin-amd64"; \
+	  [ "$$arm_name" = "$$amd_name" ] && [ "$${arm_loc%/*}" = "$${amd_loc%/*}" ] && [ "$$arm_sum" != "$$amd_sum" ] || \
+		{ echo "helm-check: Argo Rollouts gets $$arm_name of $${arm_loc%/*} on arm64 nodes, $$amd_name of $${amd_loc%/*} on amd64 nodes in $$env: pin the two assets of one release" >&2; \
+		exit 1; }; \
+	  echo "  argo-rollouts in $$env: plugin $$arm_name of $${arm_loc%/*} on both, the asset built for each architecture"; \
+	  if [ "$$env" = prd ]; then \
+	    if grep -n 'svp\.localhost' "$$tmp"/prd-*.yaml "$$tmp"/root-prd-*.yaml > "$$tmp/leftover"; then \
+	      sed "s|^$$tmp/||" "$$tmp/leftover" >&2; \
+	      echo "helm-check: the prd render above still names svp.localhost: override it in deploy/k8s/envs/prd" >&2; \
+	      exit 1; fi; \
+	    echo "  prd: no svp.localhost in the render of any chart of the repository"; \
+	  fi; \
+	done
 
 # Misconfiguration scan of the Dockerfiles, charts and manifests with the pinned trivy. It only
 # reports: exit 0 whatever it finds. The findings that are deliberate choices are left out by

@@ -42,15 +42,20 @@ check_uuid() {
   [[ $1 =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || fail "video id is a UUID (got '$1')"
 }
 
-# create_and_upload NAME AUTH_FILE FILE: creates video NAME for FILE and uploads it through the presigned form,
-# without completing it; sets <NAME>_id like create_video.
-create_and_upload() {
-  local name=$1 size status id_var="${1}_id"
-  size=$(file_size "$3")
-  create_video "$name" "$2" "drill $name $(openssl rand -hex 4)" "$size" video/mp4
+# create NAME AUTH_FILE FILE: creates video NAME for FILE, without uploading it; sets <NAME>_id like create_video. A
+# video created and never uploaded stays UPLOADING: its form counts against the author's open uploads until it expires,
+# and video-service's upload sweep moves it to FAILED later; no event is published for it.
+create() {
+  local id_var="${1}_id"
+  create_video "$1" "$2" "drill $1 $(openssl rand -hex 4)" "$(file_size "$3")" video/mp4
   check_uuid "${!id_var}"
-  status=$(upload_file "$name" "$3")
-  [[ $status == 2?? ]] || fail "upload video $name to the presigned form (status $status, code $(storage_error_code))"
+}
+
+# upload NAME FILE: uploads FILE through the presigned form of video NAME (made by create), without completing it.
+upload() {
+  local status
+  status=$(upload_file "$1" "$2")
+  [[ $status == 2?? ]] || fail "upload video $1 to the presigned form (status $status, code $(storage_error_code))"
 }
 
 # complete NAME AUTH_FILE: CompleteUpload of video NAME, which must answer 202 PROCESSING.

@@ -2,19 +2,29 @@
 # KEDA drill on cluster svp: media-worker scales on the lag of
 # group media-worker on video.lifecycle.v1 and back, and a scale-down while a job runs loses and repeats no video.
 #
-# Uploads at least N videos (default 9; the same generated 60 s 1080p clip, about 45 s of transcode each) through
-# https://api.svp.localhost:8443, and more while their records would not cover every partition of the topic:
-# video-service keys each record by its video id, and KEDA asks for at most one replica per partition with lag, so the
-# maximum of 2 replicas needs records on 2 of the 3 partitions;
-# on all 3, every member has records waiting, the one owning two partitions too. kafka_partition (lib.sh) predicts
-# each one's partition before it is completed; the drill checks the prediction against the topic at the end. Then
+# Uploads N videos (default 9; the same generated 60 s 1080p clip, about 45 s of transcode each) through
+# https://api.svp.localhost:8443, exactly N/3 on each of the topic's 3 partitions: video-service keys each record by
+# its video id, and KEDA asks for at most one replica per partition with lag, so the maximum of 2 replicas needs records
+# on 2 of the 3 partitions. An even spread is what keeps two workers transcoding at once for long: the first worker
+# owns every partition until the second one joins, and after the rebalance the second one owns one partition and works
+# only while that partition holds videos; with an uneven spread (4/2/3) it may get a partition the first worker had
+# almost emptied. kafka_partition (lib.sh) predicts a video's partition as soon as it is created: a video on a
+# partition that already has its N/3 is never uploaded nor completed and is left UPLOADING (the gateway has no way to
+# cancel one; its form counts against its author's 3 open uploads until it expires after 15 minutes, so each test user
+# creates at most 3 videos, kept or not, and video-service's upload sweep moves it to FAILED after an hour, publishing
+# nothing). The drill checks the prediction against the topic at the end. Then
 # completes all of them within a second or two, so they all wait at once. A sampler records, every ~2 s, media-worker's
 # desired and ready replicas, the group's lag as Redpanda reports it (rpk group describe), the value KEDA serves to its
 # HPA (external metrics API), which partitions each member's address owns, and kubectl top of every worker pod; a
 # watcher records when each video is READY.
 #
-# Scale-down while a job runs: once media-worker runs its maximum of ready replicas and each owns a partition (with 3
-# partitions and 2 members, one owns two), the drill picks a pod that is transcoding (a job directory in its /work) and
+# Two workers transcoding at once: once media-worker runs its maximum of ready replicas and each owns a partition (with
+# 3 partitions and 2 members, one owns two), the drill waits until every pod has had a job directory in its /work at
+# the same time for 60 s, counted from the first moment all of them have one (the first pod usually starts long before
+# the second owns a partition). That window is what the runner's sampler needs to see 6 samples of 10 s in a row with
+# 2 workers transcoding, so it comes before the scale-down ends it.
+#
+# Scale-down while a job runs: then the drill picks a pod that is transcoding (a job directory in its /work) and
 # owns a partition with at least 2 records not committed, so it is still busy, with this job or the next, when it
 # stops. The pod gets the lowest controller.kubernetes.io/pod-deletion-cost, so the ReplicaSet removes it first, and
 # the ScaledObject is pinned one replica lower with annotation autoscaling.keda.sh/paused-replicas (KEDA's own way to
@@ -27,7 +37,8 @@
 #   - the time from the first CompleteUpload to each count of desired and of ready replicas from 2 to the maximum;
 #   - for each pod added, the time from Ready to owning a partition: the member joins the group at once, but
 #     BlockRebalance holds the rebalance until every worker has finished the record in hand;
-#   - the peak lag, how many of the topic's 3 partitions the records landed on, each video's time to READY (from its own
+#   - when every pod transcoded at once and for how long before the scale-down;
+#   - the peak lag, how many videos landed on each of the topic's 3 partitions, each video's time to READY (from its own
 #     CompleteUpload and from the first one);
 #   - the scale-down while a job ran: when, which pod and video, how long the pod took to stop, which pod did the
 #     video again and when it was READY;
@@ -36,7 +47,9 @@
 #     this is shorter than 300 s plus KEDA's polling, not equal to it;
 #   - the peak CPU and RAM of a worker pod and the peak RAM of all of them together.
 # It fails when media-worker does not reach its maximum of ready replicas with every pod owning a partition within
-# 5 minutes, the pinned scale-down does not stop the chosen pod (and only it) within 90 s or the pod logs no
+# 5 minutes, the first 4N videos created do not hold N/3 on each partition, the pods do not all transcode at once for
+# 60 s within 240 s of each owning a partition (reported apart: KEDA did its part, the new pod's partition ran out of
+# videos first), the pinned scale-down does not stop the chosen pod (and only it) within 90 s or the pod logs no
 # interrupted job, a video is not READY within 15 minutes, any video has other than exactly one transcode.completed in
 # media.transcodes.v1 and one video.ready in video.lifecycle.v1 (a scale up or down while a job ran must not transcode a
 # video twice nor lose one), a record landed on another partition than predicted, or media-worker is not back at one
@@ -47,10 +60,13 @@
 # that failed because kubectl lost the API server still names the restart); docker not answering either time is a
 # failure too.
 #
-# Usage (from the repo root, cluster up): make drill-k8s-keda [N=9], N from 6 to 12: below 6 the scale-down may find
-# no pod with 2 records waiting (2 workers drain the queue slower than 3 did, so 6 still leaves enough when the second
-# one owns a partition); 12 videos on 2 workers are 6 rounds of ~45 s, well within the 15 minutes for READY. One test
-# user per 3 videos: the gateway allows a user at most 3 open upload forms. The pause annotation and the pod's deletion
+# Usage (from the repo root, cluster up): make drill-k8s-keda [N=9], N of 6, 9 or 12 (a multiple of the 3 partitions):
+# below 6 the scale-down may find no pod with 2 records waiting (2 workers drain the queue slower than 3 did, so 6 still
+# leaves enough when the second one owns a partition); 12 videos on 2 workers are 6 rounds of ~45 s, well within the
+# 15 minutes for READY. The first worker finishes one or two videos before the rebalance, maybe from the partition the
+# second one gets: with N=6 that partition may be empty by then, with N=9 it holds at least one video and with N=12 at
+# least two, the safest window. One test user per 3 videos created: the gateway allows a user at most 3 open upload
+# forms. The pause annotation and the pod's deletion
 # cost are removed when the drill ends, failed or not. LOCAL LAB ONLY: resets the register rate limit in the cluster's
 # Valkey db 10.
 set -euo pipefail
@@ -60,11 +76,15 @@ base=${1:-https://api.svp.localhost:8443}
 source "$(dirname "$0")/lib.sh"
 
 n=${N:-9}
-[[ $n =~ ^[0-9]+$ ]] && ((n >= 6 && n <= 12)) || fail "N is 6 to 12 (got '$n')"
-# Videos beyond N are uploaded only while the records would miss a partition; past this many the drill gives up.
-max_videos=$((n + 9))
+[[ $n =~ ^[0-9]+$ ]] && ((n >= 6 && n <= 12 && n % 3 == 0)) ||
+  fail "N is 6, 9 or 12, the same number of videos on each of the 3 partitions (got '$n')"
+# Videos are created until each partition has N/3 of them; past this many the drill gives up. With 3 partitions the
+# first 4N video ids miss a partition's share about once in 400 runs for N=6 and far less often for 9 and 12.
+max_videos=$((4 * n))
 start_timeout=420
 spread_timeout=300
+together_timeout=240
+together_needed=60
 ready_timeout=900
 down_timeout=600
 topic=video.lifecycle.v1
@@ -167,6 +187,26 @@ busy_pod() {
   done < <(worker_pods)
 }
 
+# transcoding_now: "PODS JOBS" over the Ready worker pods: how many there are and how many showed a job directory in
+# /work. A pod whose exec failed is not counted in JOBS: nothing shows it was transcoding then.
+transcoding_now() {
+  local pod out pods=0 jobs=0
+  while read -r pod _; do
+    pods=$((pods + 1))
+    out=$(kc -n svp exec "$pod" -c media-worker -- ls /work </dev/null 2>/dev/null) || continue
+    if grep -qE "$uuid_re" <<<"$out"; then jobs=$((jobs + 1)); fi
+  done < <(worker_pods)
+  echo "$pods $jobs"
+}
+
+# take_video ID: true, with the video's partition in $take_p, when that partition holds fewer than $per of the
+# drill's videos so far (it is then counted there); false when it already has its share.
+take_video() {
+  take_p=$(kafka_partition "$1" "$partitions")
+  ((on_partition[take_p] < per)) || return 1
+  on_partition[take_p]=$((on_partition[take_p] + 1))
+}
+
 # stopping POD: true once worker pod POD is being deleted or is gone.
 stopping() {
   local out
@@ -203,6 +243,8 @@ max_replicas=$(kc -n svp get scaledobject media-worker -o jsonpath='{.spec.maxRe
 # stops at 2. The scale-down pins one replica below the maximum, so the maximum is at least 2.
 [[ $partitions =~ ^[0-9]+$ && $max_replicas =~ ^[0-9]+$ && $max_replicas -ge 2 && $partitions -ge $max_replicas ]] ||
   fail "topic $topic has at least as many partitions as ScaledObject media-worker's maxReplicaCount, which is at least 2 (got '$partitions' and '$max_replicas')"
+((n % partitions == 0)) || fail "N=$n spreads evenly over the $partitions partitions of topic $topic"
+per=$((n / partitions))
 ok "ScaledObject media-worker Ready, up to $max_replicas replicas; its HPA reads external metric $metric"
 
 # A previous run (or real uploads) may still hold extra workers: they go about 5 minutes after the lag is gone.
@@ -217,23 +259,33 @@ ok "media-worker at 1 replica, group $group without lag"
 wait_gateway_ready 60
 make_video "$work/clip.mp4" 60 1920x1080
 ok "generated a 60 s 1080p test video ($(file_size "$work/clip.mp4") bytes)"
-count=0
-covered=
-while ((count < n)) || (($(printf '%s' "$covered" | wc -c) < partitions)); do
-  ((count < max_videos)) || fail "the records of $count videos cover all $partitions partitions"
-  if ((count % 3 == 0)); then new_user "u$((count / 3 + 1))"; fi
-  count=$((count + 1))
-  create_and_upload "v$count" "$work/u$(((count - 1) / 3 + 1)).auth" "$work/clip.mp4"
-  id_var="v${count}_id"
-  p=$(kafka_partition "${!id_var}" "$partitions")
-  printf -v "v${count}_partition" '%s' "$p"
-  [[ $covered == *"$p"* ]] || covered="$covered$p"
+# on_partition[P]: the drill's videos on partition P so far. Video v<k> is the k-th one kept; a video created on a
+# partition that already has its share is overwritten by the next try under the same name and left UPLOADING.
+on_partition=()
+for ((p = 0; p < partitions; p++)); do on_partition[p]=0; done
+created=0
+kept=0
+while ((kept < n)); do
+  ((created < max_videos)) ||
+    fail "the first $created videos created hold $per on each of the $partitions partitions (got $(printf '%s\n' "${on_partition[@]}" | paste -sd/ -))"
+  # Each test user creates 3 videos, kept or not: the gateway allows a user at most 3 open upload forms.
+  if ((created % 3 == 0)); then new_user "u$((created / 3 + 1))"; fi
+  auth="$work/u$((created / 3 + 1)).auth"
+  created=$((created + 1))
+  name="v$((kept + 1))"
+  create "$name" "$auth" "$work/clip.mp4"
+  id_var="${name}_id"
+  take_video "${!id_var}" || continue
+  upload "$name" "$work/clip.mp4"
+  kept=$((kept + 1))
+  printf -v "${name}_partition" '%s' "$take_p"
+  printf -v "${name}_auth" '%s' "$auth"
 done
-if ((count > n)); then
-  echo "note  $((count - n)) videos more than N=$n, so that the records cover all $partitions partitions"
+spread=$(printf '%s\n' "${on_partition[@]}" | paste -sd/ -)
+if ((created > n)); then
+  echo "note  $((created - n)) more videos created and left UPLOADING (never uploaded), their partitions already full"
 fi
-n=$count
-ok "$n videos uploaded, none completed yet; their records will land on all $partitions partitions"
+ok "$n videos uploaded, none completed yet; their records will land $spread on the $partitions partitions"
 
 # --- Sampler -------------------------------------------------------------------------------------------------------
 # samples: T DESIRED READY LAG KEDA OWNERS (OWNERS: comma-separated addresses of the members owning a partition, "-"
@@ -265,7 +317,8 @@ sampler_pid=$!
 
 # --- Complete all; a watcher records each READY ---------------------------------------------------------------------
 for ((i = 1; i <= n; i++)); do
-  complete "v$i" "$work/u$(((i - 1) / 3 + 1)).auth"
+  auth_var="v${i}_auth"
+  complete "v$i" "${!auth_var}"
   printf -v "v${i}_completed" '%s' "$(now)"
 done
 t0=$v1_completed
@@ -281,7 +334,8 @@ ok "$n videos completed within $(awk -v a="$t0" -v b="$(now)" 'BEGIN { printf "%
     for ((i = 1; i <= n; i++)); do
       ! grep -q "^$i " "$work/ready" || continue
       id_var="v${i}_id"
-      status=$(request GET "/videos/${!id_var}" "$work/u$(((i - 1) / 3 + 1)).auth")
+      auth_var="v${i}_auth"
+      status=$(request GET "/videos/${!id_var}" "${!auth_var}")
       [[ $status == 200 ]] || fail "read video v$i (status $status, $(problem_summary))"
       case $(field status) in
         READY)
@@ -307,6 +361,28 @@ until [[ $(worker_replicas || true) == "$max_replicas $max_replicas" ]] && descr
 done
 t_spread=$(now)
 ok "media-worker at $max_replicas ready replicas, each owning a partition of $topic"
+
+# Every pod transcoding at once for together_needed seconds, timed from the first poll that sees all of them with a
+# job (polls are seconds apart, so the true window is a little longer). Any poll that does not show a job in every pod
+# starts over: a pod without one, a pod gone, or an exec that failed, since time nobody saw cannot count as transcoding.
+deadline=$((SECONDS + together_timeout))
+t_together=
+together_longest=0
+while :; do
+  read -r pods jobs <<<"$(transcoding_now)"
+  if ((pods < max_replicas || jobs < pods)); then
+    t_together=
+  else
+    if [[ -z $t_together ]]; then t_together=$(now); fi
+    together_held=$(awk -v a="$t_together" -v b="$(now)" 'BEGIN { printf "%d", b - a }')
+    if ((together_held > together_longest)); then together_longest=$together_held; fi
+    if ((together_held >= together_needed)); then break; fi
+  fi
+  ((SECONDS < deadline)) ||
+    fail "all $max_replicas worker pods transcoding at once (a job in each one's /work) for ${together_needed}s within ${together_timeout}s of each owning a partition (longest: ${together_longest}s). Not a KEDA failure, KEDA scaled out and each pod owns a partition: the new pod's partition ran out of videos first (the first pod finished some before the rebalance); a larger N leaves it more"
+  sleep 2
+done
+ok "all $max_replicas worker pods transcoded at once for ${together_held}s"
 
 deadline=$((SECONDS + 60))
 until busy=$(busy_pod) && [[ -n $busy ]]; do
@@ -398,7 +474,6 @@ for ((i = 1; i <= n; i++)); do
   [[ $got == "${!p_var}" ]] ||
     fail "video.uploaded of v$i (${!id_var}) is on partition ${!p_var}, as kafka_partition predicted (it is on '$got')"
 done
-landed=$(for ((i = 1; i <= n; i++)); do p_var="v${i}_partition" && echo "${!p_var}"; done | sort -u | wc -l | tr -d ' ')
 
 peak_ready=$(awk -v t0="$t0" '$1 >= t0 && $3 != "-" && $3 + 0 > p { p = $3 + 0 } END { print p + 0 }' "$work/samples")
 peak_lag=$(awk -v t0="$t0" '$1 >= t0 && $4 != "-" && $4 + 0 > p { p = $4 + 0 } END { print p + 0 }' "$work/samples")
@@ -417,8 +492,9 @@ counts=$(for ((r = 2; r <= max_replicas; r++)); do echo "$r"; done | paste -sd/ 
 printf '      %-52s %s\n' "desired replicas $counts after first complete" "$(reached 2)"
 printf '      %-52s %s\n' "ready replicas $counts after first complete" "$(reached 3)"
 printf '      %-52s %s\n' "$max_replicas ready replicas, each owning a partition" "$(since "$t_spread") s"
+printf '      %-52s %s\n' "all $max_replicas pods transcoding at once" "from $(since "$t_together") s after first complete, ${together_held} s held before the pin"
 printf '      %-52s %s\n' "peak ready replicas" "$peak_ready"
-printf '      %-52s %s\n' "partitions holding the $n video.uploaded" "$landed of $partitions (as predicted)"
+printf '      %-52s %s\n' "video.uploaded on each of the $partitions partitions" "$spread (as predicted)"
 printf '      %-52s %s\n' "peak lag of group media-worker (rpk)" "$peak_lag"
 printf '      %-52s %s\n' "peak lag KEDA served to its HPA" "$peak_keda"
 

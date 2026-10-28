@@ -4,11 +4,17 @@
 # machine and runs the drills and measurements that machine cannot hold (16 GB). Not a check of pull requests: no
 # ruleset requires it, and nothing but the dispatch and the weekly schedule triggers it.
 #
-#   gh workflow run verify.yml --ref <main or feat/stage6b-...> -f scenario=<compose-obs|dev-k3d> [-f targets='<name> ...']
+#   gh workflow run verify.yml --ref <main or feat/stage6b-...> -f scenario=<scenario> [-f targets='<name> ...']
+#
+# Scenarios (deploy/ci/verify/<scenario>.sh lists the targets of each): compose-obs (job compose), dev-k3d, web-canary,
+# k6-cloud-mini, chaos and velero (job k3d, the k3d cluster of the dev path), gitops (job gitops, the cluster Argo CD
+# builds from this repository).
 #
 # The repository is public, so the log and the artifact of every run are too, red or not:
 # - only workflow_dispatch (write access to the repository needed) and schedule (the code of main, no input), never
-#   pull_request_target or workflow_run; no secret, no environment; every job has contents: read and nothing else;
+#   pull_request_target or workflow_run; no secret, no environment; every job has contents: read, and job gitops also
+#   actions: read (the source map artifact of the images run that built the web image it runs), with the job's token
+#   given to its two steps that read the platform's API only, never to the scenario's step;
 # - every action is GitHub's own and pinned to a full commit SHA; checkout never leaves the token in .git/config;
 # - the inputs reach the scripts only through env (SCENARIO, SVP_VERIFY_TARGETS) and deploy/ci/verify-run.sh checks
 #   them again with a case; if: compares the scenario as an expression, never in a shell. A scheduled run has no
@@ -27,12 +33,17 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: Scenario (compose-obs is the compose stack with OBS=lgtm, dev-k3d the k3d cluster of the dev path)
+        description: Scenario (compose-obs is the compose stack with OBS=lgtm, gitops the cluster of the GitOps path, the others the k3d cluster of the dev path)
         type: choice
         required: true
         options:
           - compose-obs
           - dev-k3d
+          - gitops
+          - web-canary
+          - k6-cloud-mini
+          - chaos
+          - velero
       targets:
         description: Targets to run, separated by spaces; empty runs every one, the build target always runs (deploy/ci/verify-run.sh)
         type: string
@@ -173,13 +184,17 @@ jobs:
         run: |
           if [ -f .env ]; then make down; else echo "no .env: make env never ran, so no stack was started"; fi
 
-  # The k3d cluster of the dev path: make k8s-up, then smoke, RAM at rest, the threat model drill, PodDisruptionBudget,
-  # the gateway's canary under the new probes, the web's source maps, its e2e tests with GlitchTip, its observability
-  # drill, KEDA with two workers transcoding (RAM peak), the Postgres restore twice (latest, then point in time), RAM at
-  # rest again. The LOCAL LAB ONLY resets of the drills delete the register rate limit keys in the cluster's Valkey, on
-  # this runner.
+  # The k3d cluster of the dev path, built by make k8s-up, for scenario dev-k3d (scheduled too: smoke, RAM at rest, the
+  # threat model drill, PodDisruptionBudget, the gateway's canary under the new probes, the web's source maps, its e2e
+  # tests with GlitchTip, its observability drill, KEDA with two workers transcoding (RAM peak), the Postgres restore
+  # twice, RAM at rest again), web-canary (the web's canary under traffic), k6-cloud-mini (the k6 Job of stage 7 scaled
+  # down), chaos (Chaos Mesh's experiments) and velero (Velero's backup and restore of Redpanda). The LOCAL LAB ONLY
+  # resets of the drills delete the register rate limit keys in the cluster's Valkey, on this runner; Chaos Mesh,
+  # Velero and the CSI driver they need live in the cluster of this runner only.
   k3d:
-    if: github.event_name == 'schedule' || inputs.scenario == 'dev-k3d'
+    if: >-
+      github.event_name == 'schedule' ||
+      contains(fromJSON('["dev-k3d", "web-canary", "k6-cloud-mini", "chaos", "velero"]'), inputs.scenario)
     runs-on: ubuntu-24.04
     # Setup about 20 minutes, the scenario step 285, then 25 for the steps after it; 30 minutes under GitHub's 6 hours.
     timeout-minutes: 330
@@ -246,6 +261,120 @@ jobs:
       - name: Scenario
         timeout-minutes: 285
         run: deploy/ci/verify-run.sh "$SCENARIO"
+      - name: Stop the sampler
+        if: always() && steps.ref.outcome == 'success'
+        run: deploy/ci/verify-sample.sh stop
+      - name: Collect and filter the results
+        if: always() && steps.ref.outcome == 'success'
+        run: deploy/ci/verify-collect.sh
+      - name: Keep the filtered results
+        if: always() && steps.ref.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verify-${{ env.SCENARIO }}
+          path: ${{ runner.temp }}/verify-artifact/
+          retention-days: 30
+          if-no-files-found: warn
+      - name: make k8s-down
+        if: always() && steps.ref.outcome == 'success'
+        run: make k8s-down
+
+  # The GitOps path: make k8s-gitops-up builds a new cluster from the branch this run checked out, Argo CD reading the
+  # public repository over anonymous HTTPS (no deploy key, no secret) and running the signed release images of GHCR by
+  # digest under Kyverno's Enforce policy; then smoke, RAM at rest, the supply chain and threat model drills, the source
+  # maps of the web image CI built, the web's e2e tests with GlitchTip and its observability drill, KEDA twice with the
+  # RAM peak of each, RAM at rest again; after the scenario, on a run of main, the wait for a release merged while the
+  # cluster runs and make measure-gitops on it (deploy/ci/verify/gitops.sh). Only dispatched: a scheduled run has no
+  # inputs, so this job is skipped then.
+  gitops:
+    if: github.event_name == 'workflow_dispatch' && inputs.scenario == 'gitops'
+    runs-on: ubuntu-24.04
+    # Setup about 10 minutes, the scenario step 175, the wait for a release 115, then 25 for the steps after them; 30
+    # minutes under GitHub's 6 hours.
+    timeout-minutes: 330
+    permissions:
+      contents: read
+      # The artifact web-sourcemaps-amd64 of the images run that built the web image the cluster runs.
+      actions: read
+    env:
+      SCENARIO: gitops
+      SVP_VERIFY_TARGETS: ${{ inputs.targets }}
+      SVP_VERIFY_JOB_MINUTES: 330
+      SVP_VERIFY_STEP_MINUTES: 175
+    steps:
+      # As in job compose.
+      - name: Check the ref and note the job's start
+        id: ref
+        run: |
+          case $GITHUB_EVENT_NAME:$GITHUB_REF in
+            workflow_dispatch:refs/heads/main | workflow_dispatch:refs/heads/feat/stage6b-*) ;;
+            *) echo "::error::verify runs on main, or dispatched on a feat/stage6b-* branch, not $GITHUB_EVENT_NAME on $GITHUB_REF"; exit 1 ;;
+          esac
+          echo "SVP_VERIFY_OUT=$RUNNER_TEMP/verify" >>"$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/verify"
+          date +%s >"$RUNNER_TEMP/verify/job-start"
+      # The whole history: make k8s-gitops-up checks the release at origin/<branch>, and make measure-gitops reads the
+      # parent of the release commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.3
+          cache-dependency-path: go.sum
+      # As in job k3d.
+      - id: tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/bin
+          key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}
+      - name: Install the pinned tools
+        if: steps.tools.outputs.cache-hit != 'true'
+        run: make tools ci-tools
+      - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
+      - name: Install pnpm
+        working-directory: web
+        run: |
+          version=$(node -p 'require("./package.json").packageManager.split("@")[1]')
+          npm install -g "pnpm@$version"
+      - name: Install the tools of the scripts
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends ffmpeg jq netcat-openbsd
+      - run: make web-install
+      - name: Install the Playwright browsers
+        working-directory: web
+        run: pnpm exec playwright install --with-deps chromium webkit
+      - run: make env
+      - run: deploy/ci/verify-mask.sh env
+      - run: deploy/ci/verify-host.sh "$SCENARIO"
+      - run: deploy/ci/verify-sample.sh start
+      # The source maps CI exported beside the web image Argo CD is about to run (artifact web-sourcemaps-amd64 of the
+      # images run that built it, chosen by the digest it was built as), downloaded with the job's token into the
+      # runner's temp directory for the scenario's step gitops-sourcemaps. A failure here does not stop the job: the
+      # scenario reports it there, and runs every step that needs no maps.
+      - name: Find the source maps of the web image
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: deploy/ci/gitops-sourcemaps.sh fetch
+      - name: Scenario
+        timeout-minutes: 175
+        run: deploy/ci/verify-run.sh "$SCENARIO"
+      # On a run of main: the promote pull request waiting since before the run is merged while this step runs (the
+      # job's steps show it running), then the release is measured from its push to its pods Ready. The job's token is
+      # for make measure-gitops alone, which reads the push from GitHub's events. On a branch it prints why it skips.
+      # These are the scenario's targets wait-release and measure-gitops: the input targets chooses them as any other.
+      - name: Waiting for a release on main
+        if: ${{ !cancelled() && steps.ref.outcome == 'success' }}
+        timeout-minutes: 115
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash deploy/ci/verify/gitops.sh release
       - name: Stop the sampler
         if: always() && steps.ref.outcome == 'success'
         run: deploy/ci/verify-sample.sh stop

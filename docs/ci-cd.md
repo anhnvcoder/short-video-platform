@@ -94,12 +94,12 @@ flowchart LR
     who -->|"-f services=tên service hay all"| b["images.yml: build, ký, promote lại"]
     who -->|"-f rescan=true, -f values_ref=ref"| r["images.yml: quét lại"]
     who -->|"-f drill=true"| d["images.yml: hai image diễn tập"]
-    who -->|"-f scenario=compose-obs hay dev-k3d, -f targets=..."| v["verify.yml: một kịch bản"]
+    who -->|"-f scenario=compose-obs, dev-k3d, gitops, web-canary, k6-cloud-mini, chaos hay velero, -f targets=..."| v["verify.yml: một kịch bản"]
 ```
 
 - `rescan` và `drill` chỉ chạy trên `main` và không chạy cùng lượt; `plan` từ chối (lượt đỏ) thay vì đoán.
 - `verify.yml` nhận `--ref main` hay nhánh `feat/stage6b-*`, ref khác dừng ở bước đầu; `targets` rỗng là mọi bước, bước dựng
-  (`up`, `k8s-up`) luôn chạy. Lệnh đầy đủ ở [`CLAUDE.md`](../CLAUDE.md#kiểm-tra).
+  (`up`, `k8s-up`, `k8s-gitops-up`) luôn chạy. Lệnh đầy đủ ở [`CLAUDE.md`](../CLAUDE.md#kiểm-tra).
 
 ## 2. Job theo từng workflow
 
@@ -149,12 +149,14 @@ Trigger: `workflow_dispatch` (input `scenario`, `targets`) và `schedule` hằng
 
 | Job | Làm gì | Chạy khi | Skip khi |
 | --- | --- | --- | --- |
-| `compose` | Kịch bản `compose-obs`: `make up OBS=lgtm`, smoke, `drill-obs-threats`, `load-local` dưới quan sát Alertmanager, Lighthouse ×3, test tích hợp của object store (`test-stack-objstore`), `drill-upload-cleanup`, `measure-upload` và RAM đỉnh của `s3` (`ram-s3-upload`), `drill-alert-to-sentry`, đường quay lại MinIO (`object-store-roundtrip`: chép ngược, `make up` lần hai, smoke); hạn 120 phút | `github.event_name == 'schedule' \|\| inputs.scenario == 'compose-obs'` | Dispatch `dev-k3d` |
-| `k3d` | Kịch bản `dev-k3d`: `make k8s-up`, smoke, RAM nghỉ, diễn tập threat model, PDB, canary, source map, e2e web, `drill-k8s-web-obs`, KEDA và RAM đỉnh, backup hai chế độ; hạn 330 phút | `github.event_name == 'schedule' \|\| inputs.scenario == 'dev-k3d'` | Dispatch `compose-obs` |
+| `compose` | Kịch bản `compose-obs`: `make up OBS=lgtm`, smoke, `drill-obs-threats`, `load-local` dưới quan sát Alertmanager, Lighthouse ×3, test tích hợp của object store (`test-stack-objstore`), `drill-upload-cleanup`, `measure-upload` và RAM đỉnh của `s3` (`ram-s3-upload`), `drill-alert-to-sentry`, đường quay lại MinIO (`object-store-roundtrip`: chép ngược, `make up` lần hai, smoke); hạn 120 phút | `github.event_name == 'schedule' \|\| inputs.scenario == 'compose-obs'` | Dispatch kịch bản khác |
+| `k3d` | Kịch bản `dev-k3d`: `make k8s-up`, smoke, RAM nghỉ, diễn tập threat model, PDB, canary, source map, e2e web, `drill-k8s-web-obs`, KEDA và RAM đỉnh, backup hai chế độ. Từ phần 3 cũng chạy `web-canary` (canary web với hai bản build thật), `k6-cloud-mini` (Job k6 1, 2, 4, 8 pod), `chaos` (Chaos Mesh, mỗi thí nghiệm một lượt k6), `velero` (driver CSI hostpath, Velero đích object store trong cluster); hạn 330 phút | `github.event_name == 'schedule' \|\| inputs.scenario` là một trong năm kịch bản đó | Dispatch `compose-obs`, `gitops` |
+| `gitops` | Kịch bản `gitops` (phần 3, chỉ dispatch): bước tìm source map của image web (`GH_TOKEN`), bước kịch bản 175 phút (`make k8s-gitops-up` vai stg qua HTTPS ẩn danh, smoke, supplychain, threats, source map của image CI, e2e, `drill-k8s-web-obs`, KEDA hai lượt, RAM), bước "Waiting for a release on main" 115 phút (`GH_TOKEN`, chỉ có nghĩa trên `main`); `contents: read`, `actions: read`; hạn 330 phút | `inputs.scenario == 'gitops'` | Mọi lượt khác |
 
 Mỗi job: kiểm ref, cài công cụ, `make env`, `deploy/ci/verify-mask.sh`, `verify-host.sh`, `verify-sample.sh start`, bước
 "Scenario" (`verify-run.sh`), rồi các bước `if: always()` dừng sampler, lọc và tải artifact `verify-<kịch bản>`, gỡ stack hay
-cluster. Một lượt dispatch chạy đúng một job, job kia skip; lượt lịch chạy cả hai.
+cluster. Một lượt dispatch chạy đúng một job, hai job kia skip; lượt lịch chạy `compose` và `k3d`. Trình tự của từng kịch bản ở
+`deploy/ci/verify/<kịch bản>.sh`.
 
 ## 3. Vì sao thiết kế như vậy
 
@@ -250,6 +252,11 @@ của `deploy/ci/` chạy trên máy ở chế độ `local` của adapter: khô
 | `verify.yml` `compose-obs`, mọi bước | 54 phút | [40132157276](https://github.com/anhnvcoder/short-video-platform/actions/runs/40132157276) (2026-10-24) |
 | `verify.yml` `compose-obs`, mọi bước, có các bước object store | 31 phút (job `compose`; kịch bản 29 phút); 45 phút ở lượt sau, trong đó 17 phút cài đặt trước kịch bản | [40203123781](https://github.com/anhnvcoder/short-video-platform/actions/runs/40203123781), [40207235062](https://github.com/anhnvcoder/short-video-platform/actions/runs/40207235062) (2026-10-25) |
 | `verify.yml` `dev-k3d`, mọi bước | 70 phút (hai lượt) | [40145677985](https://github.com/anhnvcoder/short-video-platform/actions/runs/40145677985), [40151447243](https://github.com/anhnvcoder/short-video-platform/actions/runs/40151447243) (2026-10-25); 65 phút trên RustFS [40202083397](https://github.com/anhnvcoder/short-video-platform/actions/runs/40202083397) (2026-10-25) |
+| `verify.yml` `gitops`, mọi bước trên nhánh (bước chờ phát hành skip) | 63 phút (cài đặt 6 phút, kịch bản 57 phút) | [40620627534](https://github.com/anhnvcoder/short-video-platform/actions/runs/40620627534) (2026-10-28) |
+| `verify.yml` `web-canary`, mọi bước | 29 phút | [40641057955](https://github.com/anhnvcoder/short-video-platform/actions/runs/40641057955) (2026-10-28) |
+| `verify.yml` `k6-cloud-mini`, tới mức đầu tiên trượt (1, 2, 4 pod) | 63 phút | [40620333867](https://github.com/anhnvcoder/short-video-platform/actions/runs/40620333867) (2026-10-28) |
+| `verify.yml` `chaos`, mọi bước | 129 phút (kịch bản 2 giờ 06 phút: `k8s-up` 19,5, bản thử 11,5, (a) 28,3, (b) 22,3, (c) 39,5 phút) | [40691107770](https://github.com/anhnvcoder/short-video-platform/actions/runs/40691107770) (2026-10-28) |
+| `verify.yml` `velero`, mọi bước | 27 phút | [40626700272](https://github.com/anhnvcoder/short-video-platform/actions/runs/40626700272) (2026-10-28) |
 | `verify.yml` `dev-k3d`, chọn bước | 25 phút (`k8s-smoke drill-k8s-threats`); 31 phút (`drill-k8s-keda ram-peak`) | [40157833740](https://github.com/anhnvcoder/short-video-platform/actions/runs/40157833740), [40160414327](https://github.com/anhnvcoder/short-video-platform/actions/runs/40160414327) (2026-10-25) |
 
 Thời gian của runner dùng chung thay đổi theo tải của GitHub và cache (cache Go, pnpm, DB của trivy, build cache Docker); số trên

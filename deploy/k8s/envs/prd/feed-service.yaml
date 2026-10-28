@@ -1,0 +1,11 @@
+# Production, rendered and checked only until a production cluster exists. Errors carry environment prd. A service on
+# the request path keeps serving through a node loss or a drain: the autoscaler never goes below two replicas, spread
+# over two nodes, at most one taken down at a time. A floor of policy, not a measured size: the maximum and the
+# resources stay the base's until a load test sets them.
+env:
+  SENTRY_ENVIRONMENT: prd
+hpa:
+  minReplicas: 2
+pdb:
+  minAvailable: 1
+spreadAcrossNodes: true

@@ -51,11 +51,14 @@ httpRoute:
 # A Rollout with an analysed canary, the steps of the gateway's. `make k8s-up` runs drill traffic
 # while a canary is in progress (deploy/k8s/install.sh); it requests /login and one static asset through Envoy.
 canary: true
-# 5xx below 1%, as for the gateway. p99 below 500 ms rather than the gateway's 150: a page is rendered on the server
-# after a call to the gateway, a new canary pod starts cold, and the web client has no latency SLO yet; 500 ms is one of
-# Envoy's default bucket bounds, so the interpolated p99 is close to the truth around it.
+# 5xx below 1%, as for the gateway. p99 from a measurement: Envoy's p99 for the stable web backend was 50 ms while k6's
+# cloud profile held its highest passing load on the CI verification runner (2 pods, 110 requests/s, 2026-10-28), and
+# the limit is the smallest of Envoy's default bucket bounds (250, 500, 1000, 2500 ms) not under twice that, so the
+# interpolated p99 is close to the truth around it; twice leaves room for a canary pod that starts cold, a guess to
+# revisit when a good canary is aborted on it. 150 ms, the gateway's, would be under a page rendered after a gateway
+# call.
 canaryLimits:
-  p99Ms: 500
+  p99Ms: 250
   errorRatio: 0.01
 # Two replicas on the two nodes, no autoscaler: the lab's server-side rendering load is small and there is no
 # measurement yet to set an HPA from. Always two, so a node drain or a crash leaves one serving and the budget lets one

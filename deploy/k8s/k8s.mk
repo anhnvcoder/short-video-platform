@@ -7,7 +7,8 @@ K8S_LIB := . deploy/k8s/lib.sh
 .PHONY: k8s-exclusive k8s-up k8s-down k8s-status k8s-ca k8s-secrets k8s-images k8s-smoke drill-k8s-keda drill-k8s-pdb \
 	k8s-glitchtip-init k8s-ui-grafana k8s-ui-prometheus k8s-ui-alertmanager k8s-ui-glitchtip k8s-gitops-up \
 	measure-gitops k8s-ui-argocd k8s-traffic-start k8s-traffic-stop drill-k8s-canary measure-canary drill-k8s-threats \
-	drill-k8s-supplychain k8s-web-sourcemaps k8s-web-e2e drill-k8s-web-obs cloud-check drill-k8s-backup
+	drill-k8s-supplychain k8s-web-sourcemaps k8s-web-e2e drill-k8s-web-obs cloud-check drill-k8s-backup \
+	drill-k8s-web-canary
 
 # Compose and k3d never run together on the 16 GB machine (CLAUDE.md): the cluster is not created or started beside a
 # running compose stack. `make up` refuses the other way round (deploy/compose/compose.mk).
@@ -22,15 +23,16 @@ k8s-up: k8s-exclusive env-required ## Create (or start) the registry 127.0.0.1:5
 	@bash -c '$(K8S_LIB) && ensure_registry && ensure_cluster'
 	deploy/k8s/install.sh
 
-# The GitOps path: a new cluster svp that Argo CD builds from GitHub, running the release images of GHCR. GITOPS_REV
-# is what Argo CD follows: a branch of origin (its values are read from origin/<branch> as last fetched) or a full
-# commit SHA. Releases are built, signed and promoted by CI (.github/workflows/images.yml): no target builds one on
-# this machine.
+# The GitOps path: a new cluster svp that Argo CD builds from GitHub, running the release images of GHCR, as the
+# staging environment: the base values plus the overlays of deploy/k8s/envs/stg (production is only rendered, by make
+# helm-check). GITOPS_REV is what Argo CD follows: a branch of origin (its values are read from origin/<branch> as last
+# fetched) or a full commit SHA. Releases are built, signed and promoted by CI (.github/workflows/images.yml): no
+# target builds one on this machine. Argo CD reads the public repository over HTTPS without credentials: no deploy key,
+# no secret (a deploy key made for the SSH setup before is no longer used, and can be deleted on GitHub).
 GITOPS_REV ?= main
 
-k8s-gitops-up: k8s-exclusive env-required ## Create a new cluster svp that Argo CD builds from GitHub: ARGOCD_DEPLOY_KEY=<private key file of a read-only deploy key> (GitHub repo Settings > Deploy keys, "Allow write access" unticked) [GITOPS_REV=main]; first checks that the seven release digests at that revision are on GHCR (anonymous pull), signed, with a clean vuln attestation at most 48 h old; applies the Secrets of .env, installs Argo CD, waits until every Application is Synced and Healthy
-	@test -n '$(ARGOCD_DEPLOY_KEY)' || { echo "make k8s-gitops-up: set ARGOCD_DEPLOY_KEY=<private key file of a read-only deploy key>" >&2; exit 1; }
-	ARGOCD_DEPLOY_KEY='$(ARGOCD_DEPLOY_KEY)' GITOPS_REV='$(GITOPS_REV)' deploy/k8s/gitops.sh
+k8s-gitops-up: k8s-exclusive env-required ## Create a new cluster svp that runs as staging (base values plus deploy/k8s/envs/stg), built by Argo CD from GitHub over anonymous HTTPS (no deploy key) [GITOPS_REV=main]; first checks that the seven release digests at that revision are on GHCR (anonymous pull), signed, with a clean vuln attestation at most 48 h old; applies the Secrets of .env, installs Argo CD with the plugin of Argo Rollouts for the nodes' architecture, waits until every Application is Synced and Healthy
+	GITOPS_REV='$(GITOPS_REV)' deploy/k8s/gitops.sh
 
 measure-gitops: ## On the GitOps cluster, time release commit REV=<commit> (the merge of a promote pull request) from its push (reflog of origin/main, else GitHub's PushEvent) through Argo CD's sync to the first and last pod Ready with the new digest; JSON in .k8s/drills/ (read only)
 	@test -n '$(REV)' || { echo "make measure-gitops: set REV=<commit>" >&2; exit 1; }
@@ -96,6 +98,15 @@ measure-canary: ## Read back the latest aborted canary of the gateway (Rollout, 
 	@test -s .k8s/ca.crt || { echo "make measure-canary: .k8s/ca.crt missing; run make k8s-up (or make k8s-ca)" >&2; exit 1; }
 	$(K8S_DRILL_ENV) deploy/k8s/drills/canary.sh measure
 
+# The canary of the web client: the steps, the browser clients
+# (web/e2e/canary/clients.ts, Chromium of web/node_modules as for k8s-web-e2e) and what passes are at the top of
+# deploy/k8s/drills/web-canary.sh. Node and pnpm of web/ as for the web targets of the Makefile (WEB); Node trusts the
+# cluster's CA for the clients' registrations at the gateway. exec: the drill replaces the recipe's shell, so on SIGINT
+# or SIGTERM make waits for the drill's trap to put the release back instead of returning while it still runs.
+drill-k8s-web-canary: ## Canary drill of the web client on the dev cluster: a second build of the working tree (another build id, so another deploymentId and Server Action ids) goes 25%, 50%, 100% and is promoted under drill traffic and browser clients (an old tab opened before the canary among them), a bad one (GATEWAY_URL to a Service that does not exist: the BFF's /api answers 502) is aborted by its analysis with the stable pods untouched, then the working tree's build goes back as a canary; reloads per client by cause, Server Action 409 ratio, web-asset 404, pod restarts; table and JSON in .k8s/drills/ (LOCAL LAB ONLY: resets register rate limit keys in the cluster's Valkey db 10)
+	@test -s .k8s/ca.crt || { echo "make drill-k8s-web-canary: .k8s/ca.crt missing; run make k8s-up (or make k8s-ca)" >&2; exit 1; }
+	@$(WEB) exec env $(K8S_DRILL_ENV) NODE_EXTRA_CA_CERTS=$(CURDIR)/.k8s/ca.crt bash ../deploy/k8s/drills/web-canary.sh drill
+
 drill-k8s-pdb: ## Cordon the nodes and evict both gateway pods one after the other, as a drain does: the PodDisruptionBudget lets the first go (201) and refuses the second (429) while its replacement is Pending; uncordon (LOCAL LAB ONLY: resets register rate limit keys in the cluster's Valkey db 10)
 	@test -s .k8s/ca.crt || { echo "make drill-k8s-pdb: .k8s/ca.crt missing; run make k8s-up (or make k8s-ca)" >&2; exit 1; }
 	$(K8S_DRILL_ENV) deploy/k8s/drills/pdb.sh https://api.svp.localhost:8443
@@ -117,9 +128,10 @@ drill-k8s-backup: ## Delete Postgres svp-pg and its volume and restore it under 
 # top of deploy/k8s/drills/supplychain.sh. It talks to the cluster's API, and for the CRITICAL case to GHCR and Sigstore
 # through cosign (anonymous, COSIGN_IMAGE when cosign is not installed), so it needs neither .k8s/ca.crt nor the
 # gateway, and deletes no rate limit key.
-drill-k8s-supplychain: ## Check Kyverno's image policy of namespace svp: a signed, clean release admitted; unsigned (SUPPLYCHAIN_UNSIGNED=<GHCR digest>), CRITICAL (SUPPLYCHAIN_VULNERABLE=<GHCR digest>, attestation within the maximum age), outside GHCR, without digest, attestation too old, ephemeral container and image UPDATE refused, each with its rule's message; Kyverno down refuses svp only; PASS/FAIL per case, JSON in .k8s/drills/ (dev path, whose policy is Audit: SUPPLYCHAIN_ENFORCE_TMP=1 switches it to Enforce for the drill and back)
+drill-k8s-supplychain: ## Check Kyverno's image policy of namespace svp: a signed, clean release admitted; unsigned (SUPPLYCHAIN_UNSIGNED=<GHCR digest>; SUPPLYCHAIN_UNSIGNED_FALLBACK=<GHCR digest> is used instead when Kyverno admits the first), CRITICAL (SUPPLYCHAIN_VULNERABLE=<GHCR digest>, attestation within the maximum age), outside GHCR, without digest, attestation too old, ephemeral container and image UPDATE refused, each with its rule's message; Kyverno down refuses svp only; PASS/FAIL per case, JSON in .k8s/drills/ (dev path, whose policy is Audit: SUPPLYCHAIN_ENFORCE_TMP=1 switches it to Enforce for the drill and back)
 	SVP_STACK=k3d SUPPLYCHAIN_UNSIGNED='$(SUPPLYCHAIN_UNSIGNED)' SUPPLYCHAIN_VULNERABLE='$(SUPPLYCHAIN_VULNERABLE)' \
-	  SUPPLYCHAIN_ENFORCE_TMP='$(SUPPLYCHAIN_ENFORCE_TMP)' deploy/k8s/drills/supplychain.sh
+	  SUPPLYCHAIN_UNSIGNED_FALLBACK='$(SUPPLYCHAIN_UNSIGNED_FALLBACK)' SUPPLYCHAIN_ENFORCE_TMP='$(SUPPLYCHAIN_ENFORCE_TMP)' \
+	  deploy/k8s/drills/supplychain.sh
 
 # The operations UIs have no route, LoadBalancer or NodePort (threat model OPS-2): each is reached by a port-forward
 # bound to the host's loopback only, for as long as the target runs (Ctrl-C ends it). The host ports are those of
@@ -140,11 +152,15 @@ k8s-ui-glitchtip: ## Open GlitchTip of cluster svp on http://127.0.0.1:8000 (por
 	$(K8S_PORT_FORWARD) service/glitchtip 8000:8000
 
 # The web image's source maps: built from the working
-# tree with the build id `make k8s-up` gave the image (web_build_id of deploy/k8s/lib.sh), checked against the chunks
-# https://svp.localhost:8443 serves, uploaded through a port-forward of its own on 127.0.0.1:8000, closed at the end.
-# Node and pnpm of web/ as for the web targets of the Makefile (WEB).
-k8s-web-sourcemaps: ## Upload the source maps of the web client's browser bundle, from the build cluster svp runs (dev path), to its GlitchTip with the token of Secret svp-obs/glitchtip-sourcemaps; checks first that the web serves that build (port 127.0.0.1:8000 must be free)
-	@$(WEB) bash ../deploy/observability/glitchtip/sourcemaps.sh k3d
+# tree with the build id `make k8s-up` gave the image (web_build_id of deploy/k8s/lib.sh), or with SOURCEMAPS_DIR read
+# from a folder of chunks and maps made by an earlier build (the artifact web-sourcemaps-<arch> CI exports beside the
+# image the GitOps cluster runs); either way checked against the chunks https://svp.localhost:8443 serves, uploaded
+# through a port-forward of its own on 127.0.0.1:8000, closed at the end. Node and pnpm of web/ as for the web targets
+# of the Makefile (WEB).
+SOURCEMAPS_DIR ?=
+
+k8s-web-sourcemaps: ## Upload the source maps of the web client's browser bundle, from the build cluster svp runs (dev path; SOURCEMAPS_DIR=<absolute folder> takes that folder's chunks and maps instead of a build: CI's of the image the GitOps cluster runs), to its GlitchTip with the token of Secret svp-obs/glitchtip-sourcemaps; checks first that the web serves that build (port 127.0.0.1:8000 must be free)
+	@$(WEB) bash ../deploy/observability/glitchtip/sourcemaps.sh k3d $(if $(SOURCEMAPS_DIR),'$(SOURCEMAPS_DIR)')
 
 # The web client's end-to-end tests (`make web-e2e`) against cluster svp at https://svp.localhost:8443, through
 # web/e2e/k3d-e2e.sh: it checks .k8s/ca.crt and the cluster, sets SVP_STACK=k3d and the CA for curl and Node, and with
@@ -157,6 +173,8 @@ k8s-web-e2e: ## Playwright end-to-end tests of the web client on Chromium and We
 # Read only, after make k8s-web-e2e: the
 # checks and their PASS/FAIL table are at the top of deploy/k8s/drills/web-obs.sh. Tempo, Prometheus and GlitchTip are
 # reached through port-forwards of its own on 127.0.0.1 (13200, 19090, 8000), stopped by pid at the end.
+# SVP_WEB_OBS_SKIP_ERRORS=<reason> in the environment skips the GlitchTip check alone, with that reason in its SKIP
+# line; only the verification run of the GitOps path sets it, on a branch whose web image has no source maps from CI.
 drill-k8s-web-obs: ## After make k8s-web-e2e on cluster svp: Tempo holds a trace with spans of service web and of the gateway, Prometheus has the RUM histograms of LCP, CLS (and INP when there was interaction) with closed route labels, p75 of each printed, and the GlitchTip event of SVP_E2E_GLITCHTIP=1 make k8s-web-e2e has frames mapped to the web's source; PASS/FAIL per check (read only; ports 127.0.0.1:13200, 19090, 8000 must be free)
 	SVP_STACK=k3d deploy/k8s/drills/web-obs.sh
 

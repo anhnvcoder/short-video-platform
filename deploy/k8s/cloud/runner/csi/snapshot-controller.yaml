@@ -1,0 +1,139 @@
+# The external snapshot controller of kubernetes-csi/external-snapshotter v8.7.0
+# (deploy/kubernetes/snapshot-controller/ at that tag), on the k3d cluster of a CI runner only
+# (deploy/k8s/cloud/runner/csi/install.sh, which installs its CRDs first). It turns a VolumeSnapshot into a
+# VolumeSnapshotContent that the driver's csi-snapshotter sidecar then makes; k3s ships no snapshot controller, and
+# Velero's CSI snapshots need one, as the EKS snapshot controller add-on is on the cloud cluster.
+#
+# Changed from upstream: namespace csi-hostpath instead of kube-system, one replica instead of two (one node pool, one
+# job), the image of the tag (upstream's manifest at v8.7.0 still names v8.6.0) pinned by digest; the pod runs as a
+# non-root user with no capability, no privilege escalation, a read-only root filesystem and the runtime's default
+# seccomp profile (upstream sets none of it, and the controller only talks to the API server); resources added, not
+# measured: requests as the CSI driver plugin's sidecars (10m, 40Mi), limits only against a runaway.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: snapshot-controller
+  namespace: csi-hostpath
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: snapshot-controller-runner
+rules:
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list", "watch", "create", "update", "patch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotcontents"]
+    verbs: ["create", "get", "list", "watch", "update", "delete", "patch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotcontents/status"]
+    verbs: ["patch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots/status"]
+    verbs: ["update", "patch"]
+  - apiGroups: ["groupsnapshot.storage.k8s.io"]
+    resources: ["volumegroupsnapshotclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["groupsnapshot.storage.k8s.io"]
+    resources: ["volumegroupsnapshotcontents"]
+    verbs: ["create", "get", "list", "watch", "update", "delete", "patch"]
+  - apiGroups: ["groupsnapshot.storage.k8s.io"]
+    resources: ["volumegroupsnapshotcontents/status"]
+    verbs: ["patch"]
+  - apiGroups: ["groupsnapshot.storage.k8s.io"]
+    resources: ["volumegroupsnapshots"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["groupsnapshot.storage.k8s.io"]
+    resources: ["volumegroupsnapshots/status"]
+    verbs: ["update", "patch"]
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: snapshot-controller-role
+subjects:
+  - kind: ServiceAccount
+    name: snapshot-controller
+    namespace: csi-hostpath
+roleRef:
+  kind: ClusterRole
+  name: snapshot-controller-runner
+  apiGroup: rbac.authorization.k8s.io
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: snapshot-controller-leaderelection
+  namespace: csi-hostpath
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "watch", "list", "delete", "update", "create"]
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: snapshot-controller-leaderelection
+  namespace: csi-hostpath
+subjects:
+  - kind: ServiceAccount
+    name: snapshot-controller
+    namespace: csi-hostpath
+roleRef:
+  kind: Role
+  name: snapshot-controller-leaderelection
+  apiGroup: rbac.authorization.k8s.io
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: snapshot-controller
+  namespace: csi-hostpath
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: snapshot-controller
+  # The controller is not Ready until the v1 CRDs answer, and gives up on them after --retry-crd-interval-max (30 s by
+  # default): upstream sets minReadySeconds a little above that.
+  minReadySeconds: 35
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: snapshot-controller
+    spec:
+      serviceAccountName: snapshot-controller
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: snapshot-controller
+          image: registry.k8s.io/sig-storage/snapshot-controller:v8.7.0@sha256:8511f417d0072efcd937aedd7cc79a937d5066e64ee17beb6097301c92742f19
+          args:
+            - --v=5
+            - --leader-election=true
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 10m, memory: 40Mi}
+            limits: {cpu: 200m, memory: 256Mi}

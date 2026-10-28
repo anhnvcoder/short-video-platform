@@ -4,7 +4,9 @@
 # (chart repositories, GitHub).
 #
 #   1. Renders every chart of deploy/k8s/cloud/charts.json with its values (`helm template`, Helm's homes in a temporary
-#      directory as in `make helm-check`), and gathers every manifest under deploy/k8s/cloud/ but the values files, every
+#      directory as in `make helm-check`), and once more with its runnerValues after them when it has some (the overlay
+#      of the k3d cluster of a CI runner, deploy/k8s/cloud/runner/<chart>/values.yaml), and gathers every manifest
+#      under deploy/k8s/cloud/ but the values files (values/ and runner/*/values.yaml), every
 #      *.yaml / *.yml under deploy/k6/ (none yet is fine: the k6 Jobs come later), and the output of
 #      deploy/k6/cloud/render.sh when that script exists (run with no argument, manifests on stdout).
 #   2. Turns into JSON schemas, with /openapi2jsonschema of KUBECONFORM_IMAGE (no network), the CRDs of each kind used:
@@ -17,7 +19,12 @@
 #      too (DENY_ROOT_ADDITIONAL_PROPERTIES).
 #   4. What a schema cannot say: every Chaos Mesh experiment has a duration of at most 30 minutes and a selector bound
 #      to the one namespace it lives in (svp or svp-data, never kube-system or any other) with a label, expression or
-#      pod selector; every image in the rendered charts and the manifests is pinned by exactly one @sha256:<64 hex>.
+#      pod selector; Chaos Mesh's controller, in its cloud render and its runner render, is namespaced with svp as its
+#      one target and comes with no dashboard or DNS server; in both renders its ENABLED_CONTROLLERS has no
+#      multi-cluster controller (remotecluster, <kind>-remote-apply) and no "*", and has the five controllers of each
+#      chaos kind of the pinned chart's CRDs (<kind>-records, -initFinalizers, -desiredphase, -condition,
+#      -cleanFinalizers) and the one of each child kind (podhttpchaos, podiochaos, podnetworkchaos); every image in the
+#      rendered charts and the manifests is pinned by exactly one @sha256:<64 hex>.
 #
 # Usage: deploy/k8s/cloud/check.sh [ROOT]
 #   ROOT: a directory laid out like this repository (default: the repository), from which deploy/k8s/cloud/ and
@@ -81,13 +88,17 @@ yaml2json() {
 
 # 1. Charts and manifests.
 sep=$'\x1f'
-list=$(jq -r '.charts[] | [.name, .namespace, .repo, .chart, .version, (.values // "")] | join("\u001f")' \
-  "$cloud/charts.json") || fail "read $cloud/charts.json"
+list=$(jq -r '.charts[] | [.name, .namespace, .repo, .chart, .version, (.values // ""), (.runnerValues // "")]
+  | join("\u001f")' "$cloud/charts.json") || fail "read $cloud/charts.json"
 charts=0
-while IFS=$sep read -r name namespace repo chart version values; do
+while IFS=$sep read -r name namespace repo chart version values runner_values; do
   args=(template "$name" "$chart" --repo "$repo" --version "$version" --namespace "$namespace")
   if [ -n "$values" ]; then args+=(--values "$root/$values"); fi
   helm "${args[@]}" >"$tmp/manifests/rendered__$name.yaml" 2>"$tmp/err" || { cat "$tmp/err" >&2; fail "helm template $name"; }
+  if [ -n "$runner_values" ]; then
+    helm "${args[@]}" --values "$root/$runner_values" >"$tmp/manifests/rendered__$name-runner.yaml" 2>"$tmp/err" ||
+      { cat "$tmp/err" >&2; fail "helm template $name with $runner_values"; }
+  fi
   helm pull "$chart" --repo "$repo" --version "$version" --untar --untardir "$tmp/charts/$name" 2>"$tmp/err" ||
     { cat "$tmp/err" >&2; fail "helm pull $name"; }
   # Velero's CRDs come from its source at the image's tag (step 2), not from the chart.
@@ -101,7 +112,8 @@ files=0
 while IFS= read -r f; do
   add_manifest "$f" "${f#"$root"/}"
   files=$((files + 1))
-done < <(find "$cloud" -type f \( -name '*.yaml' -o -name '*.yml' \) -not -path "$cloud/values/*" | sort)
+done < <(find "$cloud" -type f \( -name '*.yaml' -o -name '*.yml' \) -not -path "$cloud/values/*" \
+  -not -path "$cloud/runner/*/values.yaml" | sort)
 if [ -d "$root/deploy/k6" ]; then
   while IFS= read -r f; do
     add_manifest "$f" "${f#"$root"/}"
@@ -200,6 +212,49 @@ elif [ "$experiments" -eq 0 ]; then
   failed=1
 else
   echo "ok    $experiments Chaos Mesh experiments: duration <= 30m, selector bound to their own namespace"
+fi
+
+# Chaos Mesh's controller in each render of its chart (cloud values, and the runner's overlay after them): namespaced
+# (CLUSTER_SCOPED false) with svp as its one target, as experiments (a) and (b) need, and no dashboard or DNS server, so
+# that an overlay cannot widen what the controller reaches or open a UI. In both renders, its controllers
+# (ENABLED_CONTROLLERS) are listed one by one without the multi-cluster ones: remotecluster lists a cluster-scoped kind
+# a namespaced controller may not, and its cache never syncing makes the manager exit. The controller stops setting up
+# pipelines at the first chaos kind it does not find in the list, so every chaos kind of the chart's CRDs has its five.
+chaos_kinds=$(grep -h -A3 '^  names:' "$tmp/charts/chaos-mesh/chaos-mesh/crds"/*.yaml | sed -n 's/^    kind: //p' |
+  grep 'Chaos$' | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)') || fail "read the kinds of the Chaos Mesh CRDs"
+[ "$(jq length <<<"$chaos_kinds")" -gt 0 ] || fail "no chaos kind in the CRDs of the Chaos Mesh chart"
+scope=$(jq -rs --argjson kinds "$chaos_kinds" '
+  ($kinds | map(select(test("^pod.+chaos$")))) as $children
+  | ([$kinds[] | select(test("^pod.+chaos$") | not) as $k
+      | ("records", "initFinalizers", "desiredphase", "condition", "cleanFinalizers") | "\($k)-\(.)"] + $children) as $want
+  | map(select(.file | test("^rendered__chaos-mesh(-runner)?\\.yaml$"))) | group_by(.file)[] | .[0].file as $f
+  | (map(.doc | select(.kind == "Deployment" and .metadata.name == "chaos-controller-manager"))) as $c
+  | ($c[0].spec.template.spec.containers[0].env // [] | map({(.name): .value}) | add // {}) as $env
+  | ($env.ENABLED_CONTROLLERS // "" | split(",")) as $on
+  | [
+      (if ($c | length) != 1 then "not exactly one Deployment chaos-controller-manager" else empty end),
+      (if $env.CLUSTER_SCOPED != "false" then "CLUSTER_SCOPED is \($env.CLUSTER_SCOPED | tojson), not \"false\"" else empty end),
+      (if $env.TARGET_NAMESPACE != "svp" then "TARGET_NAMESPACE is \($env.TARGET_NAMESPACE | tojson), not \"svp\"" else empty end),
+      (map(.doc | select(.kind == "Deployment" and (.metadata.name | test("dashboard|dns"))) | .metadata.name)[]
+        | "Deployment \(.) rendered"),
+      ($on | map(select(. == "*" or . == "remotecluster" or endswith("-remote-apply")))
+        | if length > 0 then "ENABLED_CONTROLLERS turns on \(join(", ")): a multi-cluster controller, or all of them"
+          else empty end),
+      ($want - $on | if length > 0 then "ENABLED_CONTROLLERS lacks \(join(", "))" else empty end)
+    ][] | "  \($f | gsub("__"; "/")): \(.)"
+' "$tmp/docs.jsonl") || fail "read the Chaos Mesh renders as JSON"
+renders=$(jq -r 'select(.file | test("^rendered__chaos-mesh(-runner)?\\.yaml$")) | .file' "$tmp/docs.jsonl" | sort -u)
+if [ -n "$scope" ]; then
+  printf 'FAIL  Chaos Mesh controller not namespaced on svp alone, a UI rendered, or its controllers wrong:\n%s\n' "$scope" >&2
+  failed=1
+elif [ "$(wc -l <<<"$renders" | tr -d ' ')" -ne 2 ]; then
+  echo "FAIL  Chaos Mesh: renders found [${renders//$'\n'/ }], expected the cloud one and the runner's" >&2
+  failed=1
+else
+  for f in $renders; do
+    echo "ok    Chaos Mesh ${f//__//}: controller namespaced on svp, no dashboard or DNS server," \
+      "$(jq length <<<"$chaos_kinds") chaos kinds' controllers listed, no \"*\" or multi-cluster one"
+  done
 fi
 
 # Images: every string field named image, and every env value whose name has the word IMAGE (the pause image of
