@@ -536,15 +536,17 @@ web_build_id() {
   echo "dev-$(printf '%s\n' "$list" | shasum -a 256 | cut -c1-12)"
 }
 
-# build_image SERVICE CONTEXT: builds SERVICE's image from the source tree CONTEXT (native architecture, the
-# Dockerfiles compose uses) and sets image_id to its ID, without the sha256: prefix. The web image gets SVP_BUILD_ID
-# from web_build_id, which reads the working tree: build_dev_images passes that tree as CONTEXT.
+# build_image SERVICE CONTEXT [WEB_BUILD_ID]: builds SERVICE's image from the source tree CONTEXT (native architecture,
+# the Dockerfiles compose uses) and sets image_id to its ID, without the sha256: prefix. The web image gets SVP_BUILD_ID
+# from web_build_id, which reads the working tree: build_dev_images passes that tree as CONTEXT. WEB_BUILD_ID replaces
+# it for a second build of the same source (make drill-k8s-web-canary): next build runs again with that id, so the
+# image is another build, with its own deploymentId and Server Action ids.
 build_image() {
   local args=(--file "$2/$(dockerfile "$1")") id
   case $1 in
   media-worker) ;;
   web)
-    id=$(web_build_id) || return 1
+    id=${3:-$(web_build_id)} || return 1
     args+=(--build-arg "SVP_BUILD_ID=$id")
     ;;
   *) args+=(--build-arg "SERVICE=$1") ;;

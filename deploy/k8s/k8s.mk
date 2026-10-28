@@ -7,7 +7,8 @@ K8S_LIB := . deploy/k8s/lib.sh
 .PHONY: k8s-exclusive k8s-up k8s-down k8s-status k8s-ca k8s-secrets k8s-images k8s-smoke drill-k8s-keda drill-k8s-pdb \
 	k8s-glitchtip-init k8s-ui-grafana k8s-ui-prometheus k8s-ui-alertmanager k8s-ui-glitchtip k8s-gitops-up \
 	measure-gitops k8s-ui-argocd k8s-traffic-start k8s-traffic-stop drill-k8s-canary measure-canary drill-k8s-threats \
-	drill-k8s-supplychain k8s-web-sourcemaps k8s-web-e2e drill-k8s-web-obs cloud-check drill-k8s-backup
+	drill-k8s-supplychain k8s-web-sourcemaps k8s-web-e2e drill-k8s-web-obs cloud-check drill-k8s-backup \
+	drill-k8s-web-canary
 
 # Compose and k3d never run together on the 16 GB machine (CLAUDE.md): the cluster is not created or started beside a
 # running compose stack. `make up` refuses the other way round (deploy/compose/compose.mk).
@@ -96,6 +97,15 @@ drill-k8s-canary: ## Canary drill of the gateway on the dev cluster: with drill 
 measure-canary: ## Read back the latest aborted canary of the gateway (Rollout, AnalysisRun, HTTPRoute, the drill traffic's log, Prometheus): canary got traffic -> AnalysisRun Failed -> abort done, client 5xx, stable 5xx; JSON in .k8s/drills/ (read only)
 	@test -s .k8s/ca.crt || { echo "make measure-canary: .k8s/ca.crt missing; run make k8s-up (or make k8s-ca)" >&2; exit 1; }
 	$(K8S_DRILL_ENV) deploy/k8s/drills/canary.sh measure
+
+# The canary of the web client: the steps, the browser clients
+# (web/e2e/canary/clients.ts, Chromium of web/node_modules as for k8s-web-e2e) and what passes are at the top of
+# deploy/k8s/drills/web-canary.sh. Node and pnpm of web/ as for the web targets of the Makefile (WEB); Node trusts the
+# cluster's CA for the clients' registrations at the gateway. exec: the drill replaces the recipe's shell, so on SIGINT
+# or SIGTERM make waits for the drill's trap to put the release back instead of returning while it still runs.
+drill-k8s-web-canary: ## Canary drill of the web client on the dev cluster: a second build of the working tree (another build id, so another deploymentId and Server Action ids) goes 25%, 50%, 100% and is promoted under drill traffic and browser clients (an old tab opened before the canary among them), a bad one (GATEWAY_URL to a Service that does not exist: the BFF's /api answers 502) is aborted by its analysis with the stable pods untouched, then the working tree's build goes back as a canary; reloads per client by cause, Server Action 409 ratio, web-asset 404, pod restarts; table and JSON in .k8s/drills/ (LOCAL LAB ONLY: resets register rate limit keys in the cluster's Valkey db 10)
+	@test -s .k8s/ca.crt || { echo "make drill-k8s-web-canary: .k8s/ca.crt missing; run make k8s-up (or make k8s-ca)" >&2; exit 1; }
+	@$(WEB) exec env $(K8S_DRILL_ENV) NODE_EXTRA_CA_CERTS=$(CURDIR)/.k8s/ca.crt bash ../deploy/k8s/drills/web-canary.sh drill
 
 drill-k8s-pdb: ## Cordon the nodes and evict both gateway pods one after the other, as a drain does: the PodDisruptionBudget lets the first go (201) and refuses the second (429) while its replacement is Pending; uncordon (LOCAL LAB ONLY: resets register rate limit keys in the cluster's Valkey db 10)
 	@test -s .k8s/ca.crt || { echo "make drill-k8s-pdb: .k8s/ca.crt missing; run make k8s-up (or make k8s-ca)" >&2; exit 1; }
