@@ -179,9 +179,9 @@ scenario_targets() {
 #      deploy/k8s/values/services/ against its first parent it is the release, otherwise it is named and the wait goes
 #      on from it. None within 90 min fails ("no release");
 #   3. make measure-gitops REV=<release>, again every 30 s while it exits 2 (not pushed, synced or Ready yet) or
-#      exits 0 without the push time (GitHub's events do not list the push yet), for at most 20 min; then
+#      exits 0 without the push time (no merged pull request found and GitHub's events do not list the push yet), for at most 20 min; then
 #      release_restarts (below) on what it wrote, and the step fails unless both pass. measure-gitops reads the push
-#      time from GitHub's events through ci_push_time, which needs the job's token: GH_TOKEN is given to that make
+#      time (merged_at of the pull request, else GitHub's events) through ci_push_time, which needs the job's token: GH_TOKEN is given to that make
 #      alone, and taken out of the environment of everything else here (the drill traffic included).
 # Only the lines below reach the job's log; the targets' output goes to $SVP_VERIFY_OUT/logs/release-wait.log and
 # measure-gitops.log, which deploy/ci/verify-collect.sh copies into the artifact once they pass its scan. On a branch

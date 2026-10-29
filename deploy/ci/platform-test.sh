@@ -47,8 +47,8 @@ has() { grep -qF -- "$2" "$1"; }
 lacks() { ! grep -qF -- "$2" "$1"; }
 
 # --- Fakes. gh writes each call to gh.log, one line of %q-quoted arguments, and answers pr list from gh/prs.json; api
-# with gh/runs.json for a workflow's runs, gh/artifacts-<run>.json for a run's artifacts (none when the file is missing)
-# and gh/events.json otherwise, run through its --jq filter; run download writes the file image-digest into its --dir.
+# with gh/runs.json for a workflow's runs, gh/artifacts-<run>.json for a run's artifacts (none when the file is missing),
+# gh/pulls.json for the pull requests of a commit (none when the file is missing), and gh/events.json otherwise, run through its --jq filter; run download writes the file image-digest into its --dir.
 # With FAKE_GH_FAIL set it fails as the host would; with FAKE_GH_DOWNLOAD_FAIL set only run download fails, naming the
 # signed link it was sent to, as gh does, and with GH_DEBUG or DEBUG set run download prints its request line as gh's
 # debug log does. cosign refuses every signature and records its arguments.
@@ -72,6 +72,10 @@ case "$1 $2" in
     id=${path%/artifacts}
     file=$FAKE_GH_DIR/artifacts-${id##*/}.json
     [ -f "$file" ] || file=$FAKE_GH_DIR/no-artifacts.json
+    ;;
+  */commits/*/pulls)
+    file=$FAKE_GH_DIR/pulls.json
+    [ -f "$file" ] || file=$FAKE_GH_DIR/no-pulls.json
     ;;
   *) file=$FAKE_GH_DIR/events.json ;;
   esac
@@ -102,6 +106,7 @@ EOF
 chmod 755 "$work/bin/gh" "$work/bin/cosign"
 echo '[]' >"$work/gh/prs.json"
 echo '{"total_count": 0, "artifacts": []}' >"$work/gh/no-artifacts.json"
+echo '[]' >"$work/gh/no-pulls.json"
 
 # on PLATFORM COMMAND...: runs COMMAND with the variables of PLATFORM and none of the others': github (a made-up job of
 # repository octo/repo), local (none), gitlab (GitLab CI's own). git reads no configuration of this machine.
@@ -240,11 +245,37 @@ sha=0123456789abcdef0123456789abcdef01234567
 jq -n --arg sha "$sha" '[{type: "PushEvent", payload: {head: "ffff"}, created_at: "2026-10-01T00:00:00Z"},
   {type: "PushEvent", payload: {head: $sha}, created_at: "2026-10-02T03:04:05Z"},
   {type: "PullRequestEvent", payload: {head: $sha}, created_at: "2026-10-03T00:00:00Z"}]' >"$work/gh/events.json"
-same "local: a push time is read from the host's events" 2026-10-02T03:04:05Z "$(fn local "ci_push_time $sha")"
-same "local: the events are read for this repository" "$(gh_line api -X GET \
-  repos/anhnvcoder/short-video-platform/events -f per_page=100 --jq \
-  "[.[] | select(.type == \"PushEvent\" and .payload.head == \"$sha\") | .created_at] | last // empty")" \
+pulls_filter="[.[] | select(.merge_commit_sha == \"$sha\" and .merged_at != null)] | first // empty
+        | \"\(.merged_at) merged_at of PR #\(.number)\""
+events_filter="[.[] | select(.type == \"PushEvent\" and .payload.head == \"$sha\") | .created_at] | last // empty
+          | \"\(.) PushEvent of the repository's events\""
+same "local: no pull request of the commit, the push time is read from the host's events" \
+  "2026-10-02T03:04:05Z PushEvent of the repository's events" "$(fn local "ci_push_time $sha")"
+same "local: the pull requests, then the events, are read for this repository" "$(gh_line api -X GET \
+  repos/anhnvcoder/short-video-platform/commits/$sha/pulls -f per_page=100 --jq "$pulls_filter")
+$(gh_line api -X GET repos/anhnvcoder/short-video-platform/events -f per_page=100 --jq "$events_filter")" \
   "$(cat "$work/gh.log")"
+# A pull request merged as the commit gives its merged_at, and the events are not read; one merged as another commit,
+# or not merged, is skipped.
+jq -n --arg sha "$sha" '[{number: 7, merge_commit_sha: "eeee", merged_at: "2026-10-04T00:00:00Z"},
+  {number: 8, merge_commit_sha: $sha, merged_at: null},
+  {number: 9, merge_commit_sha: $sha, merged_at: "2026-10-02T03:00:00Z"}]' >"$work/gh/pulls.json"
+fresh
+same "github: a pull request merged as the commit gives its merged_at" "2026-10-02T03:00:00Z merged_at of PR #9" \
+  "$(fn github "ci_push_time $sha")"
+check "github: the events are not read when the pull request answers" test "$(wc -l <"$work/gh.log")" -eq 1
+jq -n --arg sha "$sha" '[{number: 7, merge_commit_sha: "eeee", merged_at: "2026-10-04T00:00:00Z"},
+  {number: 8, merge_commit_sha: $sha, merged_at: null}]' >"$work/gh/pulls.json"
+same "github: pull requests merged as another commit or not merged are skipped, the events answer" \
+  "2026-10-02T03:04:05Z PushEvent of the repository's events" "$(fn github "ci_push_time $sha")"
+rm "$work/gh/pulls.json"
+fresh
+if got=$(fn local "export FAKE_GH_FAIL=1; ci_push_time $sha" 2>/dev/null); then
+  fail "local: a host error is not an answer ($got)"
+else
+  ok "local: a host error is not an answer"
+fi
+check "local: a failed read of the pull requests is not answered from the events" test "$(wc -l <"$work/gh.log")" -eq 1
 if fn local 'ci_push_time "x\" or true"' 2>/dev/null; then fail "local: ci_push_time takes only a full SHA"; else
   ok "local: ci_push_time takes only a full SHA"
 fi
