@@ -336,7 +336,10 @@ flowchart LR
   theo bảng của ADR-0014 §5 (compose không SASL); object store `s3` (StatefulSet một replica, `s3.svp-data:9000`) cùng
   bucket, user, policy và script init như compose, không user thử. Cluster tạo khi store còn là MinIO bị `make k8s-up` từ chối
   (dựng lại cluster, không nâng tại chỗ). Mật khẩu sinh bằng
-  `make env`, đưa vào Secret bằng `deploy/k8s/secrets.sh`, không nằm trong git.
+  `make env`, đưa vào Secret bằng `deploy/k8s/secrets.sh`, không nằm trong git. Trên đường GitOps từ giai đoạn 6b phần 4
+  ([ADR-0026](adr/0026-secrets-gitops.md)) `secrets.sh` chỉ ghi nguồn vào namespace `svp-secrets`; External Secrets Operator
+  (component `external-secrets`, wave 0, chỉ đường GitOps) dựng 28 Secret từ ExternalSecret của chart `svp-cluster`, mỗi namespace
+  một SecretStore chỉ đọc đúng entry của nó; prd sẽ đọc AWS Secrets Manager (giai đoạn 7). Repo chỉ có tên Secret, key và nguồn.
 - **Workload** (ADR-0014 §10): một chart chung `deploy/helm/svp-service` cho 6 service và web (probe, `requests`/`limits`,
   securityContext `restricted`, không token ServiceAccount); gateway 2 replica có PDB và HPA theo CPU, feed-service luôn 2
   replica (HPA 2–2) có PDB, ưu tiên trải hai node ([ADR-0031](adr/0031-chaos-findings-feed-engagement-tempo.md) §1), web 2 replica cố định có PDB, trải hai node, chờ 5 s trước khi tắt (server Next thoát ngay khi nhận SIGTERM),
@@ -436,14 +439,17 @@ flowchart LR
 - **Ký và attestation** (§7): cosign keyless bằng OIDC của GitHub (chứng chỉ Fulcio, ghi Rekor; không khoá dài hạn), ký
   digest index với identity `images.yml@refs/heads/main`; attestation `vuln` trên index gộp kết quả quét hai nền tảng,
   SBOM SPDX của syft trên từng manifest con. Rescan hằng ngày quét lại mọi digest đang phát hành bằng DB mới và thay
-  attestation `vuln`.
+  attestation `vuln`. Từ giai đoạn 6b phần 4 ([ADR-0027](adr/0027-slsa-build-provenance.md)) index của bản phát hành mang thêm
+  attestation build provenance SLSA v1 (`slsaprovenance1`: workflow, ref, commit, lượt chạy), mức ghi trung thực là Build L1.
 - **Promote** (§9): job `promote` dựng lại nhánh `bot/promote` từ `main`, ghi `repository`, `tag`, `digest` của mọi
   service đã ký mà chưa merge (không bao giờ ghi lùi) vào `deploy/k8s/values/services/<svc>.yaml` và mở hay cập nhật một PR
   cuộn. Người học bấm duyệt lượt chạy của PR, merge khi hai check xanh; Argo CD poll thấy commit, sync, gateway đi canary
   như giai đoạn 4. Rollback là PR revert.
 - **Admission** (§8): Kyverno 1.19.1 (admission controller 1 replica + reports controller), một `ImageValidatingPolicy`
   `svp-images` cho Pod ở namespace `svp`, kiểm theo thứ tự: prefix GHCR của repo và có digest (không gọi mạng), chữ ký
-  đúng identity, attestation `vuln` đúng identity, đủ hai nền tảng, không CRITICAL, không quá 72 giờ. Đường GitOps Enforce
+  đúng identity, attestation `vuln` đúng identity, đủ hai nền tảng, không CRITICAL, không quá 72 giờ; khi bật
+  `requireProvenance` (overlay `deploy/k8s/envs/<env>/svp-policy.yaml`, chưa env nào bật) thêm provenance đúng identity, đúng
+  `builder.id`, repository, ref, và `verify-release.sh` đối chiếu commit của nó với chứng chỉ. Đường GitOps Enforce
   (`Deny`, webhook `Fail`: Kyverno chết hay Sigstore, GHCR không tới được thì pod `svp` mới bị từ chối); đường dev Audit.
   Namespace khác không qua webhook. Image bên thứ ba (operator, dữ liệu, observability, Argo CD, Kyverno) ghim digest, kiểm
   tĩnh trong CI bằng `deploy/k8s/check-image-digests.sh`, chưa kiểm chữ ký nhà cung cấp.
@@ -626,7 +632,7 @@ sequenceDiagram
     VS-->>C: 202, PROCESSING
     VS--)RP: relay đọc outbox, phát video.uploaded
     RP--)MW: video.uploaded
-    MW->>S3: tải file gốc, ffmpeg, ghi HLS vào media/{video_id}/
+    MW->>S3: master của version đã có? chưa: tải file gốc, ffmpeg,<br/>ghi HLS vào media/{video_id}/{version}/{attempt}/, tạo master một lần
     MW--)RP: transcode.completed
     RP--)VS: transcode.completed
     VS->>VS: 1 transaction: trạng thái READY + outbox video.ready
@@ -637,7 +643,9 @@ sequenceDiagram
 
 Không ai điều phối trung tâm: mỗi service nghe event rồi làm phần của mình (choreography). Nếu transcode lỗi, media-worker
 phát `transcode.failed`; video-service chuyển `FAILED` và xoá file dở dang. Mọi bước chịu được việc nhận trùng event:
-media-worker ghi vào đường dẫn cố định theo `video_id` nên chạy lại chỉ ghi đè; video-service chỉ chuyển trạng thái theo
+media-worker ghi output theo version (`event_id` của `video.uploaded`), mỗi lần thử một thư mục, master tạo một lần bằng
+`If-None-Match: *`, nên nhận lại event chỉ đọc lại master đã có và phát lại cùng kết quả, không ghi đè byte nào đã công khai
+([ADR-0029](adr/0029-immutable-media-versions.md)); video-service chỉ chuyển trạng thái theo
 một chiều; feed-service ghi timeline với khoá chính chống trùng.
 
 ### 7.2 Đọc feed
@@ -772,7 +780,9 @@ proto/svp/
   ghi tay `go_package`), code ra ở `gen/go`, và code sinh ra được commit (`make generate`).
 - ID là UUIDv7, trong proto là `string` 36 ký tự chữ thường, trong Postgres là `uuid`, sinh ở code Go.
 - Người gọi không nằm trong request: gateway đặt `user_id` đã xác thực vào gRPC metadata `x-user-id` ([§7.4](#74-xác-thực)).
-- API và event mang object key (`uploads/<video_id>`, `media/<video_id>/master.m3u8`), không mang URL; gateway ghép URL
+- API và event mang object key (`uploads/<video_id>`, `media/<video_id>/<version>/master.m3u8`; video `READY` trước khi có
+  version giữ key `media/<video_id>/master.m3u8`), không mang URL; mọi object HLS và thumbnail mang
+  `Cache-Control: max-age=31536000, immutable` ([ADR-0029](adr/0029-immutable-media-versions.md)); gateway ghép URL
   công khai từ cấu hình của môi trường. Ngoại lệ: `upload_url` của presigned POST.
 - Mỗi RPC có comment ghi ngữ nghĩa, idempotency và các mã lỗi chính.
 

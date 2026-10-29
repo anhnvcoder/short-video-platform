@@ -4,8 +4,10 @@
 # The GitOps path builds Argo CD Applications from the same file, so both install the same charts, versions and values.
 #
 # A component is an upstream chart (repo + chart + version; a Helm OCI repository is written oci://...) or a chart in
-# this repository (path), with an optional values file relative to the repository root. Run by `make k8s-up` after the
-# registry and the cluster exist; running it again only upgrades what changed.
+# this repository (path), with an optional values file relative to the repository root. A component with gitopsOnly
+# (External Secrets Operator) belongs to the GitOps path alone and is skipped here: the dev path's Secrets come from
+# .env through deploy/k8s/secrets.sh. Run by `make k8s-up` after the registry and the cluster exist; running it again
+# only upgrades what changed.
 set -euo pipefail
 
 # shellcheck source=deploy/k8s/lib.sh
@@ -453,7 +455,7 @@ test_ge() {
 # The project's namespaces (namespaces of svp-cluster's values, with the same labels too) are made here as well: Envoy
 # Gateway, of wave 0, binds a Role in each namespace it watches (deploy/k8s/values/envoy-gateway.yaml), and Helm
 # cannot create a Role in a namespace that does not exist yet. svp-cluster takes them over (--take-ownership below).
-wave0=$(jq -c '[.components[] | select(.wave == 0) | {name: .namespace}] | unique' "$components") ||
+wave0=$(jq -c '[.components[] | select(.wave == 0 and .gitopsOnly != true) | {name: .namespace}] | unique' "$components") ||
   fail "read the namespaces of wave 0 in $components"
 hc template svp-cluster "$repo_root/deploy/helm/svp-cluster" --show-only templates/namespaces.yaml \
   --set-json "platformNamespaces=$wave0" |
@@ -474,7 +476,7 @@ esac
 # One line per component, fields separated by the ASCII unit separator: empty fields (no path, no values) must survive
 # `read`, which collapses runs of whitespace separators such as tabs.
 sep=$'\x1f'
-lines=$(jq -r --arg arch "$node_arch" '.components | sort_by(.wave) | .[]
+lines=$(jq -r --arg arch "$node_arch" '.components | sort_by(.wave) | .[] | select(.gitopsOnly != true)
   | [.name, .namespace, (.wave | tostring), (.path // ""), (.repo // ""), (.chart // ""), (.version // ""),
      (.values // ""), (.canaryRoute // ""), ((.archValues // {})[$arch] // "")] | join("\u001f")' "$components") ||
   fail "read $components"

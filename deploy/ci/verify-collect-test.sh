@@ -1181,9 +1181,9 @@ run_verify() {
 }
 # results NAME: "id name status note" of each target of run NAME, one per line.
 results() { awk -F '\t' 'NR > 1 { print $1, $2, $3, $8 }' "$work/run-$1.out/results.tsv"; }
-compose_names="up smoke drill-obs-threats load-local fallback-alert-under-load web-lighthouse-1 web-lighthouse-2
-web-lighthouse-3 lcp test-stack-objstore drill-upload-cleanup measure-upload ram-s3-upload drill-alert-to-sentry
-object-store-roundtrip"
+compose_names="up smoke drill-duplicates drill-kill-worker drill-obs-threats load-local fallback-alert-under-load
+web-lighthouse-1 web-lighthouse-2 web-lighthouse-3 lcp test-stack-objstore drill-upload-cleanup measure-upload ram-s3-upload
+drill-alert-to-sentry object-store-roundtrip"
 k3d_names="k8s-up k8s-smoke ram-rest-start drill-k8s-threats drill-k8s-pdb drill-k8s-canary k8s-web-sourcemaps
 k8s-web-e2e drill-k8s-web-obs drill-k8s-keda ram-peak drill-k8s-backup drill-k8s-backup-pitr ram-rest-end"
 # want_rows NAMES STATUS_OF_FIRST NOTE_OF_REST [ID NAME STATUS NOTE]...: the rows of a run: the first of NAMES with
@@ -1245,10 +1245,10 @@ if timeout --version 2>/dev/null | grep -q GNU; then
   rc=$(run_verify s3-peak compose-obs SVP_VERIFY_TARGETS=ram-s3-upload)
   same "verify-run: ram-s3-upload without measure-upload makes the run fail" 1 "$rc"
   same "verify-run: ram-s3-upload without measure-upload is skipped for it" \
-    "$(want_rows "$compose_names" ok 'not in targets' '13 ram-s3-upload skipped measure-upload did not run')" \
+    "$(want_rows "$compose_names" ok 'not in targets' '15 ram-s3-upload skipped measure-upload did not run')" \
     "$(results s3-peak)"
 
-  # test-stack-objstore over the output of a fake make test-stack: a unit test and the five integration tests pass, one
+  # test-stack-objstore over the output of a fake make test-stack: a unit test and the eight integration tests pass, one
   # with a subtest; then a subtest skipped, an integration test missing, go test failing.
   fm=$work/fake-make
   mkdir -p "$fm"
@@ -1259,7 +1259,8 @@ if timeout --version 2>/dev/null | grep -q GNU; then
     shift
     {
       for t in TestNewRejectsMissingConfig TestIntegrationPresignedPost TestIntegrationWorkerPermissions \
-        TestIntegrationVideoServicePermissions TestIntegrationDeletePrefix TestIntegrationMultipartChecksum; do
+        TestIntegrationVideoServicePermissions TestIntegrationDeletePrefix TestIntegrationMultipartChecksum \
+        TestIntegrationCacheControl TestIntegrationCreateOnce TestIntegrationWorkerReadsMedia; do
         [ "${DROP_TEST:-}" = "$t" ] || printf '=== RUN   %s\n--- PASS: %s (0.10s)\n' "$t" "$t"
       done
       echo '    --- PASS: TestIntegrationPresignedPost/valid_form (0.01s)'
@@ -1269,25 +1270,25 @@ if timeout --version 2>/dev/null | grep -q GNU; then
     run_verify "objstore-$name" compose-obs SVP_VERIFY_TARGETS=test-stack-objstore FAKE_MAKE_DIR="$fm" \
       ${FAKE_FAIL:+FAKE_MAKE_FAIL=test-stack} >/dev/null
     printf '%s ' "$(results "objstore-$name" | awk '$2 == "test-stack-objstore" { print $3 }')"
-    grep '^object store tests: ' "$work/run-objstore-$name.out/logs/10-test-stack-objstore.log"
+    grep '^object store tests: ' "$work/run-objstore-$name.out/logs/12-test-stack-objstore.log"
   }
   same "verify-run: test-stack-objstore passes when every test passes" \
-    "ok object store tests: 7 passed, 0 failed, 0 skipped (tests and subtests); make test-stack exit 0" "$(objstore pass)"
+    "ok object store tests: 10 passed, 0 failed, 0 skipped (tests and subtests); make test-stack exit 0" "$(objstore pass)"
   grep -qx 'test-stack PKGS=./internal/objstore/...' "$work/run-objstore-pass.make" &&
     ok "verify-run: test-stack-objstore runs make test-stack on internal/objstore" ||
     fail "verify-run: test-stack-objstore runs make test-stack on internal/objstore"
   same "verify-run: a skipped subtest fails test-stack-objstore" \
-    "fail object store tests: 7 passed, 0 failed, 1 skipped (tests and subtests); make test-stack exit 0" \
+    "fail object store tests: 10 passed, 0 failed, 1 skipped (tests and subtests); make test-stack exit 0" \
     "$(objstore skip '    --- SKIP: TestIntegrationMultipartChecksum/trailer (0.00s)')"
   same "verify-run: an integration test that did not run fails test-stack-objstore" \
-    "fail object store tests: 6 passed, 0 failed, 0 skipped (tests and subtests); make test-stack exit 0" \
+    "fail object store tests: 9 passed, 0 failed, 0 skipped (tests and subtests); make test-stack exit 0" \
     "$(DROP_TEST=TestIntegrationMultipartChecksum objstore missing)"
   grep -qx 'FAIL  did not pass: TestIntegrationMultipartChecksum' \
-    "$work/run-objstore-missing.out/logs/10-test-stack-objstore.log" &&
+    "$work/run-objstore-missing.out/logs/12-test-stack-objstore.log" &&
     ok "verify-run: the integration test that did not pass is named" ||
     fail "verify-run: the integration test that did not pass is named"
   same "verify-run: go test failing fails test-stack-objstore" \
-    "fail object store tests: 7 passed, 0 failed, 0 skipped (tests and subtests); make test-stack exit 2" \
+    "fail object store tests: 10 passed, 0 failed, 0 skipped (tests and subtests); make test-stack exit 2" \
     "$(FAKE_FAIL=1 objstore exit)"
 
   # object-store-roundtrip with a fake make (the s3-init log, the copy's output) and the fake psql.
@@ -1303,7 +1304,7 @@ if timeout --version 2>/dev/null | grep -q GNU; then
       FAKE_PSQL_READY=3 "$@" >/dev/null
     results "roundtrip-$name" | awk '$2 == "object-store-roundtrip" { print $3 }'
   }
-  rlog() { cat "$work/run-roundtrip-$1.out/logs/15-object-store-roundtrip.log"; }
+  rlog() { cat "$work/run-roundtrip-$1.out/logs/17-object-store-roundtrip.log"; }
   same "verify-run: object-store-roundtrip passes when the copy, make up and smoke pass" ok "$(roundtrip pass)"
   same "verify-run: object-store-roundtrip reads the s3-init log, stops the stack, copies back, starts it on RustFS" \
     "$(printf '%s\n' 'up OBS=lgtm' '-s logs SVC=s3-init' down 'object-store-copy TO=minio' 'up OBS=lgtm' \

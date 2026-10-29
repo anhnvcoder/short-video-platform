@@ -22,11 +22,22 @@
 #   gitops-env             the overlays of deploy/k8s/envs/stg reached the cluster: Application gateway reads
 #                          deploy/k8s/envs/stg/gateway.yaml after its values, and every running gateway pod has
 #                          SENTRY_ENVIRONMENT=stg (the only variable of the pod spec read)
+#   gitops-external-secrets the cluster's ExternalSecrets are exactly those of files/external-secrets.yaml of chart
+#                          svp-cluster, each Ready, and the Secret each builds exists with the type and exactly the keys
+#                          its ExternalSecret names (those of its template, or of its data without one): one line per
+#                          Secret. Only the names of the keys leave kubectl's pipe, never a value
 #   drill-k8s-supplychain  make drill-k8s-supplychain with the images it needs, read from GHCR without credentials
 #                          (deploy/ci/gitops-sourcemaps.sh): the linux/amd64 manifest of the web release the cluster runs
 #                          as the unsigned image (no signature or attestation names it, they name its index), the newest
 #                          drill-vulnerable, and the newest drill-unsigned for when Kyverno admits the first. An image
-#                          that cannot be read is left out (its case SKIPs) and the step fails after the drill
+#                          that cannot be read is left out (its case SKIPs) and the step fails after the drill. For case
+#                          l (a release without build provenance) the newest web release in the history of
+#                          deploy/k8s/values/services/web.yaml that cosign finds signed without a provenance attestation
+#                          (gitops_no_provenance); none found and case l SKIPs, which fails nothing, while a release
+#                          cosign cannot answer for is left out like the images above. Case l passes only when that
+#                          release's vuln attestation is within 72 hours: dispatch the rescan the drill names
+#                          (images.yml -f rescan=true -f values_ref=<a commit whose values name it>) less than 72 hours
+#                          before this run
 #   gitops-sourcemaps      make k8s-web-sourcemaps SOURCEMAPS_DIR=<maps/ the step before found>, which checks them
 #                          against the chunks the web serves before the upload; fails with the reason when that step
 #                          failed or left nothing. When it found none on a branch other than main (status skipped: the
@@ -89,15 +100,110 @@ gitops_env() {
   echo "ok    the staging overlay is applied"
 }
 
+# gitops_external_secrets: see gitops-external-secrets in the header.
+gitops_external_secrets() {
+  local list=$repo/deploy/helm/svp-cluster/files/external-secrets.yaml want have es secrets report ns
+  want=$(awk '/^- namespace: / { ns = $3 } /^  name: / { if (ns != "") print ns "/" $2; ns = "" }' "$list" | sort)
+  es=$(kc get externalsecrets.external-secrets.io -A -o json) || {
+    echo "FAIL  gitops-external-secrets: list the ExternalSecrets"
+    return 1
+  }
+  have=$(jq -r '.items[] | "\(.metadata.namespace)/\(.metadata.name)"' <<<"$es" | sort)
+  # Name, type and key names of each Secret of the namespaces with ExternalSecrets; the values go no further than jq.
+  secrets=$(for ns in $(jq -r '[.items[].metadata.namespace] | unique[]' <<<"$es"); do
+    kc -n "$ns" get secrets -o json | jq -c --arg ns "$ns" \
+      '.items[] | {id: "\($ns)/\(.metadata.name)", type, keys: ((.data // {}) | keys)}' || exit 1
+  done | jq -s 'map({key: .id, value: .}) | from_entries') || {
+    echo "FAIL  gitops-external-secrets: read the key names of the Secrets"
+    return 1
+  }
+  report=$(jq -r --argjson secrets "$secrets" '.items[] | "\(.metadata.namespace)/\(.metadata.name)" as $id
+    | ((.status.conditions // []) | map(select(.type == "Ready")) | first // {}) as $r
+    | ((.spec.target.template.data // null | if . == null then null else keys end)
+        // [.spec.data[]?.secretKey] | sort) as $want
+    | (.spec.target.template.type // "Opaque") as $type
+    | $secrets[$id] as $s
+    | if $r.status != "True" then
+        "FAIL  \($id): ExternalSecret Ready \($r.status // "-") \($r.reason // "-"): \($r.message // "" | gsub("\n"; " "))"
+      elif $s == null then "FAIL  \($id): no Secret"
+      elif ($s.keys | sort) != $want then "FAIL  \($id): Secret keys \($s.keys | sort | join(",")), want \($want | join(","))"
+      elif $s.type != $type then "FAIL  \($id): Secret type \($s.type), want \($type)"
+      else "ok    \($id): Ready, Secret \($type) with keys \($want | join(","))" end' <<<"$es") || {
+    echo "FAIL  gitops-external-secrets: compare the ExternalSecrets with their Secrets"
+    return 1
+  }
+  [ -z "$report" ] || printf '%s\n' "$report"
+  if [ "$have" != "$want" ]; then
+    echo "FAIL  gitops-external-secrets: the cluster's ExternalSecrets (>) differ from files/external-secrets.yaml (<):"
+    diff <(printf '%s\n' "$want") <(printf '%s\n' "$have") | grep '^[<>]'
+    return 1
+  fi
+  if grep -q '^FAIL' <<<"$report"; then return 1; fi
+  echo "ok    $(grep -c . <<<"$want") ExternalSecrets Ready, each Secret with its type and keys"
+}
+
+# gitops_no_provenance: prints REPOSITORY@DIGEST (values of <commit>) of the newest web release named in the history
+# of deploy/k8s/values/services/web.yaml (from HEAD) that carries a signature of images.yml on main and no provenance
+# attestation of it, read anonymously with cosign. Every release since CI attests provenance has one, so the search
+# passes over, without asking GHCR, a release whose tag (the commit it was built from) already holds
+# deploy/ci/provenance-predicate.sh: it stays a couple of cosign calls however many releases came since. Status 1, the
+# reason on stderr, when the history has none (case l SKIPs); 2 when cosign could not answer for a release (the
+# registry or Sigstore out of reach), so an error is never read as "no provenance".
+gitops_no_provenance() (
+  # shellcheck source=deploy/ci/common.sh
+  . "$here/common.sh" || exit 1
+  sign_identity
+  file=deploy/k8s/values/services/web.yaml
+  seen=" "
+  for c in $(git -C "$repo" log --format=%H -- "$file"); do
+    content=$(git -C "$repo" show "$c:$file" 2>/dev/null) || continue
+    digest=$(values_field digest <<<"$content" 2>/dev/null) &&
+      image_repo=$(values_field repository <<<"$content" 2>/dev/null) || continue
+    # Unreadable, the tag only costs a cosign call.
+    tag=$(values_field tag <<<"$content" 2>/dev/null) || tag=
+    [ -n "$digest" ] && [ "$image_repo" = "$ghcr_prefix/web" ] || continue
+    case $seen in *" $digest "*) continue ;; esac
+    seen="$seen$digest "
+    if [ -n "$tag" ] && git -C "$repo" cat-file -e "$tag^{commit}:deploy/ci/provenance-predicate.sh" 2>/dev/null; then
+      continue
+    fi
+    rc=0
+    provenance_absent "$sign_issuer" "$sign_subject" "$image_repo@$digest" || rc=$?
+    case $rc in
+    1) continue ;;
+    0)
+      if ! verify_signature "$image_repo" "$digest"; then
+        echo "$image_repo@$digest has no provenance, but cosign verifies no signature of it (above)" >&2
+        exit 2
+      fi
+      echo "$image_repo@$digest (values of ${c:0:12})"
+      exit 0
+      ;;
+    *)
+      echo "$image_repo@$digest: cosign could not tell whether it carries a provenance attestation (above)" >&2
+      exit 2
+      ;;
+    esac
+  done
+  echo "no signed web release without provenance in the history of $file" >&2
+  exit 1
+)
+
 # gitops_supplychain: see drill-k8s-supplychain in the header.
 gitops_supplychain() {
-  local unsigned vulnerable fallback missing= rc=0
+  local unsigned vulnerable fallback no_provenance missing= rc=0
   unsigned=$("$here/gitops-sourcemaps.sh" web-amd64) || missing="$missing the web release's linux/amd64 manifest;"
   vulnerable=$("$here/gitops-sourcemaps.sh" newest drill-vulnerable) || missing="$missing drill-vulnerable;"
   fallback=$("$here/gitops-sourcemaps.sh" newest drill-unsigned) || missing="$missing drill-unsigned;"
+  no_provenance=$(gitops_no_provenance) || {
+    # 1: none in the history, case l SKIPs; otherwise GHCR did not answer, as for the images above.
+    [ $? -eq 1 ] || missing="$missing a web release without provenance;"
+    no_provenance=
+  }
   echo "unsigned: ${unsigned:-none}; vulnerable: ${vulnerable:-none}; unsigned if Kyverno admits that: ${fallback:-none}"
+  echo "without provenance: ${no_provenance:-none, case l SKIPs}"
   make drill-k8s-supplychain SUPPLYCHAIN_UNSIGNED="$unsigned" SUPPLYCHAIN_VULNERABLE="$vulnerable" \
-    SUPPLYCHAIN_UNSIGNED_FALLBACK="$fallback" || rc=$?
+    SUPPLYCHAIN_UNSIGNED_FALLBACK="$fallback" SUPPLYCHAIN_NO_PROVENANCE="${no_provenance%% *}" || rc=$?
   if [ -n "$missing" ]; then
     echo "FAIL  drill-k8s-supplychain ran without what GHCR did not give (above):$missing"
     return 1
@@ -125,7 +231,7 @@ gitops_sourcemaps() {
     ;;
   esac
 }
-export -f gitops_up gitops_env gitops_supplychain gitops_sourcemaps
+export -f gitops_up gitops_env gitops_external_secrets gitops_no_provenance gitops_supplychain gitops_sourcemaps
 
 scenario_targets() {
   local round maps maps_status maps_reason no_maps
@@ -135,7 +241,11 @@ scenario_targets() {
   maps_reason=$(head -n 1 "$maps/reason" 2>/dev/null) || maps_reason=
   step k8s-gitops-up 60 bash -c gitops_up
   step gitops-env 2 bash -c gitops_env
-  step k8s-smoke 15 make k8s-smoke
+  step gitops-external-secrets 2 bash -c gitops_external_secrets
+  # The GitOps cluster runs the releases of main, whose media-worker may still write the media layout from before
+  # versioned keys; smoke accepts that layout only with this variable. Remove it once every release writes versioned
+  # keys.
+  step k8s-smoke 15 env SVP_SMOKE_LEGACY_MEDIA=1 make k8s-smoke
   step ram-rest-start 15 bash -c 'ram_rest start'
   step drill-k8s-supplychain 40 bash -c gitops_supplychain
   step drill-k8s-threats 30 make drill-k8s-threats

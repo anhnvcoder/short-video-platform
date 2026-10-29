@@ -26,6 +26,20 @@ imageVerification:
   # Oldest scan result admitted (metadata.scanFinishedOn of the vuln attestation): the daily rescan refreshes it, so 72
   # hours bear two missed runs. A CEL duration.
   maxAttestationAge: 72h
+  # Build provenance: true adds four checks after the six above, each with its own message: an attestation of type
+  # https://slsa.dev/provenance/v1 signed by the same identity, whose runDetails.builder.id is the subject above and
+  # whose buildDefinition.externalParameters.workflow names provenanceRepository and provenanceRef. Off here: the
+  # releases signed before CI attested provenance have none, and a cluster checking it would refuse their pods. It is
+  # turned on in the overlay of an environment (deploy/k8s/envs/<env>/svp-policy.yaml) once all seven services have a
+  # release with provenance; a rollback to a release from before then must turn it off first.
+  # deploy/ci/verify-release.sh checks the same whenever a policy at that revision turns it on: it reads this line and
+  # the overlays, so the overlay of svp-policy holds this key alone (`imageVerification:` then
+  # `  requireProvenance: true`).
+  requireProvenance: false
+  # What externalParameters.workflow of the provenance must name: the repository whose workflow built the image (the
+  # URL CI writes, without .git) and the ref it ran on. Read by deploy/ci/common.sh too, each one plain line.
+  provenanceRepository: https://github.com/anhnvcoder/short-video-platform
+  provenanceRef: refs/heads/main
 
 # Drills only (deploy/k8s/drills/supplychain.sh renders a temporary copy with another name, a shorter age and an
 # objectSelector on a drill label): the policy's name, and the pods it applies to within the namespace.

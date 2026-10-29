@@ -47,13 +47,26 @@ func loadVideo(t *testing.T, id string) store.Video {
 	return v
 }
 
+// The keys media-worker publishes: the master at the root of a version, the thumbnail in the
+// directory of the try that created it.
+const (
+	testVersion = "0190a6e4-7b2c-7d3e-9f40-0000000000a1"
+	testAttempt = "0190a6e4-7b2c-7d3e-9f40-0000000000b2"
+)
+
+func playlistKeyOf(id string) string { return "media/" + id + "/" + testVersion + "/master.m3u8" }
+
+func thumbnailKeyOf(id string) string {
+	return "media/" + id + "/" + testVersion + "/" + testAttempt + "/thumbnail.jpg"
+}
+
 func completedEvent(id string) *mediav1.TranscodeEvent {
 	return &mediav1.TranscodeEvent{
 		Meta: outbox.NewMeta(),
 		Event: &mediav1.TranscodeEvent_TranscodeCompleted{TranscodeCompleted: &mediav1.TranscodeCompleted{
 			VideoId:      id,
-			PlaylistKey:  "media/" + id + "/master.m3u8",
-			ThumbnailKey: "media/" + id + "/thumbnail.jpg",
+			PlaylistKey:  playlistKeyOf(id),
+			ThumbnailKey: thumbnailKeyOf(id),
 			Duration:     durationpb.New(testDurationMs * time.Millisecond),
 			Renditions:   []*mediav1.Rendition{{Name: "360p", Width: 640, Height: 360, BitrateBps: 800_000}},
 		}},
@@ -106,8 +119,8 @@ func wantVideoReady(t *testing.T, payload []byte, v store.Video) {
 		AuthorId:     v.AuthorID.String(),
 		Title:        v.Title,
 		Duration:     durationpb.New(testDurationMs * time.Millisecond),
-		PlaylistKey:  "media/" + id + "/master.m3u8",
-		ThumbnailKey: "media/" + id + "/thumbnail.jpg",
+		PlaylistKey:  playlistKeyOf(id),
+		ThumbnailKey: thumbnailKeyOf(id),
 		PublishedAt:  timestamppb.New(*v.PublishedAt),
 	}
 	if !proto.Equal(ev.GetVideoReady(), want) {
@@ -142,8 +155,8 @@ func TestTranscodeCompletedMarksReadyAndEmitsVideoReady(t *testing.T) {
 	}
 	v := loadVideo(t, id)
 	if v.Status != "READY" || v.DurationMs == nil || *v.DurationMs != testDurationMs ||
-		v.PlaylistKey == nil || *v.PlaylistKey != "media/"+id+"/master.m3u8" ||
-		v.ThumbnailKey == nil || *v.ThumbnailKey != "media/"+id+"/thumbnail.jpg" {
+		v.PlaylistKey == nil || *v.PlaylistKey != playlistKeyOf(id) ||
+		v.ThumbnailKey == nil || *v.ThumbnailKey != thumbnailKeyOf(id) {
 		t.Errorf("stored video = %+v, want READY with the event's duration and keys", v)
 	}
 	if v.PublishedAt == nil || v.PublishedAt.Before(before.Add(-time.Second)) {

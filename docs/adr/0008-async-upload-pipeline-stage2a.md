@@ -2,7 +2,10 @@
 
 - Trạng thái: Chấp nhận; §9 (đúng một replica media-worker) chỉnh bởi [0014](0014-kubernetes-local-stage4.md) cho k8s; §6 (MinIO
   image Chainguard, `minio-init` bằng `mc`, console), tên `minio` và biến `SVP_MINIO_ROOT_PASSWORD` ở §11, cổng console ở §12
-  bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md) (RustFS, service `s3`, CORS theo bucket; user, policy và bucket policy của §6 giữ nguyên)
+  bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md) (RustFS, service `s3`, CORS theo bucket; user, policy và bucket policy của §6 giữ nguyên); §6 (policy của `svp-media-worker` thêm
+  `GetObject` trên `media/media/*` và `ListBucket` theo tiền tố `media/*`), §8 (media-worker idempotent bằng master tạo có điều kiện
+  thay cho ghi đè đường dẫn cố định; `drill-duplicates` kiểm không object nào bị ghi) và §10 (đường dẫn
+  `media/<id>/<version>/<attempt>/`) chỉnh bởi [0029](0029-immutable-media-versions.md)
 - Ngày: 2026-10-11
 
 ## Bối cảnh

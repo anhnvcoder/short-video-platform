@@ -1,7 +1,9 @@
 # 0004. Client upload thẳng lên object storage bằng presigned POST; transcode bất đồng bộ ra HLS
 
 - Trạng thái: Chấp nhận; object store local (MinIO ở Bối cảnh và Quyết định) bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md) (RustFS cho compose
-  và k3d; presigned POST, hai bucket và đọc công khai `media` giữ nguyên)
+  và k3d; presigned POST, hai bucket và đọc công khai `media` giữ nguyên); phần Phát (đường dẫn `media/<video_id>/` cố định,
+  transcode lại ghi đè) chỉnh bởi [0029](0029-immutable-media-versions.md) (output theo version `media/<video_id>/<version>/`, không
+  ghi đè, `Cache-Control: max-age=31536000, immutable`)
 - Ngày: 2026-10-04
 
 ## Bối cảnh

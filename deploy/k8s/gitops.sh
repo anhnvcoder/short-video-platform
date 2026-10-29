@@ -5,9 +5,12 @@
 #      image.repository and image.digest of the seven values files at the revision Argo CD will follow, which the
 #      promote pull request writes; each must be a release of ghcr.io/anhnvcoder/short-video-platform/<service> that
 #      GHCR serves to an anonymous pull (the nodes pull without credentials), signed by images.yml on main, with a
-#      vuln attestation that is clean and at most 48 hours old (Kyverno refuses new pods at 72);
+#      vuln attestation that is clean and at most 48 hours old (Kyverno refuses new pods at 72), and with a build
+#      provenance attestation when chart svp-policy at that revision checks provenance for stg (requireProvenance);
 #   2. the registry and the cluster (as `make k8s-up`); nothing is built here, the images come from GHCR;
-#   3. the Secrets from .env (deploy/k8s/secrets.sh), which never go to git;
+#   3. the Secrets from .env (deploy/k8s/secrets.sh), which never go to git: at a revision whose overlay turns on
+#      externalSecrets of chart svp-cluster, only their source, the Secrets of namespace svp-secrets, from which
+#      External Secrets Operator (component external-secrets) builds every Secret once Argo CD has installed it;
 #   4. Argo CD (deploy/k8s/values/argo-cd.yaml) in namespace argocd with Pod Security "restricted", AppProject svp and
 #      the emptied AppProject default (deploy/argocd/project.yaml) and root Application svp-root (chart
 #      deploy/argocd/apps at the same revision, told the architecture of the nodes and the environment, stg: this
@@ -25,7 +28,8 @@
 #                      refs/remotes/origin/<branch> as fetched last, without a fetch) or a full commit SHA.
 #   SVP_ATTEST_MAX_AGE drills only (never in .env): a shorter limit than 48h for the age of the vuln attestations.
 #
-# Secrets live outside git, so a changed .env reaches this cluster by hand: `make k8s-secrets`, then a sync of
+# Secrets live outside git, so a changed .env reaches this cluster by hand: `make k8s-secrets` (which, with External
+# Secrets, writes the source in svp-secrets and has every ExternalSecret built again from it), then a sync of
 # Application svp-data, whose init Jobs set the new passwords in Postgres, the object store and Redpanda
 # (kubectl --context k3d-svp -n argocd patch applications.argoproj.io svp-data --type merge
 #  -p '{"operation":{"sync":{}}}'), then `kubectl --context k3d-svp -n <namespace> rollout restart deployment/<name>` of
@@ -79,7 +83,8 @@ fi
 # Every service is checked before the script stops, so one run names every release that is missing. release_image
 # (deploy/k8s/lib.sh) reads the values file from git and asks GHCR; deploy/ci/verify-release.sh then checks each
 # release's signature and vuln attestation anonymously, with the pinned cosign image COSIGN_IMAGE when cosign is not
-# installed.
+# installed, and its build provenance when chart svp-policy checks it at this revision for this environment (the
+# values Argo CD will hand it, read from git like the release images).
 values_dir=deploy/k8s/values/services
 release_images=()
 if git -C "$repo_root" cat-file -e "$sha:$values_dir" 2>/dev/null; then
@@ -97,11 +102,11 @@ if git -C "$repo_root" cat-file -e "$sha:$values_dir" 2>/dev/null; then
   done
   [ -z "$unready" ] || fail "the release images at ${sha:0:12} are not ready for the GitOps path (above); nothing was created"
   for image in "${release_images[@]}"; do
-    "$repo_root/deploy/ci/verify-release.sh" "${image%@*}" "${image#*@}" || unready=1
+    "$repo_root/deploy/ci/verify-release.sh" --rev "$sha" --env "$env" "${image%@*}" "${image#*@}" || unready=1
   done
   if [ -n "$unready" ]; then
     refresh=$(ci_dispatch_hint images.yml main rescan=true "values_ref=$sha") || exit 1
-    fail "a release at ${sha:0:12} is not signed, or its vuln attestation is not clean and fresh (above); nothing was created. Refresh the attestations of these values: $refresh, then run this again once that run is green"
+    fail "a release at ${sha:0:12} is not signed, its vuln attestation is not clean and fresh, or the provenance the policy requires is missing or wrong (above); nothing was created. Refresh the vuln attestations of these values: $refresh, then run this again once that run is green (a missing provenance needs a new release instead, as named above)"
   fi
   ok "release images at ${sha:0:12}: GHCR serves all seven anonymously, each signed with a fresh, clean vuln attestation"
 else
@@ -151,18 +156,27 @@ esac
 # svp-cluster's values are made here from its own template, with the same Pod Security labels, as
 # deploy/k8s/install.sh does; Argo CD's apply of svp-cluster then finds them as they are. The chart is the one at the
 # revision, unpacked with git archive (neither the working tree nor the index is read), so the namespaces match the
-# Envoy Gateway values Argo CD deploys from that revision. A revision without it has no Application to build either
-# (has_apps): the working tree's chart then makes the namespaces for the Secrets alone.
+# Envoy Gateway values Argo CD deploys from that revision. The overlay of the environment for svp-cluster, when the
+# revision has one, is read too, as Argo CD reads it: with externalSecrets on, it adds namespace svp-secrets, which
+# deploy/k8s/secrets.sh then fills with the source of the Secrets. A revision without the chart has no Application to
+# build either (has_apps): the working tree's chart then makes the namespaces for the Secrets alone.
 cluster_chart=deploy/helm/svp-cluster
+cluster_overlay=$envs_dir/$env/svp-cluster.yaml
 if git -C "$repo_root" cat-file -e "$sha:$cluster_chart/Chart.yaml" 2>/dev/null; then
   chart_dir=$(mktemp -d) || fail "create a temporary directory for chart svp-cluster of ${sha:0:12}"
-  if ! git -C "$repo_root" archive "$sha" "$cluster_chart" | tar -x -C "$chart_dir"; then
+  archive_paths=("$cluster_chart")
+  overlay_args=()
+  if git -C "$repo_root" cat-file -e "$sha:$cluster_overlay" 2>/dev/null; then
+    archive_paths+=("$cluster_overlay")
+    overlay_args=(--values "$chart_dir/$cluster_overlay")
+  fi
+  if ! git -C "$repo_root" archive "$sha" "${archive_paths[@]}" | tar -x -C "$chart_dir"; then
     rm -rf "$chart_dir"
     fail "unpack $cluster_chart of ${sha:0:12} with git archive"
   fi
   rc=0
   project_ns=$(hc template svp-cluster "$chart_dir/$cluster_chart" --show-only templates/namespaces.yaml \
-    --set-json 'platformNamespaces=[]') || rc=$?
+    ${overlay_args[@]+"${overlay_args[@]}"} --set-json 'platformNamespaces=[]') || rc=$?
   rm -rf "$chart_dir"
   [ "$rc" = 0 ] || fail "render the project's namespaces of chart svp-cluster at ${sha:0:12}"
 else

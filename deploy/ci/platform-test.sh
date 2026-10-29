@@ -8,6 +8,7 @@
 #   - local: everything on stdout, no mask, links "local", and no write through the platform's API (reads still are);
 #   - another CI (GitLab CI, a CI=true one): a clear error, nothing written;
 #   - the scripts give what they gave when they read GitHub's variables themselves: plan.sh, vuln-predicate.sh,
+#     provenance-predicate.sh (the workflow, ref and commit of the run, and the services input of a dispatch),
 #     scan-gate.sh, values-check.sh (the signing identity is read from the policy's values) and promote.sh (a dry run
 #     and a local run in a throwaway git repository with a throwaway origin; on a machine, an origin with any push URL
 #     off its disk is refused, or with PROMOTE_DRY_RUN=1 the push is printed, and the branch never moves);
@@ -17,6 +18,16 @@
 #     a report that is not grype's exits 2;
 #   - platform-guard.sh passes the throwaway checkout and fails, naming file:line, a script that reads GITHUB_OUTPUT or
 #     calls gh itself;
+#   - verify-release.sh with a fake cosign that answers from fixtures: without requireProvenance in the policy's values
+#     or the overlays only the signature and the vuln attestation are asked for; with it on (in the base values, in the
+#     overlay of an environment, at a commit with --rev, for one environment with --env) the release also needs exactly
+#     one provenance attestation whose builder.id, workflow repository and ref match the policy and whose commit the
+#     certificate names, each fault with its own message; an overlay holding anything else is refused;
+#   - plan.sh and values-check.sh on a pull request: one that changes only the policy's values (an overlay turning
+#     provenance on, or values.yaml) runs the values check on every release in the values, one of docs/ only on none;
+#   - gitops_no_provenance of deploy/ci/verify/gitops.sh: the newest web release in the history of web.yaml that the
+#     fake cosign finds signed without provenance, passing over without cosign a release built from a commit holding
+#     provenance-predicate.sh; none found and an error of cosign each exit with their own status;
 #   - changed-services.sh builds all seven images for a change of platform.sh, as for common.sh, and none for a change
 #     of this test, of platform-guard.sh, of a scenario file under deploy/ci/verify/, of the policy's values or of
 #     docs/; all seven for a change of the GRYPE_IMAGE line of the Makefile, none for another line of it;
@@ -55,7 +66,9 @@ lacks() { ! grep -qF -- "$2" "$1"; }
 # gh/pulls.json for the pull requests of a commit (none when the file is missing), and gh/events.json otherwise, run through its --jq filter; run download writes the file image-digest into its --dir.
 # With FAKE_GH_FAIL set it fails as the host would; with FAKE_GH_DOWNLOAD_FAIL set only run download fails, naming the
 # signed link it was sent to, as gh does, and with GH_DEBUG or DEBUG set run download prints its request line as gh's
-# debug log does. cosign refuses every signature and records its arguments.
+# debug log does. cosign records its arguments and refuses every signature; with FAKE_COSIGN_DIR set it accepts every
+# signature, prints FAKE_COSIGN_DIR/<type>.jsonl for verify-attestation --type <type> (refusing without that file), and
+# with --certificate-github-workflow-sha accepts only the commit in FAKE_COSIGN_DIR/cert-sha.
 mkdir -p "$work/bin" "$work/gh" "$work/runner-temp" "$work/home"
 cat >"$work/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -104,6 +117,31 @@ EOF
 cat >"$work/bin/cosign" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$FAKE_COSIGN_LOG"
+if [ -n "${FAKE_COSIGN_DIR:-}" ]; then
+  case $1 in
+  verify) exit 0 ;;
+  verify-attestation)
+    type= sha=
+    while [ $# -gt 0 ]; do
+      case $1 in
+      --type) type=$2 && shift ;;
+      --certificate-github-workflow-sha) sha=$2 && shift ;;
+      esac
+      shift
+    done
+    if [ ! -f "$FAKE_COSIGN_DIR/$type.jsonl" ]; then
+      echo "Error: none of the attestations matched the predicate type: $type" >&2
+      exit 1
+    fi
+    if [ -n "$sha" ] && [ "$sha" != "$(cat "$FAKE_COSIGN_DIR/cert-sha")" ]; then
+      echo "Error: expected GitHub Workflow SHA not found in certificate" >&2
+      exit 1
+    fi
+    cat "$FAKE_COSIGN_DIR/$type.jsonl"
+    exit 0
+    ;;
+  esac
+fi
 echo "Error: no signatures found" >&2
 exit 1
 EOF
@@ -118,7 +156,8 @@ on() {
   local platform=$1
   shift
   local base=(env -u GITHUB_ACTIONS -u GITHUB_OUTPUT -u GITHUB_STEP_SUMMARY -u GITHUB_REPOSITORY -u GITHUB_SERVER_URL
-    -u GITHUB_RUN_ID -u GITHUB_RUN_ATTEMPT -u GITHUB_WORKFLOW_REF -u RUNNER_TEMP -u CI -u GITLAB_CI -u JENKINS_URL
+    -u GITHUB_RUN_ID -u GITHUB_RUN_ATTEMPT -u GITHUB_WORKFLOW_REF -u GITHUB_REF -u GITHUB_SHA -u GITHUB_EVENT_NAME
+    -u GITHUB_EVENT_PATH -u RUNNER_TEMP -u CI -u GITLAB_CI -u JENKINS_URL
     -u TF_BUILD -u GIT_DIR -u GIT_WORK_TREE -u PROMOTE_DRY_RUN -u PROMOTE_DRY_RUN_PRS -u RUNNER_ENVIRONMENT
     -u FAKE_GH_FAIL -u FAKE_GH_DOWNLOAD_FAIL
     PATH="$work/bin:$PATH" HOME="$work/home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
@@ -127,7 +166,9 @@ on() {
   github)
     "${base[@]}" GITHUB_ACTIONS=true CI=true GITHUB_OUTPUT="$work/output" GITHUB_STEP_SUMMARY="$work/summary" \
       GITHUB_REPOSITORY=octo/repo GITHUB_SERVER_URL=https://github.example GITHUB_RUN_ID=4242 GITHUB_RUN_ATTEMPT=3 \
-      GITHUB_WORKFLOW_REF=octo/repo/.github/workflows/images.yml@refs/heads/main RUNNER_TEMP="$work/runner-temp" "$@"
+      GITHUB_WORKFLOW_REF=octo/repo/.github/workflows/images.yml@refs/heads/main GITHUB_REF=refs/heads/main \
+      GITHUB_SHA=89abcdef0123456789abcdef0123456789abcdef GITHUB_EVENT_NAME=push GITHUB_EVENT_PATH="$work/event.json" \
+      RUNNER_TEMP="$work/runner-temp" "$@"
     ;;
   local) "${base[@]}" "$@" ;;
   gitlab) "${base[@]}" GITLAB_CI=true CI=true "$@" ;;
@@ -189,6 +230,40 @@ same "github: attempt 1 when GITHUB_RUN_ATTEMPT is unset" \
   "$(on github env -u GITHUB_RUN_ATTEMPT "$BASH" -c '. "$0"; ci_run_attempt_url' "$here/platform.sh")"
 same "github: the builder is the workflow file at its ref" \
   https://github.example/octo/repo/.github/workflows/images.yml@refs/heads/main "$(fn github ci_builder_id)"
+same "github: the repository's page" https://github.example/octo/repo "$(fn github ci_repo_url)"
+same "github: the ref and the commit of the run" "refs/heads/main 89abcdef0123456789abcdef0123456789abcdef" \
+  "$(fn github 'echo "$(ci_ref) $(ci_commit)"')"
+same "github: the workflow file and the ref it was read at" ".github/workflows/images.yml refs/heads/main" \
+  "$(fn github 'echo "$(ci_workflow_path) $(ci_workflow_ref)"')"
+same "github: a ref holding @ stays whole" "a.yml refs/heads/x@y" "$(on github env \
+  GITHUB_WORKFLOW_REF=octo/repo/a.yml@refs/heads/x@y "$BASH" -c '. "$0"; echo "$(ci_workflow_path) $(ci_workflow_ref)"' \
+  "$here/platform.sh")"
+for bad in other/repo/.github/workflows/images.yml@refs/heads/main octo/repo/.github/workflows/images.yml \
+  octo/repo/@refs/heads/main octo/repo/a.yml@; do
+  if out=$(on github env GITHUB_WORKFLOW_REF="$bad" "$BASH" -c '. "$0"; ci_workflow_path || exit 1; ci_workflow_ref' \
+    "$here/platform.sh" 2>&1); then
+    fail "github: workflow ref $bad is refused (got '$out')"
+  else
+    same "github: workflow ref $bad is refused, naming it" \
+      "FAIL  GITHUB_WORKFLOW_REF '$bad' is not <repository>/<path>@<ref> of octo/repo" "$out"
+  fi
+done
+jq -n '{inputs: {services: "gateway web", rescan: false}}' >"$work/event.json"
+same "github: no dispatch input on a push" "" "$(fn github 'ci_dispatch_input services')"
+dispatch() { on github env GITHUB_EVENT_NAME=workflow_dispatch "$BASH" -c ". \"\$0\"; $1" "$here/platform.sh"; }
+same "github: a dispatch input, read from the event" "gateway web" "$(dispatch 'ci_dispatch_input services')"
+same "github: a dispatch input not given, or false, is empty" "|" \
+  "$(dispatch 'echo "$(ci_dispatch_input values_ref)|$(ci_dispatch_input rescan)"')"
+if dispatch 'ci_dispatch_input "a b"' 2>/dev/null; then fail "github: an input name with a blank is refused"; else
+  ok "github: an input name with a blank is refused"
+fi
+echo 'not json' >"$work/event.json"
+if dispatch 'ci_dispatch_input services' >/dev/null 2>&1; then fail "github: an unreadable event fails"; else
+  ok "github: an unreadable event fails"
+fi
+out=$(on github env -u GITHUB_SHA "$BASH" -c '. "$0"; ci_commit' "$here/platform.sh" 2>&1) &&
+  fail "github: no GITHUB_SHA fails" || same "github: no GITHUB_SHA fails, naming it" \
+  "FAIL  GITHUB_SHA is empty: the CI platform sets it for every job" "$out"
 same "github: the bot" 'github-actions[bot] 41898282+github-actions[bot]@users.noreply.github.com' \
   "$(fn github 'echo "$(ci_bot_name) $(ci_bot_email)"')"
 
@@ -237,6 +312,12 @@ same "local: the temp directory is /tmp" /tmp "$(fn local ci_temp_dir)"
 same "local: this repository" anhnvcoder/short-video-platform "$(fn local ci_repo)"
 same "local: links are local" "local local local local" \
   "$(fn local 'echo "$(ci_run_id) $(ci_run_url) $(ci_run_attempt_url) $(ci_builder_id)"')"
+same "local: the repository's page on GitHub" https://github.com/anhnvcoder/short-video-platform \
+  "$(fn local ci_repo_url)"
+same "local: the ref, the workflow file and its ref are local, no dispatch input" "local local local " \
+  "$(fn local 'echo "$(ci_ref) $(ci_workflow_path) $(ci_workflow_ref) $(ci_dispatch_input services)"')"
+same "local: the commit is HEAD of the checkout platform.sh is in" "$(git -C "$here" rev-parse --verify HEAD)" \
+  "$(fn local ci_commit)"
 check "local: no file of a job was written" test ! -s "$work/output" -a ! -s "$work/summary"
 got=$(fn local 'ci_change_request_write "" bot/promote main "chore(release): x" /tmp/body')
 same "local: a pull request is printed, not written" "dry run: gh $(gh_line pr create \
@@ -524,6 +605,15 @@ on local "$tree/deploy/ci/vuln-predicate.sh" "$work/predicate.json" "$work/leg-a
 same "vuln-predicate.sh on a machine: local for each" \
   '{"uri":"local","event_id":"local","builder.id":"local","parameters":null}' "$(jq -c .invocation "$work/predicate.json")"
 
+# provenance-predicate.sh: the run that built, from the job's variables and the dispatch event (its own test covers
+# the rest).
+jq -n '{inputs: {services: "all"}}' >"$work/event.json"
+on github env GITHUB_EVENT_NAME=workflow_dispatch "$tree/deploy/ci/provenance-predicate.sh" "$work/provenance.json" \
+  >/dev/null
+same "provenance-predicate.sh on github: workflow, input, commit, builder and attempt of this run" \
+  '{"buildDefinition":{"buildType":"https://actions.github.io/buildtypes/workflow/v1","externalParameters":{"workflow":{"ref":"refs/heads/main","repository":"https://github.example/octo/repo","path":".github/workflows/images.yml"},"inputs":{"services":"all"}},"resolvedDependencies":[{"uri":"git+https://github.example/octo/repo@refs/heads/main","digest":{"gitCommit":"89abcdef0123456789abcdef0123456789abcdef"}}]},"runDetails":{"builder":{"id":"https://github.example/octo/repo/.github/workflows/images.yml@refs/heads/main"},"metadata":{"invocationId":"https://github.example/octo/repo/actions/runs/4242/attempts/3"}}}' \
+  "$(jq -c . "$work/provenance.json")"
+
 # scan-gate.sh: the table in the summary and the counts in the log on github; the table in the log on a machine. A
 # secret's line goes to both.
 jq -n --arg c "$digest_b" '{SchemaVersion: 2, Metadata: {ImageID: $c}, Results: [{Target: "app",
@@ -654,7 +744,7 @@ same "values-check.sh: cosign is asked for the policy's issuer and subject" \
   "$(cat "$work/cosign.log")"
 hint="gh workflow run images.yml --ref main -f rescan=true -f values_ref=refs/pull/42/head"
 check "values-check.sh: the dispatch in the log" has "$work/vc.err" "  $hint"
-same "values-check.sh: the dispatch in the summary" "values-check failed: refresh with \`$hint\`" "$(cat "$work/summary")"
+same "values-check.sh: the dispatch in the summary" "values-check failed: refresh the vuln attestations with \`$hint\`; a missing provenance needs a new release (above)" "$(cat "$work/summary")"
 
 # promote.sh: a dry run on github, then a run on a machine, in the throwaway checkout. The gateway of this run is a
 # newer build of the commit main runs, so it wins; the branch is pushed to the throwaway origin for real.
@@ -776,8 +866,8 @@ rm "$tree/deploy/ci/new-step.sh" "$tree/deploy/ci/linked-dir" "$tree/deploy/ci/v
 g checkout -q -- deploy/ci/rescan.sh
 
 # --- changed-services.sh: platform.sh is part of the image pipeline (common.sh sources it), so a change of it builds
-# all seven; this test, platform-guard.sh, the scripts of the verification runs, the policy's values and docs/
-# are read by no image job.
+# all seven; this test, platform-guard.sh, provenance-predicate-test.sh, the scripts of the verification runs, the
+# policy's values and docs/ are read by no image job.
 changed_by() {
   echo "# changed" >>"$tree/$1"
   g commit -qam "change $1"
@@ -787,6 +877,8 @@ all="engagement-service feed-service gateway media-worker user-service video-ser
 same "changed-services: a change of platform.sh builds all seven" "$all" "$(changed_by deploy/ci/platform.sh)"
 same "changed-services: a change of platform-test.sh builds nothing" "" "$(changed_by deploy/ci/platform-test.sh)"
 same "changed-services: a change of platform-guard.sh builds nothing" "" "$(changed_by deploy/ci/platform-guard.sh)"
+same "changed-services: a change of provenance-predicate-test.sh builds nothing" "" \
+  "$(changed_by deploy/ci/provenance-predicate-test.sh)"
 same "changed-services: a change under deploy/ci/verify/ builds nothing" "" "$(changed_by deploy/ci/verify/gitops.sh)"
 same "changed-services: a change of verify-tempo.sh builds nothing" "" "$(changed_by deploy/ci/verify-tempo.sh)"
 same "changed-services: a change of gitops-sourcemaps.sh builds nothing" "" "$(changed_by deploy/ci/gitops-sourcemaps.sh)"
@@ -804,6 +896,209 @@ sed 's/^GRYPE_IMAGE := grype@sha256:1$/GRYPE_IMAGE := grype@sha256:2/' "$tree/Ma
 same "changed-services: a change of the GRYPE_IMAGE line builds all seven" "$all" \
   "$(on local "$tree/deploy/ci/changed-services.sh" HEAD~1 HEAD 2>/dev/null)"
 same "changed-services: a change of another line of the Makefile builds nothing" "" "$(changed_by Makefile)"
+
+# --- verify-release.sh: build provenance, only where the policy checks it. A copy of the throwaway checkout, whose
+# history the cases below change freely; the fake cosign answers from $fx.
+vr=$work/vr
+cp -R "$tree" "$vr"
+gv() {
+  GIT_DIR=$vr/.git GIT_WORK_TREE=$vr GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=test \
+    -c user.email=test@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"
+}
+fx=$work/cosign-fixtures
+mkdir -p "$fx" "$vr/deploy/k8s/envs/stg" "$vr/deploy/k8s/envs/prd"
+image=ghcr.io/anhnvcoder/short-video-platform/web
+subject=https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main
+commit=0123456789abcdef0123456789abcdef01234567
+# envelope: an in-toto statement on stdin as cosign verify-attestation prints it, one line.
+envelope() { jq -c '{payloadType: "application/vnd.in-toto+json", payload: (tojson | @base64)}'; }
+jq -n --arg d "${digest_a#sha256:}" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg p "$digest_b" '{
+  predicateType: "https://cosign.sigstore.dev/attestation/vuln/v1", subject: [{digest: {sha256: $d}}],
+  predicate: {scanner: {result: {platforms: [{platform: "linux/amd64", digest: $p, report: {}},
+    {platform: "linux/arm64", digest: $p, report: {}}]}}, metadata: {scanFinishedOn: $t}}}' | envelope >"$fx/vuln.jsonl"
+# provenance [JQ]: the provenance.jsonl CI's predicate would give for $digest_a, changed by the jq filter JQ.
+provenance() {
+  jq -n --arg d "${digest_a#sha256:}" --arg b "$subject" --arg c "$commit" '{
+    predicateType: "https://slsa.dev/provenance/v1", subject: [{name: "web", digest: {sha256: $d}}],
+    predicate: {buildDefinition: {buildType: "https://actions.github.io/buildtypes/workflow/v1",
+      externalParameters: {workflow: {ref: "refs/heads/main",
+        repository: "https://github.com/anhnvcoder/short-video-platform", path: ".github/workflows/images.yml"}},
+      resolvedDependencies: [{uri: "git+https://github.com/anhnvcoder/short-video-platform@refs/heads/main",
+        digest: {gitCommit: $c}}]},
+      runDetails: {builder: {id: $b}, metadata: {invocationId: "https://github.com/x/runs/1/attempts/1"}}}}' |
+    jq -c "${1:-.}" | envelope >"$fx/slsaprovenance1.jsonl"
+}
+echo "$commit" >"$fx/cert-sha"
+# release NAME WANT_RC [ARGS...]: verify-release.sh [ARGS...] web $digest_a on a machine, output in vr.out.
+release() {
+  local name=$1 want=$2 rc=0
+  shift 2
+  fresh
+  on local env FAKE_COSIGN_DIR="$fx" "$vr/deploy/ci/verify-release.sh" "$@" "$image" "$digest_a" >"$work/vr.out" 2>&1 ||
+    rc=$?
+  same "verify-release.sh: $name (exit $want)" "$want" "$rc"
+}
+overlay() { printf 'imageVerification:\n  requireProvenance: %s\n' "$2" >"$vr/deploy/k8s/envs/$1/svp-policy.yaml"; }
+
+rm -f "$fx/slsaprovenance1.jsonl"
+release "provenance off everywhere: signature and vuln only" 0
+check "verify-release.sh: provenance off: no provenance asked for" lacks "$work/cosign.log" slsaprovenance1
+check "verify-release.sh: provenance off: the ok line names no provenance" lacks "$work/vr.out" "provenance of"
+
+overlay stg true
+release "on in the stg overlay, the release has no provenance" 1
+check "verify-release.sh: names the missing provenance and the release to build again" has "$work/vr.out" \
+  "has no provenance attestation of images.yml on main, which the policy requires here: a release built before CI attested provenance; release it again (gh workflow run images.yml --ref main -f services=web)"
+release "on in stg only, checked for prd: no provenance needed" 0 --env prd
+check "verify-release.sh: for prd no provenance asked for" lacks "$work/cosign.log" slsaprovenance1
+
+provenance
+release "on, a provenance that matches the policy and the certificate" 0
+check "verify-release.sh: the ok line names the provenance's commit" has "$work/vr.out" \
+  "provenance of ${commit:0:12} by $subject"
+check "verify-release.sh: the certificate is asked for the provenance's commit" has "$work/cosign.log" \
+  "verify-attestation --type slsaprovenance1 --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity $subject --certificate-github-workflow-sha $commit $image@$digest_a"
+
+echo 89abcdef0123456789abcdef0123456789abcdef >"$fx/cert-sha"
+release "the certificate names another commit" 1
+check "verify-release.sh: says the commits differ" has "$work/vr.out" \
+  "the provenance names commit $commit, the certificate of its signature another (or none)"
+echo "$commit" >"$fx/cert-sha"
+
+# provenance_case NAME JQ MESSAGE: a provenance changed by JQ is refused with MESSAGE.
+provenance_case() {
+  provenance "$2"
+  release "$1" 1
+  check "verify-release.sh: $1: says why" has "$work/vr.out" "$3"
+}
+provenance_case "another builder" '.predicate.runDetails.builder.id = "https://github.com/x/y/.github/workflows/z.yml@refs/heads/main"' \
+  "provenance builder.id is https://github.com/x/y/.github/workflows/z.yml@refs/heads/main, not $subject"
+provenance_case "another repository" \
+  '.predicate.buildDefinition.externalParameters.workflow.repository = "https://github.com/fork/short-video-platform"' \
+  "provenance workflow repository is https://github.com/fork/short-video-platform, not https://github.com/anhnvcoder/short-video-platform"
+provenance_case "another ref" '.predicate.buildDefinition.externalParameters.workflow.ref = "refs/heads/feat/x"' \
+  "provenance workflow ref is refs/heads/feat/x, not refs/heads/main"
+provenance_case "another digest" '.subject[0].digest.sha256 = "'"${digest_b#sha256:}"'"' \
+  "provenance the attestation is not about this digest"
+provenance_case "not SLSA v1" '.predicateType = "https://slsa.dev/provenance/v0.2"' "provenance not a SLSA v1 provenance"
+provenance_case "a short commit" '.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit = "0123456"' \
+  "provenance resolvedDependencies does not name exactly one commit"
+provenance
+cat "$fx/slsaprovenance1.jsonl" "$fx/slsaprovenance1.jsonl" >"$fx/two" && mv "$fx/two" "$fx/slsaprovenance1.jsonl"
+release "two provenance attestations" 1
+check "verify-release.sh: two provenance attestations: says so" has "$work/vr.out" "carries 2 provenance attestations, not exactly one"
+
+# At a commit (--rev, as deploy/k8s/gitops.sh reads it), not the working tree.
+rm -f "$fx/slsaprovenance1.jsonl"
+before=$(gv rev-parse HEAD)
+gv add -A deploy/k8s/envs && gv commit -qm "provenance on in stg"
+on_stg=$(gv rev-parse HEAD)
+rm "$vr/deploy/k8s/envs/stg/svp-policy.yaml"
+release "off in the working tree" 0
+release "on at a commit (--rev --env stg), no provenance" 1 --rev "$on_stg" --env stg
+check "verify-release.sh: on at a commit: the provenance is missing" has "$work/vr.out" "has no provenance attestation"
+release "at the commit before (--rev), off" 0 --rev "$before" --env stg
+
+# On in the base values: every environment without an overlay inherits it; one that turns it off is off.
+sed 's/^  requireProvenance: false$/  requireProvenance: true/' "$tree/deploy/helm/svp-policy/values.yaml" \
+  >"$vr/deploy/helm/svp-policy/values.yaml"
+release "on in the base values, no provenance" 1
+check "verify-release.sh: on in the base values: the provenance is missing" has "$work/vr.out" "has no provenance attestation"
+overlay stg false
+release "on in the base, off in the stg overlay, checked for stg" 0 --env stg
+release "on in the base, prd without overlay, checked for any environment" 1
+cp "$tree/deploy/helm/svp-policy/values.yaml" "$vr/deploy/helm/svp-policy/values.yaml"
+
+# Overlays of another shape: refused, never read as off.
+printf 'imageVerification:\n  requireProvenance: "true"\n' >"$vr/deploy/k8s/envs/stg/svp-policy.yaml"
+release "an overlay with a quoted value" 1
+check "verify-release.sh: a quoted value: names the overlay" has "$work/vr.out" \
+  "deploy/k8s/envs/stg/svp-policy.yaml: the overlay of svp-policy holds exactly"
+printf 'imageVerification:\n  requireProvenance: false\n  mode: Audit\n' >"$vr/deploy/k8s/envs/stg/svp-policy.yaml"
+release "an overlay that sets another key" 1
+check "verify-release.sh: another key: names the overlay" has "$work/vr.out" \
+  "deploy/k8s/envs/stg/svp-policy.yaml: the overlay of svp-policy holds exactly"
+printf 'imageVerification: {requireProvenance: true}\n' >"$vr/deploy/k8s/envs/stg/svp-policy.yaml"
+release "an overlay in flow style" 1
+check "verify-release.sh: an overlay refused: cosign never asked" test ! -s "$work/cosign.log"
+
+# --- plan.sh and values-check.sh in the copy: a pull request that changes only the policy's values (the one that turns
+# provenance on) runs the values check on every release in the values; one that changes docs/ only checks nothing.
+overlay stg false
+gv add deploy/k8s/envs/stg/svp-policy.yaml && gv commit -qm "provenance off in stg"
+gv update-ref refs/remotes/origin/main HEAD
+pr_base=$(gv rev-parse HEAD)
+echo "# Another decision" >>"$vr/docs/decision.md"
+gv add docs/decision.md && gv commit -qm "a decision"
+# plan_values NAME WANT: plan.sh of a pull request into main hands on values_changed=WANT.
+plan_values() {
+  fresh
+  on github env EVENT_NAME=pull_request GIT_REF=refs/pull/7/merge PR_BASE_REF=main "$vr/deploy/ci/plan.sh" \
+    >/dev/null 2>&1 || fail "plan.sh: $1: exits 0"
+  same "plan.sh: $1" "values_changed=$2" "$(grep '^values_changed=' "$work/output")"
+}
+# values_check NAME WANT_RC: values-check.sh with the pull request's base, on a machine, output in vc.out.
+values_check() {
+  local rc=0
+  fresh
+  on local env FAKE_COSIGN_DIR="$fx" "$vr/deploy/ci/values-check.sh" "$pr_base" >"$work/vc.out" 2>&1 || rc=$?
+  same "values-check.sh: $1 (exit $2)" "$2" "$rc"
+}
+plan_values "a pull request of docs/ only runs no values check" false
+values_check "docs/ only: nothing to check" 0
+check "values-check.sh: docs/ only: cosign never asked" test ! -s "$work/cosign.log"
+overlay stg true
+gv add deploy/k8s/envs/stg/svp-policy.yaml && gv commit -qm "provenance on in stg"
+plan_values "a pull request that turns provenance on in an overlay runs the values check" true
+values_check "provenance turned on, a release in the values has none" 1
+check "values-check.sh: provenance turned on: says the policy's values changed" has "$work/vc.out" \
+  "note  the values of chart svp-policy changed since ${pr_base:0:12} (deploy/k8s/envs/stg/svp-policy.yaml)"
+check "values-check.sh: provenance turned on: names the release without provenance" has "$work/vc.out" \
+  "ghcr.io/anhnvcoder/short-video-platform/gateway@$digest_a has no provenance attestation"
+check "values-check.sh: provenance turned on: every service is read" has "$work/vc.out" "ok    web: no digest"
+provenance
+values_check "provenance turned on, the release has it" 0
+echo "# A comment" >>"$vr/deploy/helm/svp-policy/values.yaml"
+gv add deploy/helm/svp-policy/values.yaml && gv commit -qm "a comment in the policy's values"
+plan_values "a change of the policy's values.yaml runs the values check" true
+
+# --- gitops_no_provenance (deploy/ci/verify/gitops.sh) in the copy: the newest web release in the history of web.yaml
+# that cosign finds signed without provenance. A release built from a commit holding provenance-predicate.sh is passed
+# over without asking cosign; an error of cosign is never "no provenance".
+web_release() {
+  printf 'image:\n  repository: ghcr.io/anhnvcoder/short-video-platform/web\n  tag: "%s"\n  digest: "%s"\n' "$1" "$2" \
+    >"$vr/deploy/k8s/values/services/web.yaml"
+  gv add deploy/k8s/values/services/web.yaml && gv commit -qm "release web $1"
+}
+# A commit this history does not hold, so not one known to hold the provenance script: cosign is asked.
+web_release 0123456789ab "$digest_b"
+old_values=$(gv rev-parse HEAD)
+web_release "$(gv rev-parse --short=12 HEAD)" "$digest_a"
+# no_provenance NAME WANT_RC [VAR=VALUE...]: gitops_no_provenance with the variables, stdout in np.out, stderr in np.err.
+no_provenance() {
+  local name=$1 want=$2 rc=0
+  shift 2
+  fresh
+  # The file as $1: with it as $0, it would take itself for run as a script.
+  on local env repo="$vr" here="$vr/deploy/ci" "$@" "$BASH" -c '. "$1"; gitops_no_provenance' bash \
+    "$vr/deploy/ci/verify/gitops.sh" >"$work/np.out" 2>"$work/np.err" || rc=$?
+  same "gitops_no_provenance: $name (exit $want)" "$want" "$rc"
+}
+rm -f "$fx/slsaprovenance1.jsonl"
+no_provenance "the older release, signed without provenance" 0 FAKE_COSIGN_DIR="$fx"
+same "gitops_no_provenance: names it and the values that name it" \
+  "ghcr.io/anhnvcoder/short-video-platform/web@$digest_b (values of ${old_values:0:12})" "$(cat "$work/np.out")"
+check "gitops_no_provenance: the release built with the provenance script: cosign never asked" lacks \
+  "$work/cosign.log" "web@$digest_a"
+provenance
+no_provenance "every release asked has provenance" 1 FAKE_COSIGN_DIR="$fx"
+check "gitops_no_provenance: none: says so" has "$work/np.err" \
+  "no signed web release without provenance in the history of deploy/k8s/values/services/web.yaml"
+no_provenance "cosign answers with an error" 2
+check "gitops_no_provenance: an error: names the release" has "$work/np.err" \
+  "web@$digest_b: cosign could not tell whether it carries a provenance attestation"
+check "gitops_no_provenance: an error: cosign's own line" has "$work/np.err" "Error: no signatures found"
+same "gitops_no_provenance: an error: nothing on stdout" "" "$(cat "$work/np.out")"
 
 if ((failures)); then
   echo "$failures check(s) failed" >&2

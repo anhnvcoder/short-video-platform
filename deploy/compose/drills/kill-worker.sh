@@ -3,9 +3,11 @@
 # (the consumer commits by hand after the handler, so the uncommitted video.uploaded is
 # delivered again). Uploads a 60 s 1080p video, completes it, waits until ffmpeg runs for it in
 # the worker, SIGKILLs the container, starts it again and waits for READY. Checks: the video is
-# READY and every playlist and segment downloads; the outbox of svp_video holds exactly two rows
-# for it (video.uploaded, video.ready); one transcode.completed was published; status and
-# published_at do not change after one more cycle. Prints one ok/FAIL line per check and exits
+# READY and every playlist and segment downloads; its master is media/<id>/<version>/master.m3u8
+# and names one attempt directory, the thumbnail's, the try after the kill having made the
+# version (the killed try was still in ffmpeg, so it had uploaded nothing); the outbox of
+# svp_video holds exactly two rows for it (video.uploaded, video.ready); one transcode.completed
+# was published; status and published_at do not change after one more cycle. Prints one ok/FAIL line per check and exits
 # non-zero on the first failure; on exit every stack service runs again.
 #
 # Usage (from the repo root, stack up): make drill-kill-worker
@@ -59,11 +61,24 @@ ok "media-worker started again"
 # A killed member never leaves its group: the redelivery waits for its session to expire.
 wait_ready clip "$work/a.auth" 600
 playlist_url=$(field playlist_url)
+thumbnail_key=$(field thumbnail_url)
+thumbnail_key=${thumbnail_key#*/media/}
 [[ -n $playlist_url ]] || fail "READY video has a playlist_url"
 ok "video READY ${clip_wait} s after the restart"
 
 hls=$(fetch_hls "$playlist_url" "$work/hls")
 ok "every playlist and segment downloads ($hls)"
+
+uuid_re='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+playlist_key=${playlist_url#*/media/}
+[[ $playlist_key =~ ^media/$clip_id/$uuid_re/master\.m3u8$ ]] ||
+  fail "playlist key is media/<video_id>/<version>/master.m3u8 (got $playlist_key)"
+attempts=$(grep -v -e '^#' -e '^[[:space:]]*$' "$work/hls/master.m3u8" | tr -d '\r' | cut -d / -f 1 | sort -u)
+[[ $(count_lines "$attempts") == 1 && $attempts =~ ^$uuid_re$ ]] ||
+  fail "master names its variants under one attempt directory (got $(printf '%s' "$attempts" | tr '\n' ' '))"
+[[ $thumbnail_key == "${playlist_key%/*}/$attempts/thumbnail.jpg" ]] ||
+  fail "thumbnail is in the attempt directory the master names (got $thumbnail_key)"
+ok "master $playlist_key names attempt directory $attempts, the thumbnail's"
 
 [[ $(log_count media-worker "$killed_at" "transcode job finished" "$clip_id") == 1 ]] ||
   fail "the restarted media-worker logged one finished job for the video"

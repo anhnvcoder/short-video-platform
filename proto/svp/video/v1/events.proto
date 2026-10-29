@@ -41,9 +41,12 @@ message VideoReady {
   string author_id = 2;
   string title = 3;
   google.protobuf.Duration duration = 4;
-  // Object key of the HLS master playlist, `media/<video_id>/master.m3u8`.
+  // Object key of the HLS master playlist,
+  // `media/<video_id>/<version>/master.m3u8` (videos made before versions:
+  // `media/<video_id>/master.m3u8`).
   string playlist_key = 5;
-  // Object key of the thumbnail image under `media/<video_id>/`.
+  // Object key of the thumbnail image under `media/<video_id>/`, in the
+  // directory the master playlist names.
   string thumbnail_key = 6;
   // Publication time used to order feeds.
   google.protobuf.Timestamp published_at = 7;

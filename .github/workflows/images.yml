@@ -1,7 +1,7 @@
 # Images of the seven services: build only what changed,
 # on native amd64 and arm64 runners; scan the local image with trivy, and its SBOM with grype, and block secrets and
 # CRITICAL vulnerabilities BEFORE anything is pushed; push exactly what was scanned; join a multi-arch index; sign it keyless with cosign and
-# attest the SBOM (syft) and the scan result; promote the signed digests through a pull request; rescan released
+# attest the SBOM (syft), the scan result and the build provenance; promote the signed digests through a pull request; rescan released
 # digests daily. The logic lives in deploy/ci/*.sh, which also run on a machine; this file wires jobs, permissions and
 # artifacts.
 #
@@ -173,7 +173,9 @@ jobs:
   values-check:
     # A pull request that changes deploy/k8s/values/services/ may only point at releases signed by this workflow on
     # main whose vuln attestation is clean and at most 48 hours old (deploy/ci/values-check.sh). Anonymous
-    # reads only, no token.
+    # reads only, no token. One that changes the values of chart svp-policy (its values.yaml or an overlay
+    # deploy/k8s/envs/<env>/svp-policy.yaml) checks all seven releases against what the policy asks now, a build
+    # provenance included when it turns that on in any environment.
     needs: plan
     if: >-
       ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.values_changed == 'true'
@@ -321,7 +323,8 @@ jobs:
           retention-days: 7
 
   sign:
-    # Keyless signature on the index digest, SBOM attestation on each manifest, vuln attestation (both scans) on the
+    # Keyless signature on the index digest, SBOM attestation on each manifest, vuln attestation (both scans) and build
+    # provenance (SLSA v1: workflow, ref, commit and attempt of this run, read from the run's own context) on the
     # index. The only build-path job with id-token: write; it uses no cache. Its artifact release-<image>
     # (repository, tag, digest of the signed index) is what promotion to deploy/k8s/values/services/ reads.
     needs: [plan, merge]
@@ -488,7 +491,7 @@ jobs:
     steps: *merge
 
   drill-sign:
-    # drill-vulnerable only: drill-unsigned stays unsigned on purpose.
+    # drill-vulnerable only: drill-unsigned stays unsigned on purpose. No build provenance: a drill image is no release.
     needs: [plan, drill-merge]
     if: >-
       ${{ !cancelled() && needs.plan.outputs.mode == 'drill'

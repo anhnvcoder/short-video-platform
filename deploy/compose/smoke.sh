@@ -16,6 +16,12 @@
 #
 # Usage: deploy/compose/smoke.sh [base-url]   (default http://127.0.0.1:8080)
 #
+# The HLS output must use the versioned layout (media/<id>/<version>/master.m3u8, variants under
+# <attempt>/<rendition>/) and its master, a variant playlist, a segment and the thumbnail must come
+# with Cache-Control: max-age=31536000, immutable. SVP_SMOKE_LEGACY_MEDIA=1 lets a master without a
+# version pass with a NOTE line and no header check, only while a stack runs a release of
+# media-worker from before versions; a versioned master is checked whatever it is set to.
+#
 # The same steps run against the local k3d cluster svp with `make k8s-smoke`: base
 # https://api.svp.localhost:8443, CURL_CA_BUNDLE=.k8s/ca.crt so curl trusts the cluster's CA for
 # the API and the storage alike, and SVP_STACK=k3d so lib.sh resets the limit in the cluster's
@@ -177,6 +183,32 @@ ok "anonymous GET segment ($(file_size "$work/segment") bytes)"
 status=$(fetch "$thumbnail_url" "$work/thumbnail")
 [[ $status == 200 && -s $work/thumbnail ]] || fail "anonymous GET thumbnail is 200 and not empty (status $status)"
 ok "anonymous GET thumbnail"
+
+# 8a. The output is immutable: a version per video.uploaded, every object cached for a year.
+# cache_control URL: the Cache-Control header of a GET of URL ("" when there is none).
+cache_control() {
+  curl -sS --max-time "$transfer_max_time" -o /dev/null -D - "$1" |
+    awk 'tolower($0) ~ /^cache-control:/ { sub(/^[^:]*:[ \t]*/, ""); sub(/\r$/, ""); print; exit }'
+}
+uuid_re='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+immutable='max-age=31536000, immutable'
+playlist_key=${playlist_url#*/media/}
+if [[ $playlist_key =~ ^media/$clip_id/$uuid_re/master\.m3u8$ ]]; then
+  variant_ref=$(first_uri "$work/master.m3u8")
+  [[ $variant_ref =~ ^$uuid_re/[a-z0-9]+/index\.m3u8$ && ${thumbnail_url#*/media/} == "${playlist_key%/*}/${variant_ref%%/*}/thumbnail.jpg" ]] ||
+    fail "master names <attempt>/<rendition>/index.m3u8 and the thumbnail is in that attempt directory (variant $variant_ref, thumbnail key ${thumbnail_url#*/media/})"
+  # One "<name>|<url>" per object: the names have blanks, the URLs none.
+  for object in "master|$playlist_url" "variant playlist|$variant_url" "segment|$(resolve "$variant_url" "$segment_ref")" \
+    "thumbnail|$thumbnail_url"; do
+    got=$(cache_control "${object#*|}") || got=
+    [[ $got == "$immutable" ]] || fail "${object%%|*} has Cache-Control: $immutable (got '$got')"
+  done
+  ok "versioned key $playlist_key; Cache-Control $immutable on master, variant playlist, segment, thumbnail"
+elif [[ ${SVP_SMOKE_LEGACY_MEDIA:-} == 1 && $playlist_key == "media/$clip_id/master.m3u8" ]]; then
+  echo "NOTE  playlist key $playlist_key has no version: SVP_SMOKE_LEGACY_MEDIA=1, the running media-worker writes the layout from before versions; Cache-Control not checked"
+else
+  fail "playlist key is media/<video_id>/<version>/master.m3u8 (got $playlist_key)"
+fi
 
 # The uploaded original stays private (UP-5).
 status=$(fetch "$(upload_url clip)/$(upload_key clip)" "$work/original")

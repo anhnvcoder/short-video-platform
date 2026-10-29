@@ -39,7 +39,8 @@ const (
 // missing or not a valid UUID.
 //
 // All ids are UUIDv7 strings in canonical lowercase form (36 chars). Media
-// locations are object keys (for example `media/<video_id>/master.m3u8`),
+// locations are object keys (for example
+// `media/<video_id>/<version>/master.m3u8`),
 // never absolute URLs: the gateway builds public URLs from per-environment
 // configuration (the local object store, a CDN in the cloud).
 type VideoServiceClient interface {
@@ -180,7 +181,8 @@ func (c *videoServiceClient) ListAuthorVideos(ctx context.Context, in *ListAutho
 // missing or not a valid UUID.
 //
 // All ids are UUIDv7 strings in canonical lowercase form (36 chars). Media
-// locations are object keys (for example `media/<video_id>/master.m3u8`),
+// locations are object keys (for example
+// `media/<video_id>/<version>/master.m3u8`),
 // never absolute URLs: the gateway builds public URLs from per-environment
 // configuration (the local object store, a CDN in the cloud).
 type VideoServiceServer interface {

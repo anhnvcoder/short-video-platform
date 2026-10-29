@@ -26,10 +26,13 @@ spec:
     - https://open-telemetry.github.io/opentelemetry-helm-charts
     - https://argoproj.github.io/argo-helm
     - https://kyverno.github.io/kyverno/
+    - https://charts.external-secrets.io
   # The project's namespaces and those of the platform charts, on this cluster only. argocd holds the Applications the
   # root makes. kube-system only because KEDA's chart puts RoleBinding keda-operator-auth-reader there: it binds the
   # Role extension-apiserver-authentication-reader, which exists in kube-system alone, so that KEDA's metrics server
-  # may read ConfigMap extension-apiserver-authentication. Without it Application keda never syncs.
+  # may read ConfigMap extension-apiserver-authentication. Without it Application keda never syncs. external-secrets
+  # holds External Secrets Operator; svp-secrets the source Secrets its stores read on a lab cluster (no chart writes
+  # one there: chart svp-cluster makes the namespace, its Roles and NetworkPolicy).
   destinations:
     - {server: https://kubernetes.default.svc, namespace: svp}
     - {server: https://kubernetes.default.svc, namespace: svp-data}
@@ -43,6 +46,8 @@ spec:
     - {server: https://kubernetes.default.svc, namespace: kyverno}
     - {server: https://kubernetes.default.svc, namespace: argocd}
     - {server: https://kubernetes.default.svc, namespace: kube-system}
+    - {server: https://kubernetes.default.svc, namespace: external-secrets}
+    - {server: https://kubernetes.default.svc, namespace: svp-secrets}
   # Cluster-scoped kinds the charts render (helm template of every component with its values), nothing else: no
   # PersistentVolume, StorageClass, PriorityClass, node or admission policy of another kind. Namespaced kinds are not
   # listed: every one is allowed in the namespaces above.
@@ -55,7 +60,11 @@ spec:
     - {group: admissionregistration.k8s.io, kind: MutatingWebhookConfiguration}
     # Envoy Gateway's chart: safe-upgrades.gateway.networking.k8s.io, which refuses an older Gateway API CRD over a
     # newer one. Chart svp-cluster: svp-cnpg-operator-secrets (templates/cnpg-rbac.yaml), which keeps the CloudNativePG
-    # operator's Secret writes in cnpg-system to its own two Secrets. No other chart renders either kind.
+    # operator's Secret writes in cnpg-system to its own two Secrets, and svp-external-secrets-writes
+    # (templates/external-secrets.yaml, GitOps path), which keeps External Secrets Operator's Secret writes to the
+    # namespaces of its ExternalSecrets, with svp-store-serviceaccount-pods and svp-store-serviceaccount-tokens (same
+    # file, stg), which refuse a pod or a token Secret for the ServiceAccount that reads the secret sources. No other
+    # chart renders either kind.
     - {group: admissionregistration.k8s.io, kind: ValidatingAdmissionPolicy}
     - {group: admissionregistration.k8s.io, kind: ValidatingAdmissionPolicyBinding}
     # KEDA's external metrics API.

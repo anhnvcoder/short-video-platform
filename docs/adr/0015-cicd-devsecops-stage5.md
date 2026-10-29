@@ -16,7 +16,10 @@
   key) chỉnh bởi 0021 ngày 2026-10-28; §8, §9 (cluster GitOps đóng vai stg với overlay `deploy/k8s/envs/stg/`; Enforce trên stg và
   prd, Audit trên dev) chỉnh bởi [0024](0024-multi-environment.md); §3 (dòng `GRYPE_IMAGE` của `Makefile` cũng build lại cả bảy
   image), §6 (grype quét SBOM syft của mỗi chân trước push cạnh trivy, cùng cổng CRITICAL và `.trivyignore.yaml`) và §12
-  (govulncheck, DAST thôi là việc để sau) chỉnh bởi [0030](0030-devsecops-supplement.md)
+  (govulncheck, DAST thôi là việc để sau) chỉnh bởi [0030](0030-devsecops-supplement.md); §7 (SLSA provenance không còn để giai
+  đoạn 9: predicate SLSA v1, `cosign attest --type slsaprovenance1` định dạng cũ trên digest index ở job `sign`, `.att` của index
+  chứa `vuln` và provenance) và §8 (khi giá trị bật trên đường GitOps, policy kiểm thêm provenance sau sáu phép cũ; đường dev không
+  đổi) chỉnh bởi [0027](0027-slsa-build-provenance.md)
 - Ngày: 2026-10-20
 
 ## Bối cảnh

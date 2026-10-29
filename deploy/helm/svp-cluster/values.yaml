@@ -78,3 +78,35 @@ kubeAPIServiceIP: 10.43.0.1
 # svp.localhost has a listener and a certificate of its own (templates/gateway.yaml).
 wildcardHost: "*.svp.localhost"
 apexHost: svp.localhost
+
+# The Secrets of the GitOps path (stg, prd): one ExternalSecret per Secret the services and the platform read, each
+# built by External Secrets Operator (component external-secrets, wave 0, GitOps path only) from a store of values
+# outside git, plus one SecretStore per namespace that holds ExternalSecrets (templates/external-secrets.yaml, the list
+# in files/external-secrets.yaml). Off here: the dev path applies the same Secrets from .env (deploy/k8s/secrets.sh) and
+# renders none of this; deploy/k8s/envs/stg and deploy/k8s/envs/prd turn it on. Names only, never a value.
+externalSecrets:
+  enabled: false
+  # kubernetes: the Secrets of namespace sourceNamespace of the same cluster, one per entry, which deploy/k8s/secrets.sh
+  # and deploy/k8s/glitchtip-init.sh write (a lab cluster). aws: AWS Secrets Manager, region and roles below (prd).
+  store: kubernetes
+  # Put before each entry's name: "" for kubernetes (the entry is the source Secret's name), svp/<env>/ for aws.
+  prefix: ""
+  # store kubernetes: the namespace of the source Secrets, with no pod, read by the ServiceAccount of each SecretStore
+  # (storeServiceAccount, one per namespace with ExternalSecrets) through a Role that names the entries that namespace
+  # needs.
+  sourceNamespace: svp-secrets
+  storeServiceAccount: svp-secrets-reader
+  # store aws: the region of Secrets Manager and, per namespace with ExternalSecrets, the IAM role its SecretStore
+  # assumes, allowed GetSecretValue on the entries of that namespace only.
+  aws:
+    region: ""
+    roles: {}
+  # The controller of component external-secrets: its namespace and ServiceAccount, which the Roles here let create a
+  # token for each store's ServiceAccount and ValidatingAdmissionPolicy svp-external-secrets-writes holds to the
+  # namespaces of the ExternalSecrets.
+  controller:
+    namespace: external-secrets
+    serviceAccount: external-secrets
+  # Host and port of Postgres in the connection strings the ExternalSecrets build (written ${postgres} in
+  # files/external-secrets.yaml): svp-pg of chart svp-data.
+  postgres: svp-pg-rw.svp-data:5432

@@ -27,6 +27,8 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
+
+	"github.com/anhnvcoder/short-video-platform/internal/ids"
 )
 
 var (
@@ -38,8 +40,10 @@ var (
 	ErrDurationExceeded = errors.New("transcode: duration exceeded")
 )
 
-// Output layout and content types. The names are fixed, so transcoding the same video again
-// overwrites the same objects.
+// Output layout and content types. Run writes master.m3u8, thumbnail.jpg and one directory per
+// rendition (index.m3u8 and its segments); master.m3u8 names each rendition playlist as
+// <attempt>/<rendition>/index.m3u8, so the caller stores everything but the master under
+// <attempt>/, next to which the master goes.
 const (
 	MasterPlaylist = "master.m3u8"
 	Thumbnail      = "thumbnail.jpg"
@@ -110,12 +114,13 @@ type limits struct {
 var defaultLimits = limits{probeTimeout: 30 * time.Second, ffmpegTimeout: 10 * time.Minute}
 
 // Run probes input, then writes master.m3u8, <rendition>/index.m3u8 with its segments and
-// thumbnail.jpg into outDir. Both paths are local; input must be a file the caller downloaded.
-func Run(ctx context.Context, input, outDir string) (Result, error) {
-	return run(ctx, input, outDir, defaultLimits)
+// thumbnail.jpg into outDir, the master naming its rendition playlists under attempt, which must
+// be a canonical UUID. Both paths are local; input must be a file the caller downloaded.
+func Run(ctx context.Context, input, outDir, attempt string) (Result, error) {
+	return run(ctx, input, outDir, attempt, defaultLimits)
 }
 
-func run(ctx context.Context, input, outDir string, lim limits) (Result, error) {
+func run(ctx context.Context, input, outDir, attempt string, lim limits) (Result, error) {
 	input, err := filepath.Abs(input)
 	if err != nil {
 		return Result{}, fmt.Errorf("transcode: %w", err)
@@ -143,7 +148,7 @@ func run(ctx context.Context, input, outDir string, lim limits) (Result, error) 
 		return Result{}, err
 	}
 
-	duration, err := playlistDuration(filepath.Join(outDir, rungs[0].name, playlistName))
+	duration, err := readPlaylistDuration(filepath.Join(outDir, rungs[0].name, playlistName))
 	if err != nil {
 		return Result{}, err
 	}
@@ -154,10 +159,14 @@ func run(ctx context.Context, input, outDir string, lim limits) (Result, error) 
 		return Result{}, err
 	}
 
-	renditions, err := readMaster(filepath.Join(outDir, MasterPlaylist), rungs)
+	master, err := rewriteMaster(filepath.Join(outDir, MasterPlaylist), attempt)
 	if err != nil {
 		return Result{}, err
 	}
+	if !slices.EqualFunc(master.Renditions, rungs, func(r Rendition, g rung) bool { return r.Name == g.name }) {
+		return Result{}, fmt.Errorf("transcode: %s does not list the renditions encoded", MasterPlaylist)
+	}
+	renditions := master.Renditions
 	files, err := listFiles(outDir)
 	if err != nil {
 		return Result{}, err
@@ -378,12 +387,17 @@ func (b *tailBuffer) lastLine(dirs []string) string {
 	return strings.ToValidUTF8(strings.TrimSpace(text), "")
 }
 
-// playlistDuration sums the #EXTINF durations of a media playlist.
-func playlistDuration(path string) (time.Duration, error) {
+// readPlaylistDuration is PlaylistDuration of the media playlist ffmpeg wrote at path.
+func readPlaylistDuration(path string) (time.Duration, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // a playlist ffmpeg just wrote under the output directory
 	if err != nil {
 		return 0, fmt.Errorf("transcode: %w", err)
 	}
+	return PlaylistDuration(data)
+}
+
+// PlaylistDuration sums the #EXTINF durations of a media playlist.
+func PlaylistDuration(data []byte) (time.Duration, error) {
 	var total float64
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	for sc.Scan() {
@@ -394,50 +408,138 @@ func playlistDuration(path string) (time.Duration, error) {
 		v, _, _ = strings.Cut(v, ",")
 		f, err := strconv.ParseFloat(v, 64)
 		if err != nil {
-			return 0, fmt.Errorf("transcode: %s: bad #EXTINF %q", filepath.Base(path), v)
+			return 0, fmt.Errorf("transcode: playlist: bad #EXTINF %q", v)
 		}
 		total += f
+	}
+	if err := sc.Err(); err != nil {
+		return 0, fmt.Errorf("transcode: playlist: %w", err)
 	}
 	return time.Duration(total * float64(time.Second)).Round(time.Millisecond), nil
 }
 
-// readMaster takes each rendition's frame size from RESOLUTION in the master playlist, the
-// size ffmpeg actually encoded.
-func readMaster(path string, rungs []rung) ([]Rendition, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // the master playlist ffmpeg just wrote
-	if err != nil {
-		return nil, fmt.Errorf("transcode: %w", err)
+// Master is what a master playlist of Run says: the attempt directory its rendition playlists
+// are under and the renditions, lowest bitrate first.
+type Master struct {
+	Attempt    string
+	Renditions []Rendition
+}
+
+// LowestPlaylist is the path of the lowest rendition's playlist, relative to the master.
+func (m Master) LowestPlaylist() string {
+	return m.Attempt + "/" + m.Renditions[0].Name + "/" + playlistName
+}
+
+// knownRungs is every rendition Run may write, lowest bitrate first.
+var knownRungs = append(slices.Clone(ladder), sourceRung)
+
+// ParseMaster reads a master playlist written by Run, the one just transcoded or one stored
+// before: every #EXT-X-STREAM-INF has a RESOLUTION and is followed by the URI
+// <attempt>/<rendition>/index.m3u8, with one attempt, a canonical UUID, for all of them, and a
+// rendition name of the ladder; the bitrate is the ladder's target for that name. Anything else
+// is an error: a playlist the caller cannot vouch for, so it must not publish it.
+func ParseMaster(data []byte) (Master, error) {
+	var m Master
+	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+	found := map[string]Rendition{}
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		attrs, isVariant := strings.CutPrefix(line, "#EXT-X-STREAM-INF:")
+		switch {
+		case line == "" || (strings.HasPrefix(line, "#") && !isVariant && !strings.HasPrefix(line, "#EXT-X-MEDIA") &&
+			!strings.HasPrefix(line, "#EXT-X-I-FRAME-STREAM-INF")):
+			continue
+		case !isVariant:
+			return Master{}, fmt.Errorf("transcode: %s: unexpected line %q", MasterPlaylist, line)
+		}
+		if i+1 >= len(lines) {
+			return Master{}, fmt.Errorf("transcode: %s: #EXT-X-STREAM-INF without a URI", MasterPlaylist)
+		}
+		i++
+		uri := strings.TrimSpace(lines[i])
+		parts := strings.Split(uri, "/")
+		if len(parts) != 3 || parts[2] != playlistName {
+			return Master{}, fmt.Errorf("transcode: %s: variant URI %q is not <attempt>/<rendition>/%s", MasterPlaylist, uri, playlistName)
+		}
+		if _, err := ids.Parse(parts[0]); err != nil {
+			return Master{}, fmt.Errorf("transcode: %s: attempt %q is not a canonical UUID", MasterPlaylist, parts[0])
+		}
+		if m.Attempt != "" && parts[0] != m.Attempt {
+			return Master{}, fmt.Errorf("transcode: %s: variants under two attempts", MasterPlaylist)
+		}
+		m.Attempt = parts[0]
+		k := slices.IndexFunc(knownRungs, func(r rung) bool { return r.name == parts[1] })
+		if k < 0 {
+			return Master{}, fmt.Errorf("transcode: %s: unknown rendition %q", MasterPlaylist, parts[1])
+		}
+		if _, dup := found[parts[1]]; dup {
+			return Master{}, fmt.Errorf("transcode: %s: rendition %s listed twice", MasterPlaylist, parts[1])
+		}
+		w, h, ok := resolution(attrs)
+		if !ok {
+			return Master{}, fmt.Errorf("transcode: %s lists no resolution for %s", MasterPlaylist, parts[1])
+		}
+		found[parts[1]] = Rendition{Name: parts[1], Width: w, Height: h, Bitrate: knownRungs[k].bitrate}
 	}
-	sizes := map[string][2]int{}
-	lines := strings.Split(string(data), "\n")
-	for i, line := range lines {
-		attrs, ok := strings.CutPrefix(line, "#EXT-X-STREAM-INF:")
-		if !ok || i+1 >= len(lines) {
+	if len(found) == 0 {
+		return Master{}, fmt.Errorf("transcode: %s lists no variant", MasterPlaylist)
+	}
+	for _, r := range knownRungs {
+		if rd, ok := found[r.name]; ok {
+			m.Renditions = append(m.Renditions, rd)
+		}
+	}
+	return m, nil
+}
+
+// resolution reads RESOLUTION=<w>x<h> of an #EXT-X-STREAM-INF attribute list, the size ffmpeg
+// actually encoded. A quoted value with commas (CODECS) splits into pieces that never start
+// with RESOLUTION=.
+func resolution(attrs string) (int, int, bool) {
+	for a := range strings.SplitSeq(attrs, ",") {
+		res, ok := strings.CutPrefix(a, "RESOLUTION=")
+		if !ok {
 			continue
 		}
-		name := strings.TrimSuffix(strings.TrimSpace(lines[i+1]), "/"+playlistName)
-		for a := range strings.SplitSeq(attrs, ",") {
-			res, ok := strings.CutPrefix(a, "RESOLUTION=")
-			if !ok {
-				continue
-			}
-			w, h, _ := strings.Cut(res, "x")
-			wi, err1 := strconv.Atoi(w)
-			hi, err2 := strconv.Atoi(h)
-			if err1 == nil && err2 == nil {
-				sizes[name] = [2]int{wi, hi}
-			}
+		w, h, _ := strings.Cut(res, "x")
+		wi, err1 := strconv.Atoi(w)
+		hi, err2 := strconv.Atoi(h)
+		if err1 == nil && err2 == nil && wi > 0 && hi > 0 {
+			return wi, hi, true
 		}
 	}
-	renditions := make([]Rendition, 0, len(rungs))
-	for _, r := range rungs {
-		size, ok := sizes[r.name]
-		if !ok {
-			return nil, fmt.Errorf("transcode: %s lists no resolution for %s", MasterPlaylist, r.name)
-		}
-		renditions = append(renditions, Rendition{Name: r.name, Width: size[0], Height: size[1], Bitrate: r.bitrate})
+	return 0, 0, false
+}
+
+// rewriteMaster puts attempt/ in front of the URI after each #EXT-X-STREAM-INF of the master
+// playlist ffmpeg wrote at path, then reads the result back with ParseMaster. A master with
+// another tag carrying a URI (#EXT-X-MEDIA, #EXT-X-I-FRAME-STREAM-INF) is an error: ffmpeg writes
+// none for this ladder, and one left unchanged would send a player to the wrong path.
+func rewriteMaster(path, attempt string) (Master, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // the master playlist ffmpeg just wrote
+	if err != nil {
+		return Master{}, fmt.Errorf("transcode: %w", err)
 	}
-	return renditions, nil
+	lines := strings.Split(string(data), "\n")
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		switch {
+		case strings.HasPrefix(line, "#EXT-X-MEDIA"), strings.HasPrefix(line, "#EXT-X-I-FRAME-STREAM-INF"):
+			return Master{}, fmt.Errorf("transcode: %s: unexpected tag with a URI: %q", MasterPlaylist, line)
+		case strings.HasPrefix(line, "#EXT-X-STREAM-INF:") && i+1 < len(lines):
+			i++
+			lines[i] = attempt + "/" + strings.TrimSpace(lines[i])
+		}
+	}
+	data = []byte(strings.Join(lines, "\n"))
+	m, err := ParseMaster(data)
+	if err != nil {
+		return Master{}, err
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil { //nolint:gosec // the master playlist ffmpeg just wrote
+		return Master{}, fmt.Errorf("transcode: %w", err)
+	}
+	return m, nil
 }
 
 // listFiles lists outDir in upload order: segments, thumbnail, rendition playlists, master.

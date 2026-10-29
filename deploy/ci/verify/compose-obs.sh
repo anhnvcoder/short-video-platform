@@ -1,7 +1,9 @@
 # shellcheck shell=bash
 # Scenario compose-obs of deploy/ci/verify-run.sh, which sources this file: the compose stack with OBS=lgtm (job compose
-# of .github/workflows/verify.yml). make up OBS=lgtm, make smoke, make drill-obs-threats, make load-local under a watch
-# of Alertmanager, make web-lighthouse three times; then the object store's checks (make test-stack of
+# of .github/workflows/verify.yml). make up OBS=lgtm, make smoke, make drill-duplicates and make drill-kill-worker (the
+# versioned HLS output: a replayed video.uploaded writes nothing, a worker killed mid-transcode leaves no published key
+# of its own; both start every service again), make drill-obs-threats, make load-local under a watch of Alertmanager,
+# make web-lighthouse three times; then the object store's checks (make test-stack of
 # internal/objstore, make drill-upload-cleanup, make measure-upload with the store's RAM peak); make
 # drill-alert-to-sentry; last, the way back to MinIO and make smoke on RustFS again.
 #
@@ -26,7 +28,8 @@
 #                              stack's object store), its output counted: fails when go test fails, when any test or
 #                              subtest SKIPs (a skipped case proves nothing about the store), or when one of the
 #                              integration tests (presigned POST, worker and video-service permissions, DeletePrefix,
-#                              multipart with CRC32) did not PASS
+#                              multipart with CRC32, Cache-Control read back anonymously, create only once, the
+#                              worker listing and reading media/) did not PASS
 #   ram-s3-upload              deploy/ci/verify-sample.sh s3-peak over the samples taken while measure-upload ran: the
 #                              highest MEM USAGE of the object store's container while ~100 MB went up from the browser
 #                              and transcoded; ram-s3-upload.json, .txt; fails when it is not under its 512 MiB limit or
@@ -205,7 +208,8 @@ objstore_tests() {
   fails=$(grep -cE '^ *--- FAIL: ' "$tmp")
   skips=$(grep -cE '^ *--- SKIP: ' "$tmp")
   for t in TestIntegrationPresignedPost TestIntegrationWorkerPermissions TestIntegrationVideoServicePermissions \
-    TestIntegrationDeletePrefix TestIntegrationMultipartChecksum; do
+    TestIntegrationDeletePrefix TestIntegrationMultipartChecksum TestIntegrationCacheControl TestIntegrationCreateOnce \
+    TestIntegrationWorkerReadsMedia; do
     grep -qE "^--- PASS: $t " "$tmp" || missing="$missing $t"
   done
   rm -f "$tmp"
@@ -274,6 +278,8 @@ export -f load_local_watch fallback_alert_check lighthouse_run lcp_median objsto
 scenario_targets() {
   step up 40 make up OBS=lgtm
   step smoke 15 make smoke
+  step drill-duplicates 15 make drill-duplicates
+  step drill-kill-worker 20 make drill-kill-worker
   step drill-obs-threats 30 make drill-obs-threats
   step load-local 25 bash -c load_local_watch
   step fallback-alert-under-load 1 bash -c fallback_alert_check
@@ -291,7 +297,8 @@ scenario_targets() {
   # An extra on top of the scenario's main sequence, and the longest wait (an alert of an earlier run must resolve
   # first).
   step drill-alert-to-sentry 40 make drill-alert-to-sentry
-  # Last: it takes the stack down and up again (see the header). The scenario takes about 45 min of the 70 its
-  # deadline leaves, so the deadline cutting it means something else ran far over.
+  # Last: it takes the stack down and up again (see the header). The scenario takes about 55 min of the 70 its
+  # deadline leaves (the two drills after smoke about 10 of them), so the deadline cutting it means something else ran
+  # far over.
   step object-store-roundtrip 40 bash -c object_store_roundtrip
 }

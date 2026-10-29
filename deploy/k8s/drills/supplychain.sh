@@ -42,6 +42,14 @@
 #   h  an ephemeral container (what kubectl debug adds) in a running pod of svp: with an unsigned image refused, with
 #      image a admitted;
 #   i  an UPDATE of a running pod of svp that sets a container's image to an unsigned one: refused;
+#   l  SUPPLYCHAIN_NO_PROVENANCE (a release signed before CI attested build provenance): refused with the provenance
+#      rule's message, only when the running policy checks provenance (requireProvenance of chart svp-policy: it has
+#      attestation provenance); otherwise SKIP "policy off". Kyverno checks provenance after every other rule, so the
+#      refusal shows the provenance rule only if the image passes all of them: before sending the pod the drill checks
+#      with cosign (anonymous) that the image is signed, has exactly one vuln attestation of both platforms, no
+#      CRITICAL, scanned within the policy's maximum age, and has no provenance attestation; otherwise the case fails,
+#      naming the dispatch that rescans that release (an old release is out of the values, so the daily rescan skips
+#      it). With the provenance rule on, case a admitted shows a release with provenance passes it;
 #   k  the keyless path with another vendor's public image (CloudNativePG's operator v1.28.1 on GHCR, signed by its
 #      release workflow; identity from docs/src/security.md of cloudnative-pg/cloudnative-pg and the certificate of
 #      its signature): two temporary policies, one with the right subject, one with a wrong one, each for its own drill
@@ -49,7 +57,8 @@
 #      before the Enforce cases), since Enforce refuses that image by its prefix.
 # "Unsigned" in h and i is SUPPLYCHAIN_UNSIGNED when set (the signature rule's message), otherwise the dev image of the
 # local registry (the prefix rule's message). A case whose image is not available is printed SKIP with the reason:
-# b without SUPPLYCHAIN_UNSIGNED, c without SUPPLYCHAIN_VULNERABLE, a, f and the admitted half of h while no pod of svp
+# b without SUPPLYCHAIN_UNSIGNED, c without SUPPLYCHAIN_VULNERABLE, l without SUPPLYCHAIN_NO_PROVENANCE, a, f and the
+# admitted half of h while no pod of svp
 # runs an image of GHCR (the dev path).
 #
 # The dev path (`make k8s-up`) installs the policy in Audit, which refuses nothing: the drill refuses to run there
@@ -64,7 +73,7 @@
 #
 # Usage (from the repo root, cluster up): make drill-k8s-supplychain [SUPPLYCHAIN_UNSIGNED=ghcr.io/...@sha256:...]
 #   [SUPPLYCHAIN_UNSIGNED_FALLBACK=ghcr.io/...@sha256:...] [SUPPLYCHAIN_VULNERABLE=ghcr.io/...@sha256:...]
-#   [SUPPLYCHAIN_ENFORCE_TMP=1].
+#   [SUPPLYCHAIN_NO_PROVENANCE=ghcr.io/...@sha256:...] [SUPPLYCHAIN_ENFORCE_TMP=1].
 set -euo pipefail
 
 # Only the cluster's API: deploy/compose/lib.sh (the gateway's API helpers, which delete rate limit keys) is left out.
@@ -72,7 +81,8 @@ set -euo pipefail
 drill_read_only=1
 # shellcheck source=deploy/k8s/drills/lib.sh
 source "$(dirname "$0")/lib.sh"
-# cosign_ (cosign from PATH, otherwise the pinned COSIGN_IMAGE; verification only) for cases c and f.
+# cosign_ (cosign from PATH, otherwise the pinned COSIGN_IMAGE; verification only) for cases c, f and l, and
+# check_vuln_statement and provenance_absent for l.
 # shellcheck source=deploy/ci/common.sh
 source "$repo_root/deploy/ci/common.sh"
 
@@ -95,13 +105,14 @@ case $max_age in
 esac
 psa_version=$(sed -n 's/^podSecurityVersion: *//p' "$repo_root/deploy/helm/svp-cluster/values.yaml")
 [[ $psa_version =~ ^v1\.[0-9]+$ ]] || fail "read podSecurityVersion of deploy/helm/svp-cluster/values.yaml (got '$psa_version')"
-for v in SUPPLYCHAIN_UNSIGNED SUPPLYCHAIN_UNSIGNED_FALLBACK SUPPLYCHAIN_VULNERABLE; do
+for v in SUPPLYCHAIN_UNSIGNED SUPPLYCHAIN_UNSIGNED_FALLBACK SUPPLYCHAIN_VULNERABLE SUPPLYCHAIN_NO_PROVENANCE; do
   [[ -z ${!v:-} || ${!v} =~ ^${prefix//./\\.}[a-z0-9._/-]+(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$ ]] ||
     fail "$v must be ${prefix}<name>@sha256:<64 hex> (got '${!v}')"
 done
 unsigned=${SUPPLYCHAIN_UNSIGNED:-}
 unsigned_fallback=${SUPPLYCHAIN_UNSIGNED_FALLBACK:-}
 vulnerable=${SUPPLYCHAIN_VULNERABLE:-}
+no_provenance=${SUPPLYCHAIN_NO_PROVENANCE:-}
 # Docker Hub's busybox 1.37.0 (multi-arch index), only ever named in a dry run.
 dockerhub=docker.io/library/busybox@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
 # Case k: CloudNativePG's operator v1.28.1, signed with cosign's older format (a .sig image beside it, as the project's
@@ -234,6 +245,26 @@ webhooks() {
   kc get validatingwebhookconfiguration kyverno-resource-validating-webhook-cfg -o json | jq -S -c '[.webhooks[]
     | select(.name | startswith("ivpol."))
     | {name, failurePolicy, namespaceSelector, objectSelector, rules, matchConditions, timeoutSeconds}] | sort_by(.name)'
+}
+
+# policy_checks_provenance NAME: prints yes when ImageValidatingPolicy NAME has attestation provenance (chart svp-policy
+# rendered with requireProvenance), no otherwise.
+policy_checks_provenance() {
+  kc get imagevalidatingpolicies.policies.kyverno.io "$1" -o json |
+    jq -r 'if any(.spec.attestations[]?; .name == "provenance") then "yes" else "no" end'
+}
+
+# values_commit DIGEST: the newest commit of HEAD's history whose values files of the services name DIGEST, the
+# values_ref a rescan of that release needs; status 1 without one.
+values_commit() {
+  local c
+  for c in $(git -C "$repo_root" log --format=%H -S"$1" -- deploy/k8s/values/services); do
+    if git -C "$repo_root" grep -qF -- "$1" "$c" -- deploy/k8s/values/services; then
+      echo "$c"
+      return 0
+    fi
+  done
+  return 1
 }
 
 # policy_mode NAME: Deny or Audit, the validationActions of ImageValidatingPolicy NAME.
@@ -428,8 +459,9 @@ trap 'exit 143' TERM
 if kc -n argocd get applications.argoproj.io svp-root >/dev/null 2>&1; then path_name=gitops; else path_name=dev; fi
 mode=$(policy_mode "$policy") || fail "read ImageValidatingPolicy $policy (is Kyverno installed? make k8s-up)"
 image_policy_ready "$policy" || fail "ImageValidatingPolicy $policy is not ready with its webhook"
+checks_provenance=$(policy_checks_provenance "$policy") || fail "read the attestations of ImageValidatingPolicy $policy"
 webhooks_start=$(webhooks) || fail "read Kyverno's webhook configuration kyverno-resource-validating-webhook-cfg"
-ok "cluster on the $path_name path, policy $policy in ${mode:-?}; its webhooks: $(jq -r 'map("\(.name) \(.failurePolicy) \(.namespaceSelector | tostring)") | join("; ")' <<<"$webhooks_start")"
+ok "cluster on the $path_name path, policy $policy in ${mode:-?}, provenance checked: $checks_provenance; its webhooks: $(jq -r 'map("\(.name) \(.failurePolicy) \(.namespaceSelector | tostring)") | join("; ")' <<<"$webhooks_start")"
 
 # A running pod of svp and its images: the GHCR release (case a) and the dev image (d, h, i) when there is one.
 target=$(kc -n svp get pods -l app.kubernetes.io/component=server --field-selector=status.phase=Running \
@@ -621,6 +653,37 @@ if [[ -n $vulnerable ]]; then
   fi
 else
   result c SKIP "SUPPLYCHAIN_VULNERABLE is not set (digest of drill-vulnerable, signed and attested with CRITICAL vulnerabilities)"
+fi
+
+# --- l: a release without provenance, once it is shown to pass every other rule (the header says why).
+if [[ $checks_provenance != yes ]]; then
+  result l SKIP "policy off: $policy has no provenance attestation to check (requireProvenance of chart svp-policy is off at the revision the cluster runs)"
+elif [[ -z $no_provenance ]]; then
+  result l SKIP "SUPPLYCHAIN_NO_PROVENANCE is not set (digest of a release signed before CI attested build provenance)"
+else
+  rescan=$(ci_dispatch_hint images.yml main rescan=true \
+    "values_ref=$(values_commit "${no_provenance#*@}" || echo '<a commit whose deploy/k8s/values/services names it>')") || exit 1
+  envelopes=$(cosign_ verify-attestation --type vuln --certificate-oidc-issuer "$policy_issuer" \
+    --certificate-identity "$policy_subject" "$no_provenance" 2>"$work/cosign.err") || envelopes=
+  if ! cosign_ verify --certificate-oidc-issuer "$policy_issuer" --certificate-identity "$policy_subject" \
+    "$no_provenance" >/dev/null 2>"$work/cosign.err"; then
+    result l FAIL "$no_provenance: a signature of $policy_subject that cosign verifies (got: $(tail -n 1 "$work/cosign.err"))"
+  elif [[ $(grep -c . <<<"$envelopes") != 1 ]]; then
+    result l FAIL "$no_provenance: exactly one vuln attestation of $policy_subject (got $(grep -c . <<<"$envelopes")); rescan it ($rescan)"
+  elif ! problem=$(jq -r '.payload | @base64d' <<<"$envelopes" | check_vuln_statement "${no_provenance#*@}" "$max_age_s"); then
+    result l FAIL "$no_provenance: its vuln attestation $problem, so Kyverno would refuse it before the provenance rule; rescan it ($rescan), then run this within $max_age"
+  else
+    absent=0
+    provenance_absent "$policy_issuer" "$policy_subject" "$no_provenance" 2>"$work/cosign.err" || absent=$?
+    case $absent in
+    0)
+      dry_run drill-supplychain-l svp "$no_provenance"
+      refused l "image without a provenance attestation signed by" "$no_provenance (signed, clean vuln attestation within $max_age, no provenance)"
+      ;;
+    1) result l FAIL "$no_provenance carries a provenance attestation of $policy_subject: set SUPPLYCHAIN_NO_PROVENANCE to a release from before provenance" ;;
+    *) result l FAIL "$no_provenance: cosign could not tell whether it carries a provenance attestation (got: $(tail -n 1 "$work/cosign.err"))" ;;
+    esac
+  fi
 fi
 
 # --- d: outside the prefix, without any registry asked.

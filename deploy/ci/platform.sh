@@ -31,7 +31,13 @@
 #   ci_builder_id         https:// + the ci_config_ref_uri claim of the id_tokens token
 #                         (<host>/<CI_PROJECT_PATH>//<CI_CONFIG_PATH>@refs/heads/<branch>), which is also the subject
 #                         of a keyless signature made with it
-#   ci_bot_name/_email    the bot user of the project access token the promote job pushes with
+#   ci_repo_url           CI_PROJECT_URL
+#   ci_ref                refs/heads/CI_COMMIT_BRANCH (refs/tags/CI_COMMIT_TAG for a tag pipeline)
+#   ci_commit             CI_COMMIT_SHA
+#   ci_workflow_path/_ref CI_CONFIG_PATH, and the ref of the ci_config_ref_uri claim
+#   ci_dispatch_input     no variable holds a pipeline's inputs (they are written into the configuration as
+#                         $[[ inputs.NAME ]]), so the pipeline hands each one to the job in a variable of its own
+#   ci_bot_name/_email   the bot user of the project access token the promote job pushes with
 #   ci_change_request_*   merge requests (glab mr list, glab mr create, glab mr update), with that token: the job's own
 #                         CI_JOB_TOKEN may read merge requests but not open one
 #   ci_dispatch_hint      glab ci run with --input (pipeline variables are turned off for new projects on gitlab.com)
@@ -234,6 +240,106 @@ ci_builder_id() {
     echo "$server/$ref"
     ;;
   local) echo local ;;
+  esac
+}
+
+# ci_repo_url: the web address of the repository on its host. On a machine, this repository's on GitHub.
+ci_repo_url() {
+  local platform server repo
+  platform=$(ci_platform) || return 1
+  case $platform in
+  github)
+    server=$(_ci_need GITHUB_SERVER_URL) && repo=$(_ci_need GITHUB_REPOSITORY) || return 1
+    echo "$server/$repo"
+    ;;
+  local) echo "https://github.com/$(ci_repo)" ;;
+  esac
+}
+
+# ci_ref: the git ref this run was started for (refs/heads/main for a push to main or a dispatch on it); "local" on a
+# machine.
+ci_ref() {
+  local platform
+  platform=$(ci_platform) || return 1
+  case $platform in
+  github) _ci_need GITHUB_REF ;;
+  local) echo local ;;
+  esac
+}
+
+# ci_commit: the full SHA of the commit this run checked out and builds. On a machine, HEAD of the checkout this file
+# is in, which is what a build there starts from.
+ci_commit() {
+  local platform
+  platform=$(ci_platform) || return 1
+  case $platform in
+  github) _ci_need GITHUB_SHA ;;
+  local) git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --verify HEAD ;;
+  esac
+}
+
+# _ci_workflow_ref_parts: on GitHub, prints the path of the workflow file that runs this job and the ref it was read
+# at, one per line, from GITHUB_WORKFLOW_REF (<owner>/<repo>/<path>@<ref>). Fails when that is not a file of this
+# repository at a ref.
+_ci_workflow_ref_parts() {
+  local whole repo rest
+  whole=$(_ci_need GITHUB_WORKFLOW_REF) && repo=$(_ci_need GITHUB_REPOSITORY) || return 1
+  rest=${whole#"$repo"/}
+  [[ $rest != "$whole" && $rest =~ ^[^@]+@.+$ ]] || {
+    _ci_fail "GITHUB_WORKFLOW_REF '$whole' is not <repository>/<path>@<ref> of $repo"
+    return 1
+  }
+  printf '%s\n%s\n' "${rest%%@*}" "${rest#*@}"
+}
+
+# ci_workflow_path: the path, in the repository, of the workflow file that runs this job (.github/workflows/images.yml);
+# "local" on a machine.
+ci_workflow_path() {
+  local platform parts
+  platform=$(ci_platform) || return 1
+  case $platform in
+  github)
+    parts=$(_ci_workflow_ref_parts) || return 1
+    sed -n 1p <<<"$parts"
+    ;;
+  local) echo local ;;
+  esac
+}
+
+# ci_workflow_ref: the git ref the workflow file of this job was read at (refs/heads/main); "local" on a machine.
+ci_workflow_ref() {
+  local platform parts
+  platform=$(ci_platform) || return 1
+  case $platform in
+  github)
+    parts=$(_ci_workflow_ref_parts) || return 1
+    sed -n 2p <<<"$parts"
+    ;;
+  local) echo local ;;
+  esac
+}
+
+# ci_dispatch_input NAME: the value of input NAME of a run started by hand (a workflow_dispatch on GitHub, read from
+# the event the platform wrote, not from a variable a step could set); nothing for a run started otherwise, for an
+# input left empty, and on a machine.
+ci_dispatch_input() {
+  local platform event file
+  platform=$(ci_platform) || return 1
+  [[ ${1:-} =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || {
+    _ci_fail "input name '${1:-}' is not a plain name"
+    return 1
+  }
+  case $platform in
+  github)
+    event=$(_ci_need GITHUB_EVENT_NAME) || return 1
+    [ "$event" = workflow_dispatch ] || return 0
+    file=$(_ci_need GITHUB_EVENT_PATH) || return 1
+    jq -r --arg name "$1" '.inputs[$name] // "" | tostring' "$file" || {
+      _ci_fail "the dispatch event in $file cannot be read"
+      return 1
+    }
+    ;;
+  local) ;;
   esac
 }
 

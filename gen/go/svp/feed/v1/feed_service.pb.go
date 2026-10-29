@@ -32,10 +32,13 @@ type FeedItem struct {
 	AuthorId string                 `protobuf:"bytes,2,opt,name=author_id,json=authorId,proto3" json:"author_id,omitempty"`
 	Title    string                 `protobuf:"bytes,3,opt,name=title,proto3" json:"title,omitempty"`
 	Duration *durationpb.Duration   `protobuf:"bytes,4,opt,name=duration,proto3" json:"duration,omitempty"`
-	// Object key of the HLS master playlist, `media/<video_id>/master.m3u8`.
+	// Object key of the HLS master playlist,
+	// `media/<video_id>/<version>/master.m3u8` (videos made before versions:
+	// `media/<video_id>/master.m3u8`).
 	// The gateway turns it into a public URL.
 	PlaylistKey string `protobuf:"bytes,5,opt,name=playlist_key,json=playlistKey,proto3" json:"playlist_key,omitempty"`
-	// Object key of the thumbnail image under `media/<video_id>/`.
+	// Object key of the thumbnail image under `media/<video_id>/`, in the
+	// directory the master playlist names.
 	ThumbnailKey  string                 `protobuf:"bytes,6,opt,name=thumbnail_key,json=thumbnailKey,proto3" json:"thumbnail_key,omitempty"`
 	PublishedAt   *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=published_at,json=publishedAt,proto3" json:"published_at,omitempty"`
 	unknownFields protoimpl.UnknownFields

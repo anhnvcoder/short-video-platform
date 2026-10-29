@@ -19,6 +19,16 @@
       "values": "deploy/k8s/values/envoy-gateway.yaml"
     },
     {
+      "name": "external-secrets",
+      "namespace": "external-secrets",
+      "wave": 0,
+      "repo": "https://charts.external-secrets.io",
+      "chart": "external-secrets",
+      "version": "2.14.0",
+      "values": "deploy/k8s/values/external-secrets.yaml",
+      "gitopsOnly": true
+    },
+    {
       "name": "svp-cluster",
       "namespace": "cert-manager",
       "wave": 1,

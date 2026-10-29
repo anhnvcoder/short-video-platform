@@ -93,11 +93,12 @@ type Video struct {
 	Status   VideoStatus            `protobuf:"varint,4,opt,name=status,proto3,enum=svp.video.v1.VideoStatus" json:"status,omitempty"`
 	// Length of the transcoded video. Set once READY.
 	Duration *durationpb.Duration `protobuf:"bytes,5,opt,name=duration,proto3" json:"duration,omitempty"`
-	// Object key of the HLS master playlist, `media/<video_id>/master.m3u8`.
-	// Set once READY.
+	// Object key of the HLS master playlist,
+	// `media/<video_id>/<version>/master.m3u8` (videos made before versions:
+	// `media/<video_id>/master.m3u8`). Set once READY.
 	PlaylistKey string `protobuf:"bytes,6,opt,name=playlist_key,json=playlistKey,proto3" json:"playlist_key,omitempty"`
-	// Object key of the thumbnail image under `media/<video_id>/`. Set once
-	// READY.
+	// Object key of the thumbnail image under `media/<video_id>/`, in the
+	// directory the master playlist names. Set once READY.
 	ThumbnailKey string `protobuf:"bytes,7,opt,name=thumbnail_key,json=thumbnailKey,proto3" json:"thumbnail_key,omitempty"`
 	// When InitUpload created the video.
 	CreatedAt *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`

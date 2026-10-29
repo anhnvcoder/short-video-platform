@@ -102,12 +102,14 @@ func unfollowRecord(t *testing.T, follower, followee string) *kgo.Record {
 // readyEvent returns a valid video.ready of video by author, published at published.
 func readyEvent(video, author string, published time.Time) *videov1.VideoReady {
 	return &videov1.VideoReady{
-		VideoId:      video,
-		AuthorId:     author,
-		Title:        "a video",
-		Duration:     durationpb.New(83250 * time.Millisecond),
-		PlaylistKey:  "media/" + video + "/master.m3u8",
-		ThumbnailKey: "media/" + video + "/thumbnail.jpg",
+		VideoId:  video,
+		AuthorId: author,
+		Title:    "a video",
+		Duration: durationpb.New(83250 * time.Millisecond),
+		// The layout media-worker writes: media/<video>/<version>/master.m3u8 and the thumbnail
+		// in the directory of the try that created the master.
+		PlaylistKey:  "media/" + video + "/0190a6e4-7b2c-7d3e-9f40-0000000000a1/master.m3u8",
+		ThumbnailKey: "media/" + video + "/0190a6e4-7b2c-7d3e-9f40-0000000000a1/0190a6e4-7b2c-7d3e-9f40-0000000000b2/thumbnail.jpg",
 		PublishedAt:  timestamppb.New(published),
 	}
 }

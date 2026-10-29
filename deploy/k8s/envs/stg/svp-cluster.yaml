@@ -1,0 +1,7 @@
+# Staging: the Secrets come from External Secrets Operator (component external-secrets, GitOps path only), each built
+# from the Secrets of namespace svp-secrets of the same cluster, which deploy/k8s/secrets.sh fills from the .env of the
+# machine that made the cluster and deploy/k8s/glitchtip-init.sh completes with GlitchTip's DSN and tokens. Names only.
+externalSecrets:
+  enabled: true
+  store: kubernetes
+  prefix: ""
