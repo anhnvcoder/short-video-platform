@@ -9,8 +9,8 @@ imageVerification:
   # with --set, never in a file.
   mode: Enforce
   # The one namespace whose pods the policy checks, and the only one whose requests reach its webhook. Every platform
-  # namespace stays out: their images are third-party ones pinned by digest and checked before merge
-  # (deploy/k8s/check-image-digests.sh), and a Kyverno that is down must not stop them.
+  # namespace stays out: their images are third-party ones pinned by digest and checked before merge (step 4 of
+  # deploy/ci/gitops-check.sh, which make helm-check runs), and a Kyverno that is down must not stop them.
   namespace: svp
   # Only images under this prefix run in the namespace, each by digest. CI pushes nothing else there. Change it when the
   # images move to another registry (with ghcr_prefix of deploy/k8s/lib.sh, which CI pushes to).

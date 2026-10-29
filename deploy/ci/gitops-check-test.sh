@@ -20,7 +20,9 @@
 # <workspace>/.worktrees/; <workspace>/gitops): from the main checkout, from a folder inside it and from the worktree it
 # names <workspace>/gitops once that is a clone of svp-gitops; SVP_GITOPS_DIR names another clone; a missing folder, a
 # folder that is no git repository, a repository with another origin and a folder inside a clone are refused with the
-# command that makes the clone, and nothing is cloned.
+# command that makes the clone, and nothing is cloned. Then gitops_clone: a GITOPS_REF that is no branch fails, and
+# the next run checks out the clone it left (no index, every file read as deleted) instead of refusing it; a change to
+# a checked-out clone is still refused.
 # Every case fails before the check reaches the network (chart repositories, GHCR): needs bash, git, jq, helm and the
 # history of this repository up to the tree's revisions and image tags (a full clone, origin/main fetched).
 #
@@ -100,6 +102,24 @@ expect "gitops_dir: SVP_GITOPS_DIR that does not exist is refused" \
   "$(lookup "$ws/backend" "$main_lib" SVP_GITOPS_DIR="$ws/missing")" "git clone https://github.com/anhnvcoder/svp-gitops.git '$ws/missing'" rc=1
 [ ! -e "$ws/missing" ] && [ ! -e "$ws/backend/.gitops" ] && ok "gitops_dir: nothing was cloned" ||
   fail "gitops_dir: nothing was cloned"
+
+# --- gitops_clone, from a local repository (the draft backend) standing for svp-gitops: gitops_is_clone is replaced so
+# that a clone whose origin is that folder counts, since its own checks are above.
+src_branch=$(git -C "$ws/backend" symbolic-ref --short HEAD)
+# clone_run [VAR=VALUE...]: gitops_clone of the draft lib.sh into $ws/ci-clone; prints its output, then "rc=<status>".
+clone_run() {
+  local out rc=0
+  out=$(env "$@" bash -c '. "$1" && gitops_url=file://$2 && gitops_ci_clone=$3 &&
+    gitops_is_clone() { [ -d "$1/.git" ]; } && gitops_clone' _ "$main_lib" "$ws/backend" "$ws/ci-clone" 2>&1) || rc=$?
+  printf '%s\nrc=%s\n' "$out" "$rc"
+}
+expect "gitops_clone: a GITOPS_REF that is no branch is refused" "$(clone_run GITOPS_REF=typo)" \
+  "GITOPS_REF=typo is neither a branch" rc=1
+expect "gitops_clone: the next run checks out the clone that run left with no index" \
+  "$(clone_run GITOPS_REF="$src_branch")" "svp-gitops at" rc=0
+echo changed >>"$ws/ci-clone/deploy/k8s/lib.sh"
+expect "gitops_clone: a checked-out clone with a change is still refused" "$(clone_run GITOPS_REF="$src_branch")" \
+  "has uncommitted changes" rc=1
 
 if [ $# -ge 1 ]; then
   tree=$(cd "$1" && pwd)

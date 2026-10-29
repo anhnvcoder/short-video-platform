@@ -32,7 +32,10 @@
 # ci_bot_email of platform.sh), made with git plumbing on a temporary index in a temporary clone: neither the working
 # tree nor the index of this checkout changes. It changes envs/stg/images/ and envs/stg/charts.yaml only. It is pushed
 # with --force-with-lease on the commit of bot/promote-stg read at the start: a change made since (another run, or the
-# owner by hand) fails the push instead of being overwritten. When nothing differs from main: no push, no pull request.
+# owner by hand) fails the push instead of being overwritten. The open pull request is read again after the push: one
+# merged or closed in between fails the job (never green with the release on a branch no pull request holds), and a
+# run of the job again builds the branch from main as it is then. When nothing differs from main: no push, no pull
+# request.
 # When bot/promote-stg already holds exactly this on top of main: no push (its check would only run again).
 #
 # Environment: the CI platform's own (the link to this run, the code repository's address: ci_run_url, ci_repo_url of
@@ -423,6 +426,14 @@ else
     gg ${auth[@]+"${auth[@]}"} push --quiet --force-with-lease="$lease_arg" origin "$head:refs/heads/$branch" ||
       fail "push $branch to svp-gitops: it is no longer at ${lease:-<none>} as read at the start (another run, or a change by hand), or the push was refused; nothing was overwritten. Run the job again to rebuild it from what is there now"
     echo "ok    pushed $branch ${head:0:12} (on main ${gmain:0:12} of svp-gitops)"
+    # The pull request read at the start may have been merged (auto-merge) or closed since, the push then landing on a
+    # branch no open pull request holds; editing it and turning on its auto-merge would still succeed. Read it again.
+    if [ -n "$pr" ] && [ -z "$dry" ]; then
+      prs=$(ci_change_request_list "$branch" main "$gitops_repo") && now_pr=$(ci_change_request_pick "$gitops_app" <<<"$prs") ||
+        fail "ask the repository's host again whether pull request #$pr of $branch is open in $gitops_repo"
+      [ "$now_pr" = "$pr" ] ||
+        fail "pull request #$pr of $branch in $gitops_repo was merged or closed between the start of this run and its push, so $branch now holds ${head:0:12} with no open pull request. Run the job again: it builds $branch again from main of svp-gitops as it is now and opens a new pull request"
+    fi
   fi
 fi
 

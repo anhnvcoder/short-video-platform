@@ -369,6 +369,10 @@ case "$names " in
     ;;
 esac
 if [ "$k3d" = 1 ]; then
+  # Fetches main again, not the commit the job's source-map step cloned. Accepted risk: a web release merged between
+  # the two steps makes those maps another release's, and target gitops-sourcemaps then fails, as it uploads nothing
+  # unless every chunk the web serves has its debug ID in the maps; so no wrong map is ever uploaded. Pinning that
+  # commit here would leave the clone off main, which the release wait after the scenario follows.
   make -s gitops-clone || {
     echo "FAIL  verify-run: make gitops-clone (the deployment configuration svp-gitops); nothing started" >&2
     exit 1

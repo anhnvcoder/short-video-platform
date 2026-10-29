@@ -33,7 +33,8 @@
 #     attestation too. GITOPS_DIR is a clone of svp-gitops (CI's, from make gitops-clone): the refs are fetched into
 #     it under refs/svp/rescan/, anonymously; the open pull request is asked of the repository's host with the job's
 #     own token, a read of a public repository. Fails, after printing every release it could read, when a file cannot
-#     be read or VALUES_REF is neither.
+#     be read or the host does not say whether the pull request is open (main and VALUES_REF are still listed); fails
+#     at once when VALUES_REF is neither.
 set -euo pipefail
 
 # shellcheck source=deploy/ci/common.sh
@@ -95,10 +96,15 @@ list() {
   gf() { GIT_TERMINAL_PROMPT=0 git -C "$dir" -c credential.helper= fetch --quiet --no-tags origin "$@"; }
   gf "+refs/heads/main:refs/svp/rescan/main" || fail "fetch main of svp-gitops"
   refs+=(refs/svp/rescan/main) labels+=("main of svp-gitops")
-  prs=$(ci_change_request_list "$gitops_promote_branch" main "$gitops_repo") ||
-    fail "ask the repository's host whether the promote pull request of $gitops_repo is open"
-  open=$(ci_change_request_pick "$gitops_app" <<<"$prs") || fail "read the open pull requests of $gitops_promote_branch"
-  if [ -n "$open" ]; then
+  # Unanswered, the releases of main and of VALUES_REF are still listed (and rescanned) before the run fails: they are
+  # what stg and prd run, whose attestations must not age out because the host did not answer.
+  if ! prs=$(ci_change_request_list "$gitops_promote_branch" main "$gitops_repo"); then
+    echo "FAIL  ask the repository's host whether the promote pull request of $gitops_repo is open; $gitops_promote_branch not read" >&2
+    status=1
+  elif ! open=$(ci_change_request_pick "$gitops_app" <<<"$prs"); then
+    echo "FAIL  read the open pull requests of $gitops_promote_branch; $gitops_promote_branch not read" >&2
+    status=1
+  elif [ -n "$open" ]; then
     gf "+refs/heads/$gitops_promote_branch:refs/svp/rescan/promote" || fail "fetch $gitops_promote_branch of svp-gitops"
     refs+=(refs/svp/rescan/promote) labels+=("$gitops_promote_branch of svp-gitops (pull request #$open)")
   fi

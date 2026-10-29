@@ -18,9 +18,12 @@
 #   - on a machine: an address of svp-gitops off its disk is refused before anything is read, and one that
 #     pushInsteadOf turns into one off it too; with PROMOTE_DRY_RUN=1 the push is printed instead and the branch does
 #     not move; an address on its disk is pushed for real, the pull request and its auto-merge printed, gh only reads;
+#   - the app's pull request is read again after a real push: still open, it is edited; merged in between (no longer
+#     listed), the run fails, saying so, and turns on no auto-merge;
 #   - rescan.sh list: the releases of every environment of main of svp-gitops, of bot/promote-stg while the app's pull
 #     request is open, of a values_ref of svp-gitops, and of a values_ref that is a commit of this repository from
-#     before svp-gitops (deploy/k8s/values/services/); a values_ref that is neither fails.
+#     before svp-gitops (deploy/k8s/values/services/); a values_ref that is neither fails; a host that does not answer
+#     whether the pull request is open fails the list after main's and values_ref's releases are printed.
 # Every run is a machine's (the local platform of platform.sh, whose job variables platform-test.sh covers): env -i
 # leaves none of a CI job's variables to the scripts. This run's commit is HEAD of the throwaway checkout.
 # Runs on macOS and Linux: no network, no Docker, no cluster.
@@ -54,7 +57,8 @@ lacks() { ! grep -qF -- "$2" "$1"; }
 # --- Fakes. gh writes each call to gh.log (one line of %q-quoted arguments), answers pr list from gh/prs.json and
 # api users/... with gh/user.json through its --jq filter; any other call (pr create, edit, merge) only records. git
 # runs the real git; with RACE_GIT_DIR set, a push first moves bot/promote-stg of that repository to RACE_COMMIT, as
-# another run would between the clone and the push.
+# another run would between the clone and the push; with RACE_PRS set, a push first makes it gh's answer to pr list,
+# as auto-merge merging the pull request between the first read and the push would.
 mkdir -p "$work/bin" "$work/gh" "$work/home"
 cat >"$work/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -74,14 +78,14 @@ esac
 EOF
 cat >"$work/bin/git" <<EOF
 #!/usr/bin/env bash
-if [ -n "\${RACE_GIT_DIR:-}" ]; then
-  for a in "\$@"; do
-    if [ "\$a" = push ]; then
+for a in "\$@"; do
+  if [ "\$a" = push ]; then
+    [ -z "\${RACE_GIT_DIR:-}" ] ||
       "$real_git" --git-dir="\$RACE_GIT_DIR" update-ref refs/heads/bot/promote-stg "\$RACE_COMMIT"
-      break
-    fi
-  done
-fi
+    [ -z "\${RACE_PRS:-}" ] || printf '%s\\n' "\$RACE_PRS" >"\$FAKE_GH_DIR/prs.json"
+    break
+  fi
+done
 exec "$real_git" "\$@"
 EOF
 chmod 755 "$work/bin/gh" "$work/bin/git"
@@ -330,6 +334,26 @@ check "on a machine: the auto-merge is printed" has "$work/promote.out" \
   "$(printed pr merge bot/promote-stg --repo anhnvcoder/svp-gitops --auto --squash --match-head-commit "$pushed")"
 check "on a machine: the body links no run" has "$work/promote.out" "Lượt chạy: local"
 
+# The app's pull request, read again after the push: still open, it is edited; merged before the push, the run fails.
+pr_list_line=$(gh_line pr list --repo anhnvcoder/svp-gitops --head bot/promote-stg --base main --state open --limit 500 \
+  --json number,isCrossRepository,author)
+echo "$app_pr" >"$work/gh/prs.json"
+release "$work/r7" video-service "$c2" "$digest_b"
+promote "on a machine, the app's pull request still open after the push" 0 "$work/r7"
+check "pull request still open: pushed" has "$work/promote.out" "ok    pushed bot/promote-stg "
+same "pull request still open: listed again after the push" 2 "$(grep -cF -- "$pr_list_line" "$work/gh.log")"
+check "pull request still open: it is edited" has "$work/promote.out" "$(printed pr edit 9 --repo anhnvcoder/svp-gitops) --title "
+release "$work/r8" feed-service "$c2" "$digest_c"
+promote "on a machine, the app's pull request merged before the push" 1 "$work/r8" RACE_PRS='[]'
+check "pull request merged before the push: pushed" has "$work/promote.out" "ok    pushed bot/promote-stg "
+check "pull request merged before the push: says so" has "$work/promote.out" \
+  "FAIL  pull request #9 of bot/promote-stg in anhnvcoder/svp-gitops was merged or closed between the start of this run and its push"
+check "pull request merged before the push: no edit" lacks "$work/promote.out" "$(printed pr edit 9)"
+check "pull request merged before the push: no auto-merge" lacks "$work/promote.out" "$(printed pr merge)"
+check "pull request merged before the push: no summary" lacks "$work/promote.out" "auto-merge on"
+echo '[]' >"$work/gh/prs.json"
+remote update-ref refs/heads/bot/promote-stg "$pushed"
+
 # --- rescan.sh list: a clone of svp-gitops, as make gitops-clone leaves it.
 "$real_git" clone -q "$gitops_url" "$work/clone"
 # list NAME WANT_RC [VALUES_REF]: rescan.sh list on a machine, stdout in list.out, stderr in list.err.
@@ -359,6 +383,16 @@ check "rescan.sh list: the release of bot/promote-stg" has "$work/list.out" \
 echo "$person_pr" >"$work/gh/prs.json"
 list "only a person's and a fork's pull request" 0
 check "rescan.sh list: theirs not read" lacks "$work/list.out" "bot/promote-stg"
+# The host does not answer pr list (no prs.json): main's releases and values_ref's are still listed, then it fails.
+mv "$work/gh/prs.json" "$work/gh/prs.off"
+list "the pull requests not answered" 1 bot/promote-stg
+same "rescan.sh list: not answered, the fourteen image files of main still listed" 14 \
+  "$(grep -c "main of svp-gitops, envs/" "$work/list.out")"
+check "rescan.sh list: not answered, values_ref still listed" has "$work/list.out" \
+  "${tab}$digest_a${tab}bot/promote-stg of svp-gitops, envs/stg/images/user-service.yaml"
+check "rescan.sh list: not answered, says so" has "$work/list.err" \
+  "FAIL  ask the repository's host whether the promote pull request of anhnvcoder/svp-gitops is open"
+mv "$work/gh/prs.off" "$work/gh/prs.json"
 echo '[]' >"$work/gh/prs.json"
 list "values_ref a branch of svp-gitops" 0 bot/promote-stg
 check "rescan.sh list: the releases of values_ref" has "$work/list.out" \

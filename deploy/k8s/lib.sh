@@ -327,7 +327,9 @@ gitops_dir() {
 # (the whole history, which the bootstrap and measure-gitops read), or fetches it when it is there, then checks out
 # GITOPS_REF (default main: a branch, as origin/<branch>, or a full commit SHA) detached, and exports SVP_GITOPS_DIR to
 # that folder for what this shell runs next. Refuses a clone there with uncommitted changes, or a folder that is no
-# clone of svp-gitops, instead of overwriting either. Touches nothing outside .gitops/ of this checkout.
+# clone of svp-gitops, instead of overwriting either. A clone with no index was never checked out (a run that stopped
+# between the clone and the checkout, as on a GITOPS_REF that is no branch): it holds nothing to lose, so the next run
+# checks it out instead of reading every file as deleted. Touches nothing outside .gitops/ of this checkout.
 gitops_clone() {
   local dir=$gitops_ci_clone ref=${GITOPS_REF:-main} target sha
   # No credential helper and no prompt: the clone is anonymous, as Argo CD's is.
@@ -335,7 +337,8 @@ gitops_clone() {
   if [ -e "$dir" ]; then
     gitops_is_clone "$dir" ||
       fail "$dir is not a clone of svp-gitops; remove it (rm -rf .gitops) and run make gitops-clone again"
-    [ -z "$(git -C "$dir" status --porcelain)" ] ||
+    [ ! -e "$(git -C "$dir" rev-parse --path-format=absolute --git-path index)" ] ||
+      [ -z "$(git -C "$dir" status --porcelain)" ] ||
       fail "$dir has uncommitted changes, which make gitops-clone does not overwrite; commit or remove them first"
     "${git_[@]}" -C "$dir" fetch -q --prune origin || fail "git fetch of $gitops_url into $dir"
   else

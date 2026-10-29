@@ -42,8 +42,10 @@
 #     provenance-predicate.sh; none found and an error of cosign each exit with their own status;
 #   - changed-services.sh builds all seven images for a change of platform.sh, as for common.sh, and none for a change
 #     of this test, of promote-test.sh, of platform-guard.sh, of a scenario file under deploy/ci/verify/, of the
-#     policy's values or of docs/; all seven for a change of the GRYPE_IMAGE line of the Makefile, none for another
-#     line of it;
+#     scripts of other workflows and of svp-gitops's check (record-stg.sh, gitops-check.sh, dora.sh and the tests of
+#     these and of release-set.sh, promote-prd.sh), of the policy's values or of docs/; all seven for a change of
+#     release-set.sh and promote-prd.sh (job promote-prd of images.yml), and of the GRYPE_IMAGE line of the Makefile,
+#     none for another line of it;
 #   - platform-guard.sh reads the scenario files under deploy/ci/verify/ too.
 # Runs on macOS and Linux: no network, no Docker, no cluster.
 #
@@ -940,8 +942,9 @@ rm "$tree/deploy/ci/new-step.sh" "$tree/deploy/ci/linked-dir" "$tree/deploy/ci/v
 g checkout -q -- deploy/ci/rescan.sh
 
 # --- changed-services.sh: platform.sh is part of the image pipeline (common.sh sources it), so a change of it builds
-# all seven; this test, platform-guard.sh, provenance-predicate-test.sh, the scripts of the verification runs, the
-# policy's values and docs/ are read by no image job.
+# all seven, as do release-set.sh and promote-prd.sh (job promote-prd); this test, platform-guard.sh,
+# provenance-predicate-test.sh, the scripts of the verification runs and of the other workflows, the policy's values
+# and docs/ are read by no image job.
 changed_by() {
   echo "# changed" >>"$tree/$1"
   g commit -qam "change $1"
@@ -959,6 +962,12 @@ same "changed-services: a change of verify-tempo.sh builds nothing" "" "$(change
 same "changed-services: a change of gitops-sourcemaps.sh builds nothing" "" "$(changed_by deploy/ci/gitops-sourcemaps.sh)"
 same "changed-services: a change of gitops-sourcemaps-test.sh builds nothing" "" \
   "$(changed_by deploy/ci/gitops-sourcemaps-test.sh)"
+for f in record-stg.sh gitops-check.sh gitops-check-test.sh dora.sh dora-test.sh release-set-test.sh \
+  promote-prd-test.sh; do
+  same "changed-services: a change of $f builds nothing" "" "$(changed_by "deploy/ci/$f")"
+done
+same "changed-services: a change of release-set.sh builds all seven" "$all" "$(changed_by deploy/ci/release-set.sh)"
+same "changed-services: a change of promote-prd.sh builds all seven" "$all" "$(changed_by deploy/ci/promote-prd.sh)"
 same "changed-services: a change of common.sh builds all seven" "$all" "$(changed_by deploy/ci/common.sh)"
 same "changed-services: a change of the policy's values builds nothing" "" \
   "$(changed_by deploy/helm/svp-policy/values.yaml)"
