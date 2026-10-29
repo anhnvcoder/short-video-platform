@@ -569,9 +569,11 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/sarif-trivy" "$RUNNER_TEMP/sarif-grype"
           while IFS= read -r -d '' f; do
+            # download-artifact unpacks a lone artifact straight into the path, with no folder of its name: a
+            # rescan uploads only sarif-rescan, so its files land directly in sarif/ and are trivy's.
             case "$f" in
               */grype.sarif) tool=grype ;;
-              */trivy.sarif | */sarif-rescan/*.sarif) tool=trivy ;;
+              */trivy.sarif | */sarif-rescan/*.sarif | "$RUNNER_TEMP"/sarif/*-*.sarif) tool=trivy ;;
               *)
                 echo "::error::Unexpected SARIF file ${f#"$RUNNER_TEMP"/}"
                 exit 1
