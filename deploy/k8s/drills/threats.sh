@@ -1787,7 +1787,7 @@ eso() {
     create serviceaccounts/default --subresource=token -n svp
   eso_can "$ctl" no "SEC-5: the controller may not create a token for $eso_source/$eso_store_sa" \
     create "serviceaccounts/$eso_store_sa" --subresource=token -n "$eso_source"
-  out=$(kc auth can-i create "serviceaccounts/$eso_store_sa" --subresource=token -n svp --as="system:serviceaccount:$ctl" 2>&1 || true)
+  out=$(kc auth can-i create "serviceaccounts/$eso_store_sa" --subresource=token -n svp --as="$eso_controller" 2>&1 || true)
   [[ $out == yes ]] && control "the controller may create a token for svp/$eso_store_sa, the store's" ||
     miss "control: the controller may create a token for svp/$eso_store_sa (got '$out')"
   # Its Secret writes: held by the admission policy, which RBAC cannot do.

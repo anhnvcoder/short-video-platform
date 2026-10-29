@@ -278,8 +278,10 @@ export -f load_local_watch fallback_alert_check lighthouse_run lcp_median objsto
 scenario_targets() {
   step up 40 make up OBS=lgtm
   step smoke 15 make smoke
-  step drill-duplicates 15 make drill-duplicates
-  step drill-kill-worker 20 make drill-kill-worker
+  # Both drills read the outbox of svp_video with psql -w: the Postgres of the runner is a service container of the job
+  # with the password postgres (as object-store-roundtrip below).
+  step drill-duplicates 15 env PGPASSWORD=postgres make drill-duplicates
+  step drill-kill-worker 20 env PGPASSWORD=postgres make drill-kill-worker
   step drill-obs-threats 30 make drill-obs-threats
   step load-local 25 bash -c load_local_watch
   step fallback-alert-under-load 1 bash -c fallback_alert_check
