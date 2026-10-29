@@ -44,12 +44,23 @@ media_objects() {
       exec curl -sS --fail -K - --aws-sigv4 aws:amz:us-east-1:s3 "http://127.0.0.1:9000/media?list-type=2&prefix=media/$1/"' \
     sh "$1" 2>&1) || fail "list media/$1/ with a signed request in the s3 container: $(printf '%s' "$out" | tail -n 1)"
   [[ $out == *"<IsTruncated>false</IsTruncated>"* ]] || fail "listing of media/$1/ is complete in one page"
-  # Each <Contents> holds its <Key> before its <ETag>: one pair per object, in order.
-  printf '%s' "$out" | grep -oE '<(Key|ETag)>[^<]*</(Key|ETag)>' |
-    awk 'NR % 2 == 1 && !/^<Key>/ { exit 1 } NR % 2 == 0 && !/^<ETag>/ { exit 1 } { print } END { if (NR % 2) exit 1 }' |
-    sed -E 's/<[^>]*>//g' | paste -d ' ' - - | LC_ALL=C sort >"$2" ||
-    fail "read the keys and ETags of media/$1/ from the listing"
+  printf '%s' "$out" | listing_pairs | LC_ALL=C sort >"$2" ||
+    fail "read the keys and ETags of media/$1/ from the listing; response starts: $(printf '%s' "$out" | head -c 300 | tr '\n' ' ')"
   [[ -s $2 ]] || fail "media/$1/ holds objects"
+}
+
+# listing_pairs: reads a ListObjectsV2 response on stdin, prints "<key> <etag>" for every <Contents>
+# block. The order of the elements inside a block differs between stores (RustFS writes the ETag
+# before the Key), so each block is read on its own: it must hold exactly one non-empty Key and
+# one ETag, whatever their order and whatever else it holds. The ETag keeps its escaped quotes.
+listing_pairs() {
+  { grep -oE '</?Contents>|<(Key|ETag)>[^<]*</(Key|ETag)>' || true; } |
+    awk '
+      /^<Contents>$/   { if (open) bad = 1; open = 1; key = etag = ""; keys = etags = 0; next }
+      /^<\/Contents>$/ { if (!open || keys != 1 || etags != 1 || key == "" || etag == "") bad = 1; else print key " " etag; open = 0; next }
+      /^<Key>/         { if (!open) bad = 1; keys++; key = $0; gsub(/<[^>]*>/, "", key); next }
+      /^<ETag>/        { if (!open) bad = 1; etags++; etag = $0; gsub(/<[^>]*>/, "", etag); next }
+      END              { if (bad || open) exit 1 }'
 }
 
 # completed_body PARTITION OFFSET: the hex of the transcode.completed at that place of the last
