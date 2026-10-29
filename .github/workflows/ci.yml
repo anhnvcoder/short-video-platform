@@ -267,9 +267,11 @@ jobs:
     permissions:
       contents: read
     steps:
+      # The whole history: the test of gitops-check.sh reads the commits that the tree of svp-gitops pins.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       # Here and not only in the image gate: a pull request that changes nothing but .trivyignore.yaml builds no image,
       # and a broken entry merged into main would stop the daily rescan from attesting every service.
       # The same step holds the misconfigurations job trivy-config leaves out to their rules: paths, reason, at most 90
@@ -312,6 +314,10 @@ jobs:
           make compose-config
       - run: make helm-check
       - run: deploy/k8s/check-image-digests.sh
+      # The check that svp-gitops runs from a pinned commit of this repository, on main of svp-gitops cloned
+      # anonymously: each negative case (a missing image file, an image newer than the charts, ...) must fail with its
+      # own message. The clone aside, every case stops before the network; helm from the PATH set above.
+      - run: deploy/ci/gitops-check-test.sh
       # k6 inspect of every profile in the pinned k6 image, with no network: a script that no longer loads or a profile
       # whose scenarios are malformed is caught here, without the compose stack the load runs need.
       - run: make k6-check
