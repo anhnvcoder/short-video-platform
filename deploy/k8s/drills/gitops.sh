@@ -5,9 +5,11 @@
 # is the merge of a promote pull request, which changes image.digest in deploy/k8s/values/services/.
 #
 #   push           the reflog entry "update by push" of refs/remotes/origin/main that moved it to REV (a push from
-#                  this machine); else the PushEvent of GitHub's events API whose head is REV (ci_push_time of
-#                  deploy/ci/platform.sh), which is how a pull request merged on GitHub arrives (this machine only
-#                  fetches it later); else "not measurable", and the times count from the start of Argo CD's sync
+#                  this machine); else, for a pull request merged on GitHub (this machine only fetches it later),
+#                  the time that pull request was merged (merged_at of the pull request whose merge commit is REV),
+#                  else the PushEvent of GitHub's events API whose head is REV (both through ci_push_time of
+#                  deploy/ci/platform.sh; the events are delayed on purpose and may not list the push for many
+#                  minutes); else "not measurable", and the times count from the start of Argo CD's sync
 #                  instead. Never the commit's own date: a commit can be made long before it is pushed.
 #   sync           the entries for REV in status.history of the Applications that synced it: when the first started
 #                  and when the last finished;
@@ -90,11 +92,11 @@ gh_note=
 if [ -z "$push_ts" ]; then
   if created=$(ci_push_time "$sha" 2>&1); then
     if [ -n "$created" ]; then
-      push_ts=$(epoch "$created")
-      push_src="GitHub PushEvent with head $short (events of $host_repo)"
+      push_ts=$(epoch "${created%% *}")
+      push_src="GitHub: ${created#* } for $short ($host_repo)"
     fi
   else
-    gh_note=" (GitHub's events could not be read: ${created%%$'\n'*})"
+    gh_note=" (GitHub's pull requests and events could not be read: ${created%%$'\n'*})"
   fi
 fi
 
@@ -124,7 +126,7 @@ if [ -z "$syncs" ]; then
     fi
   done
   if [ -z "$push_ts" ] && ! git -C "$repo_root" merge-base --is-ancestor "$sha" refs/remotes/origin/main 2>/dev/null; then
-    waiting "$short is not pushed yet: not in origin/main as last fetched, and GitHub has no PushEvent with head $short$gh_note"
+    waiting "$short is not pushed yet: not in origin/main as last fetched, and GitHub has no merged pull request or PushEvent for $short$gh_note"
   fi
   waiting "Argo CD has not synced $short yet (it polls GitHub every 60 s; the repo-server's cache of the refs adds up to 60 s more)"
 fi
@@ -345,7 +347,7 @@ if [ -n "$push_ts" ]; then
 else
   origin=$(epoch "$sync_start")
   push_at=
-  push_src="not measurable: no reflog entry and no GitHub PushEvent for $short$gh_note; offsets count from the sync's start"
+  push_src="not measurable: no reflog entry and no merged GitHub pull request or PushEvent for $short$gh_note; offsets count from the sync's start"
 fi
 offset() { echo $(($(epoch "$1") - origin)); }
 printf '%-18s %s\n' "commit" "$short" "released" "${changed[*]}" \

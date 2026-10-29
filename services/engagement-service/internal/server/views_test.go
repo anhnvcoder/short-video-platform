@@ -50,7 +50,7 @@ func newViewsEnv(t *testing.T, name string) *viewsEnv {
 	t.Cleanup(cl.Close)
 	logs := &logBuffer{}
 	logger := slog.New(logx.NewHandler(slog.NewJSONHandler(logs, nil)))
-	return &viewsEnv{s: New(pool, cl, logger), logs: logs, pool: pool, brokers: brokers, cl: cl}
+	return &viewsEnv{s: New(pool, pool, cl, logger), logs: logs, pool: pool, brokers: brokers, cl: cl}
 }
 
 func viewValue(videoID, viewerID string) []byte {
@@ -259,7 +259,7 @@ func TestFailedEndOffsetLookupRetriesTheBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	closed.Close()
-	broken := New(e.pool, closed, e.s.logger)
+	broken := New(e.pool, e.pool, closed, e.s.logger)
 	for range 2 {
 		if rejected, err := broken.HandleViews(t.Context(), &kafkax.Batch{Records: rs}); err == nil {
 			t.Fatalf("HandleViews() with no broker = %v, nil; want an error", rejected)

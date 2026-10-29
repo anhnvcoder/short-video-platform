@@ -34,7 +34,7 @@ GITOPS_REV ?= main
 k8s-gitops-up: k8s-exclusive env-required ## Create a new cluster svp that runs as staging (base values plus deploy/k8s/envs/stg), built by Argo CD from GitHub over anonymous HTTPS (no deploy key) [GITOPS_REV=main]; first checks that the seven release digests at that revision are on GHCR (anonymous pull), signed, with a clean vuln attestation at most 48 h old; applies the Secrets of .env, installs Argo CD with the plugin of Argo Rollouts for the nodes' architecture, waits until every Application is Synced and Healthy
 	GITOPS_REV='$(GITOPS_REV)' deploy/k8s/gitops.sh
 
-measure-gitops: ## On the GitOps cluster, time release commit REV=<commit> (the merge of a promote pull request) from its push (reflog of origin/main, else GitHub's PushEvent) through Argo CD's sync to the first and last pod Ready with the new digest; JSON in .k8s/drills/ (read only)
+measure-gitops: ## On the GitOps cluster, time release commit REV=<commit> (the merge of a promote pull request) from its push (reflog of origin/main, else merged_at of its pull request, else GitHub's PushEvent) through Argo CD's sync to the first and last pod Ready with the new digest; JSON in .k8s/drills/ (read only)
 	@test -n '$(REV)' || { echo "make measure-gitops: set REV=<commit>" >&2; exit 1; }
 	deploy/k8s/drills/gitops.sh '$(REV)'
 
@@ -107,7 +107,7 @@ drill-k8s-web-canary: ## Canary drill of the web client on the dev cluster: a se
 	@test -s .k8s/ca.crt || { echo "make drill-k8s-web-canary: .k8s/ca.crt missing; run make k8s-up (or make k8s-ca)" >&2; exit 1; }
 	@$(WEB) exec env $(K8S_DRILL_ENV) NODE_EXTRA_CA_CERTS=$(CURDIR)/.k8s/ca.crt bash ../deploy/k8s/drills/web-canary.sh drill
 
-drill-k8s-pdb: ## Cordon the nodes and evict both gateway pods one after the other, as a drain does: the PodDisruptionBudget lets the first go (201) and refuses the second (429) while its replacement is Pending; uncordon (LOCAL LAB ONLY: resets register rate limit keys in the cluster's Valkey db 10)
+drill-k8s-pdb: ## Cordon the nodes and, for the gateway then feed-service, evict both pods one after the other, as a drain does: each PodDisruptionBudget lets the first go (201) and refuses the second (429) while its replacement is Pending; uncordon, wait for two ready pods of each and print their nodes (LOCAL LAB ONLY: resets register rate limit keys in the cluster's Valkey db 10)
 	@test -s .k8s/ca.crt || { echo "make drill-k8s-pdb: .k8s/ca.crt missing; run make k8s-up (or make k8s-ca)" >&2; exit 1; }
 	$(K8S_DRILL_ENV) deploy/k8s/drills/pdb.sh https://api.svp.localhost:8443
 

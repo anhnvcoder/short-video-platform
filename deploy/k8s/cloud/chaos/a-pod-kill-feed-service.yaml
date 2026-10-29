@@ -6,9 +6,10 @@
 # When: under k6 profile cloud at its hold rate, after 5 minutes of steady state.
 #
 # Steady-state hypothesis: as for the gateway, the feed keeps its SLO in the 10 minutes around the kill (5xx < 0.1%, p99
-# <= 150 ms outside the first 30 s) and the replacement pod is Ready in under 60 s. feed-service has minReplicas 1 today:
-# when only one replica runs at the kill, this run measures how long the feed is down until the new pod is Ready, and the
-# result is a finding about the minimum replica count, not a failed hypothesis. Write down the replica count at the kill.
+# <= 150 ms outside the first 30 s) and the replacement pod is Ready in under 60 s. feed-service runs two replicas, as
+# the gateway does, so the other pod serves the feed while the replacement starts. Should only one replica run at the
+# kill, this run measures how long the feed is down until the new pod is Ready, and the result is a finding about the
+# replica count, not a failed hypothesis. Write down the replica count at the kill.
 #
 # Watch (Prometheus, and the k6 summary per route):
 #   feed 5xx ratio and p99: the queries at the top of a-pod-kill-gateway.yaml

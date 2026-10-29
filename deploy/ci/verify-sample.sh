@@ -50,10 +50,11 @@
 #   restarts.tsv     every 10 s  RestartCount of each container of compose project svp, running or not: container
 #                                name, its creation time (which tells a container made anew under the same name from
 #                                the one before it), RestartCount
-#   pods.tsv         every 30 s  kubectl top pods --containers of namespaces svp, svp-data and cnpg-system: namespace,
-#                                pod, container, CPU in millicores, working set in MiB (the web pods, the Postgres pods
-#                                with the Barman Cloud sidecar, the plugin itself: what the web's resources and the
-#                                plugin's 256 Mi limit are set from)
+#   pods.tsv         every 30 s  kubectl top pods --containers of namespaces svp, svp-data, cnpg-system and svp-obs:
+#                                namespace, pod, container, CPU in millicores, working set in MiB (the web pods, the
+#                                Postgres pods with the Barman Cloud sidecar, the plugin itself: what the web's resources
+#                                and the plugin's 256 Mi limit are set from; Tempo, the Collector, Prometheus and Loki
+#                                under load: what their memory limits are set from)
 #   disk.tsv         every 30 s  free and total bytes of the filesystem of Docker's data, and 1 when free is under 15%
 #                                of the total + 1 GiB: then it also creates $SVP_VERIFY_OUT/disk-low, and
 #                                deploy/ci/verify-run.sh starts no further target (kubelet would otherwise evict pods
@@ -245,7 +246,7 @@ pods_sample() {
   local t=$1
   # kubectl top prints CPU as <n>m and memory as <n>Mi.
   kc top pods -A --containers --no-headers 2>/dev/null | awk -v t="$t" -v OFS='\t' '
-    $1 == "svp" || $1 == "svp-data" || $1 == "cnpg-system" {
+    $1 == "svp" || $1 == "svp-data" || $1 == "cnpg-system" || $1 == "svp-obs" {
       cpu = $4; sub(/m$/, "", cpu); mem = $5; sub(/Mi$/, "", mem); print t, $1, $2, $3, cpu, mem }' \
     >>"$samples/pods.tsv"
 }

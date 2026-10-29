@@ -8,9 +8,14 @@
 #
 # When: under k6 profile cloud at its hold rate, after 5 minutes of steady state.
 #
-# Steady-state hypothesis (the gateway's call deadlines): the
-# feed still answers 200, with `stats` left out once the 100 ms deadline passes; feed 5xx < 0.1% and p99 <= 150 ms; like
-# and view have no 5xx (200 ms is well under their 3 s deadline); CircuitBreakerOpen does not fire (slow is not down).
+# Steady-state hypothesis (the gateway's call deadlines, engagement-service's write deadline): the
+# feed still answers 200, with `stats` left out once the 100 ms deadline passes; feed 5xx < 0.1% and p99 <= 150 ms; view
+# has no 5xx (one produce to Redpanda, within its 2 s bound); a like is one statement, one round trip on a pooled
+# connection (two the first time on it, one more for the pool's ping of a connection idle over a second), so it
+# answers within engagement-service's 1 s write deadline; a like that needs a new connection overruns it and is a fast
+# 503 (UNAVAILABLE, DEPENDENCY_UNAVAILABLE, not retried), never a 504 at the gateway's 3 s; the GetStats the gateway
+# cancels redial only in engagement-service's read pool, so they never hold up a like; CircuitBreakerOpen does not fire
+# (slow is not down, and the breaker does not count DEPENDENCY_UNAVAILABLE).
 # A feed p99 above 150 ms is a finding about the gateway's call deadlines, recorded, not a failed experiment.
 #
 # Watch (Prometheus, and the k6 summary per route):

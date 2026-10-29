@@ -28,15 +28,74 @@ tempo:
       remote_write:
         - url: http://kps-prometheus.svp-obs:9090/api/v1/write
           send_exemplars: true
+  # Memory bounds. Without them Tempo was OOM-killed at a 768Mi limit some 25 minutes into a k6 run (1 pod, ~55 req/s)
+  # and within minutes at 4 pods (~220 req/s). In single-binary mode one process
+  # receives spans, holds them as live traces, writes WAL blocks, turns them into parquet blocks, compacts those and
+  # runs the metrics-generator. Sizes below are protobuf bytes; decoded on the heap a span takes about 3 times that.
+  # A span here is estimated at 500 B to 1 KB (HTTP server spans carry about 12 attributes, pgx spans the SQL text),
+  # Measured on a 4 vCPU runner at the Collector's exporter to Tempo: 726 spans/s at 1 k6 pod, 1 444 at 2, 3 036 at 4,
+  # so 4 pods send 1.5-3 MB/s. Bytes per second were not measured.
+  #
+  # Each consumer, with its worst case on the heap:
+  # - compaction and block completion buffer one parquet row group before they write it, by default 100 MB of rows.
+  #   Compaction merges 4 blocks a level within a one-hour window (30 s, 2 min, 8 min, 32 min blocks), so the buffer
+  #   fills only once the blocks hold 100 MB, about 20 minutes into a 1-pod run, which is why the memory grew with time.
+  #   20 MB row groups, one compaction and two completions at a time: 3 x 20 MB x 3 = 180 MB.
+  # - live traces (spans held until a trace has been idle 5 s): about 10 s of input, 15-30 MB at 4 pods. Over
+  #   max_live_traces_bytes, pushes wait instead of growing the map: 64 MB x 3 = 190 MB.
+  # - push requests being decoded: the Collector sends at most 10 batches at a time, about 1 MB each, copied about
+  #   5 times on the way in: 50 MB.
+  # - requests queued for the metrics-generator: forwarder.queue_size 20 (default 100), dropped from the metrics
+  #   when it is full, never from storage: 20 x 1 MB x 3 = 60 MB.
+  # - generator series: about 7 000 today (7 services x a few hundred span names, 17 series per histogram);
+  #   max_active_series 50 000 at about 1 KB each = 50 MB. Series over the cap merge into one overflow series.
+  # - service graph edges waiting for their other side (default 10 000 items): 10 MB. Remote write queue and WAL of
+  #   the generator: about 30 MB. Runtime, rings, caches and the idle query path: about 150 MB.
+  # Worst case on the heap all together is about 720 MB (687 MiB). The container's working set counts more than the
+  # heap (non-heap memory, active page cache of the WAL and block files): its measured peak was 687 MiB at 1 pod,
+  # 560 MiB at 2 and 784 MiB at 4, 240 MiB under the limit and just under GOMEMLIMIT. Nothing above 4 pods was measured.
+  #
+  # Ingestion cap: 6 MB/s, twice the 3 MB/s of 4 pods even at 1 KB a span, and no span was refused at 4 pods. 8 pods
+  # (about 6 000 spans/s; not measured, the runner's CPU gave out at 4) would reach the cap at 1 KB a span, so Tempo
+  # may refuse part of their spans: traces lost on purpose instead of an OOM. A runaway sender cannot fill the live
+  # traces faster than they are cut (6 MB/s x 10 s is under 64 MB). The burst of 12 MB lets the Collector drain its
+  # 4 MiB queue after a Tempo restart. A refused push gets RESOURCE_EXHAUSTED with a 5 s retry hint: the Collector
+  # retries it for at most 60 s and then drops it.
+  # max_traces_per_user (10 000) and max_bytes_per_trace (5 MB) keep their defaults, written here so the bounds can
+  # be read in one place: 4 pods keep about 3 000 traces live, and one trace of this system is a few tens of KB.
   overrides:
     defaults:
+      ingestion:
+        rate_limit_bytes: 6000000
+        burst_size_bytes: 12000000
+        max_traces_per_user: 10000
+      global:
+        max_bytes_per_trace: 5000000
       metrics_generator:
         processors: [service-graphs, span-metrics]
+        max_active_series: 50000
+        forwarder:
+          queue_size: 20
+  liveStore:
+    max_live_traces_bytes: 64000000
+  storage:
+    trace:
+      block:
+        parquet_row_group_size_bytes: 20000000
+  # GOMEMLIMIT 800MiB sits above the 687 MiB heap worst case and 224 MiB under the limit, which leaves room for
+  # goroutine stacks and other non-heap memory. Without it the Go runtime lets garbage grow to twice the live heap
+  # before it collects, which alone takes a heap over half the limit past it. Near it the runtime collects more often:
+  # it spends CPU instead of being OOM-killed. The 784 MiB peak of 4 pods is the container's working set, which also
+  # counts active page cache of the WAL and block files; no Go heap figure was measured. Not Tempo's own
+  # memory.automemlimit_enabled: the chart renders no memory section.
+  extraEnv:
+    - name: GOMEMLIMIT
+      value: 800MiB
   # No usage reports to stats.grafana.org, as in compose.
   reportingEnabled: false
   resources:
     requests: {cpu: 50m, memory: 128Mi}
-    limits: {memory: 768Mi}
+    limits: {memory: 1Gi}
   # Pod Security "restricted" (the namespace rejects pods that do not meet it): the chart sets no
   # container securityContext.
   securityContext:

@@ -29,6 +29,14 @@
 #                         videos are uploaded through the API; its return (the broker Ready again); the 3 videos READY
 #                         within 15 min, each transcoded and announced once; the lag of every consumer group back (see
 #                         Lag below) and the dead-letter topics unchanged 10 min after the return
+#   tempo-ingest-chaos-<x>
+#                         after each of chaos-a, chaos-b and chaos-c: deploy/ci/verify-tempo.sh chaos-<x> over the hold
+#                         window of that experiment's k6 run (k6-windows.tsv, below): no span the Collector's receivers
+#                         refused, its exporter to Tempo failed to send or to queue, or Tempo discarded; a trace of
+#                         gateway found and fetched with 2 services or more; the service graph edge gateway ->
+#                         feed-service grown; every source measured. Skipped when the experiment's run wrote no hold
+#                         window (the step skipped, or its run deleted before its hold); its result is its own and
+#                         stops no later experiment
 #   chaos-mesh-uninstall  its diagnostics (see Diagnostics below); every experiment deleted and gone first; then the
 #                         commands of the end of a cloud session: helm uninstall, namespace chaos-mesh deleted, the
 #                         CRDs *.chaos-mesh.org deleted; then nothing of Chaos Mesh left: no experiment, CRD, webhook
@@ -118,7 +126,8 @@
 # hypothesis is held against: <experiment>.k6.baseline), its k6 run (<experiment>.k6: level, the hold's arithmetic,
 # the hold window; <experiment>.k6_end: the summaries, the runner's checks over the hold window), what the uninstall
 # left, and the name of each diagnostics file (<step>.diagnostics). Each run's hold window also goes to
-# $SVP_VERIFY_OUT/k6-windows.tsv (label chaos-<experiment>), for the throttle criterion of deploy/ci/verify-sample.sh.
+# $SVP_VERIFY_OUT/k6-windows.tsv (label chaos-<experiment>), for the throttle criterion of deploy/ci/verify-sample.sh
+# and for tempo-ingest-chaos-<experiment>.
 #
 # Stopped by a signal (the run cancelled, or a step's limit reached, which verify-run.sh turns into TERM with 120 s
 # before KILL): the step deletes the experiments and waits up to 40 s for them to be gone. Chaos Mesh's finalizer lets
@@ -1765,6 +1774,7 @@ scenario_targets() {
   else
     step chaos-a 50 bash -c 'chaos_a'
   fi
+  k6mini_tempo_step tempo-ingest-chaos-a chaos-a
   if [ -n "$chaos_off" ] || [ -s "$chaos_stop_file" ]; then
     skip chaos-b "${chaos_off:-$(cat "$chaos_stop_file")}"
   elif [ "$chaos_trial_status" != ok ]; then
@@ -1772,11 +1782,13 @@ scenario_targets() {
   else
     step chaos-b 40 bash -c 'chaos_b'
   fi
+  k6mini_tempo_step tempo-ingest-chaos-b chaos-b
   if [ -n "$chaos_off" ] || [ -s "$chaos_stop_file" ]; then
     skip chaos-c "${chaos_off:-$(cat "$chaos_stop_file")}"
   else
     step chaos-c 75 bash -c 'chaos_c'
   fi
+  k6mini_tempo_step tempo-ingest-chaos-c chaos-c
   step chaos-mesh-uninstall 15 bash -c 'chaos_uninstall'
 }
 
@@ -2543,10 +2555,12 @@ EOJ
   st_out=$( (
     exec 3>&1 >/dev/null 2>&1
     echo absent >"$SVP_VERIFY_OUT/sch-netem"
-    rm -f "$chaos_state/stop"
+    rm -f "$chaos_state/stop" "$SVP_VERIFY_OUT/k6-windows.tsv"
     step() {
       echo "step $1" >&3
       last_status=ok
+      # An experiment's run writes its hold window, as chaos_k6_finish does.
+      [ "${1#chaos-[abc]}" != "" ] || printf '%s\t1000\t1600\t1\n' "$1" >>"$SVP_VERIFY_OUT/k6-windows.tsv"
       [ "$1" = chaos-b-trial ] || return 0
       last_status=fail
       chaos_put trial '{"result": "fail", "reason": "sch_netem absent on kernel k: no network delay possible"}'
@@ -2557,8 +2571,8 @@ EOJ
     }
     scenario_targets
   ) | tr '\n' ';')
-  same "scenario: the trial runs with sch_netem absent on the host; chaos-b skipped with the trial's reason" \
-    "step k8s-up;step seed-videos;step chaos-mesh-install;step chaos-b-trial;step chaos-a;skip chaos-b: the trial of the network delay did not pass: sch_netem absent on kernel k: no network delay possible;step chaos-c;step chaos-mesh-uninstall;" \
+  same "scenario: the trial runs with sch_netem absent on the host; chaos-b skipped with the trial's reason; tempo-ingest after each experiment that held its load" \
+    "step k8s-up;step seed-videos;step chaos-mesh-install;step chaos-b-trial;step chaos-a;step tempo-ingest-chaos-a;skip chaos-b: the trial of the network delay did not pass: sch_netem absent on kernel k: no network delay possible;skip tempo-ingest-chaos-b: no hold window of chaos-b in k6-windows.tsv;step chaos-c;step tempo-ingest-chaos-c;step chaos-mesh-uninstall;" \
     "$st_out"
   rm -f "$work/apt-fails" "$SVP_VERIFY_OUT/sch-netem"
   touch "$work/netem-loaded"
@@ -2627,6 +2641,7 @@ EOJ
   local si_out
   si_out=$( (
     exec 3>&1 >/dev/null 2>&1
+    rm -f "$SVP_VERIFY_OUT/k6-windows.tsv"
     step() {
       echo "step $1" >&3
       last_status=ok
@@ -2639,7 +2654,7 @@ EOJ
     scenario_targets
   ) | tr '\n' ';')
   same "scenario: the install failed: every experiment skipped, the uninstall run" \
-    "step k8s-up;step seed-videos;step chaos-mesh-install;skip chaos-b-trial: Chaos Mesh not installed;skip chaos-a: Chaos Mesh not installed;skip chaos-b: Chaos Mesh not installed;skip chaos-c: Chaos Mesh not installed;step chaos-mesh-uninstall;" \
+    "step k8s-up;step seed-videos;step chaos-mesh-install;skip chaos-b-trial: Chaos Mesh not installed;skip chaos-a: Chaos Mesh not installed;skip tempo-ingest-chaos-a: no hold window of chaos-a in k6-windows.tsv;skip chaos-b: Chaos Mesh not installed;skip tempo-ingest-chaos-b: no hold window of chaos-b in k6-windows.tsv;skip chaos-c: Chaos Mesh not installed;skip tempo-ingest-chaos-c: no hold window of chaos-c in k6-windows.tsv;step chaos-mesh-uninstall;" \
     "$si_out"
 
   # The uninstall's lists: one the API did not answer is listed as unread, never as nothing left.

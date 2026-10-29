@@ -338,8 +338,8 @@ flowchart LR
   (dựng lại cluster, không nâng tại chỗ). Mật khẩu sinh bằng
   `make env`, đưa vào Secret bằng `deploy/k8s/secrets.sh`, không nằm trong git.
 - **Workload** (ADR-0014 §10): một chart chung `deploy/helm/svp-service` cho 6 service và web (probe, `requests`/`limits`,
-  securityContext `restricted`, không token ServiceAccount); gateway 2 replica có PDB và HPA theo CPU, feed-service HPA
-  theo CPU, web 2 replica cố định có PDB, trải hai node, chờ 5 s trước khi tắt (server Next thoát ngay khi nhận SIGTERM),
+  securityContext `restricted`, không token ServiceAccount); gateway 2 replica có PDB và HPA theo CPU, feed-service luôn 2
+  replica (HPA 2–2) có PDB, ưu tiên trải hai node ([ADR-0031](adr/0031-chaos-findings-feed-engagement-tempo.md) §1), web 2 replica cố định có PDB, trải hai node, chờ 5 s trước khi tắt (server Next thoát ngay khi nhận SIGTERM),
   NetworkPolicy chỉ nhận từ Envoy và chỉ ra gateway, Valkey, Collector, GlitchTip (threat model WEB-13); media-worker 1–2
   replica do KEDA scale theo lag của group `media-worker` (topic vẫn 3 partition; 3 worker
   cùng transcode làm Docker VM hết CPU và k3s server chết, [ADR-0017](adr/0017-gitops-capacity-media-worker-max2.md)).
@@ -555,11 +555,13 @@ giai đoạn 6b (runner CI 16 GB hay VM thuê theo giờ, không dịch vụ AWS
   đúng với hai bản build thật (Server Action 409 22,6 %, mở việc xét khoá cố định), k6 thu nhỏ đạt tới 2 pod (110 req/s; mức 4
   trượt, Tempo OOM), ngưỡng p99 canary của web 250 ms, Velero đích RustFS (RTO 58 s, offset giữ), Chaos Mesh: tắt Redpanda 5 phút và
   kill pod gateway giữ SLO, hai phát hiện (feed-service một replica: feed 5xx 0,28 % khi mất pod; engagement-service chậm 200 ms:
-  18,5 % like hết hạn 3 s vì mỗi round trip Postgres của transaction cũng chậm), sửa trước buổi chaos của giai đoạn 7; LCP sát ngưỡng, chưa ổn định,
-  chuẩn là RUM p75.
-- **Dời:** phần còn lại của giai đoạn 6b:
-  source map của image CI và đo phát hành service có Postgres (`measure-gitops`) ở lượt `gitops` trên `main` sau merge; phần 4
-  (repo GitOps riêng). Giai đoạn 7: k6 1 000 req/s, Chaos Mesh trên EKS (sau khi sửa hai phát hiện),
+  18,5 % like hết hạn 3 s vì mỗi round trip Postgres của transaction cũng chậm), cùng Tempo OOM ở limit 768 Mi; cách sửa ở
+  [ADR-0031](adr/0031-chaos-findings-feed-engagement-tempo.md), kiểm lại trên runner 2026-10-29: (a) feed-service và (b) đạt (feed
+  5xx 0, like + view 5xx 0), Tempo không OOM và không bỏ span tới mức 4 pod; k6 thu nhỏ vẫn đạt tới 2 pod, mức 4 chạm trần CPU của
+  runner. Source map của image CI và đo phát hành service có Postgres (`measure-gitops`, 139 s từ merge tới pod Ready) đạt trên
+  `main` 2026-10-29. LCP sát ngưỡng, chưa ổn định, chuẩn là RUM p75.
+- **Dời:** phần còn lại của giai đoạn 6b: phần 4
+  (repo GitOps riêng). Giai đoạn 7: k6 1 000 req/s, Chaos Mesh trên EKS,
   diễn tập phục hồi RDS, Velero với S3 và snapshot EBS, hạn 50 ms của Redis trên ElastiCache. Manifest của phần đo thật kiểm schema
   bằng `make cloud-check`; LCP mobile mô phỏng sát ngưỡng 2,5 s trên runner mà chưa ổn định, Lighthouse là tín hiệu hồi quy,
   chuẩn là RUM p75 (ADR-0020, Kết quả "LCP").
@@ -871,7 +873,8 @@ Thân lỗi theo RFC 9457 (`Content-Type: application/problem+json`):
 - Circuit breaker của service đích đang mở ([§7.2](#72-đọc-feed)): gateway không gọi mạng mà trả ngay `UNAVAILABLE`, tức
   503 với `code` `UNAVAILABLE`, `detail` rỗng, như mọi 5xx. Service báo phụ thuộc của nó chết (`UNAVAILABLE` kèm reason
   `DEPENDENCY_UNAVAILABLE`, ví dụ `RecordView` khi Redpanda chết, `CompleteUpload` khi object store chết) cũng là 503 không lộ
-  reason.
+  reason. Like/Unlike khi Postgres chậm quá hạn ghi 1 s phía server hay không tới được cũng trả lỗi đó, kèm trailer
+  `grpc-retry-pushback-ms: -1` nên gateway không thử lại ([ADR-0031](adr/0031-chaos-findings-feed-engagement-tempo.md) §2).
 - Lỗi từ engagement-service khi ghép feed **không** đi qua bảng này: gateway nuốt lỗi và trả feed không kèm số đếm
   (graceful degradation, [§7.2](#72-đọc-feed)).
 

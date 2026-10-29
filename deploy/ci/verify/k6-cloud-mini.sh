@@ -2,9 +2,17 @@
 # Scenario k6-cloud-mini of deploy/ci/verify-run.sh, which sources this file: the k6 Job of profile cloud
 # (deploy/k6/cloud/run.sh) scaled down on the k3d cluster of the dev path (job k3d of .github/workflows/verify.yml), at
 # 1, 2, 4 and 8 pods, each pod the share of load of a pod of the 20-pod design. make k8s-up, the READY videos the load
-# reads (seed-videos), then one step per level, k6-pods-<n>; the first level that does not pass stops the scenario, the
-# later ones are skipped. The highest level that passed is the most load this runner carries: a limit of 4 vCPUs shared
-# by the whole system and the load, not the system's capacity.
+# reads (seed-videos), then one step per level, k6-pods-<n>, each followed by tempo-ingest-<n>; the first level that
+# does not pass stops the scenario, the later levels are skipped. The highest level that passed is the most load this
+# runner carries: a limit of 4 vCPUs shared by the whole system and the load, not the system's capacity.
+#
+# tempo-ingest-<n>: deploy/ci/verify-tempo.sh k6-pods-<n> over the level's hold window (step 5 below): whether Tempo
+# took in and served the level's traces (spans the Collector's receivers refused, its exporter to Tempo failed to send
+# or to queue, Tempo discarded, a trace of gateway found and fetched with 2 services or more, the service graph edge
+# gateway -> feed-service grown). Levels 1, 2 and 4 pass only with no span lost and every source measured; level 8, past
+# the load measured to fit, records the numbers and passes. Skipped when the level wrote no hold window (it did not
+# reach its hold, or was skipped); its result is its own and stops no later level. Run it alone with
+# targets='k6-pods-<n> tempo-ingest-<n>': it reads the window that level writes.
 #
 # seed-videos: 32 videos of 2 s at 320x240 (8 for each of 4 new users: the upload limit allows 10 at once per user),
 # uploaded through Envoy and waited for until READY, then at least 30 in GET /feed/explore: with fewer, most views
@@ -19,7 +27,8 @@
 #      pool from its own address (D23).
 #   4. Waits for the Job to end, reads each pod's summary (run.sh logs, .k6/cloud-<time>/pod-<i>.json), deletes it.
 #   5. The hold window: from 2 min after the last pod ended setup() to 12 min after the first did, 10 s in from each
-#      end; written to $SVP_VERIFY_OUT/k6-windows.tsv for the throttle criterion of deploy/ci/verify-sample.sh.
+#      end; written to $SVP_VERIFY_OUT/k6-windows.tsv for the throttle criterion of deploy/ci/verify-sample.sh and for
+#      tempo-ingest-<n>.
 #   6. Prometheus of the cluster over that window (a port-forward on 127.0.0.1:19090, as the drills open it): p95 and
 #      p99 of the gateway by route and of Envoy by route backend, p99_E (Envoy's stable backend of route web, the series
 #      the canary analysis reads), the web pods' average CPU, its share of their limit, their throttled periods and
@@ -402,6 +411,16 @@ k6mini_level() {
 export -f k6mini_seed k6mini_job_ended k6mini_setup_ends k6mini_register_keys k6mini_server k6mini_runner k6mini_oom \
   k6mini_level
 
+# k6mini_tempo_step NAME LABEL: step NAME, deploy/ci/verify-tempo.sh LABEL, when $SVP_VERIFY_OUT/k6-windows.tsv has a
+# hold window labelled LABEL; skipped otherwise. Scenario chaos uses it too.
+k6mini_tempo_step() {
+  if awk -F '\t' -v l="$2" '$1 == l { f = 1 } END { exit !f }' "$SVP_VERIFY_OUT/k6-windows.tsv" 2>/dev/null; then
+    step "$1" 10 "$here/verify-tempo.sh" "$2"
+  else
+    skip "$1" "no hold window of $2 in k6-windows.tsv"
+  fi
+}
+
 scenario_targets() {
   local k6mini_pods k6mini_stop=
   step k8s-up 60 make k8s-up
@@ -410,10 +429,11 @@ scenario_targets() {
   for k6mini_pods in 1 2 4 8; do
     if [ -n "$k6mini_stop" ]; then
       skip "k6-pods-$k6mini_pods" "$k6mini_stop"
-      continue
+    else
+      step "k6-pods-$k6mini_pods" 40 bash -c 'k6mini_level "$1"' _ "$k6mini_pods"
+      case $last_status in fail | timeout) k6mini_stop="level k6-pods-$k6mini_pods did not pass" ;; esac
     fi
-    step "k6-pods-$k6mini_pods" 40 bash -c 'k6mini_level "$1"' _ "$k6mini_pods"
-    case $last_status in fail | timeout) k6mini_stop="level k6-pods-$k6mini_pods did not pass" ;; esac
+    k6mini_tempo_step "tempo-ingest-$k6mini_pods" "k6-pods-$k6mini_pods"
   done
 }
 
@@ -611,6 +631,30 @@ EOS
   edit k6 '$2 != "b"'
   same "enough: one check short beside one unmeasured is short" "false null false" \
     "$(k6mini_runner 1000 1600 2 "$oom_clean" | jq -r '"\(.checks.mem_available_2gib) \(.checks.k6_cpu_throttle_5pct) \(.enough)"')"
+
+  # The scenario's steps, step and skip faked: a level that reached its hold writes its window, as k6mini_level does;
+  # level 4 fails after its hold, level 8 is then skipped with no window.
+  local sc_out
+  sc_out=$( (
+    exec 3>&1 >/dev/null 2>&1
+    rm -f "$SVP_VERIFY_OUT/k6-windows.tsv"
+    step() {
+      if [ "${1#tempo-ingest-}" = "$1" ]; then echo "step $1" >&3; else echo "step $1: ${3##*/} $4" >&3; fi
+      last_status=ok
+      # No case here: bash 3.2 reads its pattern's ")" as the end of the command substitution.
+      [ "${1#k6-pods-}" = "$1" ] || printf '%s\t1000\t1600\t%s\n' "$1" "${1#k6-pods-}" >>"$SVP_VERIFY_OUT/k6-windows.tsv"
+      [ "$1" != k6-pods-4 ] || last_status=fail
+    }
+    skip() {
+      echo "skip $1: $2" >&3
+      last_status=skipped
+    }
+    here=deploy/ci
+    scenario_targets
+  ) | tr '\n' ';')
+  same "scenario: tempo-ingest-<n> after each level that held, its result stopping nothing; skipped without a window" \
+    "step k8s-up;step seed-videos;step k6-pods-1;step tempo-ingest-1: verify-tempo.sh k6-pods-1;step k6-pods-2;step tempo-ingest-2: verify-tempo.sh k6-pods-2;step k6-pods-4;step tempo-ingest-4: verify-tempo.sh k6-pods-4;skip k6-pods-8: level k6-pods-4 did not pass;skip tempo-ingest-8: no hold window of k6-pods-8 in k6-windows.tsv;" \
+    "$sc_out"
 
   echo "k6mini_test: $failures failure(s)"
   [ "$failures" = 0 ]

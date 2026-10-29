@@ -36,8 +36,11 @@ spec:
   completionMode: Indexed
   completions: @PODS@
   parallelism: @PODS@
-  # A pod run again would register its pool again: a failed pod is a result to read, not to retry.
-  backoffLimit: 0
+  # A pod run again would register its pool again: a failed pod is a result to read, not to retry. The limit is per
+  # index so that one pod failing (k6 exits 99 on a threshold it missed) does not end the Job, which would make the
+  # Job controller delete the pods still running before they print their summary; the Job ends, Failed if any index
+  # failed, once every index has finished.
+  backoffLimitPerIndex: 0
   # The whole run with room, so that a stuck run ends here: by default 3600 s for the profile's 10 min ramp, 10 min
   # hold and 1 min down; with render.sh --ramp or --hold, ramp + hold + 1 min down + 15 min for the pods to be pulled
   # and scheduled, setup() (3 min at most) and the summary.

@@ -9,7 +9,8 @@
   `scan-gate.sh --check-ignorefile` kiểm cả hai tệp) chỉnh bởi [0021](0021-deferred-verification-stage6b.md); §3 (đổi các file
   của `deploy/ci/` mà không job image nào đọc: tệp bỏ qua misconfig, script và test của `verify.yml`, `platform-test.sh`,
   `platform-guard.sh`, không build lại image) chỉnh bởi 0021 và [0023](0023-ci-platform-neutral.md); §1 (job `gitops` của
-  `verify.yml` thêm `actions: read`, `GH_TOKEN` chỉ ở bước tìm source map và bước chờ phát hành), §4 (chân build `web` của lượt
+  `verify.yml` thêm `actions: read`, từ 2026-10-29 cả `pull-requests: read` cho mốc push của `measure-gitops`, `GH_TOKEN` chỉ ở bước
+  tìm source map và bước chờ phát hành), §4 (chân build `web` của lượt
   phát hành xuất artifact `web-sourcemaps-<arch>` cùng build cache sau bước push, kèm `image-digest`; mọi chân `web`, cả ở PR, kiểm
   debug ID của chunk image có trong bộ map) và §9 (cluster GitOps đọc repo qua HTTPS ẩn danh, `make k8s-gitops-up` không còn deploy
   key) chỉnh bởi 0021 ngày 2026-10-28; §8, §9 (cluster GitOps đóng vai stg với overlay `deploy/k8s/envs/stg/`; Enforce trên stg và
@@ -919,6 +920,11 @@ workflow quyết. Các job:
     `values-check` kiểm các digest của PR (mục 7), `images-ok` xanh khi nó đạt; `ci.yml` chạy đủ.
 - **Người học review, duyệt lượt chạy, merge.** Merge → Argo CD poll thấy commit (thường ≤ 60 s, tệ nhất ~120 s, ADR-0014
   §12) → sync → canary của gateway như giai đoạn 4.
+  - **Đã đo trên cluster GitOps (2026-10-29, `main`):** phát hành `user-service` (PR #29 merge 02:49:25Z): sync bắt đầu +120 s,
+    pod Ready +139 s (phần lớn là chờ Argo CD poll git: `timeout.reconciliation` 60 s, ADR-0014 §12 ghi tệ nhất ~120 s; +120 s nằm ở cận tệ nhất đó), Job migrate tạo đúng
+    trong sync đó, 0 restart; source map của image CI đạt. Mốc push lấy từ `merged_at` của PR promote vì Events API trễ. Lượt
+    [40801610039](https://github.com/anhnvcoder/short-video-platform/actions/runs/40801610039); chi tiết và tiêu chí ở D5, D26
+    của [ADR-0021](0021-deferred-verification-stage6b.md).
 - **Rollback:** PR `git revert` commit phát hành (hay sửa values về digest cũ), như mọi PR. Đóng PR cuộn đang mở nếu nó
   còn mang bản bị rollback (quy tắc chọn ở trên chỉ đọc nhánh bot khi PR còn mở). `values-check` đỏ vì attestation của
   digest cũ quá 48 giờ thì dispatch rescan với `values_ref=refs/pull/<số PR>/head` (mục 7), chạy lại check, rồi merge.

@@ -11,63 +11,53 @@ import (
 	"uuid"
 )
 
-const decrementLikeCount = `-- name: DecrementLikeCount :exec
-UPDATE like_counts SET like_count = like_count - 1
-WHERE video_id = $1
-`
-
-func (q *Queries) DecrementLikeCount(ctx context.Context, videoID uuid.UUID) error {
-	_, err := q.db.Exec(ctx, decrementLikeCount, videoID)
-	return err
-}
-
-const deleteLike = `-- name: DeleteLike :execrows
-DELETE FROM likes
-WHERE video_id = $1 AND user_id = $2
-`
-
-type DeleteLikeParams struct {
-	VideoID uuid.UUID
-	UserID  uuid.UUID
-}
-
-// Returns 0 when the caller does not like the video.
-func (q *Queries) DeleteLike(ctx context.Context, arg DeleteLikeParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteLike, arg.VideoID, arg.UserID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const incrementLikeCount = `-- name: IncrementLikeCount :exec
+const like = `-- name: Like :exec
+WITH inserted AS (
+    INSERT INTO likes (video_id, user_id)
+    VALUES ($1, $2)
+    ON CONFLICT (video_id, user_id) DO NOTHING
+    RETURNING video_id
+)
 INSERT INTO like_counts (video_id, like_count)
-VALUES ($1, 1)
+SELECT video_id, 1 FROM inserted
 ON CONFLICT (video_id) DO UPDATE SET like_count = like_counts.like_count + 1
 `
 
-func (q *Queries) IncrementLikeCount(ctx context.Context, videoID uuid.UUID) error {
-	_, err := q.db.Exec(ctx, incrementLikeCount, videoID)
-	return err
-}
-
-const insertLike = `-- name: InsertLike :execrows
-INSERT INTO likes (video_id, user_id)
-VALUES ($1, $2)
-ON CONFLICT (video_id, user_id) DO NOTHING
-`
-
-type InsertLikeParams struct {
+type LikeParams struct {
 	VideoID uuid.UUID
 	UserID  uuid.UUID
 }
 
-// Returns 0 when the caller already likes the video; a concurrent insert of the same row waits
-// for the other transaction and then inserts nothing.
-func (q *Queries) InsertLike(ctx context.Context, arg InsertLikeParams) (int64, error) {
-	result, err := q.db.Exec(ctx, insertLike, arg.VideoID, arg.UserID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// Inserts the caller's like and, only when the row is new, adds one to like_count, in one
+// statement and so one implicit transaction: liking twice counts once. A concurrent insert of
+// the same row waits for the other transaction and then inserts nothing. The counter upsert reads
+// the rows the insert returns, so the likes row is locked before the like_counts row.
+func (q *Queries) Like(ctx context.Context, arg LikeParams) error {
+	_, err := q.db.Exec(ctx, like, arg.VideoID, arg.UserID)
+	return err
+}
+
+const unlike = `-- name: Unlike :exec
+WITH deleted AS (
+    DELETE FROM likes
+    WHERE likes.video_id = $1 AND likes.user_id = $2
+    RETURNING likes.video_id
+)
+UPDATE like_counts SET like_count = like_counts.like_count - 1
+FROM deleted
+WHERE like_counts.video_id = deleted.video_id
+`
+
+type UnlikeParams struct {
+	VideoID uuid.UUID
+	UserID  uuid.UUID
+}
+
+// Deletes the caller's like and, only when a row was deleted, takes one from like_count, in one
+// statement: unliking a video not liked changes nothing, and like_count never goes below the
+// number of likes rows. The counter update joins the rows the delete returns, so the likes row is
+// locked before the like_counts row.
+func (q *Queries) Unlike(ctx context.Context, arg UnlikeParams) error {
+	_, err := q.db.Exec(ctx, unlike, arg.VideoID, arg.UserID)
+	return err
 }

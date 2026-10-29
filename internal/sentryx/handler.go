@@ -114,13 +114,12 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 		event.Contexts["trace"] = sentry.Context{"trace_id": sc.TraceID().String(), "span_id": sc.SpanID().String()}
 	}
 	key := fingerprint{r.service, event.Message, event.Tags["route"], exception.Type}
-	now := time.Now()
-	allowed, dropped, flushAt := r.limits.allow(now, key)
+	allowed, dropped, flushIn := r.limits.allow(time.Now(), key)
 	if dropped != 0 {
 		slog.WarnContext(ctx, "error tracker events dropped", slog.Uint64("dropped", dropped))
 	}
-	if !flushAt.IsZero() {
-		r.after(flushAt.Sub(now), func() {
+	if flushIn != 0 {
+		r.after(flushIn, func() {
 			if dropped := r.limits.flush(time.Now()); dropped != 0 {
 				slog.Warn("error tracker events dropped", slog.Uint64("dropped", dropped))
 			}

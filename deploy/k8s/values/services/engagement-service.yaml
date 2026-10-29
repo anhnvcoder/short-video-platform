@@ -18,6 +18,11 @@ env:
   LISTEN_ADDR: ":9103"
   # Produces and consumes engagement.views.v1: views are counted in batches.
   KAFKA_BROKERS: redpanda.svp-data.svc.cluster.local:9092
+  # Most Postgres connections the process opens, those still being dialed included: half for GetStats, half for
+  # likes and the views consumer, so GetStats calls the gateway cancels after 100 ms, whose connections pgx closes
+  # and dials again, never take a connection a like needs. Set here because pgx's own default, max(4, NumCPU) per
+  # pool, changes with the node.
+  DATABASE_MAX_CONNS: "10"
   PYROSCOPE_SERVER_ADDRESS: http://pyroscope.svp-obs:4040
   SENTRY_ENVIRONMENT: k3d
 # SENTRY_DSN from Secret sentry (errors to GlitchTip in svp-obs).

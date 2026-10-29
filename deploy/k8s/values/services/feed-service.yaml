@@ -27,9 +27,19 @@ env:
 errorTracking: true
 ingressFrom: [gateway]
 egressTo: [postgres, redpanda, valkey, collector, pyroscope, glitchtip]
-# One replica at rest, a second one when reads of the feeds keep it above 70% of its 100m CPU request. No
-# PodDisruptionBudget: at one replica it would block every node drain.
+# Two replicas always, preferably on the two nodes, so a killed or crashed pod, a node drain or an eviction leaves one
+# serving the feeds while its replacement starts: with a single replica the gateway's retries (well under a second) end
+# before a new pod is Ready, and the feed requests of that gap fail. The spread is a preference only (the chart's
+# whenUnsatisfiable: ScheduleAnyway): both pods may still land on one node. The budget lets a drain take one pod at a
+# time. The maximum stays at two, within the RAM the machine leaves for the cluster, so the autoscaler does not scale
+# today; it stays for a higher maximum later, with 70% of the 100m CPU request as the point where it scales out.
+# Risk: each gateway pod holds one long-lived HTTP/2 connection to feed-service:9104 through the ClusterIP (grpc-go's
+# pick_first; kube-proxy picks the backend when the connection opens), so the load splits by connections, not by
+# requests, and can be uneven between the two pods.
 hpa:
-  minReplicas: 1
+  minReplicas: 2
   maxReplicas: 2
   cpuUtilization: 70
+pdb:
+  minAvailable: 1
+spreadAcrossNodes: true

@@ -345,15 +345,15 @@ func TestDropWarningCountsTheTailOfABurst(t *testing.T) {
 	if allowed, _, _ := l.allow(now, key); !allowed {
 		t.Fatal("first event denied")
 	}
-	if _, dropped, flushAt := l.allow(now, key); dropped != 1 || !flushAt.IsZero() {
-		t.Fatalf("first drop reported %d with flush at %v, want 1 at once and no flush", dropped, flushAt)
+	if _, dropped, flushIn := l.allow(now, key); dropped != 1 || flushIn != 0 {
+		t.Fatalf("first drop reported %d with a flush after %v, want 1 at once and no flush", dropped, flushIn)
 	}
-	if _, dropped, flushAt := l.allow(now.Add(time.Second), key); dropped != 0 || !flushAt.Equal(now.Add(time.Minute)) {
-		t.Fatalf("second drop reported %d with flush at %v, want 0 and a flush at %v", dropped, flushAt, now.Add(time.Minute))
+	if _, dropped, flushIn := l.allow(now.Add(time.Second), key); dropped != 0 || flushIn != 59*time.Second {
+		t.Fatalf("second drop reported %d with a flush after %v, want 0 and a flush after 59s", dropped, flushIn)
 	}
 	for range 997 {
-		if _, dropped, flushAt := l.allow(now.Add(2*time.Second), key); dropped != 0 || !flushAt.IsZero() {
-			t.Fatalf("later drop reported %d with flush at %v, want 0 and no new flush", dropped, flushAt)
+		if _, dropped, flushIn := l.allow(now.Add(2*time.Second), key); dropped != 0 || flushIn != 0 {
+			t.Fatalf("later drop reported %d with a flush after %v, want 0 and no new flush", dropped, flushIn)
 		}
 	}
 	if got := l.flush(now.Add(time.Minute)); got != 998 {
@@ -367,8 +367,26 @@ func TestDropWarningCountsTheTailOfABurst(t *testing.T) {
 	if allowed, _, _ := l.allow(later, key); !allowed {
 		t.Fatal("event denied after its 30 s and the process minute")
 	}
-	if _, dropped, flushAt := l.allow(later, key); dropped != 0 || !flushAt.Equal(now.Add(2*time.Minute)) {
-		t.Fatalf("drop after the flush reported %d with flush at %v, want 0 and a flush at %v", dropped, flushAt, now.Add(2*time.Minute))
+	if _, dropped, flushIn := l.allow(later, key); dropped != 0 || flushIn != 59*time.Second {
+		t.Fatalf("drop after the flush reported %d with a flush after %v, want 0 and a flush after 59s", dropped, flushIn)
+	}
+}
+
+// Callers read the clock before they wait for the limiter's lock, so one can arrive with a now
+// earlier than the warning another caller recorded meanwhile. Its flush is still due within a
+// minute: the delay never counts the time it spent waiting for the lock.
+func TestFlushDelayStaysWithinAMinuteWhenNowPrecedesTheWarning(t *testing.T) {
+	var l limiter
+	now := time.Unix(100, 0)
+	key := fingerprint{"service", "internal error", "", "string"}
+	if allowed, _, _ := l.allow(now, key); !allowed {
+		t.Fatal("first event denied")
+	}
+	if _, dropped, _ := l.allow(now.Add(5*time.Millisecond), key); dropped != 1 {
+		t.Fatalf("first drop reported %d, want 1", dropped)
+	}
+	if _, dropped, flushIn := l.allow(now.Add(time.Millisecond), key); dropped != 0 || flushIn != time.Minute {
+		t.Fatalf("drop read before the warning reported %d with a flush after %v, want 0 and a flush a minute after the warning", dropped, flushIn)
 	}
 }
 

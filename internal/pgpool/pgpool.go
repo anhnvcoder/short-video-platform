@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 
 	"github.com/anhnvcoder/short-video-platform/internal/pgretry"
 )
@@ -37,17 +38,49 @@ var ErrInvalidURL = errors.New("pgpool: invalid database URL; want postgres://us
 // as children of the caller's span only (none without one). Spans carry the SQL text with its
 // $n placeholders but never the parameter values, which can hold emails and password hashes, nor
 // the error message of a failed call, which can quote them: only its severity and SQLSTATE.
-// Pool statistics (pgxpool.*) are reported to the global meter provider; otelpgx keeps them
-// registered after Close, so open one pool per process.
-func New(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
-	return open(ctx, databaseURL, pgretry.Window)
+// Pool statistics (pgxpool.*) are reported to the global meter provider, labelled
+// db.client.connection.pool.name; otelpgx keeps them registered after Close. Without WithName that
+// label is host:port/database, the same for every pool of one process on one database, so a
+// process opens one pool per name: a second pool needs a name of its own (WithName), or the two
+// report over each other.
+//
+// Without options the pool has pgx's defaults, pool_max_conns of the URL or max(4, NumCPU)
+// connections; WithMaxConns sets the size instead.
+func New(ctx context.Context, databaseURL string, opts ...Option) (*pgxpool.Pool, error) {
+	return open(ctx, databaseURL, pgretry.Window, opts...)
+}
+
+// Option changes the pool New opens.
+type Option func(*options)
+
+type options struct {
+	maxConns int32
+	name     string
+}
+
+// WithMaxConns caps the pool at n connections, counting those still being opened: pgxpool takes
+// a slot before it dials and gives it back only when the dial fails or the connection is closed,
+// even when the Acquire that started the dial was canceled.
+func WithMaxConns(n int32) Option {
+	return func(o *options) { o.maxConns = n }
+}
+
+// WithName names the pool in its statistics, as the db.client.connection.pool.name attribute of
+// the OpenTelemetry semantic conventions for database client metrics, so that two pools of one
+// process report apart.
+func WithName(name string) Option {
+	return func(o *options) { o.name = name }
 }
 
 // open is New with the startup window as a parameter, so that tests need not wait 30 s. The window
 // bounds the startup check with its retries and the pool warm-up (pool_min_conns), whatever
 // connect_timeout the URL sets.
-func open(ctx context.Context, databaseURL string, window time.Duration) (*pgxpool.Pool, error) {
-	cfg, err := parseConfig(databaseURL)
+func open(ctx context.Context, databaseURL string, window time.Duration, opts ...Option) (*pgxpool.Pool, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	cfg, err := parseConfig(databaseURL, o)
 	if err != nil {
 		return nil, err
 	}
@@ -65,15 +98,20 @@ func open(ctx context.Context, databaseURL string, window time.Duration) (*pgxpo
 		pool.Close()
 		return nil, fmt.Errorf("pgpool: connect to database: %w", err)
 	}
-	if err := otelpgx.RecordStats(pool); err != nil {
+	var statsOpts []otelpgx.StatsOption
+	if o.name != "" {
+		statsOpts = append(statsOpts, otelpgx.WithStatsAttributes(semconv.DBClientConnectionPoolName(o.name)))
+	}
+	if err := otelpgx.RecordStats(pool, statsOpts...); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("pgpool: record pool stats: %w", err)
 	}
 	return pool, nil
 }
 
-// parseConfig parses databaseURL and adds the tracer and the default connect timeout.
-func parseConfig(databaseURL string) (*pgxpool.Config, error) {
+// parseConfig parses databaseURL and adds the tracer, the default connect timeout and the size
+// in o.
+func parseConfig(databaseURL string, o options) (*pgxpool.Config, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		// The parse error quotes the URL, with a best-effort redacted password: drop it.
@@ -83,6 +121,9 @@ func parseConfig(databaseURL string) (*pgxpool.Config, error) {
 	// value the URL sets, 0 included.
 	if cfg.ConnConfig.ConnectTimeout == 0 && !setsConnectTimeout(databaseURL) {
 		cfg.ConnConfig.ConnectTimeout = ConnectTimeout
+	}
+	if o.maxConns != 0 {
+		cfg.MaxConns = o.maxConns
 	}
 	// Query parameters stay out of spans: WithIncludeQueryParameters is not set.
 	cfg.ConnConfig.Tracer = redactingTracer{otelpgx.NewTracer()}

@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -24,6 +25,7 @@ import (
 	engagementv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/engagement/v1"
 	userv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1"
 	videov1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/video/v1"
+	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
 )
 
 func TestParseMediaBaseURL(t *testing.T) {
@@ -378,6 +380,37 @@ func TestSlowStatsDoNotOpenBreaker(t *testing.T) {
 		if got := f.count(m); got != 1 {
 			t.Errorf("%s reached engagement-service %d times, want 1", m, got)
 		}
+	}
+}
+
+// TestDependencyUnavailableLikeNotRetried: engagement-service answering a like with UNAVAILABLE,
+// an ErrorInfo of the platform's domain (DEPENDENCY_UNAVAILABLE: its database is down or too
+// slow) and a negative retry pushback is neither retried, though Like is in the retry policy, nor
+// counted by the breaker: after many such answers likes still reach the service.
+func TestDependencyUnavailableLikeNotRetried(t *testing.T) {
+	like := engagementv1.EngagementService_Like_FullMethodName
+	f, conn := connect(t, engagementBackend, func(ctx context.Context, _ string, n int) error {
+		if n > 25 {
+			return nil
+		}
+		if err := grpc.SetTrailer(ctx, metadata.Pairs("grpc-retry-pushback-ms", "-1")); err != nil {
+			return err
+		}
+		return grpcerr.New(codes.Unavailable, "DEPENDENCY_UNAVAILABLE", "like could not be saved, retry later")
+	})
+	for i := range 25 {
+		if err := invoke(t.Context(), conn, like); status.Code(err) != codes.Unavailable || grpcerr.Reason(err) != "DEPENDENCY_UNAVAILABLE" {
+			t.Fatalf("call %d: error = %v, want UNAVAILABLE with reason DEPENDENCY_UNAVAILABLE", i+1, err)
+		}
+		if got := f.count(like); got != i+1 {
+			t.Fatalf("after call %d engagement-service got %d attempts, want %d: no retry", i+1, got, i+1)
+		}
+	}
+	if err := invoke(t.Context(), conn, like); err != nil {
+		t.Fatalf("like after 25 dependency failures: %v, want it to reach engagement-service", err)
+	}
+	if got := f.count(like); got != 26 {
+		t.Errorf("engagement-service got %d calls, want 26", got)
 	}
 }
 

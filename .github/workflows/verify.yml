@@ -296,6 +296,8 @@ jobs:
       contents: read
       # The artifact web-sourcemaps-amd64 of the images run that built the web image the cluster runs.
       actions: read
+      # The release's push time: merged_at of the promote pull request whose merge is the release commit.
+      pull-requests: read
     env:
       SCENARIO: gitops
       SVP_VERIFY_TARGETS: ${{ inputs.targets }}
@@ -367,7 +369,7 @@ jobs:
         run: deploy/ci/verify-run.sh "$SCENARIO"
       # On a run of main: the promote pull request waiting since before the run is merged while this step runs (the
       # job's steps show it running), then the release is measured from its push to its pods Ready. The job's token is
-      # for make measure-gitops alone, which reads the push from GitHub's events. On a branch it prints why it skips.
+      # for make measure-gitops alone, which reads the push from the merged pull request (else GitHub's events). On a branch it prints why it skips.
       # These are the scenario's targets wait-release and measure-gitops: the input targets chooses them as any other.
       - name: Waiting for a release on main
         if: ${{ !cancelled() && steps.ref.outcome == 'success' }}

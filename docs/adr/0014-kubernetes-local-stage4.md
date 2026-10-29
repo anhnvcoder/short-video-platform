@@ -13,7 +13,9 @@
   môi trường `deploy/k8s/envs/`, cluster GitOps đóng vai stg) chỉnh bởi [0024](0024-multi-environment.md); MinIO ở §1 (image), §2 và §10 (RAM), §4 (StatefulSet `minio`, `deploy/minio/init.sh`
   với `mc`), §7 (symlink), §8 (Secret `minio-root`, `minio-users`) và §9 (đích của HTTPRoute `s3`) bị thay một phần bởi
   [0022](0022-local-object-store-minio-replacement.md) (RustFS, StatefulSet, Service và Job `s3`, `s3-init`, Secret `s3-root`, `s3-users`, CORS theo bucket; giới
-  hạn 512 MiB, uid 10001)
+  hạn 512 MiB, uid 10001); §10 (feed-service HPA 1–2 không PDB thành luôn 2 replica, PDB `minAvailable: 1`, ưu tiên trải hai
+  node) và giới hạn RAM của Tempo trong bảng ngân sách (768 MiB thành 1 GiB) bị thay một phần bởi
+  [0031](0031-chaos-findings-feed-engagement-tempo.md)
 - Ngày: 2026-10-18
 
 ## Bối cảnh
@@ -219,7 +221,7 @@ cuối. Cột "Giới hạn" là `limits.memory` đặt trong values (mục 10).
 | Service | 6 service lúc nghỉ, gateway 2 replica (`svp`) | 300 MiB | bảng mục 10 |
 | Observability | Prometheus + config-reloader (`svp-obs`) | 620 MiB | 1 GiB |
 | Observability | Loki | 300 MiB | 512 MiB |
-| Observability | Tempo (có metrics-generator) | 400 MiB | 768 MiB |
+| Observability | Tempo (có metrics-generator) | 400 MiB | 1 GiB (request 128 MiB; trước 768 MiB, ADR-0031) |
 | Observability | Pyroscope | 250 MiB | 512 MiB |
 | Observability | Grafana + 2 sidecar | 250 MiB | 448 MiB + 2 × 128 MiB |
 | Observability | Alertmanager + config-reloader, Prometheus operator, kube-state-metrics | 140 MiB | 64 / 128 / 128 MiB |
@@ -1460,7 +1462,9 @@ giá: không phát hiện được Valkey treo mà cổng vẫn mở, lab chấp
   hiện, và còn nguyên sau 180 s (ba lần poll, không phải lỗi thoáng qua) thì script dừng, không chờ hết 1800 s.
   **Sửa 2026-10-18.**
 - **Đo push → pod mới Ready:** giờ push từ reflog `refs/remotes/origin/main` (người học push từ máy này); không có thì
-  PushEvent của GitHub (`gh api repos/anhnvcoder/short-video-platform/events`, chỉ đọc, ghi nguồn); không có cả hai thì "không
+  `merged_at` của PR có `merge_commit_sha` là commit đó (`gh api repos/anhnvcoder/short-video-platform/commits/<sha>/pulls`; sửa
+  2026-10-29, Events API trễ có chủ đích nên trên runner hay chưa có PushEvent), rồi PushEvent của GitHub
+  (`gh api repos/anhnvcoder/short-video-platform/events`), mọi đường chỉ đọc, ghi nguồn; không có cả ba thì "không
   đo được", **không** thay bằng giờ commit; giờ sync từ `status.operationState`/`status.history`, giờ Ready từ condition
   của pod. Sync đang chạy nhận theo cả revision được yêu cầu lẫn revision đã resolve (`syncResult`): sync tay theo `main`
   chỉ ghi SHA trong kết quả. Commit không còn đo được thì báo thẳng (exit 1) thay vì chờ mãi: Argo CD đã sync một commit

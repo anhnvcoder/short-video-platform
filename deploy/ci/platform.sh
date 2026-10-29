@@ -331,11 +331,15 @@ ci_dispatch_hint() {
   esac
 }
 
-# ci_push_time SHA: prints when the push whose new head is commit SHA reached the repository host (RFC 3339, UTC), from
-# the host's newest 100 events of the repository; nothing when none of them is such a push. Fails, with the host's
-# error on stderr, when the events cannot be read. A read, so a machine asks GitHub too.
+# ci_push_time SHA: prints when the push whose new head is commit SHA reached the repository host, as one line
+# "TIMESTAMP SOURCE": TIMESTAMP is RFC 3339, UTC, and SOURCE says where it was read. The time a pull request that
+# produced SHA as its merge commit was merged comes first: it is exact and is there as soon as the merge is, while the
+# host's events list is delayed on purpose and has no promise of when a push shows in it. Else the newest 100 events of
+# the repository are searched for the push. Prints nothing when neither knows SHA. Fails, with the host's error on
+# stderr, when either cannot be read (a failed first read is not answered from the second). A read, so a machine asks
+# GitHub too.
 ci_push_time() {
-  local platform repo
+  local platform repo found
   platform=$(ci_platform) || return 1
   [[ $1 =~ ^[0-9a-f]{40}$ ]] || {
     _ci_fail "ci_push_time takes a full commit SHA, not '$1'"
@@ -344,8 +348,15 @@ ci_push_time() {
   case $platform in
   github | local)
     repo=$(ci_repo) || return 1
-    gh api -X GET "repos/$repo/events" -f per_page=100 \
-      --jq "[.[] | select(.type == \"PushEvent\" and .payload.head == \"$1\") | .created_at] | last // empty"
+    found=$(gh api -X GET "repos/$repo/commits/$1/pulls" -f per_page=100 \
+      --jq "[.[] | select(.merge_commit_sha == \"$1\" and .merged_at != null)] | first // empty
+        | \"\(.merged_at) merged_at of PR #\(.number)\"") || return 1
+    if [ -z "$found" ]; then
+      found=$(gh api -X GET "repos/$repo/events" -f per_page=100 \
+        --jq "[.[] | select(.type == \"PushEvent\" and .payload.head == \"$1\") | .created_at] | last // empty
+          | \"\(.) PushEvent of the repository's events\"") || return 1
+    fi
+    [ -z "$found" ] || echo "$found"
     ;;
   esac
 }

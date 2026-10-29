@@ -24,8 +24,8 @@
 #   start   finds the ClusterIP of Envoy's Service of Gateway svp, renders the manifests (render.sh) and applies them:
 #           namespace svp-load, the scripts' ConfigMap, Job svp-k6. Refuses while a Job svp-k6 exists.
 #   logs    after the Job ends: the summary line of each pod into .k6/cloud-<time>/pod-<i>.json, and a table of them;
-#           exits 1 when a pod printed no summary or a summary holds what looks like a token, cookie or password
-#           (which is then deleted)
+#           exits 1 when the Job's pods are not as many as its completions, a pod printed no summary or a summary holds
+#           what looks like a token, cookie or password (which is then deleted)
 #   delete  deletes namespace svp-load (the Job, its pods and their logs)
 #
 # Before start: the stack runs on the cloud cluster with at least 30 READY videos (fewer and most views stop at the
@@ -102,6 +102,12 @@ case $cmd in
       jq -r '.items[] | "\(.metadata.annotations["batch.kubernetes.io/job-completion-index"]) \(.metadata.name)"')
     [ -n "$pods" ] || die "no pod of Job svp-load/svp-k6"
     rc=0
+    completions=$(kc -n svp-load get job svp-k6 -o jsonpath='{.spec.completions}')
+    found=$(grep -c . <<<"$pods" || :)
+    if [ "$found" != "$completions" ]; then
+      echo "FAIL  Job has $found of $completions pod(s)" >&2
+      rc=1
+    fi
     while read -r i pod; do
       kc -n svp-load logs "$pod" | sed -n 's/^svp-k6-summary //p' >"$out/pod-$i.json"
       [ -s "$out/pod-$i.json" ] || {

@@ -75,6 +75,11 @@ Người học ưu tiên học DevOps + SA.
   thực, database không có, TLS bị từ chối, tên miền không có thì dừng ngay. Mỗi lần lỗi một dòng WARN `database not reachable,
   retrying` (`attempt`, `error`, không URL), nối được sau khi lỗi thì INFO `database connected after retries` (`attempts`,
   `elapsed_ms`).
+- **engagement-service mở tối đa `DATABASE_MAX_CONNS` kết nối Postgres mỗi process** ([ADR-0031](docs/adr/0031-chaos-findings-feed-engagement-tempo.md)
+  §2): số nguyên ≥ 2, không đặt thì 10, giá trị khác thì service không khởi động; chia hai pool cùng URL: pool đọc (chỉ `GetStats`)
+  ⌊n/2⌋, pool ghi (Like, Unlike, consumer lượt xem) phần còn lại. Values k3d đặt `"10"`, compose không đặt. Like/Unlike có hạn
+  Postgres 1 s phía server; hết hạn hay Postgres không tới được thì `UNAVAILABLE` + `DEPENDENCY_UNAVAILABLE`, gateway không thử lại
+  (503 ngay). Service khác giữ pool mặc định của pgx.
 - **Docker, compose, k3d chỉ chạy qua `Makefile`.** Mọi target gọi `env -u DOCKER_DEFAULT_PLATFORM docker ...`:
   shell global đặt `DOCKER_DEFAULT_PLATFORM=linux/amd64` cho dự án khác, nếu không bỏ biến này thì
   container chạy amd64 qua giả lập, chậm và tốn RAM. Chạy tay ngoài Makefile cũng phải thêm tiền tố đó.
@@ -406,7 +411,8 @@ liệt kê target):
   thì dừng; bản amd64 ở `deploy/k8s/values/argo-rollouts-amd64.yaml`, cùng file `install.sh` của đường dev đọc), AppProject
   `svp` và `default` đã khoá, root `svp-root` (`env=stg`; revision chưa có overlay thì bỏ qua env); chờ mọi Application
   `Synced`, Healthy, sync cuối `Succeeded` (lỗi còn sau 180 s thì dừng). `measure-gitops` đo commit phát hành (merge của PR
-  promote) từ lúc push (reflog `origin/main`, không có thì PushEvent qua `gh api`, chỉ đọc) qua sync của Argo CD tới pod đầu
+  promote) từ lúc push (reflog `origin/main`, không có thì `merged_at` của PR có `merge_commit_sha` là commit đó, rồi PushEvent,
+  cả hai qua `gh api`, chỉ đọc, ghi nguồn) qua sync của Argo CD tới pod đầu
   và cuối Ready với digest mới; service có `migrate: true` ở revision đó thì Job migrate phải tạo trong cửa sổ của đúng sync
   đã đo và `restartCount` 0 (thiếu Job là FAIL, sync đang chạy là exit 2: đo lại); chỉ đọc, JSON ở `.k8s/drills/`. Với image GHCR cả hai target **kiểm sau push**.
 - `make k8s-traffic-start` / `make k8s-traffic-stop`: traffic diễn tập chạy nền, 4 user, ~10 request/s vào
@@ -424,8 +430,10 @@ liệt kê target):
   riêng, không phải lỗi KEDA), đo KEDA scale media-worker lên tối đa 2 replica và về 1, lag đỉnh, mỗi
   `READY`, CPU/RAM, scale down một pod đang transcode (ghim `paused-replicas` của KEDA thấp hơn một, pod tắt êm) rồi kiểm
   mọi video transcode đúng một lần, và k3s server không restart suốt diễn tập (`RestartCount`, `StartedAt` của container
-  `k3d-svp-server-0`, [ADR-0017](docs/adr/0017-gitops-capacity-media-worker-max2.md)); cordon node và evict lần lượt hai pod gateway như drain: PDB cho pod đầu (201), từ chối
-  pod thứ hai (429) khi pod thay còn Pending, rồi uncordon; canary của gateway trên cluster dev dưới traffic diễn tập:
+  `k3d-svp-server-0`, [ADR-0017](docs/adr/0017-gitops-capacity-media-worker-max2.md)); cordon node và evict lần lượt hai pod gateway rồi hai pod feed-service
+  (feed-service hai replica, PDB `minAvailable: 1`, [ADR-0031](docs/adr/0031-chaos-findings-feed-engagement-tempo.md) §1) như drain:
+  mỗi service PDB cho pod đầu (201), từ chối pod thứ hai (429) khi pod thay còn Pending, rồi uncordon, chờ lại 2 pod Ready và in
+  node của hai pod trước và sau (hai pod cùng node chỉ là ghi chú: trải node là ưu tiên); canary của gateway trên cluster dev dưới traffic diễn tập:
   bản tốt qua 25%, 50%, 100% và được promote, bản lỗi (`FEED_SERVICE_ADDR` trỏ Service không có) bị phân tích abort,
   trọng số về 0, pod stable không đổi, rồi trả bản tốt; `measure-canary` đọc lại lần abort canary gần nhất (chỉ đọc);
   các dòng giai đoạn 4 của threat model, mỗi dòng có ca đối chứng (pod thử ở namespace `svp-probe` tạo rồi xoá,
@@ -589,24 +597,31 @@ liệt kê target):
     trên nhánh thì `skipped`), `web-canary` (`make k8s-up`, `make k8s-smoke`, `make drill-k8s-web-canary`), `k6-cloud-mini`
     (`make k8s-up`, seed ≥ 30 video `READY`, Job k6 profile `cloud` 1, 2, 4, 8 pod qua `run.sh --pods N`, mỗi mức lên 2 phút,
     giữ 10, xuống 1, dừng ở mức đầu tiên trượt; mỗi mức ghi số k6, khoá rate limit bằng số pod, p95/p99 phía server, CPU,
-    throttle, working set của web; **LOCAL LAB ONLY:** xoá khoá đăng ký giữa hai mức), `chaos` (`make k8s-up`, seed, cài Chaos
+    throttle, working set của web; sau mỗi mức step `tempo-ingest-<n>`; **LOCAL LAB ONLY:** xoá khoá đăng ký giữa hai mức), `chaos` (`make k8s-up`, seed, cài Chaos
     Mesh với values phủ của runner (chỉ controller không multi-cluster; controller phải giữ cùng pod, 0 restart, không dòng
     `is forbidden` trong 150 s), bản thử NetworkChaos trên pod thử (nạp `sch_netem`, thiếu thì cài `linux-modules-extra-<kernel>`;
     không nạp được thì FAIL và (b) không chạy), thí nghiệm (a), (b), (c) (mỗi `apply` chờ webhook có endpoint Ready),
-    mỗi thí nghiệm một lượt k6 1 pod riêng dưới 55 phút có cửa sổ ổn định 5 phút riêng, gỡ bằng lệnh của buổi cloud và kiểm không
-    còn gì), `velero` (`SVP_K8S_RUNNER_CSI=1 make k8s-up`, bucket và user `svp-velero`, cài Velero, kiểm NetworkPolicy, seed bằng
+    mỗi thí nghiệm một lượt k6 1 pod riêng dưới 55 phút có cửa sổ ổn định 5 phút riêng, sau mỗi thí nghiệm step
+    `tempo-ingest-chaos-<x>`, gỡ bằng lệnh của buổi cloud và kiểm không còn gì). Step `tempo-ingest-*` (`deploy/ci/verify-tempo.sh`,
+    [ADR-0031](docs/adr/0031-chaos-findings-feed-engagement-tempo.md) §3) đọc cửa sổ giữ tải của step trước ở `k6-windows.tsv` (không
+    có thì skip, kết quả không chặn step sau): đạt khi 0 span bị receiver của Collector từ chối hay lỗi, exporter `otlp_grpc/tempo`
+    gửi lỗi hay không vào được hàng đợi, Tempo bỏ (`tempo_discarded_spans_total`), container `tempo` không khởi động lại trong cửa sổ,
+    tìm và lấy được theo id một trace của gateway có ≥ 2 service, cạnh gateway → feed-service của service graph tăng; mức 8 pod chỉ ghi
+    số; JSON ở `.k8s/drills/tempo-ingest-<nhãn>-<time>.json`; `velero` (`SVP_K8S_RUNNER_CSI=1 make k8s-up`, bucket và user `svp-velero`, cài Velero, kiểm NetworkPolicy, seed bằng
     smoke và fixture, `drill-restore.sh` chế độ runner, sweep, gỡ). Dispatch và đọc kết quả (AI được chạy, chỉ khi người
     học giao): `gh workflow run verify.yml --ref <main|feat/stage6b-…> -f
     scenario=<compose-obs|dev-k3d|gitops|web-canary|k6-cloud-mini|chaos|velero> [-f targets='<bước> …']` (`targets` rỗng là mọi
     bước, bước dựng luôn chạy; tên bước ở `results.tsv`), `gh run view <id> --log`, `gh run download <id> -n verify-<kịch
-    bản>`. Job `compose`, `k3d` chỉ `contents: read`; job `gitops` thêm `actions: read`, `GH_TOKEN` chỉ ở bước tìm source map và
-    bước chờ phát hành; không secret, không environment; `concurrency` một lượt mỗi kịch bản. Trình tự mỗi kịch bản ở
+    bản>`. Job `compose`, `k3d` chỉ `contents: read`; job `gitops` thêm `actions: read` (artifact source map) và
+    `pull-requests: read` (`merged_at` của PR promote cho mốc push của `measure-gitops`), `GH_TOKEN` chỉ ở bước tìm source map
+    và bước chờ phát hành; không secret, không environment; `concurrency` một lượt mỗi kịch bản. Trình tự mỗi kịch bản ở
     `deploy/ci/verify/<kịch bản>.sh` (bước dựng, hạn job mặc định, danh sách bước). Script `deploy/ci/verify-*.sh` (chạy được
     trên VM Linux thay runner):
     `verify-host.sh` (cổng đĩa, `/etc/hosts` cho ba tên `*.svp.localhost`, lệch version kubectl, hạn chế AppArmor, `sudo
     modprobe sch_netem` cho `chaos`), `verify-run.sh` (nạp trình tự của kịch bản, hạn mỗi target, output mỗi target vào file thay
     vì log job, dừng sớm khi bước dựng đỏ),
-    `verify-sample.sh` (mẫu RAM, CPU, đĩa, `docker stats`, `memory.stat` của node, số pod media-worker đang chạy `ffmpeg`,
+    `verify-sample.sh` (mẫu RAM, CPU, đĩa, `docker stats`, `memory.stat` của node, `kubectl top` mỗi container của namespace
+    `svp`, `svp-data`, `cnpg-system`, `svp-obs` ở `pods.tsv`, số pod media-worker đang chạy `ffmpeg`,
     số restart của từng container compose, `cpu.stat` của pod k6 trong cửa sổ giữ ghi ở `k6-windows.tsv`;
     `runner.json`, `runner.txt` "runner đủ"), `verify-mask.sh` (`::add-mask::` giá trị bí mật của `.env` sau mỗi target và
     của Secret trong cluster, gồm `chaos-mesh`, `svp-load`, `velero`), `verify-collect.sh` (artifact `verify-<kịch bản>`, giữ 30 ngày: chỉ file theo danh sách cho
@@ -682,7 +697,8 @@ Quy ước test:
   và `internal/pgtest` DROP rồi CREATE database theo tên cố định.
 - Test thử lại kết nối Postgres (`internal/pgretry`, `internal/pgpool`, `internal/dbmigrate`) dùng helper của
   `internal/pgretry/pgretrytest` (`ClosedPort`, `Blackhole`, `DelayedProxy`: proxy đóng mọi kết nối một lúc rồi mới chuyển tiếp
-  tới database test), mọi cổng do chính test mở; test đo thời gian với cửa sổ thử lại rút ngắn còn 1,5 s.
+  tới database test; `LatencyProxy`: proxy trễ mỗi chiều, đổi được trễ, cắt kết nối giữa chừng, cho test Postgres chậm của
+  engagement-service), mọi cổng do chính test mở; test đo thời gian với cửa sổ thử lại rút ngắn còn 1,5 s.
 - Test Kafka dùng `kfake` (cluster Kafka giả trong bộ nhớ của franz-go), không cần Docker, nên `make check` chạy được khi
   stack đang tắt.
 - Test cần object store hay Redpanda thật đọc `SVP_TEST_S3_ENDPOINT`, `SVP_TEST_S3_VIDEO_ACCESS_KEY` /

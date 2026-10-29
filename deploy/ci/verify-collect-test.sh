@@ -14,7 +14,7 @@
 # the criteria of the k3d scenarios of part 3 (two KEDA drills of gitops, the k6 pods' CPU throttling).
 # Then deploy/ci/verify-run.sh with a fake make (and a fake psql and docker for the copy back to MinIO): the scenarios
 # of compose-obs and dev-k3d, each scenario of part 3 by its name, and made-up scenario files for what a scenario file
-# can get wrong and for a drill run twice.
+# can get wrong and for a drill run twice. Then the self-test of deploy/ci/verify-tempo.sh.
 # Last, that deploy/ci/changed-services.sh builds no image for a change of these scripts, in a throwaway git repository
 # holding a copy of it. Runs on macOS and Linux, no network, no Docker, no cluster.
 #
@@ -1431,6 +1431,15 @@ EOF2
     fail "verify-run: a rejected list starts no target"
 else
   echo "skip  verify-run: no GNU timeout on PATH (Linux, or coreutils on macOS)"
+fi
+
+# --- verify-tempo.sh: its own self-test (fake kubectl, curl and nc; no cluster, no network), so that job config of CI
+# runs it with the rest of the verification scripts' tests.
+if bash "$here/verify-tempo.sh" test >"$work/verify-tempo-test.out" 2>&1; then
+  ok "verify-tempo.sh: its self-test passes"
+else
+  sed 's/^/    /' "$work/verify-tempo-test.out" >&2
+  fail "verify-tempo.sh: its self-test passes"
 fi
 
 # --- changed-services.sh: a change of a verification script builds no image; one of verify-release.sh, which the image
