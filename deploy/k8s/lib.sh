@@ -281,23 +281,99 @@ es_force_sync() {
   done
 }
 
-# argocd_root_app REPO_URL REVISION ENV: prints the root Application svp-root of the GitOps path, as JSON for
-# `kc apply -f -`: chart deploy/argocd/apps of REPO_URL at REVISION, which hands the same revision to every Application
-# it makes (its value targetRevision) and adds the overlays of environment ENV (its value env, a directory of
-# deploy/k8s/envs). Built by jq from --arg values, so the revision and the environment are always JSON strings: a
-# branch named 2026, true or 1e3 written into YAML as it is would be read as a number or a boolean, which the
+# The deployment configuration lives in its own repository, svp-gitops: base/ (the values of every component, the only
+# layer the dev path reads), envs/<env>/ (overlays, charts.yaml, images/) and argocd/ (components.json, the root chart,
+# AppProject, Argo CD's own install). Every script reads it through gitops_dir; this repository holds the charts.
+gitops_url=https://github.com/anhnvcoder/svp-gitops.git
+# The clone CI jobs read (make gitops-clone), inside the checkout and gitignored. A machine reads its own (gitops_dir).
+gitops_ci_clone=$repo_root/.gitops/svp-gitops
+
+# gitops_is_clone DIR: true when DIR is the top of a git work tree whose remote origin is svp-gitops (over HTTPS or
+# SSH): the check every reader of the configuration makes before it trusts a folder.
+gitops_is_clone() {
+  local top url
+  [ -d "$1" ] || return 1
+  top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) && [ "$top" = "$(cd "$1" && pwd -P)" ] || return 1
+  url=$(git -C "$1" remote get-url origin 2>/dev/null) || return 1
+  [[ $url =~ ^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)anhnvcoder/svp-gitops(\.git)?$ ]]
+}
+
+# gitops_dir: prints the absolute path of the clone of svp-gitops to read. SVP_GITOPS_DIR when set (CI sets it to the
+# clone of make gitops-clone; on a machine it may name another clone, the one being edited); otherwise
+# <workspace>/gitops, where <workspace> holds the main checkout of this repository: the parent of the folder of git's
+# common directory (<workspace>/backend/.git, the same from the main checkout and from a worktree under
+# <workspace>/.worktrees/, which --show-toplevel would not give). The dev path reads that clone's working tree as it is,
+# uncommitted changes included, and never clones, fetches or switches a branch in it. Fails, printing the command that
+# makes the clone, when the folder is not a clone of svp-gitops: no other copy of the configuration is ever read in its
+# place.
+gitops_dir() {
+  local dir common
+  if [ -n "${SVP_GITOPS_DIR:-}" ]; then
+    dir=$SVP_GITOPS_DIR
+    gitops_is_clone "$dir" ||
+      fail "SVP_GITOPS_DIR=$dir is not a clone of svp-gitops: clone it there (git clone $gitops_url '$dir'), or in CI run make gitops-clone first, which sets it"
+  else
+    # --path-format=absolute: otherwise git prints the common directory relative to the current directory.
+    common=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) ||
+      fail "$repo_root is not a git checkout, so the workspace that holds the clone of svp-gitops is unknown; set SVP_GITOPS_DIR"
+    dir=$(dirname "$(dirname "$common")")/gitops
+    gitops_is_clone "$dir" ||
+      fail "$dir is not a clone of svp-gitops, the deployment configuration this path reads: git clone $gitops_url '$dir' (or set SVP_GITOPS_DIR to a clone)"
+  fi
+  (cd "$dir" && pwd -P)
+}
+
+# gitops_clone: CI's copy of the configuration (make gitops-clone). Clones svp-gitops anonymously into $gitops_ci_clone
+# (the whole history, which the bootstrap and measure-gitops read), or fetches it when it is there, then checks out
+# GITOPS_REF (default main: a branch, as origin/<branch>, or a full commit SHA) detached, and exports SVP_GITOPS_DIR to
+# that folder for what this shell runs next. Refuses a clone there with uncommitted changes, or a folder that is no
+# clone of svp-gitops, instead of overwriting either. Touches nothing outside .gitops/ of this checkout.
+gitops_clone() {
+  local dir=$gitops_ci_clone ref=${GITOPS_REF:-main} target sha
+  # No credential helper and no prompt: the clone is anonymous, as Argo CD's is.
+  local git_=(env GIT_TERMINAL_PROMPT=0 git -c credential.helper=)
+  if [ -e "$dir" ]; then
+    gitops_is_clone "$dir" ||
+      fail "$dir is not a clone of svp-gitops; remove it (rm -rf .gitops) and run make gitops-clone again"
+    [ -z "$(git -C "$dir" status --porcelain)" ] ||
+      fail "$dir has uncommitted changes, which make gitops-clone does not overwrite; commit or remove them first"
+    "${git_[@]}" -C "$dir" fetch -q --prune origin || fail "git fetch of $gitops_url into $dir"
+  else
+    mkdir -p "$(dirname "$dir")" || fail "create $(dirname "$dir")"
+    "${git_[@]}" clone -q --no-checkout "$gitops_url" "$dir" || fail "git clone $gitops_url into $dir"
+  fi
+  if [[ $ref =~ ^[0-9a-f]{40}$ ]]; then
+    target=$ref
+  else
+    target=refs/remotes/origin/$ref
+  fi
+  sha=$(git -C "$dir" rev-parse --verify --quiet "$target^{commit}") ||
+    fail "GITOPS_REF=$ref is neither a branch of $gitops_url nor a full commit SHA of it"
+  git -C "$dir" checkout -q --detach "$sha" || fail "check out $ref ($sha) in $dir"
+  export SVP_GITOPS_DIR=$dir
+  ok "svp-gitops at ${sha:0:12} ($ref) in ${dir#"$repo_root"/}"
+}
+
+# argocd_root_app REPO_URL REVISION ENV CHART_REPO_URL: prints the root Application svp-root of the GitOps path, as
+# JSON for `kc apply -f -`: chart argocd/apps of svp-gitops (REPO_URL) at REVISION, which hands the same revision to
+# every Application it makes for its values files (its value targetRevision), reads the charts of this repository from
+# CHART_REPO_URL at the commit envs/ENV/charts.yaml pins (its value chartRepoURL) and adds the overlays of environment
+# ENV (its value env, a directory of envs/). REVISION is a full ref (refs/heads/<branch>) or a commit, never a short
+# name: Argo CD fetches every branch and tag and may resolve a short name to a tag of that name, so a tag named main
+# pushed with a stolen token could be deployed. Built by jq from --arg values, so the revision and the environment are always JSON
+# strings: a branch named 2026, true or 1e3 written into YAML as it is would be read as a number or a boolean, which the
 # Application CRD refuses (targetRevision is a string).
 #
 # The root compares with Argo CD's default diff, not with the server-side diff the controller uses for every other
-# Application (deploy/k8s/values/argo-cd.yaml): the root applies its child Applications client-side (no
+# Application (base/argo-cd.yaml of svp-gitops): the root applies its child Applications client-side (no
 # ServerSideApply=true), so their fields belong to a field manager of operation Update. A server-side dry run is an
-# Apply, which never removes a field another manager entry owns: a field deleted from chart deploy/argocd/apps (an
+# Apply, which never removes a field another manager entry owns: a field deleted from chart argocd/apps (an
 # ignoreDifferences, a retry block, managedNamespaceMetadata) would stay in the predicted and the live Application
 # alike, so the root would stay Synced and the child keep the field for good. The default diff compares with the
 # kubectl.kubernetes.io/last-applied-configuration annotation of a client-side apply and sees the deletion. The
 # children apply their own objects server-side (ServerSideApply=true), for which the server-side diff is right.
 argocd_root_app() {
-  jq -n --arg repo "$1" --arg rev "$2" --arg env "$3" '{
+  jq -n --arg repo "$1" --arg rev "$2" --arg env "$3" --arg charts "$4" '{
     apiVersion: "argoproj.io/v1alpha1",
     kind: "Application",
     metadata: {
@@ -310,8 +386,8 @@ argocd_root_app() {
       source: {
         repoURL: $repo,
         targetRevision: $rev,
-        path: "deploy/argocd/apps",
-        helm: {valuesObject: {targetRevision: $rev, env: $env}}
+        path: "argocd/apps",
+        helm: {valuesObject: {targetRevision: $rev, env: $env, chartRepoURL: $charts}}
       },
       destination: {server: "https://kubernetes.default.svc", namespace: "argocd"},
       syncPolicy: {
@@ -644,8 +720,8 @@ image_paths() {
 # Release images: built, scanned and signed by CI only,
 # under this prefix on GHCR, one image per service; nothing else may be pushed there. The promote pull request writes
 # a release's repository, tag (first 12 hex digits of its commit, for people) and digest (what pods run) into
-# deploy/k8s/values/services/<service>.yaml; the GitOps cluster pulls them anonymously by digest. The dev path never
-# reads them: `make k8s-up` passes its own registry, tag and an empty digest (deploy/k8s/install.sh).
+# envs/<env>/images/<service>.yaml of svp-gitops; the GitOps cluster pulls them anonymously by digest. The dev path
+# never reads them: `make k8s-up` passes its own registry, tag and an empty digest (deploy/k8s/install.sh).
 # shellcheck disable=SC2034 # read by the scripts that source this file
 ghcr_prefix=ghcr.io/anhnvcoder/short-video-platform
 
@@ -747,8 +823,8 @@ ghcr_manifest_status() {
     "https://ghcr.io/v2/$1/manifests/$2" || true
 }
 
-# release_image SERVICE WHERE: reads SERVICE's values file on stdin (WHERE names it in messages, such as
-# "deploy/k8s/values/services/gateway.yaml at 1a2b3c4d5e6f") and prints REPOSITORY@DIGEST of the release it names
+# release_image SERVICE WHERE: reads SERVICE's image file on stdin (WHERE names it in messages, such as
+# "envs/stg/images/gateway.yaml at 1a2b3c4d5e6f") and prints REPOSITORY@DIGEST of the release it names
 # once the GitOps cluster can pull it: image.digest set (the promote pull request writes it), image.repository
 # exactly $ghcr_prefix/SERVICE, and that manifest served to an anonymous pull by GHCR. Fails naming the cause
 # otherwise; creates nothing. Whether the release carries a signature and a fresh vuln attestation is
@@ -757,9 +833,9 @@ release_image() {
   local svc=$1 where=$2 values repo digest code
   values=$(cat)
   digest=$(values_field digest <<<"$values") ||
-    fail "$svc: no release in $where (image.digest above); the promote pull request (branch bot/promote) writes it: merge it on GitHub, fetch, and run again"
+    fail "$svc: no release in $where (image.digest above); the promote pull request of svp-gitops writes it: once it is merged, fetch the clone and run again"
   [ -n "$digest" ] ||
-    fail "$svc: image.digest is empty in $where: $svc has no release there yet; merge the promote pull request (branch bot/promote) on GitHub, fetch, and run again"
+    fail "$svc: image.digest is empty in $where: $svc has no release there yet; once the promote pull request of svp-gitops is merged, fetch the clone and run again"
   repo=$(values_field repository <<<"$values") || fail "$svc: cannot read image.repository in $where (above)"
   [ "$repo" = "$ghcr_prefix/$svc" ] ||
     fail "$svc: image.repository is '$repo' in $where; the GitOps path runs only releases of $ghcr_prefix/$svc"

@@ -9,7 +9,14 @@
 #   - an empty revision in envs/stg/charts.yaml;
 #   - an image newer than the charts: revision set to the parent of an image's commit (derived values from that
 #     parent), so the image's tag is no ancestor of it;
-#   - a wrong collectorConfigSha256.
+#   - a wrong collectorConfigSha256;
+#   - a short targetRevision (main, not refs/heads/main) for the sources of svp-gitops in argocd/apps/values.yaml.
+# First, gitops_dir of deploy/k8s/lib.sh, which every script asks for the clone of svp-gitops, in a draft workspace laid
+# out as the lab's (<workspace>/backend, a git repository holding a copy of lib.sh; a worktree of it in
+# <workspace>/.worktrees/; <workspace>/gitops): from the main checkout, from a folder inside it and from the worktree it
+# names <workspace>/gitops once that is a clone of svp-gitops; SVP_GITOPS_DIR names another clone; a missing folder, a
+# folder that is no git repository, a repository with another origin and a folder inside a clone are refused with the
+# command that makes the clone, and nothing is cloned.
 # Every case fails before the check reaches the network (chart repositories, GHCR): needs bash, git, jq, helm and the
 # history of this repository up to the tree's revisions and image tags (a full clone, origin/main fetched).
 #
@@ -30,6 +37,65 @@ fail() {
   echo "FAIL  $1" >&2
   failures=$((failures + 1))
 }
+
+# --- gitops_dir
+ws=$work/ws
+mkdir -p "$ws/backend/deploy/k8s"
+cp "$repo_root/deploy/k8s/lib.sh" "$ws/backend/deploy/k8s/"
+gw() { git -C "$1" -c user.name=test -c user.email=test@example.invalid "${@:2}"; }
+git init -q "$ws/backend"
+gw "$ws/backend" add deploy
+gw "$ws/backend" commit -q -m lib
+gw "$ws/backend" worktree add -q -b worktree-x "$ws/.worktrees/backend-x"
+ws_real=$(cd "$ws" && pwd -P)
+# lookup DIR LIB [VAR=VALUE...]: gitops_dir of LIB (a copy of lib.sh), run from DIR without SVP_GITOPS_DIR unless one
+# of VAR=VALUE sets it; prints its output, then "rc=<exit status>".
+lookup() {
+  local dir=$1 lib=$2 out rc=0
+  shift 2
+  out=$(cd "$dir" && env -u SVP_GITOPS_DIR "$@" bash -c '. "$1" && gitops_dir' _ "$lib" 2>&1) || rc=$?
+  printf '%s\nrc=%s\n' "$out" "$rc"
+}
+# expect NAME OUTPUT WANT...: OUTPUT holds each WANT.
+expect() {
+  local name=$1 out=$2 w
+  shift 2
+  for w in "$@"; do
+    [[ $out == *"$w"* ]] || {
+      fail "$name: no '$w' in:"$'\n'"$(sed 's/^/      /' <<<"$out")"
+      return
+    }
+  done
+  ok "$name"
+}
+main_lib=$ws/backend/deploy/k8s/lib.sh
+wt_lib=$ws/.worktrees/backend-x/deploy/k8s/lib.sh
+clone_hint="git clone https://github.com/anhnvcoder/svp-gitops.git '$ws_real/gitops'"
+expect "gitops_dir: no clone in the workspace, the command that makes it" "$(lookup "$ws/backend" "$main_lib")" \
+  "$clone_hint" rc=1
+mkdir "$ws/gitops"
+expect "gitops_dir: a folder that is no git repository is refused" "$(lookup "$ws/backend" "$main_lib")" "$clone_hint" rc=1
+git init -q "$ws/gitops"
+gw "$ws/gitops" remote add origin https://github.com/someone/other.git
+expect "gitops_dir: a repository with another origin is refused" "$(lookup "$ws/backend" "$main_lib")" "$clone_hint" rc=1
+gw "$ws/gitops" remote set-url origin https://github.com/anhnvcoder/svp-gitops.git
+mkdir -p "$ws/gitops/base"
+expect "gitops_dir: the clone beside the main checkout" "$(lookup "$ws/backend" "$main_lib")" "$ws_real/gitops"$'\n'rc=0
+expect "gitops_dir: the same from a folder inside the main checkout" "$(lookup "$ws/backend/deploy" "$main_lib")" \
+  "$ws_real/gitops"$'\n'rc=0
+expect "gitops_dir: the same from a worktree under .worktrees/, not .worktrees/gitops" \
+  "$(lookup "$ws/.worktrees/backend-x" "$wt_lib")" "$ws_real/gitops"$'\n'rc=0
+git init -q "$ws/other"
+gw "$ws/other" remote add origin git@github.com:anhnvcoder/svp-gitops.git
+expect "gitops_dir: SVP_GITOPS_DIR names another clone (an SSH remote)" \
+  "$(lookup "$ws/.worktrees/backend-x" "$wt_lib" SVP_GITOPS_DIR="$ws/other")" "$ws_real/other"$'\n'rc=0
+expect "gitops_dir: SVP_GITOPS_DIR inside a clone is refused" \
+  "$(lookup "$ws/backend" "$main_lib" SVP_GITOPS_DIR="$ws/gitops/base")" \
+  "SVP_GITOPS_DIR=$ws/gitops/base is not a clone of svp-gitops" "make gitops-clone" rc=1
+expect "gitops_dir: SVP_GITOPS_DIR that does not exist is refused" \
+  "$(lookup "$ws/backend" "$main_lib" SVP_GITOPS_DIR="$ws/missing")" "git clone https://github.com/anhnvcoder/svp-gitops.git '$ws/missing'" rc=1
+[ ! -e "$ws/missing" ] && [ ! -e "$ws/backend/.gitops" ] && ok "gitops_dir: nothing was cloned" ||
+  fail "gitops_dir: nothing was cloned"
 
 if [ $# -ge 1 ]; then
   tree=$(cd "$1" && pwd)
@@ -113,6 +179,11 @@ t=$(copy)
 sed -i.bak "s/^collectorConfigSha256:.*/collectorConfigSha256: $(printf '0%.0s' $(seq 64))/" "$t/envs/stg/charts.yaml" &&
   rm "$t/envs/stg/charts.yaml.bak"
 check "a wrong collectorConfigSha256" "$t" "envs/stg/charts.yaml: collectorConfigSha256 is '$(printf '0%.0s' $(seq 64))'"
+
+t=$(copy)
+sed -i.bak 's|^targetRevision: .*|targetRevision: main|' "$t/argocd/apps/values.yaml" && rm "$t/argocd/apps/values.yaml.bak"
+check "a short targetRevision" "$t" \
+  "every source of https://github.com/anhnvcoder/svp-gitops.git must name a full ref (refs/heads/<branch>) or a commit as targetRevision, not main"
 
 if [ "$failures" -gt 0 ]; then
   echo "FAIL  $failures check(s) failed" >&2

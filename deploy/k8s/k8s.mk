@@ -8,7 +8,7 @@ K8S_LIB := . deploy/k8s/lib.sh
 	k8s-glitchtip-init k8s-ui-grafana k8s-ui-prometheus k8s-ui-alertmanager k8s-ui-glitchtip k8s-gitops-up \
 	measure-gitops k8s-ui-argocd k8s-traffic-start k8s-traffic-stop drill-k8s-canary measure-canary drill-k8s-threats \
 	drill-k8s-supplychain k8s-web-sourcemaps k8s-web-e2e drill-k8s-web-obs cloud-check drill-k8s-backup \
-	drill-k8s-web-canary
+	drill-k8s-web-canary gitops-clone
 
 # Compose and k3d never run together on the 16 GB machine (CLAUDE.md): the cluster is not created or started beside a
 # running compose stack. `make up` refuses the other way round (deploy/compose/compose.mk).
@@ -16,25 +16,36 @@ k8s-exclusive:
 	@running=$$(env -u DOCKER_DEFAULT_PLATFORM docker compose -p svp ps -q); \
 	  if [ -n "$$running" ]; then echo "make k8s-up: the compose stack svp is running; run 'make down' first" >&2; exit 1; fi
 
-# env-required: the Secrets come from .env (deploy/k8s/secrets.sh, run by install.sh once the namespaces exist).
+# env-required: the Secrets come from .env (deploy/k8s/secrets.sh, run by install.sh once the namespaces exist). The
+# clone of svp-gitops is looked up first (gitops_dir), so a missing one stops the target before anything is created.
 # install.sh refuses a cluster made while the object store was MinIO (StatefulSet svp-data/minio): such a cluster is
 # made again, never upgraded in place.
-k8s-up: k8s-exclusive env-required ## Create (or start) the registry 127.0.0.1:5111 and cluster svp (API 127.0.0.1:6550, HTTPS 127.0.0.1:8443), build and push the seven images, install deploy/argocd/apps/components.json, with drill traffic while a canary of the gateway or the web client runs; idempotent; refuses a cluster still running MinIO (make k8s-down first) (LOCAL LAB ONLY: a canary's drill traffic resets register rate limit keys in the cluster's Valkey db 10)
-	@bash -c '$(K8S_LIB) && ensure_registry && ensure_cluster'
+k8s-up: k8s-exclusive env-required ## Create (or start) the registry 127.0.0.1:5111 and cluster svp (API 127.0.0.1:6550, HTTPS 127.0.0.1:8443), build and push the seven images, install argocd/apps/components.json of the clone of svp-gitops (../gitops beside the checkout, or SVP_GITOPS_DIR) with its base/ values, with drill traffic while a canary of the gateway or the web client runs; idempotent; refuses a cluster still running MinIO (make k8s-down first) (LOCAL LAB ONLY: a canary's drill traffic resets register rate limit keys in the cluster's Valkey db 10)
+	@bash -c '$(K8S_LIB) && gitops_dir >/dev/null && ensure_registry && ensure_cluster'
 	deploy/k8s/install.sh
 
+# The deployment configuration is the repository svp-gitops (deploy/k8s/lib.sh, gitops_dir): a machine reads its own
+# clone, ../gitops beside the main checkout or SVP_GITOPS_DIR, which no target clones, fetches or switches. CI clones
+# it with gitops-clone into .gitops/svp-gitops (gitignored) at GITOPS_REF and sets SVP_GITOPS_DIR there before any
+# target that reads the configuration.
+GITOPS_REF ?= main
+
+gitops-clone: ## CI: clone svp-gitops anonymously into .gitops/svp-gitops (gitignored), or fetch it when it is there, and check out GITOPS_REF (default main, or a full commit SHA); refuses a clone there with uncommitted changes. A machine reads its own clone instead (../gitops beside the checkout, or SVP_GITOPS_DIR)
+	@GITOPS_REF='$(GITOPS_REF)' bash -c '$(K8S_LIB) && gitops_clone'
+
 # The GitOps path: a new cluster svp that Argo CD builds from GitHub, running the release images of GHCR, as the
-# staging environment: the base values plus the overlays of deploy/k8s/envs/stg (production is only rendered, by make
-# helm-check). GITOPS_REV is what Argo CD follows: a branch of origin (its values are read from origin/<branch> as last
-# fetched) or a full commit SHA. Releases are built, signed and promoted by CI (.github/workflows/images.yml): no
-# target builds one on this machine. Argo CD reads the public repository over HTTPS without credentials: no deploy key,
-# no secret (a deploy key made for the SSH setup before is no longer used, and can be deleted on GitHub).
+# staging environment: base/ of svp-gitops plus the overlays and release images of its envs/stg, with the charts of this
+# repository at the commit envs/stg/charts.yaml pins (production is only rendered, by the checks). GITOPS_REV is the
+# revision of svp-gitops Argo CD follows: a branch of the clone's origin (read from origin/<branch> as last fetched;
+# Argo CD gets refs/heads/<branch>) or a full commit SHA. Releases are built, signed and promoted by CI
+# (.github/workflows/images.yml): no target builds one on this machine. Argo CD reads both public repositories over
+# HTTPS without credentials: no deploy key, no secret.
 GITOPS_REV ?= main
 
-k8s-gitops-up: k8s-exclusive env-required ## Create a new cluster svp that runs as staging (base values plus deploy/k8s/envs/stg), built by Argo CD from GitHub over anonymous HTTPS (no deploy key) [GITOPS_REV=main]; first checks that the seven release digests at that revision are on GHCR (anonymous pull), signed, with a clean vuln attestation at most 48 h old; applies the Secrets of .env, installs Argo CD with the plugin of Argo Rollouts for the nodes' architecture, waits until every Application is Synced and Healthy
+k8s-gitops-up: k8s-exclusive env-required ## Create a new cluster svp that runs as staging (base/ plus envs/stg of svp-gitops), built by Argo CD from GitHub over anonymous HTTPS (no deploy key) [GITOPS_REV=main, a branch of the clone of svp-gitops or a commit]; first checks that the seven release digests of envs/stg/images/ at that revision are on GHCR (anonymous pull), signed, with a clean vuln attestation at most 48 h old; applies the Secrets of .env, installs Argo CD with the plugin of Argo Rollouts for the nodes' architecture, waits until every Application is Synced and Healthy
 	GITOPS_REV='$(GITOPS_REV)' deploy/k8s/gitops.sh
 
-measure-gitops: ## On the GitOps cluster, time release commit REV=<commit> (the merge of a promote pull request) from its push (reflog of origin/main, else merged_at of its pull request, else GitHub's PushEvent) through Argo CD's sync to the first and last pod Ready with the new digest; JSON in .k8s/drills/ (read only)
+measure-gitops: ## On the GitOps cluster, time release commit REV=<commit of svp-gitops> (the merge of a promote pull request there) from its push (reflog of origin/main of the clone, else merged_at of its pull request, else GitHub's PushEvent) through Argo CD's sync to the first and last pod Ready with the new digest; JSON in .k8s/drills/ (read only)
 	@test -n '$(REV)' || { echo "make measure-gitops: set REV=<commit>" >&2; exit 1; }
 	deploy/k8s/drills/gitops.sh '$(REV)'
 

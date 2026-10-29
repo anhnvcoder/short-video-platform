@@ -25,7 +25,7 @@
 #    thrown away after the run, and the job already has root through sudo), so the sandbox stays on; Playwright's own
 #    launches (the e2e tests) turn the sandbox off themselves and need nothing.
 # 5. k3d only: prints vm.min_free_kbytes. Seastar takes it off the broker's cgroup limit before it checks --memory, and
-#    deploy/k8s/values/redpanda.yaml leaves room for it (66 MiB on an x86_64 runner, 44 MiB in Docker Desktop's VM).
+#    base/redpanda.yaml of svp-gitops leaves room for it (66 MiB on an x86_64 runner, 44 MiB in Docker Desktop's VM).
 # 6. chaos only: sudo modprobe sch_netem, the kernel module the network delay of Chaos Mesh needs (the k3d nodes share
 #    the runner's kernel), and writes loaded or absent to $SVP_VERIFY_OUT/sch-netem. Absent does not stop the run here:
 #    the scenario's trial step (chaos-b-trial) checks the module again itself, loads it with modprobe or first installs

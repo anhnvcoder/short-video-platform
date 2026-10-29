@@ -90,12 +90,11 @@
 #              their reason;
 #   PSA-platform every namespace but kube-system, kube-public, kube-node-lease and default (the platform charts'
 #              included: cert-manager, envoy-gateway-system, cnpg-system, keda, argo-rollouts, kyverno, argocd on the
-#              GitOps path) enforces PSA restricted at the podSecurityVersion of chart svp-cluster, and every
-#              namespace of deploy/argocd/apps/components.json exists; default, kube-public and kube-node-lease carry
-#              no PSA label and the cluster default (deploy/k8s/pod-security-admission.yaml) refuses a privileged pod
-#              with the node's / as hostPath there, restricted at that version (server-side dry run). Control: a
-#              restricted pod is admitted in each. kube-system, exempt from the default, is printed as info with its
-#              reason;
+#              GitOps path) enforces PSA restricted at the podSecurityVersion of chart svp-cluster, and every namespace
+#              of argocd/apps/components.json of svp-gitops exists; default, kube-public and kube-node-lease carry no
+#              PSA label and the cluster default (deploy/k8s/pod-security-admission.yaml) refuses a privileged pod with
+#              the node's / as hostPath there, restricted at that version (server-side dry run). Control: a restricted
+#              pod is admitted in each. kube-system, exempt from the default, is printed as info with its reason;
 #   WEB-7      a drill user registers through the web client's /register form at https://svp.localhost:8443 (posted as a
 #              browser without JavaScript posts it: the form's hidden Server Action fields, read from the page, then the
 #              user's fields; the session cookie __Host-Http-svp_sid stays in a private cookie jar). With that session,
@@ -1182,7 +1181,7 @@ rbac() {
   done
   # Webhook configurations are cluster-scoped: asked with -A, kubectl prints no warning that they have no namespace.
   # Writing one would let the operator send itself every Secret written in the cluster; cainjector writes the CA of its
-  # two (deploy/k8s/values/cloudnative-pg.yaml).
+  # two (base/cloudnative-pg.yaml of svp-gitops).
   for r in mutatingwebhookconfigurations validatingwebhookconfigurations; do
     for v in create update patch; do
       out=$(kc auth can-i "$v" "$r.admissionregistration.k8s.io" -A \
@@ -1213,11 +1212,11 @@ rbac() {
   [[ $out == yes ]] &&
     control "as the same user, can-i says yes to create secrets in cnpg-system (the operator's CA Secret)" ||
     miss "control: as $cnpg_as, can-i says yes to create secrets in cnpg-system (got '$out')"
-  info "RBAC exception: Envoy Gateway reads the Secrets of svp and svp-data, which it watches for routes api and s3 (its Secret cache covers every watched namespace; deploy/k8s/values/envoy-gateway.yaml)"
-  info "RBAC exception: cert-manager's controller and cainjector read Secrets in every namespace, cainjector patches every webhook configuration, the controller creates pods in every namespace (Certificates in cert-manager, svp-edge, keda and cnpg-system, ClusterIssuers svp-selfsigned and svp-ca; deploy/k8s/values/cert-manager.yaml); its pods are held to PSA restricted everywhere but kube-system (PSA-platform)"
+  info "RBAC exception: Envoy Gateway reads the Secrets of svp and svp-data, which it watches for routes api and s3 (its Secret cache covers every watched namespace; base/envoy-gateway.yaml of svp-gitops)"
+  info "RBAC exception: cert-manager's controller and cainjector read Secrets in every namespace, cainjector patches every webhook configuration, the controller creates pods in every namespace (Certificates in cert-manager, svp-edge, keda and cnpg-system, ClusterIssuers svp-selfsigned and svp-ca; base/cert-manager.yaml of svp-gitops); its pods are held to PSA restricted everywhere but kube-system (PSA-platform)"
   info "RBAC exception: Argo CD's application controller and server (GitOps path) hold rights on every resource of the cluster, Secrets included: they apply every chart"
-  info "RBAC exception: the Barman Cloud plugin (cnpg-system/plugin-barman-cloud, backups of Postgres svp-pg) reads, creates and deletes the Secrets of every namespace, the JWT signing key of svp included, and creates Roles and RoleBindings everywhere: its manager caches the whole cluster with no flag to narrow it, so a Role per namespace as for CloudNativePG would leave it failing on permissions (threat model BAK-1, accepted for the lab; deploy/k8s/values/plugin-barman-cloud.yaml); the CloudNativePG operator beside it in cnpg-system may neither run code as its ServiceAccount nor get it a token (checked above)"
-  info "RBAC exception: Kyverno's admission controller creates, patches and deletes every webhook configuration and validating admission policy of the cluster: it registers the webhooks of its policies itself (a taken-over controller could send itself any request, or drop the image policy's webhook); its reports controller reads the pods of every namespace (what the policy matches; the chart's view binding is off, deploy/k8s/values/kyverno.yaml)"
+  info "RBAC exception: the Barman Cloud plugin (cnpg-system/plugin-barman-cloud, backups of Postgres svp-pg) reads, creates and deletes the Secrets of every namespace, the JWT signing key of svp included, and creates Roles and RoleBindings everywhere: its manager caches the whole cluster with no flag to narrow it, so a Role per namespace as for CloudNativePG would leave it failing on permissions (threat model BAK-1, accepted for the lab; base/plugin-barman-cloud.yaml of svp-gitops); the CloudNativePG operator beside it in cnpg-system may neither run code as its ServiceAccount nor get it a token (checked above)"
+  info "RBAC exception: Kyverno's admission controller creates, patches and deletes every webhook configuration and validating admission policy of the cluster: it registers the webhooks of its policies itself (a taken-over controller could send itself any request, or drop the image policy's webhook); its reports controller reads the pods of every namespace (what the policy matches; the chart's view binding is off, base/kyverno.yaml of svp-gitops)"
 }
 
 # cnpg_secrets: the CloudNativePG operator may create Secrets in cnpg-system (its CA, cnpg-ca-secret, made at start),
@@ -1670,12 +1669,13 @@ rl1() {
 # already refuses that in a namespace without labels; the label is still required: it pins the level and version on
 # the namespace itself, visible there and independent of the API server's configuration, and the default is only the
 # net for a namespace whose label is missing. Every namespace counts, not a list kept here: one that a new chart
-# brings without the label fails. Each namespace of deploy/argocd/apps/components.json must be among them.
+# brings without the label fails. Each namespace of argocd/apps/components.json of svp-gitops (the clone gitops_dir of
+# deploy/k8s/lib.sh names, the file the cluster was installed from) must be among them.
 # default, kube-public and kube-node-lease have no label: there the cluster default of the API server
 # (deploy/k8s/pod-security-admission.yaml) holds, shown by a privileged pod it refuses at the same level and version;
 # a label on one of them (privileged, say) would override the default, so they must have none.
 psa_platform() {
-  local version=$psa_version ns level got out n=0
+  local version=$psa_version ns level got out n=0 components
   kc get namespaces -o json | jq -r '.items[] | [.metadata.name,
     (.metadata.labels["pod-security.kubernetes.io/enforce"] // "-"),
     (.metadata.labels["pod-security.kubernetes.io/enforce-version"] // "-")] | @tsv' >"$work/psa-namespaces" ||
@@ -1689,10 +1689,11 @@ psa_platform() {
   # A component of the GitOps path only (gitopsOnly: External Secrets Operator) has its namespace there only.
   local gitops=false
   if kc get namespace argocd >/dev/null 2>&1; then gitops=true; fi
+  components=$(gitops_dir)/argocd/apps/components.json || fail "PSA-platform: the clone of svp-gitops (above)"
   for ns in $(jq -r --argjson gitops "$gitops" '.components[] | select($gitops or .gitopsOnly != true) | .namespace' \
-    "$repo_root/deploy/argocd/apps/components.json" | sort -u); do
+    "$components" | sort -u); do
     awk -F '\t' -v ns="$ns" '$1 == ns { found = 1 } END { exit !found }' "$work/psa-namespaces" ||
-      miss "PSA-platform: namespace $ns of deploy/argocd/apps/components.json exists"
+      miss "PSA-platform: namespace $ns of argocd/apps/components.json of svp-gitops exists"
   done
   ((n > 0)) || miss "PSA-platform: the cluster has namespaces besides kube-system, kube-public, kube-node-lease and default"
   for ns in default kube-public kube-node-lease; do
@@ -1802,7 +1803,7 @@ eso() {
   [[ $out == *'created (server dry run)'* ]] && control "as the controller, an Opaque Secret in svp passes $vap" ||
     miss "control: as the controller, an Opaque Secret in svp passes $vap (got: $(head -n 1 <<<"$out"))"
   out=$(kc auth can-i list secrets -n argocd --as="$eso_controller" 2>&1 || true)
-  info "SEC-5 exception: External Secrets Operator's controller reads every Secret of the cluster (can-i list secrets in argocd: $out): it watches the metadata of every Secret whatever its flags (WatchesMetadata of Secret, externalsecret_controller.go of v2.14.0), and a right to list is a right to read; its writes are held to the namespaces of its ExternalSecrets by $vap and its tokens to the stores' ServiceAccounts (checked above; deploy/k8s/values/external-secrets.yaml)"
+  info "SEC-5 exception: External Secrets Operator's controller reads every Secret of the cluster (can-i list secrets in argocd: $out): it watches the metadata of every Secret whatever its flags (WatchesMetadata of Secret, externalsecret_controller.go of v2.14.0), and a right to list is a right to read; its writes are held to the namespaces of its ExternalSecrets by $vap and its tokens to the stores' ServiceAccounts (checked above; base/external-secrets.yaml of svp-gitops)"
   out=$(kc get validatingwebhookconfigurations,mutatingwebhookconfigurations -o json | jq -r '.items[]
     | select((.metadata.name | test("external-secrets")) or ((.metadata.labels // {})["app.kubernetes.io/instance"] == "external-secrets"))
     | .metadata.name')

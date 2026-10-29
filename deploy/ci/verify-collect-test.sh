@@ -1121,15 +1121,17 @@ same "sample: dev-k3d has no k6 criterion" "null level-1=4/2/2" "$(throttle k6-d
 rm -f "$so/k6-windows.tsv" "$so/samples/k6.tsv"
 echo compose-obs >"$so/scenario"
 
-# --- verify-run.sh: the build target's failure skips the rest at once, SVP_VERIFY_TARGETS picks targets. It runs from
-# a copy in a throwaway tree with a fake .env, a fake make first on PATH (it logs its arguments and fails for the
-# targets FAKE_MAKE_FAIL names), a fake docker and the fake kubectl above (no cluster answers), so no target, no
-# container, no cluster and no real .env is ever reached. verify-run.sh needs GNU timeout (and GNU date for its time
-# lines: gdate on macOS).
+# --- verify-run.sh: the build target's failure skips the rest at once, SVP_VERIFY_TARGETS picks targets, a k3d scenario
+# clones svp-gitops first (make gitops-clone) and starts nothing when that fails. It runs from a copy in a throwaway
+# tree with a fake .env, a fake make first on PATH (it logs its arguments and fails for the targets FAKE_MAKE_FAIL
+# names), a fake docker and the fake kubectl above (no cluster answers), so no target, no container, no cluster, no
+# clone and no real .env is ever reached. verify-run.sh needs GNU timeout (and GNU date for its time lines: gdate on
+# macOS).
 vr=$work/verify-run
 vb=$work/verify-run-bin
-mkdir -p "$vr/deploy/ci" "$vr/deploy/observability/glitchtip" "$vb"
+mkdir -p "$vr/deploy/ci" "$vr/deploy/k8s" "$vr/deploy/observability/glitchtip" "$vb"
 cp "$here/verify-run.sh" "$here/verify-mask.sh" "$here/verify-sample.sh" "$here/platform.sh" "$vr/deploy/ci/"
+cp "$here/../k8s/lib.sh" "$vr/deploy/k8s/"
 cp -R "$here/verify" "$vr/deploy/ci/"
 cp "$here/../observability/glitchtip/dotenv.sh" "$vr/deploy/observability/glitchtip/"
 cp "$repo/.env" "$vr/.env"
@@ -1227,15 +1229,22 @@ if timeout --version 2>/dev/null | grep -q GNU; then
 
   rc=$(run_verify one dev-k3d SVP_VERIFY_TARGETS=drill-k8s-threats)
   same "verify-run: a run of the chosen targets that pass passes" 0 "$rc"
-  same "verify-run: only the build target and the chosen one run" "$(printf 'k8s-up\ndrill-k8s-threats')" \
-    "$(cat "$work/run-one.make")"
+  same "verify-run: a k3d scenario clones svp-gitops, then only the build target and the chosen one run" \
+    "$(printf -- '-s gitops-clone\nk8s-up\ndrill-k8s-threats')" "$(cat "$work/run-one.make")"
   same "verify-run: the targets left out keep their ids and are skipped as not in targets" \
     "$(want_rows "$k3d_names" ok 'not in targets' '04 drill-k8s-threats ok ')" "$(results one)"
 
   rc=$(run_verify one-fails dev-k3d 'SVP_VERIFY_TARGETS=drill-k8s-pdb  drill-k8s-threats' FAKE_MAKE_FAIL=drill-k8s-pdb)
   same "verify-run: a chosen target that fails makes the run fail" 1 "$rc"
   same "verify-run: chosen targets run in the scenario's order, whatever the order given" \
-    "$(printf 'k8s-up\ndrill-k8s-threats\ndrill-k8s-pdb')" "$(cat "$work/run-one-fails.make")"
+    "$(printf -- '-s gitops-clone\nk8s-up\ndrill-k8s-threats\ndrill-k8s-pdb')" "$(cat "$work/run-one-fails.make")"
+
+  rc=$(run_verify clone-fails dev-k3d FAKE_MAKE_FAIL=gitops-clone)
+  same "verify-run: a failed clone of svp-gitops makes the run fail" 1 "$rc"
+  [ "$(cat "$work/run-clone-fails.make")" = "-s gitops-clone" ] && [ ! -e "$work/run-clone-fails.out/results.tsv" ] &&
+    ok "verify-run: after a failed clone of svp-gitops no target starts" ||
+    fail "verify-run: after a failed clone of svp-gitops no target starts"
+  has run-clone-fails "the failed clone is named" "make gitops-clone (the deployment configuration svp-gitops); nothing started"
 
   rc=$(run_verify peak dev-k3d SVP_VERIFY_TARGETS=ram-peak)
   same "verify-run: ram-peak without drill-k8s-keda makes the run fail" 1 "$rc"
@@ -1330,8 +1339,9 @@ if timeout --version 2>/dev/null | grep -q GNU; then
     ok "verify-run: the s3-init log is counted, never printed" || fail "verify-run: the s3-init log is counted, never printed"
 
   # Each scenario of part 3 is a name verify-run.sh takes, its file sourced: the build target failing skips every other
-  # target at once, and only the build target ran. What comes after it is left to each scenario's own work. The copy
-  # is a git checkout on a branch, which gitops gives make k8s-gitops-up as the revision Argo CD follows.
+  # target at once, and only the build target ran, after the clone of svp-gitops. What comes after it is left to each
+  # scenario's own work. The copy is a git checkout on a branch, which gitops does not give Argo CD: the cluster
+  # follows main of svp-gitops whatever the branch of this repository.
   git -c init.defaultBranch=feat/stage6b-verify init -q "$vr"
   for sc in gitops:k8s-gitops-up web-canary:k8s-up k6-cloud-mini:k8s-up chaos:k8s-up velero:k8s-up; do
     scn=${sc%%:*}
@@ -1345,10 +1355,10 @@ if timeout --version 2>/dev/null | grep -q GNU; then
       ok "verify-run: $scn skips every target after its build target for it" ||
       fail "verify-run: $scn skips every target after its build target for it"
   done
-  same "verify-run: gitops builds the cluster from the branch of the checkout" \
-    "k8s-gitops-up GITOPS_REV=feat/stage6b-verify" "$(cat "$work/run-infra-gitops.make")"
-  same "verify-run: a k3d scenario of the dev path runs only make k8s-up when it fails" "k8s-up" \
-    "$(cat "$work/run-infra-velero.make")"
+  same "verify-run: gitops builds the cluster from main of svp-gitops, cloned first" \
+    "$(printf -- '-s gitops-clone\nk8s-gitops-up GITOPS_REV=main')" "$(cat "$work/run-infra-gitops.make")"
+  same "verify-run: a k3d scenario of the dev path runs only the clone and make k8s-up when it fails" \
+    "$(printf -- '-s gitops-clone\nk8s-up')" "$(cat "$work/run-infra-velero.make")"
   rc=$(run_verify no-scenario nope)
   same "verify-run: a name that is no scenario stops it" 2 "$rc"
   [ ! -s "$work/run-no-scenario.make" ] && [ ! -e "$work/run-no-scenario.out/results.tsv" ] &&
@@ -1358,7 +1368,7 @@ if timeout --version 2>/dev/null | grep -q GNU; then
   # first target is not its build target, one fake scenario that runs a drill twice, each followed by its RAM peak.
   vr2=$work/verify-run-2
   mkdir -p "$vr2/deploy"
-  cp -R "$vr/deploy/ci" "$vr/deploy/observability" "$vr2/deploy/"
+  cp -R "$vr/deploy/ci" "$vr/deploy/k8s" "$vr/deploy/observability" "$vr2/deploy/"
   cp "$vr/.env" "$vr2/.env"
   rm "$vr2/deploy/ci/verify/web-canary.sh"
   printf 'build=k8s-up\njob_minutes_default=330\nscenario_targets() { step k8s-up 1 make k8s-up; }\n' \

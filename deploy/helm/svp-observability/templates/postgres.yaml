@@ -7,7 +7,7 @@ backup, first recoverability point), read by alerts PostgresWALArchivingFailing 
 but have no metrics port.
 
 The PodMonitor lives in svp-obs although the pods are in svp-data, as envoy-svp does (templates/envoy.yaml): the
-Prometheus operator watches svp-obs only (deploy/k8s/values/kube-prometheus-stack.yaml), so the PodMonitor
+Prometheus operator watches svp-obs only (base/kube-prometheus-stack.yaml of svp-gitops), so the PodMonitor
 CloudNativePG can make itself (spec.monitoring.enablePodMonitor) would be made in svp-data and never read. Prometheus
 finds the pods with its own cluster-wide right to list pods; policy prometheus opens its egress to 9187, and policy
 postgres of chart svp-data the ingress.

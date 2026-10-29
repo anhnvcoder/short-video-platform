@@ -1,31 +1,33 @@
 #!/usr/bin/env bash
-# Measures, after the fact, how long a commit took from the push to the pods that run it on the GitOps path:
-# `make measure-gitops REV=<commit>` on a cluster made by
-# `make k8s-gitops-up`. Read only: git, GitHub's events and the cluster are read, nothing is changed. A release commit
-# is the merge of a promote pull request, which changes image.digest in deploy/k8s/values/services/.
+# Measures, after the fact, how long a commit of the deployment configuration svp-gitops took from the push to the pods
+# that run it on the GitOps path: `make measure-gitops REV=<commit of svp-gitops>` on a cluster made by
+# `make k8s-gitops-up`. Read only: git (the clone of svp-gitops gitops_dir of deploy/k8s/lib.sh names), GitHub's
+# events and the cluster are read, nothing is changed. A release commit is the merge of a promote pull request of
+# svp-gitops, which changes image.digest in envs/stg/images/.
 #
-#   push           the reflog entry "update by push" of refs/remotes/origin/main that moved it to REV (a push from
-#                  this machine); else, for a pull request merged on GitHub (this machine only fetches it later),
-#                  the time that pull request was merged (merged_at of the pull request whose merge commit is REV),
-#                  else the PushEvent of GitHub's events API whose head is REV (both through ci_push_time of
-#                  deploy/ci/platform.sh; the events are delayed on purpose and may not list the push for many
-#                  minutes); else "not measurable", and the times count from the start of Argo CD's sync
-#                  instead. Never the commit's own date: a commit can be made long before it is pushed.
+#   push           the reflog entry "update by push" of refs/remotes/origin/main of the clone that moved it to REV (a
+#                  push from this machine); else, for a pull request merged on GitHub (this machine only fetches it
+#                  later), the time that pull request was merged (merged_at of the pull request of svp-gitops whose
+#                  merge commit is REV), else the PushEvent of svp-gitops's events whose head is REV (both through
+#                  ci_push_time of deploy/ci/platform.sh for that repository; the events are delayed on purpose and may
+#                  not list the push for many minutes); else "not measurable", and the times count from the start of
+#                  Argo CD's sync instead. Never the commit's own date: a commit can be made long before it is pushed.
 #   sync           the entries for REV in status.history of the Applications that synced it: when the first started
 #                  and when the last finished;
-#   pods           the services whose image.digest REV changes (values files at REV against its first parent): when
+#   pods           the services whose image.digest REV changes (envs/stg/images/ at REV against its first parent): when
 #                  the first and the last pod running the new digest turned Ready, once every pod of those services
 #                  runs it.
 #                  Pods that restarted since, or that were made outside the rollout (the HPA scaling out, a pod that
 #                  replaced an evicted one), no longer hold the time the rollout made them Ready: they are left out
 #                  and named.
 #   restarts       per service REV releases: the restarts of its pods running the new digest and, for a service with a
-#                  database (migrate: true in its values at REV), its migrate Job (the PreSync hook that migrates the
-#                  schema before the new pods start): whether it was made during the sync of REV measured above and is
-#                  complete, its pods and their restarts; for both, how often they retried the database connection at
-#                  startup (the log lines "database not reachable, retrying" and "database connected after retries",
-#                  counted, never printed: none of either is a connection at the first try). Reported, not judged
-#                  here: the verification run of the GitOps path fails a release whose pods or migrate Job restarted.
+#                  database (migrate: true in base/services/<service>.yaml at REV), its migrate Job (the PreSync hook
+#                  that migrates the schema before the new pods start): whether it was made during the sync of REV
+#                  measured above and is complete, its pods and their restarts; for both, how often they retried the
+#                  database connection at startup (the log lines "database not reachable, retrying" and "database
+#                  connected after retries", counted, never printed: none of either is a connection at the first try).
+#                  Reported, not judged here: the verification run of the GitOps path fails a release whose pods or
+#                  migrate Job restarted.
 # Prints a table and writes it as JSON to .k8s/drills/gitops-<commit>.json. A commit not pushed yet, not synced yet,
 # or whose pods are not all Ready yet is reported as such (exit 2), never as a number; so is a service whose
 # Application runs a sync, or starts one while the pods and the Job are read: what was read may be that sync's. A
@@ -37,12 +39,15 @@ set -euo pipefail
 
 # shellcheck source=deploy/k8s/lib.sh
 . "$(dirname "$0")/../lib.sh"
-# ci_repo, ci_push_time: the repository on its host, and when a commit was pushed there.
+# ci_push_time: when a commit was pushed to a repository of its host.
 # shellcheck source=deploy/ci/platform.sh
 . "$repo_root/deploy/ci/platform.sh"
 
-host_repo=$(ci_repo) || exit 1
-values_dir=deploy/k8s/values/services
+gitops=$(gitops_dir) || exit 1
+# owner/name of svp-gitops on GitHub, from its URL.
+host_repo=${gitops_url#https://github.com/}
+host_repo=${host_repo%.git}
+images_dir=envs/stg/images
 
 waiting() {
   echo "WAIT  $1" >&2
@@ -59,20 +64,20 @@ else
 fi
 
 [ $# = 1 ] && [ -n "$1" ] || fail "usage: make measure-gitops REV=<commit>"
-sha=$(git -C "$repo_root" rev-parse --verify --quiet "$1^{commit}") || fail "$1 is not a commit of this clone"
+sha=$(git -C "$gitops" rev-parse --verify --quiet "$1^{commit}") || fail "$1 is not a commit of the clone of svp-gitops $gitops"
 short=${sha:0:12}
 
 # --- the services whose release digest REV changes, from git alone and before the cluster is read: a commit that
 # changes no digest (code or docs only) changes no pod, so no rollout follows it, and only this check can say why.
 # The first parent of a merge on GitHub is main before it.
-parent=$(git -C "$repo_root" rev-parse --verify --quiet "$sha^1") || fail "$short has no parent to compare its release digests with"
+parent=$(git -C "$gitops" rev-parse --verify --quiet "$sha^1") || fail "$short has no parent to compare its release digests with"
 changed=()
 for svc in "${svp_services[@]}"; do
-  new=$(git -C "$repo_root" show "$sha:$values_dir/$svc.yaml" 2>/dev/null | values_field digest 2>/dev/null) || continue
-  old=$(git -C "$repo_root" show "$parent:$values_dir/$svc.yaml" 2>/dev/null | values_field digest 2>/dev/null) || old=
+  new=$(git -C "$gitops" show "$sha:$images_dir/$svc.yaml" 2>/dev/null | values_field digest 2>/dev/null) || continue
+  old=$(git -C "$gitops" show "$parent:$images_dir/$svc.yaml" 2>/dev/null | values_field digest 2>/dev/null) || old=
   if [ -n "$new" ] && [ "$new" != "$old" ]; then changed+=("$svc@$new"); fi
 done
-[ ${#changed[@]} -gt 0 ] || fail "$short changes no image.digest in $values_dir, so no pod runs a new release to time; measure the merge commit of a promote pull request"
+[ ${#changed[@]} -gt 0 ] || fail "$short changes no image.digest in $images_dir of svp-gitops, so no pod runs a new release to time; measure the merge commit of a promote pull request there"
 
 kc get --raw /readyz >/dev/null 2>&1 || fail "cluster svp is not reachable (context k3d-svp); run make k8s-gitops-up"
 kc -n argocd get applications.argoproj.io svp-root >/dev/null 2>&1 ||
@@ -87,10 +92,10 @@ while read -r h sel subject; do
     push_ts=${push_ts%\}}
     push_src="reflog of refs/remotes/origin/main (update by push)"
   fi
-done < <(git -C "$repo_root" reflog show --format='%H %gd %gs' --date=unix refs/remotes/origin/main 2>/dev/null)
+done < <(git -C "$gitops" reflog show --format='%H %gd %gs' --date=unix refs/remotes/origin/main 2>/dev/null)
 gh_note=
 if [ -z "$push_ts" ]; then
-  if created=$(ci_push_time "$sha" 2>&1); then
+  if created=$(ci_push_time "$sha" "$host_repo" 2>&1); then
     if [ -n "$created" ]; then
       push_ts=$(epoch "${created%% *}")
       push_src="GitHub: ${created#* } for $short ($host_repo)"
@@ -116,7 +121,7 @@ running=$(printf '%s' "$apps_json" | jq -r --arg sha "$sha" "$git_revs"'
       | index($sha))
   | .metadata.name' | tr '\n' ' ')
 # later_than_rev COMMIT: true when COMMIT is a later commit than REV, one REV is an ancestor of.
-later_than_rev() { [ "$1" != "$sha" ] && git -C "$repo_root" merge-base --is-ancestor "$sha" "$1" 2>/dev/null; }
+later_than_rev() { [ "$1" != "$sha" ] && git -C "$gitops" merge-base --is-ancestor "$sha" "$1" 2>/dev/null; }
 if [ -z "$syncs" ]; then
   if [ -n "$running" ]; then waiting "Argo CD is syncing $short: ${running% }"; fi
   # Every Application follows main: once one has synced a later commit, none will sync REV any more.
@@ -125,8 +130,8 @@ if [ -z "$syncs" ]; then
       fail "$short cannot be measured: no Application has a sync of it in its history (Argo CD keeps the last 10 of each), and Argo CD has since synced ${rev:0:12}, a later commit; $short was pushed together with it or replaced before Argo CD's next poll. Measure ${rev:0:12} if it releases a service"
     fi
   done
-  if [ -z "$push_ts" ] && ! git -C "$repo_root" merge-base --is-ancestor "$sha" refs/remotes/origin/main 2>/dev/null; then
-    waiting "$short is not pushed yet: not in origin/main as last fetched, and GitHub has no merged pull request or PushEvent for $short$gh_note"
+  if [ -z "$push_ts" ] && ! git -C "$gitops" merge-base --is-ancestor "$sha" refs/remotes/origin/main 2>/dev/null; then
+    waiting "$short is not pushed yet: not in origin/main of the clone of svp-gitops as last fetched, and GitHub has no merged pull request or PushEvent for $short$gh_note"
   fi
   waiting "Argo CD has not synced $short yet (it polls GitHub every 60 s; the repo-server's cache of the refs adds up to 60 s more)"
 fi
@@ -295,7 +300,7 @@ for image in "${changed[@]}"; do
   # of REV measured only when made during that sync (from deployStartedAt to deployedAt): made before, that sync ran no
   # hook; made after, a later sync (of REV again or of another commit) replaced it, and the restarts of the Job of the
   # sync measured are gone with it. Its pods carry the label of the Job's uid.
-  values=$(git -C "$repo_root" show "$sha:$values_dir/$svc.yaml")
+  values=$(git -C "$gitops" show "$sha:base/services/$svc.yaml")
   has_database=false
   if grep -Eq '^migrate:[[:space:]]*true[[:space:]]*(#.*)?$' <<<"$values"; then has_database=true; fi
   job=$(kc -n svp get job "$svc-migrate" --ignore-not-found -o json) || fail "read Job $svc-migrate"

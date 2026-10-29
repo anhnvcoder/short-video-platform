@@ -1,15 +1,15 @@
 {{- /*
 RBAC of the CloudNativePG operator (ServiceAccount cnpg-system/cloudnative-pg, chart cloudnative-pg 0.29.1 of wave 2),
-rendered here because deploy/k8s/values/cloudnative-pg.yaml turns the chart's own off: the chart can bind its
+rendered here because base/cloudnative-pg.yaml of svp-gitops turns the chart's own off: the chart can bind its
 namespaced rules either cluster-wide or in its release namespace only, and the project's only Cluster, svp-pg, is in
 svp-data. The rules are the chart's (templates/_helpers.tpl of chart 0.29.1): clusterwideRules in the ClusterRole
 (nodes, ClusterImageCatalogs; no Secret, no pod) but for its get and patch on webhook configurations, and commonRules,
 unchanged, in the Role of svp-data only. The operator patches its webhook configurations only to write its own CA
 into them, and patch on them would let a stolen token point a webhook at the operator's pod for every Secret written in
-the cluster: it runs with MANAGE_WEBHOOK_CONFIGURATIONS=false (deploy/k8s/values/cloudnative-pg.yaml), and
+the cluster: it runs with MANAGE_WEBHOOK_CONFIGURATIONS=false (base/cloudnative-pg.yaml of svp-gitops), and
 cert-manager's cainjector writes the CA instead (templates/cnpg-webhook-certificate.yaml).
 
-The operator watches svp-data and cnpg-system (WATCH_NAMESPACE in deploy/k8s/values/cloudnative-pg.yaml, the same two
+The operator watches svp-data and cnpg-system (WATCH_NAMESPACE in base/cloudnative-pg.yaml of svp-gitops, the same two
 as the RoleBindings below): its informers list and watch every kind it caches in each of them, so each Role reads every
 kind of commonRules. svp-data is where it runs svp-pg's pods and Jobs and makes their Secrets, ServiceAccount, Role and
 RoleBinding: the whole of commonRules. cnpg-system holds no Cluster; the operator is there for its ConfigMap, the
@@ -20,7 +20,7 @@ renewCACertificate), and would patch cnpg-webhook-cert (type kubernetes.io/tls, 
 it near its end. So its Role in cnpg-system reads, and writes only Secrets (create, update, patch; no delete), events
 and its Lease: no pod, pods/exec, Deployment, Job, PersistentVolumeClaim, ServiceAccount, Role or RoleBinding is written
 there. That namespace also runs the plugin, whose ServiceAccount reads every Secret of the cluster (the JWT signing key
-of svp included; deploy/k8s/values/plugin-barman-cloud.yaml): with commonRules there, a stolen operator token could
+of svp included; base/plugin-barman-cloud.yaml of svp-gitops): with commonRules there, a stolen operator token could
 exec into the plugin's pod, run a pod or patch its Deployment as that ServiceAccount, and read them all.
 
 Creating Secrets in cnpg-system is still such a path: a Secret of type kubernetes.io/service-account-token naming

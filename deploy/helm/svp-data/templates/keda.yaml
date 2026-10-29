@@ -6,11 +6,11 @@ topic video.lifecycle.v1 and group media-worker (files/kafka-users.sh), which is
 needs.
 
 Cluster-scoped, not a TriggerAuthentication beside the ScaledObject: the KEDA operator may read the Secrets of namespace
-keda only (deploy/k8s/values/keda.yaml), and a ClusterTriggerAuthentication reads its Secrets there. Any ScaledObject of
-the cluster may name it, which gives nothing beyond that DESCRIBE. It is one object for the whole cluster, so it is made
-here, once, beside the user and ACLs it logs in with: rendered by each release of chart svp-service with a ScaledObject,
-a second such release would fail Helm's ownership check, and uninstalling one would delete the others' login. This
-chart is wave 4: after KEDA's CRDs (wave 2), before media-worker's ScaledObject (wave 7).
+keda only (base/keda.yaml of svp-gitops), and a ClusterTriggerAuthentication reads its Secrets there. Any ScaledObject
+of the cluster may name it, which gives nothing beyond that DESCRIBE. It is one object for the whole cluster, so it is
+made here, once, beside the user and ACLs it logs in with: rendered by each release of chart svp-service with a
+ScaledObject, a second such release would fail Helm's ownership check, and uninstalling one would delete the others'
+login. This chart is wave 4: after KEDA's CRDs (wave 2), before media-worker's ScaledObject (wave 7).
 */}}
 apiVersion: keda.sh/v1alpha1
 kind: ClusterTriggerAuthentication

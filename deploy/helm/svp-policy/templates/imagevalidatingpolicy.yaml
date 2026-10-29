@@ -71,7 +71,7 @@ spec:
   webhookConfiguration:
     timeoutSeconds: 30
   evaluation:
-    # Admission only: Kyverno's background scan is off (deploy/k8s/values/kyverno.yaml).
+    # Admission only: Kyverno's background scan is off (base/kyverno.yaml of svp-gitops).
     background:
       enabled: false
   # Pods only, no rule generated for Deployments, ReplicaSets, Jobs or Rollouts (an empty list that is not nil turns

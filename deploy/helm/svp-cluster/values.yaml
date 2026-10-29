@@ -1,5 +1,5 @@
 # Base of the cluster. Installed by deploy/k8s/install.sh
-# (wave 1 of deploy/argocd/apps/components.json), after cert-manager and Envoy Gateway brought their CRDs.
+# (wave 1 of argocd/apps/components.json of svp-gitops), after cert-manager and Envoy Gateway brought their CRDs.
 
 # The project's namespaces. Every one gets Pod Security "restricted", a default-deny NetworkPolicy and allow-dns.
 # routes: HTTPRoutes of this namespace may attach to Gateway svp. kubeAPI: pods labelled svp-kube-api=allow may reach the
@@ -39,7 +39,7 @@ platformNamespaces:
 # Kyverno (wave 2), the one platform namespace whose pods also get
 # NetworkPolicies here: it verifies images against registries and Sigstore on the internet, and the API server sends it
 # every pod of svp (Kyverno itself starts no pod there). default-deny and allow-dns as in the project's namespaces,
-# allow-kube-api for its pods labelled svp-kube-api=allow (deploy/k8s/values/kyverno.yaml), and two of its own
+# allow-kube-api for its pods labelled svp-kube-api=allow (base/kyverno.yaml of svp-gitops), and two of its own
 # (templates/networkpolicies.yaml): the API server's webhook calls in, TCP 443 out to public addresses only.
 kyverno:
   namespace: kyverno
@@ -83,7 +83,7 @@ apexHost: svp.localhost
 # built by External Secrets Operator (component external-secrets, wave 0, GitOps path only) from a store of values
 # outside git, plus one SecretStore per namespace that holds ExternalSecrets (templates/external-secrets.yaml, the list
 # in files/external-secrets.yaml). Off here: the dev path applies the same Secrets from .env (deploy/k8s/secrets.sh) and
-# renders none of this; deploy/k8s/envs/stg and deploy/k8s/envs/prd turn it on. Names only, never a value.
+# renders none of this; envs/stg and envs/prd of svp-gitops turn it on. Names only, never a value.
 externalSecrets:
   enabled: false
   # kubernetes: the Secrets of namespace sourceNamespace of the same cluster, one per entry, which deploy/k8s/secrets.sh

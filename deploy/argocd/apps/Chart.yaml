@@ -1,7 +1,0 @@
-apiVersion: v2
-name: svp-apps
-description: >-
-  App-of-apps of the short-video platform: one Argo CD Application per entry of components.json, the list
-  deploy/k8s/install.sh installs from on the dev path.
-type: application
-version: 0.1.0

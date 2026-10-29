@@ -157,7 +157,7 @@ slo: ## Generate the SLO recording and burn-rate alert rules from deploy/observa
 	sloth generate --no-color -i deploy/observability/slo/svp-slos.yaml -o deploy/observability/prometheus/rules/slo-generated.yaml
 
 # The Collector image of `otelcol` and `otelcol-elastic` in deploy/compose/compose.yaml and of
-# deploy/k8s/values/otel-collector.yaml (keep the four in step), run with no network and the config
+# base/otel-collector.yaml of svp-gitops (keep the four in step), run with no network and the config
 # files at the paths compose mounts them.
 # renovate: datasource=docker depName=otel/opentelemetry-collector-contrib
 OTELCOL_IMAGE := otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
@@ -245,141 +245,20 @@ check: check-go web-check ## Run every check: Go (check-go) and the web client (
 
 check-go: fmt-check vet lint actionlint buf-lint vulncheck test ## Run the Go, workflow and proto checks
 
-# Every chart of the repository, as the GitOps path renders it: each component of components.json
-# with a `path`, under its release name and namespace, with its values file, and the app-of-apps chart itself. A release
-# of svp-service whose values carry no image.digest yet (none before the first promotion) gets an all-zero digest, so it
-# goes down the digest branch of the GitOps path instead of failing on the dev tag the dev path passes. Helm's cache,
-# config and data live in a scratch directory, never in .k8s/helm.
-# Each environment of deploy/k8s/envs too: a chart with an overlay there is linted and rendered again with the overlay
-# after its values, as Argo CD reads them, and the app-of-apps chart is rendered with value env set to each (it refuses
-# an overlay that names no component, or that sets an image or the canary of a service). Production is never deployed by
-# this lab, so its render is held to having overridden every k3d name: no svp.localhost anywhere in it.
-# The app-of-apps chart is rendered once per node architecture (value nodeArch, which deploy/k8s/gitops.sh sets from
-# the nodes): Argo Rollouts' Gateway API plugin is a native binary, so Application argo-rollouts names one more values
-# file on amd64 nodes (archValues of components.json). The plugin each architecture gets is read back by merging the
-# values files that Application names, in its order, with Helm itself (a scratch chart that prints only the plugin list;
-# no upstream chart is fetched): exactly one plugin, the asset built for that architecture, both of the same plugin
-# and release, as deploy/k8s/install.sh checks on the dev path.
-ZERO_DIGEST := sha256:0000000000000000000000000000000000000000000000000000000000000000
-# The Secrets of the GitOps path (chart svp-cluster, externalSecrets): the base render, the dev path's, has no
-# ExternalSecret or SecretStore; each environment's has one ExternalSecret per entry of
-# deploy/helm/svp-cluster/files/external-secrets.yaml and one SecretStore per namespace that holds them (stg: provider
-# kubernetes; prd: provider aws and no namespace svp-secrets). External Secrets Operator runs without its admission
-# webhook, so the API server checks these against the CRDs' schemas only: kubeconform -strict (KUBECONFORM_IMAGE, no
-# network) checks them against schemas made from the CRDs of the chart version components.json pins, the other kinds
-# of that template (ServiceAccount, Role, RoleBinding, the admission policy) left to helm lint and the API server.
-# Provider crd of SecretStore is taken out of its schema: one of its fields is named additionalProperties, which
-# openapi2jsonschema turns into a boolean, and kubeconform, which compiles schemas as draft 4, then finds no schema at
-# all for SecretStore. No store here uses that provider, so -strict refuses it instead.
-helm-check: ## helm lint and helm template every chart of the repository with the values of the GitOps path, alone and with the overlays of each environment of deploy/k8s/envs (prd without svp.localhost), the app-of-apps chart for each environment on amd64 and arm64 nodes, each with the plugin of Argo Rollouts built for it; the ExternalSecrets and SecretStores of each environment against the CRD schemas of the pinned External Secrets chart (kubeconform)
-	@tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
-	export HELM_CACHE_HOME="$$tmp/cache" HELM_CONFIG_HOME="$$tmp/config" HELM_DATA_HOME="$$tmp/data"; \
-	envs=; for d in deploy/k8s/envs/*/; do [ -d "$$d" ] && envs="$$envs $$(basename "$$d")"; done; \
-	[ -n "$$envs" ] || { echo "helm-check: deploy/k8s/envs holds no environment" >&2; exit 1; }; \
-	jq -r '.components[] | select(.path) | [.name, .namespace, .path, (.values // "")] | @tsv' \
-		deploy/argocd/apps/components.json > "$$tmp/charts" || exit 1; \
-	tab=$$(printf '\t'); \
-	while IFS="$$tab" read -r name ns path values; do \
-	  set --; \
-	  if [ -n "$$values" ]; then set -- -f "$$values"; fi; \
-	  if [ "$$path" = deploy/helm/svp-service ] && ! grep -Eq '^  digest: "?sha256:[0-9a-f]{64}"?$$' "$$values"; then \
-	    set -- "$$@" --set image.digest=$(ZERO_DIGEST); fi; \
-	  echo "helm lint and template: $$name ($$path $$*)"; \
-	  helm lint --quiet --namespace "$$ns" "$$path" "$$@" || exit 1; \
-	  helm template "$$name" "$$path" --namespace "$$ns" "$$@" > "$$tmp/base-$$name.yaml" || exit 1; \
-	  for env in $$envs; do \
-	    overlay=deploy/k8s/envs/$$env/$$name.yaml; \
-	    if [ -f "$$overlay" ]; then \
-	      echo "helm lint and template: $$name in $$env (-f $$overlay)"; \
-	      helm lint --quiet --namespace "$$ns" "$$path" "$$@" -f "$$overlay" || exit 1; \
-	      helm template "$$name" "$$path" --namespace "$$ns" "$$@" -f "$$overlay" > "$$tmp/$$env-$$name.yaml" || exit 1; \
-	    else cp "$$tmp/base-$$name.yaml" "$$tmp/$$env-$$name.yaml" || exit 1; fi; \
-	  done; \
-	done < "$$tmp/charts"; \
-	mkdir -p "$$tmp/plugins/templates" || exit 1; \
-	printf 'apiVersion: v2\nname: plugins\nversion: 0.1.0\n' > "$$tmp/plugins/Chart.yaml" || exit 1; \
-	printf '%s\n' '{{- range .Values.controller.trafficRouterPlugins }}' \
-		'# plugin {{ .name }} {{ .location }} {{ .sha256 }}' '{{- end }}' > "$$tmp/plugins/templates/plugins.yaml" || exit 1; \
-	for env in $$envs; do \
-	  for arch in arm64 amd64; do \
-	    echo "helm lint and template: svp-root (deploy/argocd/apps --set env=$$env --set nodeArch=$$arch)"; \
-	    helm lint --quiet --namespace argocd deploy/argocd/apps --set-string env=$$env --set nodeArch=$$arch || exit 1; \
-	    helm template svp-root deploy/argocd/apps --namespace argocd --set-string env=$$env --set nodeArch=$$arch \
-		> "$$tmp/root-$$env-$$arch.yaml" || exit 1; \
-	    set --; \
-	    for f in $$(awk '/^---/ { app = 0 } /^  name: argo-rollouts$$/ { app = 1 } \
-		app && /^ *- \$$values\// { sub(/^ *- \$$values\//, ""); print }' "$$tmp/root-$$env-$$arch.yaml"); do \
-	      set -- "$$@" -f "$$f"; done; \
-	    [ $$# -gt 0 ] || { echo "helm-check: Application argo-rollouts names no values file on $$arch nodes in $$env" >&2; \
-		exit 1; }; \
-	    helm template plugins "$$tmp/plugins" "$$@" | sed -n 's/^# plugin //p' > "$$tmp/plugin-$$arch" || exit 1; \
-	    echo "  argo-rollouts on $$arch nodes ($$*): $$(cat "$$tmp/plugin-$$arch")"; \
-	    [ "$$(grep -c . "$$tmp/plugin-$$arch")" = 1 ] && \
-		grep -Eq "^[^ ]+ https://[^ ]+/[^ /]+-linux-$$arch [0-9a-f]{64}$$" "$$tmp/plugin-$$arch" || \
-		{ echo "helm-check: Argo Rollouts on $$arch nodes must get exactly one plugin, the asset built for linux-$$arch" >&2; \
-		exit 1; }; \
-	  done; \
-	  read -r arm_name arm_loc arm_sum < "$$tmp/plugin-arm64"; read -r amd_name amd_loc amd_sum < "$$tmp/plugin-amd64"; \
-	  [ "$$arm_name" = "$$amd_name" ] && [ "$${arm_loc%/*}" = "$${amd_loc%/*}" ] && [ "$$arm_sum" != "$$amd_sum" ] || \
-		{ echo "helm-check: Argo Rollouts gets $$arm_name of $${arm_loc%/*} on arm64 nodes, $$amd_name of $${amd_loc%/*} on amd64 nodes in $$env: pin the two assets of one release" >&2; \
-		exit 1; }; \
-	  echo "  argo-rollouts in $$env: plugin $$arm_name of $${arm_loc%/*} on both, the asset built for each architecture"; \
-	  if [ "$$env" = prd ]; then \
-	    if grep -n 'svp\.localhost' "$$tmp"/prd-*.yaml "$$tmp"/root-prd-*.yaml > "$$tmp/leftover"; then \
-	      sed "s|^$$tmp/||" "$$tmp/leftover" >&2; \
-	      echo "helm-check: the prd render above still names svp.localhost: override it in deploy/k8s/envs/prd" >&2; \
-	      exit 1; fi; \
-	    echo "  prd: no svp.localhost in the render of any chart of the repository"; \
-	  fi; \
-	done; \
-	if grep -Eq '^kind: (ExternalSecret|SecretStore)$$' "$$tmp/base-svp-cluster.yaml"; then \
-	  echo "helm-check: the base render of svp-cluster (the dev path's) has an ExternalSecret or a SecretStore" >&2; exit 1; fi; \
-	want_es=$$(grep -c '^- namespace: ' deploy/helm/svp-cluster/files/external-secrets.yaml); \
-	want_ss=$$(sed -n 's/^- namespace: //p' deploy/helm/svp-cluster/files/external-secrets.yaml | sort -u | grep -c .); \
-	eso=$$(jq -r '.components[] | select(.name == "external-secrets") | "\(.repo) \(.chart) \(.version) \(.values)"' \
-		deploy/argocd/apps/components.json) && [ -n "$$eso" ] || \
-		{ echo "helm-check: no component external-secrets in deploy/argocd/apps/components.json" >&2; exit 1; }; \
-	set -- $$eso; mkdir -p "$$tmp/eso/crds" "$$tmp/eso/schemas" "$$tmp/eso/manifests" || exit 1; \
-	helm template external-secrets "$$2" --repo "$$1" --version "$$3" --namespace external-secrets -f "$$4" \
-		--show-only templates/crds/externalsecret.yaml --show-only templates/crds/secretstore.yaml \
-		> "$$tmp/eso/crds/crds.yaml" || exit 1; \
-	env -u DOCKER_DEFAULT_PLATFORM docker run --rm --user "$$(id -u):$$(id -g)" --network none \
-		-v "$$tmp/eso/crds:/crds:ro" -v "$$tmp/eso/schemas:/schemas" --workdir /schemas \
-		-e 'FILENAME_FORMAT={kind}-{fullgroup}-{version}' -e DENY_ROOT_ADDITIONAL_PROPERTIES=1 \
-		--entrypoint /openapi2jsonschema $(KUBECONFORM_IMAGE) /crds/crds.yaml > "$$tmp/eso/o2j.log" 2>&1 || \
-		{ cat "$$tmp/eso/o2j.log" >&2; echo "helm-check: schemas from the CRDs of external-secrets $$3" >&2; exit 1; }; \
-	ss_schema="$$tmp/eso/schemas/secretstore-external-secrets.io-v1.json"; \
-	jq -e '.properties.spec.properties.provider.properties.crd' "$$ss_schema" > /dev/null || \
-		{ echo "helm-check: no provider crd in $${ss_schema##*/}: drop the line that removes it" >&2; exit 1; }; \
-	jq 'del(.properties.spec.properties.provider.properties.crd)' "$$ss_schema" > "$$tmp/eso/ss.json" && \
-		mv "$$tmp/eso/ss.json" "$$ss_schema" || exit 1; \
-	for env in $$envs; do \
-	  f="$$tmp/$$env-svp-cluster.yaml"; \
-	  es=$$(grep -c '^kind: ExternalSecret$$' "$$f"); ss=$$(grep -c '^kind: SecretStore$$' "$$f"); \
-	  [ "$$es" = "$$want_es" ] && [ "$$ss" = "$$want_ss" ] || \
-		{ echo "helm-check: svp-cluster in $$env renders $$es ExternalSecrets and $$ss SecretStores, want $$want_es and $$want_ss" >&2; exit 1; }; \
-	  provider=$$(awk '/^kind: SecretStore$$/ { s = 1 } s && /^    [a-z]+:$$/ { sub(/:$$/, ""); print $$1; s = 0 }' "$$f" | sort -u | paste -sd ' ' -); \
-	  if [ "$$env" = prd ]; then \
-	    [ "$$provider" = aws ] || { echo "helm-check: the SecretStores of prd use provider '$$provider', want aws" >&2; exit 1; }; \
-	    if grep -n 'svp-secrets' "$$f" >&2; then \
-	      echo "helm-check: the prd render of svp-cluster above still names svp-secrets, the lab's source namespace" >&2; exit 1; fi; \
-	  else \
-	    [ "$$provider" = kubernetes ] || { echo "helm-check: the SecretStores of $$env use provider '$$provider', want kubernetes" >&2; exit 1; }; \
-	  fi; \
-	  helm template svp-cluster deploy/helm/svp-cluster --namespace cert-manager -f deploy/k8s/envs/$$env/svp-cluster.yaml \
-		--show-only templates/external-secrets.yaml > "$$tmp/eso/manifests/$$env.yaml" || exit 1; \
-	  env -u DOCKER_DEFAULT_PLATFORM docker run --rm --user "$$(id -u):$$(id -g)" --network none \
-		-v "$$tmp/eso/manifests:/manifests:ro" -v "$$tmp/eso/schemas:/schemas:ro" $(KUBECONFORM_IMAGE) \
-		-strict -summary -skip ServiceAccount,Role,RoleBinding,ValidatingAdmissionPolicy,ValidatingAdmissionPolicyBinding \
-		-schema-location '/schemas/{{.ResourceKind}}-{{.Group}}-{{.ResourceAPIVersion}}.json' \
-		"/manifests/$$env.yaml" > "$$tmp/eso/kubeconform.log" 2>&1 || \
-		{ cat "$$tmp/eso/kubeconform.log" >&2; echo "helm-check: kubeconform on the ExternalSecrets and SecretStores of $$env" >&2; exit 1; }; \
-	  grep -q "Valid: $$((es + ss)), Invalid: 0, Errors: 0" "$$tmp/eso/kubeconform.log" || \
-		{ cat "$$tmp/eso/kubeconform.log" >&2; echo "helm-check: kubeconform did not find $$((es + ss)) valid ExternalSecrets and SecretStores in $$env" >&2; exit 1; }; \
-	  echo "  svp-cluster in $$env: $$es ExternalSecrets, $$ss SecretStores (provider $$provider), valid against the CRDs of external-secrets $$3 (kubeconform -strict)"; \
-	  [ "$$env" != prd ] || echo "  prd: no svp-secrets in the render of svp-cluster"; \
-	done; \
-	echo "  base: no ExternalSecret or SecretStore in the render of svp-cluster (the dev path's)"
+# Every chart of the repository's working tree, as the GitOps path renders it with the deployment configuration of
+# svp-gitops: the clone gitops_dir of deploy/k8s/lib.sh names (../gitops beside the main checkout, or SVP_GITOPS_DIR,
+# which CI points at the clone of make gitops-clone, main of svp-gitops). deploy/ci/gitops-check.sh --worktree, the
+# check svp-gitops runs on its own changes, with the working tree's charts in place of the commit each environment
+# pins: the root chart argocd/apps of the clone for each environment on amd64 and arm64 nodes (the plugin of Argo
+# Rollouts built for each, every source of svp-gitops on a full ref); each chart of this repository with base/ alone and
+# with each environment's overlay and image file, as Argo CD reads them (prd without svp.localhost); the ExternalSecrets
+# and SecretStores of each environment against the CRD schemas of the pinned External Secrets chart (kubeconform in
+# KUBECONFORM_IMAGE, no network), none with base/ alone; every third-party image pinned by digest and no overlay
+# changing one. Needs Docker and network access to the chart repositories. A change that needs a new value in base/
+# merges in svp-gitops first, then here.
+helm-check: ## helm lint and helm template every chart of the working tree with base/ of the clone of svp-gitops (../gitops, or SVP_GITOPS_DIR) alone and with the overlays and image files of each environment (prd without svp.localhost), its root chart argocd/apps for each environment on amd64 and arm64 nodes, the ExternalSecrets and SecretStores of each environment against the CRD schemas of the pinned External Secrets chart (kubeconform), every third-party image pinned by digest (deploy/ci/gitops-check.sh --worktree)
+	@gitops=$$(bash -c '$(K8S_LIB) && gitops_dir') && \
+	  KUBECONFORM_IMAGE='$(KUBECONFORM_IMAGE)' deploy/ci/gitops-check.sh --worktree "$$gitops"
 
 # Misconfiguration scan of the Dockerfiles, charts and manifests with the pinned trivy. It only
 # reports: exit 0 whatever it finds. The findings that are deliberate choices are left out by

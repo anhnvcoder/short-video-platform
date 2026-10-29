@@ -266,12 +266,19 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+    # The deployment configuration this job checks the charts against: main of svp-gitops, which make gitops-clone
+    # clones anonymously into this folder (gitignored) below; every script reads it there through gitops_dir of
+    # deploy/k8s/lib.sh.
+    env:
+      SVP_GITOPS_DIR: ${{ github.workspace }}/.gitops/svp-gitops
     steps:
       # The whole history: the test of gitops-check.sh reads the commits that the tree of svp-gitops pins.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
+      # Public repository, over HTTPS without credentials: no token, no secret.
+      - run: make gitops-clone
       # Here and not only in the image gate: a pull request that changes nothing but .trivyignore.yaml builds no image,
       # and a broken entry merged into main would stop the daily rescan from attesting every service.
       # The same step holds the misconfigurations job trivy-config leaves out to their rules: paths, reason, at most 90
@@ -302,7 +309,7 @@ jobs:
       - name: Install the pinned tools
         if: steps.tools.outputs.cache-hit != 'true'
         run: make tools ci-tools
-      # Helm for the image digest check below; make targets put GOBIN on PATH themselves.
+      # Helm for gitops-check-test.sh below; make targets put GOBIN on PATH themselves.
       - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: make slo-check
       - run: make otelcol-validate
@@ -312,12 +319,14 @@ jobs:
         run: |
           make env
           make compose-config
+      # The working tree's charts with main of svp-gitops (deploy/ci/gitops-check.sh --worktree), every third-party
+      # image pinned by digest among them; needs network: chart repositories.
       - run: make helm-check
-      - run: deploy/k8s/check-image-digests.sh
-      # The check that svp-gitops runs from a pinned commit of this repository, on main of svp-gitops cloned
-      # anonymously: each negative case (a missing image file, an image newer than the charts, ...) must fail with its
-      # own message. The clone aside, every case stops before the network; helm from the PATH set above.
-      - run: deploy/ci/gitops-check-test.sh
+      # The check that svp-gitops runs from a pinned commit of this repository, on the clone above: each negative case
+      # (a missing image file, an image newer than the charts, ...) must fail with its own message, and gitops_dir of
+      # deploy/k8s/lib.sh finds the clone of a draft workspace. Every case stops before the network; helm from the
+      # PATH set above.
+      - run: deploy/ci/gitops-check-test.sh "$SVP_GITOPS_DIR"
       # k6 inspect of every profile in the pinned k6 image, with no network: a script that no longer loads or a profile
       # whose scenarios are malformed is caught here, without the compose stack the load runs need.
       - run: make k6-check

@@ -1,5 +1,5 @@
 # Observability of the project in namespace svp-obs.
-# Installed by deploy/k8s/install.sh as wave 5 of deploy/argocd/apps/components.json: after kube-prometheus-stack
+# Installed by deploy/k8s/install.sh as wave 5 of argocd/apps/components.json of svp-gitops: after kube-prometheus-stack
 # (wave 2, whose CRDs the PrometheusRules need, and whose Grafana sidecars load the ConfigMaps below) and Loki, Tempo,
 # Pyroscope (wave 3), before the Collector (wave 6), which mounts the ConfigMap made here.
 

@@ -1,7 +1,7 @@
 # Defaults shared by the seven releases of svp-service (the six Go services and the web client). Each release's own
-# values are deploy/k8s/values/services/<service>.yaml; the release name is the service name, which names the pods'
+# values are base/services/<service>.yaml of svp-gitops; the release name is the service name, which names the pods'
 # label app.kubernetes.io/name, the Service, the ServiceAccount and the Secrets.
-# Installed by deploy/k8s/install.sh as wave 7 of deploy/argocd/apps/components.json, once every dependency runs.
+# Installed by deploy/k8s/install.sh as wave 7 of argocd/apps/components.json of svp-gitops, once every dependency runs.
 
 image:
   # GitOps path: ghcr.io/anhnvcoder/short-video-platform/<service>, from the release's values file. Dev path: `make

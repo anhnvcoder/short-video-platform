@@ -254,12 +254,14 @@ policy_checks_provenance() {
     jq -r 'if any(.spec.attestations[]?; .name == "provenance") then "yes" else "no" end'
 }
 
-# values_commit DIGEST: the newest commit of HEAD's history whose values files of the services name DIGEST, the
-# values_ref a rescan of that release needs; status 1 without one.
+# values_commit DIGEST: the newest commit of the history of origin/main of svp-gitops (the clone gitops_dir names)
+# whose release images (envs/<env>/images/) name DIGEST, the values_ref a rescan of that release needs; status 1
+# without one.
 values_commit() {
-  local c
-  for c in $(git -C "$repo_root" log --format=%H -S"$1" -- deploy/k8s/values/services); do
-    if git -C "$repo_root" grep -qF -- "$1" "$c" -- deploy/k8s/values/services; then
+  local c gitops
+  gitops=$(gitops_dir 2>/dev/null) || return 1
+  for c in $(git -C "$gitops" log --format=%H -S"$1" refs/remotes/origin/main -- envs); do
+    if git -C "$gitops" grep -qF -- "$1" "$c" -- 'envs/*/images/*'; then
       echo "$c"
       return 0
     fi
@@ -662,7 +664,7 @@ elif [[ -z $no_provenance ]]; then
   result l SKIP "SUPPLYCHAIN_NO_PROVENANCE is not set (digest of a release signed before CI attested build provenance)"
 else
   rescan=$(ci_dispatch_hint images.yml main rescan=true \
-    "values_ref=$(values_commit "${no_provenance#*@}" || echo '<a commit whose deploy/k8s/values/services names it>')") || exit 1
+    "values_ref=$(values_commit "${no_provenance#*@}" || echo '<a commit of svp-gitops whose envs/*/images/ names it>')") || exit 1
   envelopes=$(cosign_ verify-attestation --type vuln --certificate-oidc-issuer "$policy_issuer" \
     --certificate-identity "$policy_subject" "$no_provenance" 2>"$work/cosign.err") || envelopes=
   if ! cosign_ verify --certificate-oidc-issuer "$policy_issuer" --certificate-identity "$policy_subject" \

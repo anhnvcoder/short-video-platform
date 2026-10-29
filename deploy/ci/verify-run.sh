@@ -26,6 +26,11 @@
 # run was cut short (cancelled, or the step stopped by its timeout-minutes) and results.tsv may lack the target that
 # was running and every later one, so deploy/ci/verify-sample.sh does not count the run as ended in time.
 #
+# Before the first target of a k3d scenario: make gitops-clone, main of the deployment configuration svp-gitops cloned
+# anonymously into .gitops/svp-gitops of the checkout (base/ and components.json for make k8s-up, all of it for make
+# k8s-gitops-up), and SVP_GITOPS_DIR exported to it for every target (deploy/k8s/lib.sh, gitops_dir). No target can
+# pass without it: when the clone fails nothing starts (exit 1).
+#
 # The first target builds what the others use (the scenario file's build: up for compose-obs, k8s-gitops-up for gitops,
 # k8s-up for the other k3d scenarios). When it is not ok, every later target is skipped at once with the note
 # "infrastructure step failed": none of them can pass, and waiting for each to fail (the RAM steps wait 15 min for pods
@@ -363,6 +368,14 @@ case "$names " in
     exit 2
     ;;
 esac
+if [ "$k3d" = 1 ]; then
+  make -s gitops-clone || {
+    echo "FAIL  verify-run: make gitops-clone (the deployment configuration svp-gitops); nothing started" >&2
+    exit 1
+  }
+  SVP_GITOPS_DIR=$(. "$repo/deploy/k8s/lib.sh" && echo "$gitops_ci_clone") || exit 1
+  export SVP_GITOPS_DIR
+fi
 mkdir -p "$out/logs" || exit 1
 rm -f "$out/run-end"
 printf 'id\tname\tstatus\texit\tstart\tend\tseconds\tnote\n' >"$results"

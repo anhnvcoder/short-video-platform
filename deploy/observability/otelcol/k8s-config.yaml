@@ -43,7 +43,7 @@ processors:
   # OOM-killed. One instance serves the three pipelines and measures the heap of the whole process,
   # so once it is over the soft limit every receiver is refused, whichever signal filled it; the
   # bounded exporter queues below keep a slow backend from getting it there. GOMEMLIMIT (140 MiB,
-  # deploy/k8s/values/otel-collector.yaml) sits just under the soft limit so that the Go runtime
+  # base/otel-collector.yaml of svp-gitops) sits just under the soft limit so that the Go runtime
   # collects garbage before the limiter counts it.
   memory_limiter:
     check_interval: 1s

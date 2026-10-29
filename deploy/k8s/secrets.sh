@@ -129,7 +129,7 @@ pg_url() { printf 'postgres://svp_%s_%s:%s@svp-pg-rw.svp-data:5432/svp_%s?sslmod
 # <service>-migrate-env holds the migrator role, for the migrate Job only. The JWT signing key is in user-service-env
 # alone; the gateway gets the public keys (threat model JWT-10). web-env holds the web client's Server Action key alone,
 # set at run time so that the key in use is never in the public image: its other settings are no secret
-# (deploy/k8s/values/services/web.yaml), its DSN comes from Secret sentry, and Valkey, where it keeps sessions, has no
+# (base/services/web.yaml of svp-gitops), its DSN comes from Secret sentry, and Valkey, where it keeps sessions, has no
 # password. The Secret must exist in any case: chart
 # svp-service reads <release>-env with envFrom, not optional.
 svp_manifests() {
@@ -164,7 +164,7 @@ svp_manifests() {
 # Redpanda user svp-keda for KEDA's Kafka scaler (ClusterTriggerAuthentication keda-kafka of chart svp-data, which
 # media-worker's ScaledObject names), keys named after the scaler's parameters: SCRAM-SHA-256 without TLS, like the
 # services. It may only DESCRIBE video.lifecycle.v1 and group media-worker, enough to read the group's lag. In
-# namespace keda, the only one whose Secrets the KEDA operator may read (deploy/k8s/values/keda.yaml).
+# namespace keda, the only one whose Secrets the KEDA operator may read (base/keda.yaml of svp-gitops).
 keda_manifests() {
   secret keda keda-kafka Opaque \
     sasl=scram_sha256 tls=disable username=svp-keda password="$SVP_KAFKA_KEDA_PASSWORD"
@@ -175,7 +175,7 @@ keda_manifests() {
 # token and an integer chat id, everything else (and every alert, without Telegram) only listed in the UI and API.
 # severity="ticket" always stays in the UI: the 1d/3d SLO windows keep firing for days after a drill. The bot token is
 # never in this config: Alertmanager reads it from the file Secret alertmanager-telegram is mounted as
-# (alertmanagerSpec.secrets of deploy/k8s/values/kube-prometheus-stack.yaml). The chat id is in it, as in compose; it
+# (alertmanagerSpec.secrets of base/kube-prometheus-stack.yaml of svp-gitops). The chat id is in it, as in compose; it
 # is an identifier, not a credential.
 telegram=off
 if [ -n "$SVP_ALERT_TELEGRAM_BOT_TOKEN" ] && [ -n "$SVP_ALERT_TELEGRAM_CHAT_ID" ]; then

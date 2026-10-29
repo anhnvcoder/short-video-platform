@@ -1,8 +1,7 @@
-# Data tier in namespace svp-data. Installed
-# by deploy/k8s/install.sh as wave 4 of deploy/argocd/apps/components.json: after the CloudNativePG operator and KEDA
-# (wave 2, whose CRDs its Cluster and ClusterTriggerAuthentication need), Redpanda and the Barman Cloud plugin (wave 3,
-# whose CRD its ObjectStore needs), before observability and the services. Every Secret it reads is written by
-# deploy/k8s/secrets.sh from .env before this release; none is in git.
+# Data tier in namespace svp-data. Installed by deploy/k8s/install.sh as wave 4 of argocd/apps/components.json of
+# svp-gitops: after the CloudNativePG operator and KEDA (wave 2, whose CRDs its Cluster and ClusterTriggerAuthentication
+# need), Redpanda and the Barman Cloud plugin (wave 3, whose CRD its ObjectStore needs), before observability and the
+# services. Every Secret it reads is written by deploy/k8s/secrets.sh from .env before this release; none is in git.
 
 postgres:
   # Major 15 like the host's Postgres the tests run on; minimal: no extension is needed.
