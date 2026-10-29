@@ -108,7 +108,7 @@ func (b *logBuffer) records(t *testing.T, msg string) []map[string]any {
 func newServer(producer *kgo.Client) (*Server, *logBuffer) {
 	logs := &logBuffer{}
 	logger := slog.New(logx.NewHandler(slog.NewJSONHandler(logs, nil)))
-	return New(testPool, producer, logger), logs
+	return New(testPool, testPool, producer, logger), logs
 }
 
 // newServerWithoutDB is newServer with no database at all, for tests whose code path must not
@@ -116,7 +116,7 @@ func newServer(producer *kgo.Client) (*Server, *logBuffer) {
 func newServerWithoutDB(producer *kgo.Client) (*Server, *logBuffer) {
 	logs := &logBuffer{}
 	logger := slog.New(logx.NewHandler(slog.NewJSONHandler(logs, nil)))
-	return New(nil, producer, logger), logs
+	return New(nil, nil, producer, logger), logs
 }
 
 // call runs handler the way the gRPC server does: through the callerid interceptor, with caller

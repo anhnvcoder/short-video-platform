@@ -16,9 +16,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/anhnvcoder/short-video-platform/internal/pgretry/pgretrytest"
@@ -38,7 +43,7 @@ func TestParseConfigConnectTimeout(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg, err := parseConfig(tt.url)
+			cfg, err := parseConfig(tt.url, options{})
 			if err != nil {
 				t.Fatalf("parseConfig() error = %v", err)
 			}
@@ -49,6 +54,97 @@ func TestParseConfigConnectTimeout(t *testing.T) {
 				t.Errorf("Tracer = %T, want redactingTracer around *otelpgx.Tracer", cfg.ConnConfig.Tracer)
 			}
 		})
+	}
+}
+
+// WithMaxConns sets the pool's size; without it the size is pgx's own, from the URL or the
+// default.
+func TestParseConfigMaxConns(t *testing.T) {
+	for _, u := range []string{
+		"postgres://svp@127.0.0.1:5432/svp_user",
+		"postgres://svp@127.0.0.1:5432/svp_user?pool_max_conns=7",
+	} {
+		pgxDefault, err := pgxpool.ParseConfig(u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := parseConfig(u, options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.MaxConns != pgxDefault.MaxConns {
+			t.Errorf("%s without options: MaxConns = %d, want pgx's %d", u, cfg.MaxConns, pgxDefault.MaxConns)
+		}
+		var o options
+		WithMaxConns(3)(&o)
+		if cfg, err = parseConfig(u, o); err != nil {
+			t.Fatal(err)
+		}
+		if cfg.MaxConns != 3 {
+			t.Errorf("%s with WithMaxConns(3): MaxConns = %d, want 3", u, cfg.MaxConns)
+		}
+	}
+}
+
+// Two pools of one process on one database report their statistics apart under their names;
+// a pool without a name keeps otelpgx's host:port/database.
+func TestNewNamesPoolStats(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	otel.SetMeterProvider(mp)
+	t.Cleanup(func() {
+		otel.SetMeterProvider(metricnoop.NewMeterProvider())
+		_ = mp.Shutdown(context.Background())
+	})
+	u := testDatabaseURL(t, "svp_pgpool_names_test")
+
+	sizes := map[string]int32{"read": 2, "write": 3}
+	for name, size := range sizes {
+		pool, err := New(t.Context(), u.String(), WithName(name), WithMaxConns(size))
+		if err != nil {
+			t.Fatalf("New(%s) error = %v", name, err)
+		}
+		t.Cleanup(pool.Close)
+		if got := pool.Config().MaxConns; got != size {
+			t.Errorf("pool %s: MaxConns = %d, want %d", name, got, size)
+		}
+	}
+	unnamed, err := New(t.Context(), u.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(unnamed.Close)
+	wantUnnamed := fmt.Sprintf("%s:%d/%s", unnamed.Config().ConnConfig.Host, unnamed.Config().ConnConfig.Port, unnamed.Config().ConnConfig.Database)
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(t.Context(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	maxConns := map[string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "pgxpool.max_connections" {
+				continue
+			}
+			data, ok := m.Data.(metricdata.Gauge[int64])
+			if !ok {
+				t.Fatalf("pgxpool.max_connections is %T, want an int64 gauge", m.Data)
+			}
+			for _, dp := range data.DataPoints {
+				name, _ := dp.Attributes.Value(semconv.DBClientConnectionPoolNameKey)
+				maxConns[name.AsString()] = dp.Value
+			}
+		}
+	}
+	for name, size := range sizes {
+		if maxConns[name] != int64(size) {
+			t.Errorf("pgxpool.max_connections{%s=%q} = %d, want %d; got %v", semconv.DBClientConnectionPoolNameKey, name, maxConns[name], size, maxConns)
+		}
+	}
+	// Pools of earlier tests may report here too: the global meter provider forwards their
+	// instruments to the first provider set.
+	if _, ok := maxConns[wantUnnamed]; !ok {
+		t.Errorf("pool names in pgxpool.max_connections = %v, want %s for the pool without a name", maxConns, wantUnnamed)
 	}
 }
 

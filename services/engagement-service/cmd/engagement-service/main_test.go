@@ -73,6 +73,59 @@ func TestServeReportsAFailureBeforeTheErrorTrackerStops(t *testing.T) {
 	}
 }
 
+func TestPoolSizes(t *testing.T) {
+	for _, tc := range []struct {
+		value       string
+		read, write int32
+		wantErr     bool
+	}{
+		{value: "", read: 5, write: 5},
+		{value: "10", read: 5, write: 5},
+		{value: "2", read: 1, write: 1},
+		{value: "3", read: 1, write: 2},
+		{value: "0", wantErr: true},
+		{value: "1", wantErr: true},
+		{value: "-4", wantErr: true},
+		{value: "ten", wantErr: true},
+		{value: "4.5", wantErr: true},
+		{value: " 10", wantErr: true},
+		{value: "99999999999", wantErr: true},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv("DATABASE_MAX_CONNS", tc.value)
+			read, write, err := poolSizes()
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "DATABASE_MAX_CONNS") {
+					t.Fatalf("poolSizes() error = %v, want one naming DATABASE_MAX_CONNS", err)
+				}
+				if len(tc.value) > 1 && strings.Contains(err.Error(), tc.value) {
+					t.Errorf("error %q carries the value", err)
+				}
+				return
+			}
+			if err != nil || read != tc.read || write != tc.write {
+				t.Errorf("poolSizes() = %d, %d, %v; want %d, %d, nil", read, write, err, tc.read, tc.write)
+			}
+		})
+	}
+}
+
+// An invalid DATABASE_MAX_CONNS stops serve before anything starts, with an error that names the
+// variable and not the database URL.
+func TestServeRejectsInvalidMaxConns(t *testing.T) {
+	const secret = "s3cret-pw"
+	t.Setenv("DATABASE_URL", "postgres://svp:"+secret+"@127.0.0.1:1/svp_engagement")
+	t.Setenv("KAFKA_BROKERS", "redpanda:9092")
+	t.Setenv("DATABASE_MAX_CONNS", "1")
+	err := serve(t.Context(), slog.New(slog.DiscardHandler))
+	if err == nil || !strings.Contains(err.Error(), "DATABASE_MAX_CONNS") {
+		t.Fatalf("serve() = %v, want an error naming DATABASE_MAX_CONNS", err)
+	}
+	if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "127.0.0.1") {
+		t.Errorf("error %q leaks the database URL", err)
+	}
+}
+
 func TestRunRejectsUnknownCommand(t *testing.T) {
 	if err := run(t.Context(), slog.New(slog.DiscardHandler), []string{"serv"}); err == nil {
 		t.Error("run(serv) = nil, want an error")

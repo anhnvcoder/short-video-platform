@@ -11,7 +11,12 @@
 // serve also runs the consumer that adds view.recorded events to the view counters in batches.
 //
 // Configuration comes from the environment: LISTEN_ADDR (default 127.0.0.1:9103) and
-// DATABASE_URL (required for serve and migrate); serve also needs KAFKA_BROKERS. serve exports
+// DATABASE_URL (required for serve and migrate); serve also needs KAFKA_BROKERS.
+// DATABASE_MAX_CONNS (default 10, at least 2) is the most Postgres connections serve opens, those
+// still being dialed included, split between two pools on DATABASE_URL: floor(n/2) for the read
+// pool, which serves GetStats only, and the rest for the write pool, which serves Like, Unlike and
+// the views consumer. A GetStats canceled by its caller can leave a connection dialing; in a pool
+// of its own that never takes a connection a like needs. serve exports
 // telemetry when OTEL_EXPORTER_OTLP_ENDPOINT is set, profiles when PYROSCOPE_SERVER_ADDRESS is,
 // and reports errors when SENTRY_DSN is.
 package main
@@ -23,6 +28,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -49,6 +55,9 @@ const (
 	// consumerRestartDelay is the wait before a views consumer that stopped on an error is
 	// replaced.
 	consumerRestartDelay = 5 * time.Second
+	// defaultMaxConns is DATABASE_MAX_CONNS when unset: a fixed total, where pgx's own default,
+	// max(4, NumCPU) per pool, would change with the node the pod runs on.
+	defaultMaxConns = 10
 )
 
 func main() {
@@ -94,6 +103,10 @@ func serve(ctx context.Context, logger *slog.Logger) (err error) {
 	if err != nil {
 		return err
 	}
+	readConns, writeConns, err := poolSizes()
+	if err != nil {
+		return err
+	}
 	brokers, err := envcfg.Required("KAFKA_BROKERS")
 	if err != nil {
 		return err
@@ -112,10 +125,10 @@ func serve(ctx context.Context, logger *slog.Logger) (err error) {
 	if err != nil {
 		return errors.Join(err, shutdownTelemetry(context.WithoutCancel(ctx)))
 	}
-	var pool *pgxpool.Pool
+	var readPool, writePool *pgxpool.Pool
 	// Runs once the server and the consumer have stopped: a failure is logged first, while the
-	// error tracker and the providers still run, then telemetry is flushed while the pool still
-	// exists, then the error reports, and the pool closes last.
+	// error tracker and the providers still run, then telemetry is flushed while the pools still
+	// exist, then the error reports, and the pools close last.
 	defer func() {
 		if err != nil {
 			logger.Error("engagement-service failed", slog.Any("error", err))
@@ -125,16 +138,25 @@ func serve(ctx context.Context, logger *slog.Logger) (err error) {
 			logger.Warn("telemetry shutdown failed", slog.Any("error", err))
 		}
 		flushErrors()
-		if pool != nil {
-			pool.Close()
+		if readPool != nil {
+			readPool.Close()
+		}
+		if writePool != nil {
+			writePool.Close()
 		}
 	}()
-	pool, err = pgpool.New(ctx, databaseURL)
+	// One after the other: once the first has connected, the second's startup check connects at
+	// once.
+	writePool, err = pgpool.New(ctx, databaseURL, pgpool.WithMaxConns(writeConns), pgpool.WithName("write"))
+	if err != nil {
+		return err
+	}
+	readPool, err = pgpool.New(ctx, databaseURL, pgpool.WithMaxConns(readConns), pgpool.WithName("read"))
 	if err != nil {
 		return err
 	}
 
-	srv := server.New(pool, kafka, logger)
+	srv := server.New(readPool, writePool, kafka, logger)
 	newConsumer := func() (runner, error) { return kafkax.NewBatchConsumer(srv.ViewsConsumerConfig(brokers)) }
 	// The consumer stops with the server; a consumer that cannot be created stops the server too.
 	ctx, cancel := context.WithCancel(ctx)
@@ -154,6 +176,21 @@ func serve(ctx context.Context, logger *slog.Logger) (err error) {
 		err = errors.Join(err, fmt.Errorf("views consumer: %w", cerr))
 	}
 	return err
+}
+
+// poolSizes reads DATABASE_MAX_CONNS, n, and returns the sizes of the read pool, floor(n/2), and
+// of the write pool, the rest. Unset or empty is defaultMaxConns; anything but an integer of at
+// least 2, which gives each pool a connection, is an error naming the variable.
+func poolSizes() (read, write int32, err error) {
+	n := int64(defaultMaxConns)
+	if v := envcfg.String("DATABASE_MAX_CONNS", ""); v != "" {
+		n, err = strconv.ParseInt(v, 10, 32)
+		if err != nil || n < 2 {
+			return 0, 0, errors.New("DATABASE_MAX_CONNS: want an integer of at least 2")
+		}
+	}
+	total := int32(n) //nolint:gosec // n fits in int32: ParseInt was given bitSize 32
+	return total / 2, total - total/2, nil
 }
 
 // runner is what runConsumer needs of a kafkax.BatchConsumer.

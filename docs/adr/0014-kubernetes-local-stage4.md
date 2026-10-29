@@ -13,7 +13,8 @@
   môi trường `deploy/k8s/envs/`, cluster GitOps đóng vai stg) chỉnh bởi [0024](0024-multi-environment.md); MinIO ở §1 (image), §2 và §10 (RAM), §4 (StatefulSet `minio`, `deploy/minio/init.sh`
   với `mc`), §7 (symlink), §8 (Secret `minio-root`, `minio-users`) và §9 (đích của HTTPRoute `s3`) bị thay một phần bởi
   [0022](0022-local-object-store-minio-replacement.md) (RustFS, StatefulSet, Service và Job `s3`, `s3-init`, Secret `s3-root`, `s3-users`, CORS theo bucket; giới
-  hạn 512 MiB, uid 10001)
+  hạn 512 MiB, uid 10001); §10 (feed-service HPA 1–2 không PDB thành luôn 2 replica, PDB `minAvailable: 1`, ưu tiên trải hai
+  node) bị thay một phần bởi [0031](0031-chaos-findings-feed-engagement-tempo.md)
 - Ngày: 2026-10-18
 
 ## Bối cảnh

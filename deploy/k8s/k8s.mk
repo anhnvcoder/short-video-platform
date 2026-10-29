@@ -107,7 +107,7 @@ drill-k8s-web-canary: ## Canary drill of the web client on the dev cluster: a se
 	@test -s .k8s/ca.crt || { echo "make drill-k8s-web-canary: .k8s/ca.crt missing; run make k8s-up (or make k8s-ca)" >&2; exit 1; }
 	@$(WEB) exec env $(K8S_DRILL_ENV) NODE_EXTRA_CA_CERTS=$(CURDIR)/.k8s/ca.crt bash ../deploy/k8s/drills/web-canary.sh drill
 
-drill-k8s-pdb: ## Cordon the nodes and evict both gateway pods one after the other, as a drain does: the PodDisruptionBudget lets the first go (201) and refuses the second (429) while its replacement is Pending; uncordon (LOCAL LAB ONLY: resets register rate limit keys in the cluster's Valkey db 10)
+drill-k8s-pdb: ## Cordon the nodes and, for the gateway then feed-service, evict both pods one after the other, as a drain does: each PodDisruptionBudget lets the first go (201) and refuses the second (429) while its replacement is Pending; uncordon, wait for two ready pods of each and print their nodes (LOCAL LAB ONLY: resets register rate limit keys in the cluster's Valkey db 10)
 	@test -s .k8s/ca.crt || { echo "make drill-k8s-pdb: .k8s/ca.crt missing; run make k8s-up (or make k8s-ca)" >&2; exit 1; }
 	$(K8S_DRILL_ENV) deploy/k8s/drills/pdb.sh https://api.svp.localhost:8443
 
