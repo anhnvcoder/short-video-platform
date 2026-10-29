@@ -166,16 +166,24 @@ func TestSetupUnavailableCollectorDoesNotBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	start = time.Now()
-	// Exceed both queues to exercise their non-blocking overflow behavior as well.
+	// Exceed both queues to exercise their non-blocking overflow behavior as well. An export to
+	// the closed port runs until the export timeout, so a call that waited on an export would take
+	// at least exportTimeout. A non-blocking call takes microseconds; even on a loaded machine
+	// under -race, all 3000 iterations together have taken well under half a second. Checking
+	// the slowest single iteration against a fifth of the export timeout keeps both cases apart
+	// whatever the machine's speed.
+	var slowest time.Duration
 	for range 3000 {
+		start = time.Now()
 		ctx, span := otel.Tracer("test").Start(context.Background(), "request")
 		logger.InfoContext(ctx, "request")
 		counter.Add(ctx, 1)
 		span.End()
+		slowest = max(slowest, time.Since(start))
 	}
-	if elapsed := time.Since(start); elapsed >= 200*time.Millisecond {
-		t.Errorf("span/log/metric work took %s, want < 200ms", elapsed)
+	if limit := exportTimeout / 5; slowest >= limit {
+		t.Errorf("slowest span/log/metric iteration took %s, want < %s (a blocked call waits up to %s)",
+			slowest, limit, exportTimeout)
 	}
 	start = time.Now()
 	err = shutdown(context.Background())
