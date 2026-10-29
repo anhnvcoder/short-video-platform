@@ -411,7 +411,8 @@ liệt kê target):
   thì dừng; bản amd64 ở `deploy/k8s/values/argo-rollouts-amd64.yaml`, cùng file `install.sh` của đường dev đọc), AppProject
   `svp` và `default` đã khoá, root `svp-root` (`env=stg`; revision chưa có overlay thì bỏ qua env); chờ mọi Application
   `Synced`, Healthy, sync cuối `Succeeded` (lỗi còn sau 180 s thì dừng). `measure-gitops` đo commit phát hành (merge của PR
-  promote) từ lúc push (reflog `origin/main`, không có thì PushEvent qua `gh api`, chỉ đọc) qua sync của Argo CD tới pod đầu
+  promote) từ lúc push (reflog `origin/main`, không có thì `merged_at` của PR có `merge_commit_sha` là commit đó, rồi PushEvent,
+  cả hai qua `gh api`, chỉ đọc, ghi nguồn) qua sync của Argo CD tới pod đầu
   và cuối Ready với digest mới; service có `migrate: true` ở revision đó thì Job migrate phải tạo trong cửa sổ của đúng sync
   đã đo và `restartCount` 0 (thiếu Job là FAIL, sync đang chạy là exit 2: đo lại); chỉ đọc, JSON ở `.k8s/drills/`. Với image GHCR cả hai target **kiểm sau push**.
 - `make k8s-traffic-start` / `make k8s-traffic-stop`: traffic diễn tập chạy nền, 4 user, ~10 request/s vào
@@ -611,8 +612,9 @@ liệt kê target):
     học giao): `gh workflow run verify.yml --ref <main|feat/stage6b-…> -f
     scenario=<compose-obs|dev-k3d|gitops|web-canary|k6-cloud-mini|chaos|velero> [-f targets='<bước> …']` (`targets` rỗng là mọi
     bước, bước dựng luôn chạy; tên bước ở `results.tsv`), `gh run view <id> --log`, `gh run download <id> -n verify-<kịch
-    bản>`. Job `compose`, `k3d` chỉ `contents: read`; job `gitops` thêm `actions: read`, `GH_TOKEN` chỉ ở bước tìm source map và
-    bước chờ phát hành; không secret, không environment; `concurrency` một lượt mỗi kịch bản. Trình tự mỗi kịch bản ở
+    bản>`. Job `compose`, `k3d` chỉ `contents: read`; job `gitops` thêm `actions: read` (artifact source map) và
+    `pull-requests: read` (`merged_at` của PR promote cho mốc push của `measure-gitops`), `GH_TOKEN` chỉ ở bước tìm source map
+    và bước chờ phát hành; không secret, không environment; `concurrency` một lượt mỗi kịch bản. Trình tự mỗi kịch bản ở
     `deploy/ci/verify/<kịch bản>.sh` (bước dựng, hạn job mặc định, danh sách bước). Script `deploy/ci/verify-*.sh` (chạy được
     trên VM Linux thay runner):
     `verify-host.sh` (cổng đĩa, `/etc/hosts` cho ba tên `*.svp.localhost`, lệch version kubectl, hạn chế AppArmor, `sudo

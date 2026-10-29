@@ -9,7 +9,8 @@
   `scan-gate.sh --check-ignorefile` kiểm cả hai tệp) chỉnh bởi [0021](0021-deferred-verification-stage6b.md); §3 (đổi các file
   của `deploy/ci/` mà không job image nào đọc: tệp bỏ qua misconfig, script và test của `verify.yml`, `platform-test.sh`,
   `platform-guard.sh`, không build lại image) chỉnh bởi 0021 và [0023](0023-ci-platform-neutral.md); §1 (job `gitops` của
-  `verify.yml` thêm `actions: read`, `GH_TOKEN` chỉ ở bước tìm source map và bước chờ phát hành), §4 (chân build `web` của lượt
+  `verify.yml` thêm `actions: read`, từ 2026-10-29 cả `pull-requests: read` cho mốc push của `measure-gitops`, `GH_TOKEN` chỉ ở bước
+  tìm source map và bước chờ phát hành), §4 (chân build `web` của lượt
   phát hành xuất artifact `web-sourcemaps-<arch>` cùng build cache sau bước push, kèm `image-digest`; mọi chân `web`, cả ở PR, kiểm
   debug ID của chunk image có trong bộ map) và §9 (cluster GitOps đọc repo qua HTTPS ẩn danh, `make k8s-gitops-up` không còn deploy
   key) chỉnh bởi 0021 ngày 2026-10-28; §8, §9 (cluster GitOps đóng vai stg với overlay `deploy/k8s/envs/stg/`; Enforce trên stg và

@@ -18,7 +18,7 @@ nêu tên.
   ([ADR-0014](0014-kubernetes-local-stage4.md) §10), lúc kill chỉ có 1 replica; pod thay Ready sau 2 s. Feed 5xx **0,28 %** trong cửa sổ
   10 phút quanh lần kill (giả thuyết < 0,1 %), k6 explore và following lỗi 0,33 % cả lượt, p99 9,6 → 9,5 ms, không cảnh báo page.
   Cùng lượt, gateway (2 replica lúc kill) qua lần kill với feed 5xx 0.
-- Gateway thử lại `GetExploreFeed`, `GetFollowingFeed` khi `UNAVAILABLE`, tối đa 3 lần, chờ 0,05 s rồi 0,1 s nhân hệ số ngẫu nhiên
+- Gateway thử lại `GetExploreFeed`, `GetFollowingFeed` khi `UNAVAILABLE`, tối đa 3 lần gọi (2 lần thử lại), chờ 0,05 s rồi 0,1 s nhân hệ số ngẫu nhiên
   0,8–1,2 (mục Kiểm chứng), và `retryThrottling` ngừng thử lại sau vài lỗi (ADR-0010 §4): tổng chờ khoảng 0,15 s, tối đa 0,18 s, hết trước 2 s
   không có pod nào Ready.
 - Một pod feed-service trên runner (mẫu 30 s của `kubectl top`, `pods.tsv` của sampler): working set tối đa **35 MiB**, CPU tối đa
@@ -371,7 +371,8 @@ Lượt runner ngày 2026-10-29 trên nhánh `feat/stage6b-chaos-fixes`, commit 
   vào được hàng đợi 0; Tempo bỏ 0 (`tempo_discarded_spans_total` không có series nào). Đọc lại: mỗi cửa sổ tìm thấy 20 trace của
   gateway, lấy được theo id một trace có 2–5 service; cạnh gateway → feed-service của service graph tăng (78 726 ở (a), 124 065 ở mức 4).
   `drill-k8s-web-obs` của `dev-k3d` tìm thấy trace web + gateway qua Tempo cấu hình mới (PASS).
-- Biên: 784 MiB ở mức 4 còn 240 MiB tới limit và sát `GOMEMLIMIT` 800 MiB (từ đó GC chạy dày hơn, tốn CPU thay vì OOM); tốc độ span
+- Biên: working set 784 MiB ở mức 4 còn 240 MiB tới limit; số này gồm cả page cache của WAL và block, không phải heap Go, nên chưa cho biết
+  runtime có chạm `GOMEMLIMIT` 800 MiB hay không (heap chưa đo); tốc độ span
   cao hơn ước lượng mà các trần dựa vào. Chưa có số ở tải cao hơn mức 4.
 - Mức 8 pod không chạy (dừng ở mức 4 trượt). Mức 4 trượt vì hệ thống không giữ được tải trên runner (CPU máy trung bình 89 %, ADR-0021
   dòng D11), không vì Tempo.

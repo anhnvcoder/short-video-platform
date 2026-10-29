@@ -237,7 +237,7 @@ Code, cấu hình và tài liệu dùng đúng các tên này; đổi tên nào 
 | --- | --- | --- |
 | Thêm job vào `ci.yml` (theo lịch hay dispatch) | Không thêm file | Trộn kiểm của mỗi PR với buổi đo dài; trigger, concurrency, quyền khác hẳn |
 | **Workflow thứ ba, chỉ `workflow_dispatch`** | Chỉ người có quyền ghi chạy được; không bao giờ chạy code của PR fork; tách hẳn khỏi `ci-ok`, `images-ok` | Thêm một file ngoài hai workflow của ADR-0015 §1 (kèm quy ước của nó) |
-| **Mỗi lượt một kịch bản, mỗi nhóm kịch bản một job** (`compose`, `k3d`, `gitops`) | Runner mới cho mỗi kịch bản; service container chỉ ở job compose; quyền `actions: read` chỉ ở job `gitops` | Kịch bản dùng chung bước setup phải khai ở nhiều job |
+| **Mỗi lượt một kịch bản, mỗi nhóm kịch bản một job** (`compose`, `k3d`, `gitops`) | Runner mới cho mỗi kịch bản; service container chỉ ở job compose; quyền `actions: read` (và `pull-requests: read`, từ 2026-10-29) chỉ ở job `gitops` | Kịch bản dùng chung bước setup phải khai ở nhiều job |
 | Mọi kịch bản trong một job, bước theo điều kiện | Một định nghĩa | Service container (job-level) dựng cả khi không cần; quyền lớn nhất cho mọi kịch bản |
 | Matrix nhiều kịch bản một lượt | Chạy song song | Nhiều kết quả cùng lúc cho một người đọc; lỗi chung (script chưa chạy được trên Linux) lặp ở mọi chân |
 | `concurrency` một lượt mỗi lúc (chọn lúc đầu) | Lỗi chung sửa xong trước lượt kế; không hai lượt cùng chờ một bản phát hành | Không song song; dispatch lượt thứ ba khi đã có một lượt chạy và một lượt chờ thì lượt chờ bị huỷ (cách GitHub giữ hàng chờ) |
@@ -271,7 +271,8 @@ Code, cấu hình và tài liệu dùng đúng các tên này; đổi tên nào 
   code của nhánh đó). AI dispatch (`gh workflow run verify.yml --ref <nhánh> -f scenario=<tên>`) và đọc kết quả (`gh run view`,
   `gh run download`) từng lượt; lượt kế của một kịch bản chỉ dispatch khi lượt trước của nó đã xong.
 - **Quyền:** `permissions: {}` đầu file; `compose`, `k3d`: `contents: read`; `gitops`: `contents: read`, `actions: read` (tải artifact
-  source map của lượt `images.yml`, mục 6). Không secret, không environment. `GH_TOKEN: ${{ github.token }}` chỉ ở bước gọi `gh`
+  source map của lượt `images.yml`, mục 6), `pull-requests: read` (từ 2026-10-29: `merged_at` của PR promote có `merge_commit_sha`
+  là commit phát hành, mốc push của `make measure-gitops`, qua `GET commits/{sha}/pulls`). Không secret, không environment. `GH_TOKEN: ${{ github.token }}` chỉ ở bước gọi `gh`
   (job `gitops`). Mọi action ghim SHA như ADR-0015 §1 (`checkout`, `setup-go`, `setup-node`, `cache`, `upload-artifact`,
   `download-artifact` đã ghim trong repo); `persist-credentials: false`; không `pull_request_target`, `workflow_run`.
 - **`concurrency: { group: verify-${{ inputs.scenario || github.event_name }}, cancel-in-progress: false }`** (sửa 2026-10-25;
@@ -482,8 +483,9 @@ object store trong cluster. **Phần 4:** bài SA tách repo GitOps (roadmap, "B
   token; `targets` vẫn nhận hai tên `wait-release`, `measure-gitops`; lượt trên nhánh `feat/stage6b-*` ghi bước này `skipped`. Khi bước đó đang chạy (đọc qua `gh api
   repos/<repo>/actions/jobs/<id>`, trạng thái từng bước), người học hay AI được người học uỷ quyền merge PR promote. `main` đổi thì job `git fetch`,
   kiểm commit mới đổi `image.digest` trong `deploy/k8s/values/services/` (đúng một bản phát hành), chạy `make measure-gitops
-  REV=<sha>` lặp tới khi exit khác 2 (tối đa 20 phút). Push không có reflog trên runner nên script đọc PushEvent bằng `gh api`
-  (`GH_TOKEN` chỉ ở bước này). Hết 90 phút không có push thì bước FAIL "no release", các diễn tập khác vẫn có kết quả.
+  REV=<sha>` lặp tới khi exit khác 2 (tối đa 20 phút). Push không có reflog trên runner nên script đọc `merged_at` của PR promote
+  có `merge_commit_sha` là commit, không có thì PushEvent, bằng `gh api` (`GH_TOKEN` chỉ ở bước này; sửa 2026-10-29: Events API trễ
+  có chủ đích, lượt D26 đầu không có PushEvent). Hết 90 phút không có push thì bước FAIL "no release", các diễn tập khác vẫn có kết quả.
   Tiêu chí D26: số đo có, pod mới không restart.
 - **Ca web chưa ký của Kyverno:** `SUPPLYCHAIN_UNSIGNED` là **digest manifest con `linux/amd64` của bản web đang phát hành** (đọc từ
   index đã ký): cùng repository `…/web`, digest thật, kéo được, nhưng chữ ký và attestation gắn với digest index, không với manifest

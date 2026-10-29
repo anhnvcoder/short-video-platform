@@ -1462,7 +1462,9 @@ giá: không phát hiện được Valkey treo mà cổng vẫn mở, lab chấp
   hiện, và còn nguyên sau 180 s (ba lần poll, không phải lỗi thoáng qua) thì script dừng, không chờ hết 1800 s.
   **Sửa 2026-10-18.**
 - **Đo push → pod mới Ready:** giờ push từ reflog `refs/remotes/origin/main` (người học push từ máy này); không có thì
-  PushEvent của GitHub (`gh api repos/anhnvcoder/short-video-platform/events`, chỉ đọc, ghi nguồn); không có cả hai thì "không
+  `merged_at` của PR có `merge_commit_sha` là commit đó (`gh api repos/anhnvcoder/short-video-platform/commits/<sha>/pulls`; sửa
+  2026-10-29, Events API trễ có chủ đích nên trên runner hay chưa có PushEvent), rồi PushEvent của GitHub
+  (`gh api repos/anhnvcoder/short-video-platform/events`), mọi đường chỉ đọc, ghi nguồn; không có cả ba thì "không
   đo được", **không** thay bằng giờ commit; giờ sync từ `status.operationState`/`status.history`, giờ Ready từ condition
   của pod. Sync đang chạy nhận theo cả revision được yêu cầu lẫn revision đã resolve (`syncResult`): sync tay theo `main`
   chỉ ghi SHA trong kết quả. Commit không còn đo được thì báo thẳng (exit 1) thay vì chờ mãi: Argo CD đã sync một commit
