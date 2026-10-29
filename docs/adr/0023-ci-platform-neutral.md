@@ -1,6 +1,9 @@
 # 0023. CI trung lập nền tảng: YAML của nền tảng chỉ nối bước, logic ở `Makefile` và `deploy/ci/`, mọi chỗ đọc ngữ cảnh CI hay gọi API nền tảng đi qua adapter `deploy/ci/platform.sh` (hiện thực GitHub Actions và chạy trên máy), identity ký viết ở một chỗ; bảng ánh xạ GitHub ↔ GitLab (gitlab.com và self-managed)
 
-- Trạng thái: Chấp nhận; adapter hiện thực 2026-10-25 (nhánh `github`, `local`), kiểm trên CI thật sau push
+- Trạng thái: Chấp nhận; adapter hiện thực 2026-10-25 (nhánh `github`, `local`), kiểm trên CI thật sau push; bảng Tên chốt (hàm
+  của repo cấu hình: PR ở repo đích và auto-merge, bot và credential git của GitHub App, `ci_push_time` theo repo, lượt chạy, bản ghi
+  Deployment) và bảng ánh xạ repo (dòng của repo cấu hình) chỉnh bởi [0025](0025-gitops-config-repo.md) và
+  [0028](0028-dora-metrics.md), từ 2026-10-30
 - Ngày: 2026-10-25
 
 ## Bối cảnh
@@ -75,13 +78,17 @@ dự án công ty chạy GitLab), không phải lúc chỉ có một nền tản
    | `ci_repo` | `$GITHUB_REPOSITORY` | `anhnvcoder/short-video-platform` | `CI_PROJECT_PATH` |
    | `ci_run_id`, `ci_run_url`, `ci_run_attempt_url` | `GITHUB_RUN_ID`, `.../actions/runs/<id>`, `.../attempts/<n>` | `local` | `CI_PIPELINE_ID`, `CI_PIPELINE_URL`, `CI_JOB_URL` |
    | `ci_builder_id` | `$GITHUB_SERVER_URL/$GITHUB_WORKFLOW_REF` | `local` | `https://` + claim `ci_config_ref_uri` |
-   | `ci_bot_name`, `ci_bot_email` | `github-actions[bot]` | như `github` (dry run tạo đúng commit của CI) | user bot của project access token |
-   | `ci_change_request_list BRANCH BASE`, `ci_change_request_pick`, `ci_change_request_write [--dry-run] NUMBER BRANCH BASE TITLE BODY_FILE` | `gh pr list/edit/create`; chỉ PR do bot mở từ chính repo | đọc qua `gh`; ghi chỉ in `dry run: gh ...` | `glab mr list/create/update` bằng project access token |
+   | `ci_bot_name [APP]`, `ci_bot_email [APP]` | `github-actions[bot]`; với `APP` (từ 2026-10-30) bot của GitHub App (`<app>[bot]`, id đọc qua `gh api`) | như `github` (dry run tạo đúng commit của CI) | user bot của project access token |
+   | `ci_change_request_list BRANCH BASE [REPO]`, `ci_change_request_pick [APP]`, `ci_change_request_write [--dry-run] NUMBER BRANCH BASE TITLE BODY_FILE [REPO]` | `gh pr list/edit/create`; chỉ PR do bot mở; `REPO` là repo đích (từ 2026-10-30: `svp-gitops`) | đọc qua `gh`; ghi chỉ in `dry run: gh ...` | `glab mr list/create/update` bằng project access token |
+   | `ci_change_request_auto_merge [--dry-run] SELECTOR HEAD REPO` (từ 2026-10-30) | `gh pr merge --auto --squash --match-head-commit` | chỉ in lệnh | `glab mr merge --auto-merge` |
+   | `ci_git_auth` (từ 2026-10-30) | tuỳ chọn `git -c` của một credential helper đọc `GH_TOKEN` (token App) cho push HTTPS | không có | credential helper với project access token |
    | `ci_dispatch_hint WORKFLOW REF [NAME=VALUE...]` | in `gh workflow run ...` (không chạy) | như `github` | `glab ci run` với `--input` |
-   | `ci_push_time SHA` | in một dòng `TIMESTAMP SOURCE`: `merged_at` của PR có `merge_commit_sha` là `SHA` (`gh api .../commits/<SHA>/pulls`), không có thì sự kiện `PushEvent` (100 sự kiện mới nhất); không in gì khi cả hai không biết `SHA` | như `github` (đọc) | MR đã merge của commit (API `repository/commits/<SHA>/merge_requests`), rồi events API của project |
+   | `ci_push_time SHA [REPO]` (`REPO` từ 2026-10-30, mặc định `ci_repo`) | in một dòng `TIMESTAMP SOURCE`: `merged_at` của PR có `merge_commit_sha` là `SHA` (`gh api .../commits/<SHA>/pulls`), không có thì sự kiện `PushEvent` (100 sự kiện mới nhất); không in gì khi cả hai không biết `SHA` | như `github` (đọc) | MR đã merge của commit (API `repository/commits/<SHA>/merge_requests`), rồi events API của project |
    | `ci_hosted_runner` | exit 0 khi `RUNNER_ENVIRONMENT=github-hosted`, exit 1 khi rỗng hay `self-hosted`; không in gì | exit 1 | không biến nào chứng minh runner do GitLab cấp (tag `saas-linux-*` runner riêng cũng gắn được): exit 1 |
    | `ci_artifact_runs WORKFLOW COMMIT ARTIFACT` | `gh api .../actions/workflows/<WORKFLOW>/runs` (head là `COMMIT`, `completed`, `push`/`workflow_dispatch`, mọi conclusion) rồi artifact chưa hết hạn của từng lượt; in id, lượt bắt đầu sau nhất trước; exit 3 khi không lượt nào | như `github` (đọc) | pipelines API (`sha`, `source` `push`/`web`) rồi artifact theo job (`artifacts:name`, `expire_at`) |
    | `ci_artifact_fetch RUN ARTIFACT DIR` | `gh run download` vào `DIR` rỗng; không in URL tải có chữ ký: tắt debug log của `gh` (`GH_DEBUG`, `DEBUG`), lỗi của `gh` in ra với mỗi URL chỉ còn scheme và host; exit 3 khi lượt không có artifact đó hay đã hết hạn | như `github` (đọc) | job artifacts API (`glab job artifact`) với `CI_JOB_TOKEN` |
+   | `ci_is_run_url URL`, `ci_run_workflow URL` (từ 2026-10-30) | URL là trang một lượt của repo code; in `<file workflow> <nhánh>` của lượt đó (`gh api .../actions/runs/<id>`) | như `github` (đọc) | pipelines API (`GET .../pipelines/<id>`), một project một file cấu hình |
+   | `ci_deployment_record [--dry-run] REPO ENVIRONMENT REF PAYLOAD_FILE DESCRIPTION LOG_URL`, `ci_deployment_list REPO ENVIRONMENT` (từ 2026-10-30) | `POST .../deployments` (`auto_merge: false`, `required_contexts: []`, payload) rồi trạng thái `success` với `auto_inactive: false`; đọc 100 bản ghi mới nhất kèm payload và mọi trạng thái | ghi chỉ in lệnh; đọc qua `gh` | deployments API của project cấu hình; **không có payload**, JSON của bản ghi phải nằm chỗ khác (chốt khi mang sang) |
 
 4. **Identity ký một chỗ:** issuer và subject chỉ viết ở `imageVerification.issuer`, `.subject` của
    `deploy/helm/svp-policy/values.yaml` (comment "đổi khi đổi nền tảng CI"); `common.sh` (`sign_identity`, dùng bởi
@@ -139,6 +146,7 @@ Tài liệu đọc ngày 2026-10-25. Bậc giá ghi theo nhãn trên trang tài 
 | Kết quả quét bảo mật | SARIF lên tab Security (`upload-sarif`) | security report, vulnerability report, security dashboard; nhận SARIF 2.1.0 từ 19.2 [L16] | Ultimate |
 | Cập nhật dependency | Renovate (App Mend), Dependabot alerts | Renovate (platform `gitlab`, token scope `api`, vai Developer; tài liệu Renovate không khuyên project access token) [L17]; Dependabot là tính năng của repo GitHub [G5] | Free (Renovate tự chạy theo lịch pipeline) |
 | Duyệt chạy CI của PR bot | "Approve workflows to run" (PR do `GITHUB_TOKEN` mở) | không có bước tương đương được kiểm ở đây | — |
+| Repo cấu hình (từ 2026-10-30) | credential bot, cổng prd, bypass có ghi, auto-merge, bản ghi stg, check gọi script của repo khác: bảng ở [ADR-0025](0025-gitops-config-repo.md) §11 | như bảng đó | như bảng đó |
 
 ## gitlab.com và GitLab self-managed khác nhau ở đâu
 

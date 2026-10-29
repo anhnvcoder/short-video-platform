@@ -1,8 +1,10 @@
 # 0027. SLSA build provenance cho bảy image phát hành: predicate SLSA v1 do script của repo dựng, `cosign attest --type slsaprovenance1` định dạng cũ trên digest index ở job `sign`, Kyverno `svp-images` kiểm thêm provenance trên đường GitOps, bật theo bậc sau khi cả bảy service có bản phát hành mang provenance
 
 - Trạng thái: Chấp nhận (người học duyệt 2026-10-28, chọn (a) ở cả ba dòng "Cần người học chọn"); bậc 1 của mục 6 hiện thực
-  2026-10-29 (provenance trong `images.yml`, policy và `verify-release.sh` có giá trị bật, mặc định tắt); provenance trên bản
-  phát hành, Kyverno với policy bật và ca `l` **kiểm sau push**; bậc 2–5 chưa làm
+  2026-10-29 (provenance trong `images.yml`, policy và `verify-release.sh` có giá trị bật, mặc định tắt); bậc 2–5 xong 2026-10-29
+  đến 2026-10-30: bảy bản phát hành build ở `6ca2d8a` mang provenance (PR promote #36), bật `requireProvenance` ở `envs/stg/`,
+  `envs/prd/svp-policy.yaml` của `svp-gitops` ngay từ commit khởi tạo ([ADR-0025](0025-gitops-config-repo.md)), kịch bản `gitops` với
+  policy bật đạt cả ca `a` và ca `l` (mục Kiểm chứng sau)
 - Ngày: 2026-10-28
 
 ## Bối cảnh
@@ -266,12 +268,12 @@ Giả định chưa kiểm được lúc viết; mỗi dòng nêu phép kiểm c
 
 | Giả định | Phép kiểm | Kết quả |
 | --- | --- | --- |
-| Bảy bản phát hành sau bậc 2 có đúng một attestation provenance đúng identity, đúng predicate | **Kiểm sau push**, trên máy: `cosign verify-attestation --type slsaprovenance1 --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main ghcr.io/anhnvcoder/short-video-platform/<svc>@<digest>`: một envelope, `predicateType` `https://slsa.dev/provenance/v1`, `builder.id`, `workflow.ref`, 12 hex đầu của `gitCommit` bằng tag image | Chưa kiểm |
-| Commit của predicate trùng commit trong chứng chỉ | Cùng lệnh thêm `--certificate-github-workflow-sha <gitCommit>` (extension 1.3.6.1.4.1.57264.1.3 còn được Fulcio ghi cho GitHub?), và một lệnh với commit khác phải đỏ | Chưa kiểm |
-| Thêm provenance không làm mất `vuln`, rescan không làm mất provenance | Sau bậc 2 và sau một lượt rescan: `cosign verify-attestation --type vuln` và `--type slsaprovenance1` mỗi loại đúng một envelope trên cùng digest | Chưa kiểm |
-| Kyverno v1.19.1 đọc được attestation `slsaprovenance1` định dạng cũ nằm cùng `.att` với `vuln` | Kịch bản `gitops`, policy bật: ca a được nhận, pod `svp` Running | Chưa kiểm |
-| Kyverno từ chối bản thiếu provenance đúng message của phép 7 | Ca mới của `make drill-k8s-supplychain` (kịch bản `gitops`, sau rescan làm mới `vuln` của digest cũ) PASS, không SKIP | Chưa kiểm |
-| Admission khi chưa trúng cache vẫn dưới `timeoutSeconds: 30` với ba lần xác minh mỗi image | Thời gian lần đầu của ca a in bởi diễn tập | Chưa kiểm |
+| Bảy bản phát hành sau bậc 2 có đúng một attestation provenance đúng identity, đúng predicate | **Kiểm sau push**, trên máy: `cosign verify-attestation --type slsaprovenance1 --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main ghcr.io/anhnvcoder/short-video-platform/<svc>@<digest>`: một envelope, `predicateType` `https://slsa.dev/provenance/v1`, `builder.id`, `workflow.ref`, 12 hex đầu của `gitCommit` bằng tag image | Đạt: `gitops` [40954609229](https://github.com/anhnvcoder/short-video-platform/actions/runs/40954609229) (2026-10-29): `verify-release.sh` qua 7/7 digest của `envs/stg/images/`, mỗi bản đúng một provenance "of 6ca2d8a795dd by …images.yml@refs/heads/main"; trước đó `values-check` của CI PR-A ([40873929718](https://github.com/anhnvcoder/short-video-platform/actions/runs/40873929718)) kiểm cả bảy bản đã ký |
+| Commit của predicate trùng commit trong chứng chỉ | Cùng lệnh thêm `--certificate-github-workflow-sha <gitCommit>` (extension 1.3.6.1.4.1.57264.1.3 còn được Fulcio ghi cho GitHub?), và một lệnh với commit khác phải đỏ | Đạt: `verify-release.sh` đối chiếu bằng `--certificate-github-workflow-sha` và qua 7/7 ở [40954609229](https://github.com/anhnvcoder/short-video-platform/actions/runs/40954609229). Ca commit khác bị từ chối: kiểm trên máy 2026-10-29 bằng cosign, không có id lượt chạy |
+| Thêm provenance không làm mất `vuln`, rescan không làm mất provenance | Sau bậc 2 và sau một lượt rescan: `cosign verify-attestation --type vuln` và `--type slsaprovenance1` mỗi loại đúng một envelope trên cùng digest | Đạt: sau lượt rescan [40937034809](https://github.com/anhnvcoder/short-video-platform/actions/runs/40937034809) (2026-10-29, job `rescan` xanh), [40954609229](https://github.com/anhnvcoder/short-video-platform/actions/runs/40954609229) vẫn qua `vuln` và provenance của cả bảy bản; số envelope mỗi loại chưa đếm riêng bằng `cosign verify-attestation` |
+| Kyverno v1.19.1 đọc được attestation `slsaprovenance1` định dạng cũ nằm cùng `.att` với `vuln` | Kịch bản `gitops`, policy bật: ca a được nhận, pod `svp` Running | Đạt: [40954609229](https://github.com/anhnvcoder/short-video-platform/actions/runs/40954609229): "policy svp-images in Deny, provenance checked: yes", ca a nhận hai lần, pod `svp` của bảy release Running (26/26 Application Healthy) |
+| Kyverno từ chối bản thiếu provenance đúng message của phép 7 | Ca mới của `make drill-k8s-supplychain` (kịch bản `gitops`, sau rescan làm mới `vuln` của digest cũ) PASS, không SKIP | Đạt: [40954609229](https://github.com/anhnvcoder/short-video-platform/actions/runs/40954609229): ca l với digest web của `34a4bc2` (chưa provenance, `vuln` còn trong 72 giờ) PASS đúng message "image without a provenance attestation signed by …images.yml@refs/heads/main" |
+| Admission khi chưa trúng cache vẫn dưới `timeoutSeconds: 30` với ba lần xác minh mỗi image | Thời gian lần đầu của ca a in bởi diễn tập | Một phần: ca a PASS hai lần ở [40954609229](https://github.com/anhnvcoder/short-video-platform/actions/runs/40954609229), nên lần đầu dưới `timeoutSeconds: 30`; thời gian lần đầu chưa trích từ artifact |
 | Tắt (mặc định) thì render `svp-policy` và `verify-release.sh` như trước | `helm template` trước và sau, `diff` rỗng; test của `verify-release.sh` | Đạt trên máy 2026-10-29 lúc hiện thực: `diff` render mặc định, `mode=Audit` và bản của ca f trước và sau rỗng; `deploy/ci/platform-test.sh` (gồm `verify-release.sh`, `values-check.sh`, `plan.sh`) xanh |
 
 ## Hệ quả
@@ -316,7 +318,11 @@ Hiện thực 2026-10-29 tới bậc 1 của mục 6 (sinh provenance, policy v�
   `deploy/k8s/gitops.sh` (`--rev <revision> --env stg`): mục 5.
 - `deploy/k8s/drills/supplychain.sh` (ca `l`, `SUPPLYCHAIN_NO_PROVENANCE`), `deploy/k8s/k8s.mk`, `deploy/ci/verify/gitops.sh`
   (`gitops_no_provenance` tìm bản web thiếu provenance): mục 7.
-- Chưa có: overlay `deploy/k8s/envs/<env>/svp-policy.yaml` bật provenance (bậc 4 của mục 6, sau bậc 2 và 3 trên `main`).
+- Bậc 4: overlay `envs/stg/svp-policy.yaml`, `envs/prd/svp-policy.yaml` của repo `svp-gitops` (`requireProvenance: true`). Từ PR-B
+  (tách repo, [ADR-0025](0025-gitops-config-repo.md)): `provenance_required` của `deploy/ci/common.sh` đọc overlay đó trong thư mục cấu
+  hình, `deploy/ci/verify-release.sh` thêm `--gitops DIR`, `deploy/ci/values-check.sh` chỉ còn `--gitops` (chạy trong check của
+  `svp-gitops`), `deploy/ci/plan.sh` bỏ `values_changed`; `gitops_no_provenance` của `deploy/ci/verify/gitops.sh` vẫn tìm bản web trong
+  lịch sử `deploy/k8s/values/services/web.yaml` của repo code, `deploy/ci/rescan.sh` nhận `values_ref` là commit đó.
 
 ## Nguồn
 

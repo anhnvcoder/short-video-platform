@@ -19,7 +19,12 @@
   (govulncheck, DAST thôi là việc để sau) chỉnh bởi [0030](0030-devsecops-supplement.md); §7 (SLSA provenance không còn để giai
   đoạn 9: predicate SLSA v1, `cosign attest --type slsaprovenance1` định dạng cũ trên digest index ở job `sign`, `.att` của index
   chứa `vuln` và provenance) và §8 (khi giá trị bật trên đường GitOps, policy kiểm thêm provenance sau sáu phép cũ; đường dev không
-  đổi) chỉnh bởi [0027](0027-slsa-build-provenance.md)
+  đổi) chỉnh bởi [0027](0027-slsa-build-provenance.md); từ phần 4 của giai đoạn 6b (2026-10-30) §7 (tập digest của rescan là
+  `envs/*/images/` của `svp-gitops` ở `main`, ở PR promote đang mở và ở `values_ref`), §9 (promote stg sang `svp-gitops` bằng token
+  GitHub App ở environment `promote`, nhánh `bot/promote-stg`, auto-merge sau `gitops-ok`, không còn "Approve workflows to run"; promote
+  prd bằng PR có người duyệt chép cả bộ của một bản ghi stg; bỏ job `values-check` của repo code), §10 (Renovate tách hai repo,
+  `svp-gitops` bỏ qua `envs/**`) và §11 (ruleset `main`, `owners`, `tags`, CODEOWNERS và cài đặt của `svp-gitops`) chỉnh bởi
+  [0024](0024-multi-environment.md) và [0025](0025-gitops-config-repo.md)
 - Ngày: 2026-10-20
 
 ## Bối cảnh

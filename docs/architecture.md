@@ -353,14 +353,15 @@ flowchart LR
   Tempo, scrape `/public_metrics` của Redpanda), kube-prometheus-stack (Prometheus, Alertmanager gửi Telegram, Grafana),
   Loki, Tempo có metrics-generator, Pyroscope, GlitchTip trên database `svp_glitchtip` của `svp-pg`. Không UI nào có route
   hay cổng node: chỉ `make k8s-ui-*` (port-forward trên `127.0.0.1`), Grafana và GlitchTip có đăng nhập.
-- **Cài đặt và GitOps** (ADR-0014 §7, §12): `deploy/argocd/apps/components.json` liệt kê 23 thành phần theo wave 0–7
-  (cert-manager và Envoy Gateway; namespace, CA, policy; operator và Kyverno; backend dữ liệu, observability và policy
-  image `svp-policy`; chart dữ liệu; chart observability; Collector; 6 service và web, web đứng sau gateway). Đường dev `make k8s-up` cài file đó bằng
-  Helm, image tag `dev-<image ID>` build từ working tree vào registry k3d (môi trường dev, values gốc); đường GitOps
-  `make k8s-gitops-up` dựng cluster mới đóng vai stg (values gốc cộng overlay `deploy/k8s/envs/stg/`,
+- **Cài đặt và GitOps** (ADR-0014 §7, §12; từ giai đoạn 6b phần 4 ở repo `svp-gitops`, [§5.5](#55-hai-repo-code-và-cấu-hình-triển-khai-giai-đoạn-6b-phần-4)):
+  `argocd/apps/components.json` của `svp-gitops` liệt kê 25 thành phần theo wave 0–7
+  (cert-manager, Envoy Gateway, External Secrets Operator (chỉ đường GitOps cài); namespace, CA, policy; operator và Kyverno;
+  backend dữ liệu, observability, plugin Barman Cloud và policy image `svp-policy`; chart dữ liệu; chart observability; Collector; 6 service và web, web đứng sau gateway). Đường dev `make k8s-up` cài file đó bằng
+  Helm từ bản clone `svp-gitops` cạnh repo (values `base/`), image tag `dev-<image ID>` build từ working tree vào registry k3d
+  (môi trường dev); đường GitOps `make k8s-gitops-up` dựng cluster mới đóng vai stg (`base/` cộng overlay `envs/stg/`,
   [ADR-0024](adr/0024-multi-environment.md)) mà Argo CD (app-of-apps, root `svp-root` với giá trị `env`, AppProject `svp`)
   đồng bộ từ GitHub qua HTTPS ẩn danh (không deploy key, từ 2026-10-28), image kéo từ GHCR theo digest mà PR promote ghi vào
-  values (giai đoạn 5, [§5.2](#52-cicd-và-chuỗi-cung-ứng-giai-đoạn-5)); overlay prd chỉ render và kiểm tĩnh tới giai đoạn 7.
+  `envs/stg/images/` (giai đoạn 5, [§5.2](#52-cicd-và-chuỗi-cung-ứng-giai-đoạn-5)); overlay prd chỉ render và kiểm tĩnh tới giai đoạn 7.
 - **Canary của gateway** (ADR-0014 §13): Argo Rollouts đổi trọng số HTTPRoute `api` qua plugin Gateway API: 25% → 60 s →
   50% → 60 s → bước phân tích chặn → 100%. Phân tích đọc metric Envoy của backend canary trong Prometheus: tỉ lệ 5xx < 1%
   và p99 < 150 ms (SLO feed), cần ít nhất 30 response không phải 4xx mỗi phút; hỏng hay Prometheus không trả lời thì
@@ -378,7 +379,8 @@ flowchart LR
 
 ### 5.2 CI/CD và chuỗi cung ứng (giai đoạn 5)
 
-Image phát hành không còn build trên máy: GitHub Actions build, quét, ký và đẩy lên GHCR; một PR ghi digest vào values;
+Image phát hành không còn build trên máy: GitHub Actions build, quét, ký và đẩy lên GHCR; một PR ghi digest vào values (từ
+giai đoạn 6b phần 4 là PR trong repo `svp-gitops`, [§5.5](#55-hai-repo-code-và-cấu-hình-triển-khai-giai-đoạn-6b-phần-4));
 Argo CD đồng bộ; Kyverno chỉ cho pod của `svp` chạy image đã ký và sạch. Thiết kế và lý do ở
 [ADR-0015](adr/0015-cicd-devsecops-stage5.md); lệnh ở [`CLAUDE.md`](../CLAUDE.md) mục Kiểm tra. Đường dev `make k8s-up`
 giữ image `dev-*` chưa ký trong registry k3d, policy chạy Audit.
@@ -389,12 +391,13 @@ flowchart LR
     renovate["App Renovate<br/>PR dependency"]
     subgraph gh["GitHub: repo public"]
         pr["Pull request"]
-        checks["ci.yml: make check, generate-check,<br/>buf, config, gitleaks<br/>images.yml: build-nopush, values-check"]
+        checks["ci.yml: make check, generate-check,<br/>buf, config, gitleaks<br/>images.yml: build-nopush"]
         main["main<br/>ruleset: ci-ok, images-ok"]
         build["images.yml trên main<br/>build amd64 + arm64 → trivy<br/>→ push → index → ký, attest"]
-        promote["bot/promote<br/>PR promote"]
+        promote["job promote<br/>(token App)"]
         rescan["rescan hằng ngày"]
     end
+    gitops["repo svp-gitops<br/>PR bot/promote-stg,<br/>gitops-ok, auto-merge"]
     ghcr[("GHCR<br/>image theo digest,<br/>.sig, .att")]
     sigstore["Sigstore công khai<br/>Fulcio, Rekor, TUF"]
     subgraph cluster["cluster GitOps svp"]
@@ -410,9 +413,10 @@ flowchart LR
     build -->|"push, .sig, .att"| ghcr
     build -->|"OIDC → chứng chỉ, log ký"| sigstore
     build --> promote
-    promote -->|"người học duyệt, merge"| main
+    promote -->|"envs/stg/images/, charts.yaml"| gitops
     rescan -->|"attestation vuln mới"| ghcr
-    main -->|"values: image.digest"| argo
+    gitops -->|"image.digest"| argo
+    main -->|"chart ở SHA của charts.yaml"| argo
     argo -->|"tạo pod"| kyv
     kyv -->|"chữ ký, attestation"| ghcr
     kyv -->|"khoá tin cậy TUF"| sigstore
@@ -441,20 +445,22 @@ flowchart LR
   SBOM SPDX của syft trên từng manifest con. Rescan hằng ngày quét lại mọi digest đang phát hành bằng DB mới và thay
   attestation `vuln`. Từ giai đoạn 6b phần 4 ([ADR-0027](adr/0027-slsa-build-provenance.md)) index của bản phát hành mang thêm
   attestation build provenance SLSA v1 (`slsaprovenance1`: workflow, ref, commit, lượt chạy), mức ghi trung thực là Build L1.
-- **Promote** (§9): job `promote` dựng lại nhánh `bot/promote` từ `main`, ghi `repository`, `tag`, `digest` của mọi
-  service đã ký mà chưa merge (không bao giờ ghi lùi) vào `deploy/k8s/values/services/<svc>.yaml` và mở hay cập nhật một PR
-  cuộn. Người học bấm duyệt lượt chạy của PR, merge khi hai check xanh; Argo CD poll thấy commit, sync, gateway đi canary
-  như giai đoạn 4. Rollback là PR revert.
+- **Promote** (§9; từ giai đoạn 6b phần 4 theo [ADR-0025](adr/0025-gitops-config-repo.md) §2, §6, [§5.5](#55-hai-repo-code-và-cấu-hình-triển-khai-giai-đoạn-6b-phần-4)):
+  job `promote` dựng lại nhánh `bot/promote-stg` từ `main` của repo `svp-gitops` bằng token GitHub App, ghi `repository`, `tag`,
+  `digest` của mọi service đã ký mà stg chưa chạy (không bao giờ ghi lùi) vào `envs/stg/images/<svc>.yaml` cùng commit chart vào
+  `envs/stg/charts.yaml`, mở hay cập nhật một PR cuộn và bật auto-merge; PR tự merge khi `gitops-ok` xanh; Argo CD poll thấy
+  commit, sync, gateway đi canary như giai đoạn 4. Rollback stg là PR revert trong `svp-gitops`.
 - **Admission** (§8): Kyverno 1.19.1 (admission controller 1 replica + reports controller), một `ImageValidatingPolicy`
   `svp-images` cho Pod ở namespace `svp`, kiểm theo thứ tự: prefix GHCR của repo và có digest (không gọi mạng), chữ ký
   đúng identity, attestation `vuln` đúng identity, đủ hai nền tảng, không CRITICAL, không quá 72 giờ; khi bật
-  `requireProvenance` (overlay `deploy/k8s/envs/<env>/svp-policy.yaml`, chưa env nào bật) thêm provenance đúng identity, đúng
+  `requireProvenance` (overlay `envs/<env>/svp-policy.yaml` của `svp-gitops`, bật ở stg và prd từ khi tách repo) thêm provenance đúng identity, đúng
   `builder.id`, repository, ref, và `verify-release.sh` đối chiếu commit của nó với chứng chỉ. Đường GitOps Enforce
   (`Deny`, webhook `Fail`: Kyverno chết hay Sigstore, GHCR không tới được thì pod `svp` mới bị từ chối); đường dev Audit.
   Namespace khác không qua webhook. Image bên thứ ba (operator, dữ liệu, observability, Argo CD, Kyverno) ghim digest, kiểm
-  tĩnh trong CI bằng `deploy/k8s/check-image-digests.sh`, chưa kiểm chữ ký nhà cung cấp.
-- **Renovate** (§10): App Mend chỉ cho repo này, mở PR hằng tuần cho Go module, action (SHA), base image, công cụ của
-  `Makefile`, chart và image ghim; chờ bản phát hành 3 ngày, không automerge.
+  tĩnh trong CI bằng bước 4 của `deploy/ci/gitops-check.sh` (`make helm-check`, check của `svp-gitops`), chưa kiểm chữ ký nhà cung cấp.
+- **Renovate** (§10): App Mend cho repo này và `svp-gitops`, mở PR hằng tuần cho Go module, action (SHA), base image, công cụ của
+  `Makefile` (repo này), chart upstream, image ghim trong `base/`, commit checker (`svp-gitops`, bỏ qua `envs/**`); chờ bản phát hành
+  3 ngày, không automerge.
 - **Chi phí:** repo public nên runner (cả arm64) và package GHCR public không tính tiền; ngân sách thời gian mỗi workflow
   dưới 10 phút (kiểm sau push). Kyverno thêm 0,13–0,16 GiB RAM: cluster dev nghỉ 6,40 GiB, đỉnh 7,92 GiB khi media-worker
   scale lên (đo 2026-10-21, cách đo ADR-0014 §2); cluster GitOps đo sau push.
@@ -566,11 +572,63 @@ giai đoạn 6b (runner CI 16 GB hay VM thuê theo giờ, không dịch vụ AWS
   5xx 0, like + view 5xx 0), Tempo không OOM và không bỏ span tới mức 4 pod; k6 thu nhỏ vẫn đạt tới 2 pod, mức 4 chạm trần CPU của
   runner. Source map của image CI và đo phát hành service có Postgres (`measure-gitops`, 139 s từ merge tới pod Ready) đạt trên
   `main` 2026-10-29. LCP sát ngưỡng, chưa ổn định, chuẩn là RUM p75.
-- **Dời:** phần còn lại của giai đoạn 6b: phần 4
-  (repo GitOps riêng). Giai đoạn 7: k6 1 000 req/s, Chaos Mesh trên EKS,
+- **Dời:** Giai đoạn 7: k6 1 000 req/s, Chaos Mesh trên EKS,
   diễn tập phục hồi RDS, Velero với S3 và snapshot EBS, hạn 50 ms của Redis trên ElastiCache. Manifest của phần đo thật kiểm schema
   bằng `make cloud-check`; LCP mobile mô phỏng sát ngưỡng 2,5 s trên runner mà chưa ổn định, Lighthouse là tín hiệu hồi quy,
   chuẩn là RUM p75 (ADR-0020, Kết quả "LCP").
+
+### 5.5 Hai repo: code và cấu hình triển khai (giai đoạn 6b phần 4)
+
+[ADR-0025](adr/0025-gitops-config-repo.md), cài đặt và quy trình tay ở [`runbooks/svp-gitops-setup.md`](runbooks/svp-gitops-setup.md).
+
+```mermaid
+flowchart LR
+    subgraph code["repo short-video-platform (code)"]
+        src["code, test, Dockerfile,<br/>chart deploy/helm/*"]
+        img["images.yml: build, quét,<br/>ký, provenance"]
+        ver["verify.yml: kịch bản gitops,<br/>job record-stg"]
+        env["environment promote<br/>(khoá App, chỉ main)"]
+    end
+    subgraph cfg["repo svp-gitops (cấu hình)"]
+        base["base/ values gốc"]
+        stg["envs/stg/: overlay,<br/>charts.yaml, images/"]
+        prd["envs/prd/: overlay,<br/>charts.yaml, images/"]
+        argo["argocd/: AppProject,<br/>bootstrap, app-of-apps"]
+        dep["Deployment stg<br/>(bản ghi)"]
+    end
+    cluster["cluster stg<br/>(Argo CD)"]
+    img -->|"PR bot/promote-stg, auto-merge"| stg
+    ver -->|"bản ghi bộ đã kiểm"| dep
+    dep -->|"PR bot/promote-prd,<br/>Code Owner duyệt"| prd
+    env -.-> img
+    env -.-> ver
+    cluster -->|"root, values: refs/heads/main"| cfg
+    cluster -->|"chart: SHA của charts.yaml"| src
+```
+
+- **Ranh giới:** repo code giữ code, test, Dockerfile, chart Helm và CI build, quét, ký; `svp-gitops` (public, không secret) giữ
+  mọi thứ quyết định cái gì chạy ở một env: values gốc (`base/`), overlay, commit chart (`envs/<env>/charts.yaml`) và digest
+  (`envs/<env>/images/`) của mỗi env, bản cài và manifest Argo CD. Push vào `main` repo code không đổi cluster nào.
+- **Một bản phát hành = bảy digest + một commit chart**, đi qua stg rồi mới tới prd (như Freight của Kargo). `charts.yaml` mang
+  `revision` (commit repo code) cùng hai giá trị dẫn xuất (`podSecurityVersion`, `collectorConfigSha256`) thay hai symlink cũ;
+  check của `svp-gitops` tính lại chúng và chặn image mới hơn chart.
+- **Argo CD multi-source:** root `svp-root` và nguồn `ref: values` đọc `svp-gitops` ở `refs/heads/main` (tên đầy đủ, không bao giờ
+  tên ngắn: tên ngắn có thể phân giải sang tag cùng tên; ruleset `tags` cấm tạo tag), nguồn chart đọc repo code ở SHA 40 hex.
+- **Quyền:** stg tự động (PR của bot chỉ đổi `envs/stg/`, không Code Owner, tự merge sau `gitops-ok`); prd chỉ qua PR do bot mở chép
+  cả bộ của một bản ghi stg, Code Owner duyệt; file chung cần Code Owner, người học tự merge bằng bypass ruleset `owners` (có bản
+  ghi). Khoá App chỉ ở environment `promote` của repo code, ba job trên `main` dùng nó với token 1 giờ, mỗi job đúng quyền.
+- **Bản ghi stg:** job `record-stg` của `verify.yml` (sau kịch bản `gitops` xanh trên `main`) tạo Deployment `stg` trên `svp-gitops`
+  với bộ đã chạy suốt các phép kiểm (`release-set.json`); đây là đầu vào duy nhất của promote prd và là nguồn của DORA metrics
+  ([ADR-0028](adr/0028-dora-metrics.md), `dora.yml`).
+- **Đường dev:** đọc working tree của bản clone `svp-gitops` cạnh repo (`../gitops`, hay `SVP_GITOPS_DIR`), không tự clone hay
+  fetch; CI clone ẩn danh bằng `make gitops-clone`. Thay đổi cần cả code lẫn cấu hình thành hai PR theo thứ tự (cấu hình tương
+  thích bản cũ trước).
+- **Đã kiểm** (2026-10-29): kịch bản `gitops` [40954609229](https://github.com/anhnvcoder/short-video-platform/actions/runs/40954609229)
+  trên nhánh tách repo (26/26 Application Synced/Healthy đọc hai repo ẩn danh, provenance bắt buộc ở stg, smoke chặt), `dev-k3d`
+  [40937054425](https://github.com/anhnvcoder/short-video-platform/actions/runs/40937054425) đọc bản clone, check đầu của
+  `svp-gitops` [40902199532](https://github.com/anhnvcoder/svp-gitops/actions/runs/40902199532). RAM của lượt `gitops` đó: nghỉ
+  cuối 7 241 MiB (bỏ active_file), vượt ngưỡng 6,5 GiB; đỉnh `ram-peak-2` median 8 954 MiB, vượt 8,7 GiB (không kết luận đạt,
+  [ADR-0021](adr/0021-deferred-verification-stage6b.md)). **Kiểm sau push:** auto-merge PR bot, `record-stg`, promote prd, DORA.
 
 ## 6. Sở hữu dữ liệu và event
 

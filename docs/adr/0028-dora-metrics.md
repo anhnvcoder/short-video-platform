@@ -1,8 +1,9 @@
 # 0028. DORA metrics của lab tính bằng script của repo (`deploy/ci/dora.sh`, workflow `dora.yml` chỉ đọc) từ bằng chứng đã triển khai (bản ghi Deployment `success` của stg trên `svp-gitops`), không từ merge; mọi số là của stg lab, prd ghi "chưa có dữ liệu" tới giai đoạn 7, chỉ số thiếu mẫu ghi "chưa đủ dữ liệu", không xếp hạng theo mức DORA
 
 - Trạng thái: Chấp nhận (người học duyệt 2026-10-28, chọn (a) ở cả bốn dòng "Cần người học chọn", gồm kịch bản `gitops` vào
-  lịch tuần của `verify.yml`); chưa hiện thực (phần 4 của giai đoạn 6b, sau khi tách `svp-gitops` theo
-  [ADR-0025](0025-gitops-config-repo.md))
+  lịch tuần của `verify.yml`); hiện thực 2026-10-29 (phần 4 của giai đoạn 6b, PR-B, nhánh `feat/stage6b-gitops-split`, PR #39; mục
+  Hiện thực ở): `dora-test.sh` xanh ở job `config`; lượt `dora.yml` đầu và số trên bản ghi stg thật kiểm sau merge PR-B; dòng 4 (kịch
+  bản `gitops` vào lịch tuần) chưa làm: job `gitops` của `verify.yml` vẫn chỉ chạy khi dispatch
 - Ngày: 2026-10-28
 
 ## Bối cảnh
@@ -286,14 +287,14 @@ Mỗi dòng đề xuất đứng trước. Người học duyệt ngày 2026-10-
 
 | Giả định | Phép kiểm | Kết quả |
 | --- | --- | --- |
-| `dora.sh` đếm đúng: ba bản ghi cùng (stg, R, bộ) là một deployment, ba lượt kiểm, lead time từ bản ghi đầu; R1/A → R2/A (chỉ đổi chart) là hai deployment, không rollback; A → B → A ở ba revision có commit revert là ba deployment, cái cuối là rollback, cái giữa thất bại; digest merge không có bản ghi chỉ nằm trong "đã merge, chưa triển khai" và trong tần suất promote | `deploy/ci/dora-test.sh` với dữ liệu giả cố định, chạy ở job `config` | Chưa kiểm |
-| Lead time một mẫu mỗi thay đổi: A → B → rollback A → C (C sau B) thì thay đổi của (A, B] chỉ có mẫu ở B, C chỉ thêm thay đổi của (B, C]; thay đổi mà deployment đầu tiên đã chứa không có mẫu | Như trên | Chưa kiểm |
-| Bản ghi trạng thái hiện tại `inactive` mà danh sách còn `success` được tính kèm cảnh báo (hai bản ghi cùng R, bản đầu bị bản sau đặt `inactive`: vẫn một deployment, `deployed_at` của bản đầu); không còn `success` thì bị bỏ và liệt kê | Như trên | Chưa kiểm |
-| Prd không dữ liệu in "chưa có dữ liệu prd", chỉ số dưới ngưỡng in "chưa đủ dữ liệu" | Như trên | Chưa kiểm |
-| `GITHUB_TOKEN` của job repo code đọc được Deployment và trạng thái của repo public `svp-gitops` | Lượt dispatch đầu của `dora.yml`; lỗi thì đọc ẩn danh (60 request mỗi giờ) và đếm số request | Chưa kiểm |
-| Footer `Refs:` của PR revert còn trong commit squash của `svp-gitops` với hai cài đặt squash | Một PR revert thử trên `svp-gitops` sau khi tách, đọc `git log` | Chưa kiểm |
-| Lượt `dora.yml` đầu sau một lượt `gitops` xanh trên `main` ra một deployment stg, lead time có số, các chỉ số tỷ lệ "chưa đủ dữ liệu" | Phần 4, **kiểm sau push** | Chưa kiểm |
-| Sau lượt `gitops` xanh thứ hai trên `main`, bản ghi stg của lượt đầu vẫn có trạng thái hiện tại `success` (`auto_inactive: false`) | `GET .../deployments/{id}/statuses` của bản ghi đầu, phần 4, **kiểm sau push** | Chưa kiểm |
+| `dora.sh` đếm đúng: ba bản ghi cùng (stg, R, bộ) là một deployment, ba lượt kiểm, lead time từ bản ghi đầu; R1/A → R2/A (chỉ đổi chart) là hai deployment, không rollback; A → B → A ở ba revision có commit revert là ba deployment, cái cuối là rollback, cái giữa thất bại; digest merge không có bản ghi chỉ nằm trong "đã merge, chưa triển khai" và trong tần suất promote | `deploy/ci/dora-test.sh` với dữ liệu giả cố định, chạy ở job `config` | Đạt (2026-10-29): `deploy/ci/dora-test.sh` (dữ liệu giả cố định, `--now` cố định) xanh ở job `config` của CI PR #39 [40954602918](https://github.com/anhnvcoder/short-video-platform/actions/runs/40954602918) (`027f8bd`) |
+| Lead time một mẫu mỗi thay đổi: A → B → rollback A → C (C sau B) thì thay đổi của (A, B] chỉ có mẫu ở B, C chỉ thêm thay đổi của (B, C]; thay đổi mà deployment đầu tiên đã chứa không có mẫu | Như trên | Đạt, như dòng trên |
+| Bản ghi trạng thái hiện tại `inactive` mà danh sách còn `success` được tính kèm cảnh báo (hai bản ghi cùng R, bản đầu bị bản sau đặt `inactive`: vẫn một deployment, `deployed_at` của bản đầu); không còn `success` thì bị bỏ và liệt kê | Như trên | Đạt, như dòng trên |
+| Prd không dữ liệu in "chưa có dữ liệu prd", chỉ số dưới ngưỡng in "chưa đủ dữ liệu" | Như trên | Đạt, như dòng trên |
+| `GITHUB_TOKEN` của job repo code đọc được Deployment và trạng thái của repo public `svp-gitops` | Lượt dispatch đầu của `dora.yml`; lỗi thì đọc ẩn danh (60 request mỗi giờ) và đếm số request | Chưa kiểm (kiểm sau merge PR-B: lượt dispatch đầu của `dora.yml` trên `main`) |
+| Footer `Refs:` của PR revert còn trong commit squash của `svp-gitops` với hai cài đặt squash | Một PR revert thử trên `svp-gitops` sau khi tách, đọc `git log` | Chưa kiểm (kiểm sau merge PR-B) |
+| Lượt `dora.yml` đầu sau một lượt `gitops` xanh trên `main` ra một deployment stg, lead time có số, các chỉ số tỷ lệ "chưa đủ dữ liệu" | Phần 4, **kiểm sau push** | Chưa kiểm (kiểm sau merge PR-B) |
+| Sau lượt `gitops` xanh thứ hai trên `main`, bản ghi stg của lượt đầu vẫn có trạng thái hiện tại `success` (`auto_inactive: false`) | `GET .../deployments/{id}/statuses` của bản ghi đầu, phần 4, **kiểm sau push** | Chưa kiểm (kiểm sau merge PR-B) |
 
 ## Hệ quả
 
@@ -329,12 +330,20 @@ Mỗi dòng đề xuất đứng trước. Người học duyệt ngày 2026-10-
 
 ## Hiện thực ở
 
-Dự kiến (chưa hiện thực):
+Hiện thực 2026-10-29 (PR-B, nhánh `feat/stage6b-gitops-split`):
 
-- `deploy/ci/dora.sh`, `deploy/ci/dora-test.sh`: định nghĩa và cách tính của mục 2 đến 6.
-- `.github/workflows/dora.yml`: lịch, dispatch, quyền, artifact (mục 8).
-- `deploy/ci/platform.sh`: hàm đọc Deployment (mục 9).
-- `docs/postmortems/README.md`: front matter (mục 7).
+- `deploy/ci/dora.sh`: định nghĩa và cách tính của mục 2 đến 6 (danh tính (env, R, bộ), khử trùng lượt kiểm, lead time một mẫu mỗi
+  thay đổi, rollback và revert theo mục 5, ngưỡng 10/5, "chưa đủ dữ liệu", "chưa có dữ liệu prd", số promote không tính commit khởi
+  tạo của `svp-gitops`, cảnh báo khi danh sách chạm trần 100 bản ghi), bảng Markdown qua `ci_summary` và JSON.
+  `deploy/ci/dora-test.sh`: dữ liệu giả cố định, chạy ở job `config` của `.github/workflows/ci.yml`.
+- `.github/workflows/dora.yml`: lịch thứ Bảy 09:17 UTC, dispatch `days`, `contents: read` và `actions: read` (đọc lượt mà bản ghi trỏ
+  tới), không secret, không environment; `make gitops-clone`; artifact `dora` (mục 8).
+- `deploy/ci/platform.sh`: `ci_deployment_list` (trả payload và các trạng thái, tham số `states`), `ci_run_workflow`;
+  `ci_deployment_record` ghi `success` với `auto_inactive: false` (dùng bởi `deploy/ci/record-stg.sh`); test ở
+  `deploy/ci/platform-test.sh` (mục 9).
+- `docs/postmortems/README.md` và `docs/postmortems/261024-gameday-engagement-down.md`: front matter của mục 7.
+- Chưa làm: dòng 4 của "Cần người học chọn" (kịch bản `gitops` vào lịch tuần của `verify.yml`; job `gitops` vẫn chỉ chạy khi
+  dispatch); cài đặt squash của `svp-gitops` (mục 5) chưa kiểm.
 
 ## Nguồn
 

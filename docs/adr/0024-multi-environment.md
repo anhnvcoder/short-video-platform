@@ -1,9 +1,13 @@
 # 0024. Nhiều môi trường dev, stg, prd: build một lần, mọi env chạy cùng digest đã ký, khác biệt chỉ ở overlay values `deploy/k8s/envs/<env>/` mà Argo CD chọn theo giá trị `env` của root Application; ở giai đoạn 6b cluster GitOps trên k3d đóng vai stg, prd chỉ render và kiểm tĩnh
 
 - Trạng thái: Chấp nhận (người học duyệt 2026-10-26, chọn (a) ở cả bảy dòng "Cần người học chọn"). Phần 3 của giai đoạn 6b
-  hiện thực 2026-10-26; "k3d đóng vai stg" chạy trên runner 2026-10-28 (kịch bản `gitops`, mục Kiểm chứng sau); phần 4 và giai
-  đoạn 7 chưa hiện thực; §9 (Secret mỗi env: ExternalSecret của từng namespace qua store riêng, ở prd mỗi store assume một role chỉ
-  đọc entry namespace đó cần) chỉnh bởi [0026](0026-secrets-gitops.md)
+  hiện thực 2026-10-26; "k3d đóng vai stg" chạy trên runner 2026-10-28 (kịch bản `gitops`, mục Kiểm chứng sau); phần 4 hiện thực
+  2026-10-29 đến 2026-10-30 (thư mục `base/`, `envs/` ở repo `svp-gitops` theo [0025](0025-gitops-config-repo.md), kịch bản `gitops` trên
+  nhánh PR-B đạt; promote stg tự động, bản ghi stg, promote prd kiểm sau merge PR-B); giai đoạn 7 chưa hiện thực; §9 (Secret mỗi env:
+  ExternalSecret của từng namespace qua store riêng, ở prd mỗi store assume một role chỉ đọc entry namespace đó cần) chỉnh bởi
+  [0026](0026-secrets-gitops.md); §8 (payload bản ghi stg và check prd thêm `charts`, tên dành riêng `charts.yaml` trong thư mục env,
+  bản cài Argo CD ở `argocd/` của `svp-gitops`) chỉnh bởi 0025; §8 (bản ghi stg ghi trạng thái `success` với `auto_inactive: false`;
+  deployment của GitLab không có payload) chỉnh bởi [0028](0028-dora-metrics.md)
 - Ngày: 2026-10-26
 
 ## Bối cảnh
@@ -371,13 +375,13 @@ Giả định chưa kiểm được lúc viết; mỗi dòng nêu phép kiểm c
 | Giả định | Phép kiểm | Kết quả |
 | --- | --- | --- |
 | Helm trong Argo CD v3.5.5 đọc `.Files.Glob` qua symlink thư mục `files/envs` của chart `apps` như `helm` trên máy | Phần 3: `make helm-check` trên máy; kịch bản `gitops` trên runner: root `Synced`, Application `gateway` có `deploy/k8s/envs/stg/gateway.yaml` trong `valueFiles` | Đạt: `make helm-check` trên máy (2026-10-26); runner (2026-10-28, [40620627534](https://github.com/anhnvcoder/short-video-platform/actions/runs/40620627534), bước `gitops-env`): root và 25/25 Application Synced/Healthy, Application `gateway` có `$values/deploy/k8s/envs/stg/gateway.yaml` trong `valueFiles` |
-| Overlay stg áp thật lên pod | Kịch bản `gitops`: pod gateway có `SENTRY_ENVIRONMENT=stg`; event GlitchTip của lượt e2e mang environment `stg` | Pod: đạt (2026-10-28, [40620627534](https://github.com/anhnvcoder/short-video-platform/actions/runs/40620627534)): hai pod gateway Running có `SENTRY_ENVIRONMENT=stg`. Event GlitchTip: chưa kiểm, lượt trên nhánh chạy e2e không `SVP_E2E_GLITCHTIP=1` (không có source map của image CI); kiểm ở lượt `gitops` trên `main` sau merge |
+| Overlay stg áp thật lên pod | Kịch bản `gitops`: pod gateway có `SENTRY_ENVIRONMENT=stg`; event GlitchTip của lượt e2e mang environment `stg` | Pod: đạt (2026-10-28, [40620627534](https://github.com/anhnvcoder/short-video-platform/actions/runs/40620627534)): hai pod gateway Running có `SENTRY_ENVIRONMENT=stg`; lại đạt sau khi tách repo (2026-10-29, [40954609229](https://github.com/anhnvcoder/short-video-platform/actions/runs/40954609229), overlay đọc từ `svp-gitops`). Event GlitchTip mang environment `stg`: chưa kiểm, kiểm ở lượt `gitops` trên `main` sau merge PR-B |
 | Render các component của stg chỉ khác render GitOps trước overlay ở sáu biến `SENTRY_ENVIRONMENT` | Phần 3: `helm template` trước và sau, `diff` | Đạt (2026-10-26): mỗi service đúng một dòng `SENTRY_ENVIRONMENT` `k3d` → `stg`; root với `env=stg` chỉ thêm một dòng `valueFiles` cho sáu Application, không thêm nguồn; chart khác không đổi |
 | Render prd không còn `svp.localhost`, image của mọi env bằng gốc | Phần 3: `make helm-check`, `deploy/k8s/check-image-digests.sh` | Đạt (2026-10-26): `make helm-check` exit 0 (bỏ `apexHost` của prd trên bản sao thì FAIL đúng hai dòng); `check-image-digests.sh` exit 0 với 14 render overlay, ca âm (`postgres.image` ở prd, `image.tag` ở stg) FAIL nêu đúng hai overlay |
 | Chart `apps` từ chối env lạ, file overlay không có component, overlay có `image` | Phần 3: ba ca âm trên bản sao tạm | Đạt (2026-10-26): env `dev`, `../stg`, `stg/x`, rỗng; file `nosuch.yaml`, `gateway.yml`; overlay có `image`, `canary`, `httpRoute.name`; file là list, YAML hỏng: đều fail đúng message; file ẩn bị bỏ qua |
 | user-service, video-service, engagement-service đúng khi chạy 2 replica (relay outbox một khoá advisory, consumer group, job dọn upload một khoá) | Giai đoạn 7: stg EKS với sàn replica của prd, `make k8s-smoke` và diễn tập trùng event | Chưa kiểm |
-| PR của bot chỉ đổi `envs/stg/images/` tự merge sau check; PR đổi `envs/prd/` hay file chung không merge được khi chưa có duyệt của người học | Phần 4, **kiểm sau push**: một bản phát hành và một lần promote prd thật | Chưa kiểm |
-| Check của PR prd nhận bộ digest bằng đúng payload của một bản ghi triển khai stg `success`, từ chối bộ ghép từ hai bản ghi và bộ chỉ có trong lịch sử `envs/stg/` | Phần 4, **kiểm sau push**: một lượt `gitops` xanh ghi bản ghi rồi promote prd (check xanh); một PR thử sửa tay một file của `envs/prd/images/` sang digest của bản ghi khác (check đỏ); một PR thử với bộ đã merge vào `envs/stg/images/` mà không có lượt `gitops` nào (check đỏ) | Chưa kiểm |
+| PR của bot chỉ đổi `envs/stg/images/` tự merge sau check; PR đổi `envs/prd/` hay file chung không merge được khi chưa có duyệt của người học | Phần 4, **kiểm sau push**: một bản phát hành và một lần promote prd thật | Chưa kiểm (kiểm sau merge PR-B) |
+| Check của PR prd nhận bộ digest bằng đúng payload của một bản ghi triển khai stg `success`, từ chối bộ ghép từ hai bản ghi và bộ chỉ có trong lịch sử `envs/stg/` | Phần 4, **kiểm sau push**: một lượt `gitops` xanh ghi bản ghi rồi promote prd (check xanh); một PR thử sửa tay một file của `envs/prd/images/` sang digest của bản ghi khác (check đỏ); một PR thử với bộ đã merge vào `envs/stg/images/` mà không có lượt `gitops` nào (check đỏ) | Ca giả: đạt (2026-10-30): bước 1b của `deploy/ci/gitops-check.sh` trong `deploy/ci/gitops-check-test.sh` (một bản ghi khớp nhận; bộ ghép từ hai bản ghi, bộ chỉ có trong lịch sử `envs/stg/`, bộ khớp mà `charts.yaml` khác đỏ, mỗi ca một message; bản ghi có commit ngoài `main` của `svp-gitops` bị bỏ), xanh ở job `config` của CI PR #39 [40954602918](https://github.com/anhnvcoder/short-video-platform/actions/runs/40954602918). Trên GitHub thật: chưa kiểm (kiểm sau merge PR-B) |
 | Mỗi env một backend Terraform: quyền chạy `plan` của stg không đọc được state của prd | Giai đoạn 7: người học chạy, đọc lỗi từ chối | Chưa kiểm |
 
 ## Hệ quả
@@ -421,8 +425,14 @@ Giả định chưa kiểm được lúc viết; mỗi dòng nêu phép kiểm c
 - Phần 3 (hiện thực 2026-10-26): `deploy/k8s/envs/stg/`, `deploy/k8s/envs/prd/` (overlay); `deploy/argocd/apps/` (`files/envs`, giá trị `env`, overlay
   trong template); `argocd_root_app` của `deploy/k8s/lib.sh` và `deploy/k8s/gitops.sh` (env của root); target `helm-check` của
   `Makefile` và `deploy/k8s/check-image-digests.sh` (phép kiểm tĩnh); `deploy/ci/verify/gitops.sh` (kiểm overlay trên cluster).
-- Phần 4 (chưa hiện thực): repo `svp-gitops` (`base/`, `envs/`, CODEOWNERS, ruleset), job promote của `.github/workflows/images.yml`, job ghi bản ghi
-  triển khai stg của `.github/workflows/verify.yml` và các script của mục 8.
+  Từ phần 4, overlay và chart app-of-apps nằm ở repo `svp-gitops` (`envs/stg/`, `envs/prd/`, `argocd/apps/`); phép kiểm tĩnh là
+  `deploy/ci/gitops-check.sh` (`make helm-check` chạy `--worktree`), gộp cả `check-image-digests.sh` đã xoá.
+- Phần 4 (hiện thực 2026-10-29 đến 2026-10-30): repo `svp-gitops` (`base/`, `envs/<env>/images/`, `envs/<env>/charts.yaml`,
+  `CODEOWNERS`, `.github/rulesets/`); promote stg `deploy/ci/promote.sh` (job `promote` của `.github/workflows/images.yml`); bản ghi stg
+  `deploy/ci/release-set.sh`, `deploy/ci/record-stg.sh` (job `record-stg` của `.github/workflows/verify.yml`); promote prd
+  `deploy/ci/promote-prd.sh` (job `promote-prd` của `images.yml`); check của PR prd ở bước 1b của `deploy/ci/gitops-check.sh`; hàm
+  Deployment `ci_deployment_record`, `ci_deployment_list` của `deploy/ci/platform.sh`. Chi tiết ở mục Hiện thực ở của
+  [ADR-0025](0025-gitops-config-repo.md).
 - Giai đoạn 7 (chưa hiện thực): `deploy/terraform/` theo mục 9.
 
 ## Nguồn

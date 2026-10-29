@@ -32,6 +32,25 @@ code của service gọi nó qua `internal/objstore`.
 Muốn xem thêm telemetry (Grafana, Alertmanager, GlitchTip) thì `make up OBS=lgtm`. Không dùng `OBS` thì chỉ chạy các service.
 Chỉ chạy một bộ observability một lúc vì máy 16 GB RAM không đủ cho hai bộ.
 
+## Hai repo: code và cấu hình triển khai
+
+Repo này giữ code, test, Dockerfile, chart Helm (`deploy/helm/`) và CI build, quét, ký image. **Thứ chạy ở từng môi trường** nằm ở
+repo public riêng [`anhnvcoder/svp-gitops`](https://github.com/anhnvcoder/svp-gitops) ([ADR-0025](docs/adr/0025-gitops-config-repo.md)):
+
+| Ở `svp-gitops` | Chứa gì |
+| --- | --- |
+| `base/` | Values gốc của chart upstream, của Argo CD, của từng service (không khối `image`); đường dev chỉ đọc lớp này. |
+| `envs/stg/`, `envs/prd/` | Overlay của môi trường, `charts.yaml` (commit chart của repo này mà env chạy), `images/` (digest đang chạy). |
+| `argocd/` | AppProject, bản cài Argo CD, chart app-of-apps với `components.json`. |
+
+Bản phát hành tới stg bằng PR do GitHub App mở trong `svp-gitops`, tự merge khi check `gitops-ok` xanh; tới prd bằng PR chép cả bộ
+đã chạy ở stg, có người duyệt. Push vào `main` của repo này không đổi cluster nào. Đường dev (`make k8s-up`, `make helm-check`)
+đọc bản clone `svp-gitops` ở thư mục `gitops/` cạnh repo này (hay `SVP_GITOPS_DIR`):
+
+```sh
+git clone https://github.com/anhnvcoder/svp-gitops.git ../gitops
+```
+
 Sổ lệnh đầy đủ (kiểm tra gồm `make vulncheck`, `make fuzz`, `make dast`, `make grype`; diễn tập, k3d, cloud, CI) nằm ở [`CLAUDE.md`](CLAUDE.md), mục "Kiểm tra" và "Quy ước". Đừng chạy
 `make up` và `make k8s-up` cùng lúc: mỗi bên từ chối khi bên kia đang chạy.
 
@@ -55,15 +74,14 @@ Sổ lệnh đầy đủ (kiểm tra gồm `make vulncheck`, `make fuzz`, `make 
 | `deploy/docker/` | Dockerfile của service Go, media-worker và web. |
 | `deploy/postgres/`, `deploy/redpanda/`, `deploy/s3/` | Bootstrap database, topic Kafka (compose), bucket, user, policy và CORS của object storage (RustFS, service `s3`). ACL Kafka của cluster k3d nằm trong chart Helm. |
 | `deploy/observability/` | Collector, Prometheus và rule SLO, Alertmanager, Grafana LGTM, GlitchTip, Elastic (so sánh). |
-| `deploy/k8s/` | Cluster k3d: script `install.sh`, `k8s.mk`, values, PSA, và thư mục `envs/` (overlay của môi trường stg, prd), `drills/` (diễn tập), `cloud/` (manifest cho cluster đo thật, phủ chỉ cho runner ở `cloud/runner/`). |
+| `deploy/k8s/` | Cluster k3d: script `install.sh`, `gitops.sh` (đường GitOps), `k8s.mk`, PSA, `drills/` (diễn tập), `cloud/` (manifest cho cluster đo thật, phủ chỉ cho runner ở `cloud/runner/`). Values, overlay và digest của các môi trường nằm ở `svp-gitops`. |
 | `deploy/helm/` | Chart Helm: `svp-service` (chung cho mọi service), `svp-cluster`, `svp-data`, `svp-observability`, `svp-policy` (Kyverno). |
-| `deploy/argocd/` | Application và AppProject của Argo CD cho đường GitOps. |
 | `deploy/k6/` | Kịch bản tải k6 theo SLO, chạy bằng image ghim. |
 | `deploy/dast/` | DAST của gateway theo `openapi.yaml` bằng Schemathesis (`make dast`, image ghim), chạy trên stack `make up` và ở job `stack` của CI. |
-| `deploy/ci/` | Script của pipeline: build, quét, ký, attest, promote image; `verify/` là trình tự từng kịch bản của `verify.yml`. Phần lớn logic CI nằm ở đây, không nằm trong YAML. |
+| `deploy/ci/` | Script của pipeline: build, quét, ký, attest, promote sang `svp-gitops` (stg, prd), bản ghi triển khai stg, check của `svp-gitops` (`gitops-check.sh`), DORA; `verify/` là trình tự từng kịch bản của `verify.yml`. Phần lớn logic CI nằm ở đây, không nằm trong YAML. |
 | `.githooks/` | Git hook `pre-commit` (gofmt, golangci-lint, buf lint, gitleaks); bật một lần bằng `make hooks`. |
 | `.github/rulesets/` | Ruleset của nhánh `main` (check bắt buộc `ci-ok`, `images-ok`). |
-| `.github/workflows/` | `ci.yml` (kiểm tra và stack), `images.yml` (image và chuỗi cung ứng), `verify.yml` (kiểm chứng dồn trên runner, chạy tay và hằng tuần). |
+| `.github/workflows/` | `ci.yml` (kiểm tra và stack), `images.yml` (image, chuỗi cung ứng, promote), `verify.yml` (kiểm chứng dồn trên runner, chạy tay và hằng tuần; ghi bản ghi stg), `dora.yml` (DORA metrics của stg, hằng tuần). |
 | `docs/architecture.md` | Thiết kế hiện tại: yêu cầu, ước lượng quy mô, C4, luồng chính, contract. |
 | `docs/adr/` | Quyết định kiến trúc, mỗi quyết định một file (mục lục ở `docs/adr/README.md`). |
 | `docs/runbooks/` | Một runbook cho mỗi cảnh báo mức page và các sự cố đã gặp. Mở khi có cảnh báo. |

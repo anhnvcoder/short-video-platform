@@ -129,7 +129,7 @@ Sự cố đã gặp và quy trình:
 | [vuln-attestation-expired.md](vuln-attestation-expired.md) | Kyverno từ chối pod vì attestation `vuln` quá 72 giờ; `make k8s-gitops-up` dừng vì attestation cũ |
 | [jwt-key-rotation.md](jwt-key-rotation.md) | Đổi khoá ký JWT theo `kid` (định kỳ hay khi nghi lộ khoá) |
 | [postgres-restore.md](postgres-restore.md) | Postgres `svp-pg` của k3d mất hay hỏng, cần PITR, hay `make drill-k8s-backup` dừng giữa chừng |
-| [svp-gitops-setup.md](svp-gitops-setup.md) | Dựng hay kiểm cài đặt GitHub của `svp-gitops` (App `svp-gitops-promoter`, environment `promote`, ruleset), xoay khoá App, nghi khoá App bị lộ |
+| [svp-gitops-setup.md](svp-gitops-setup.md) | Dựng hay kiểm cài đặt GitHub của `svp-gitops` (App `svp-gitops-promoter`, environment `promote`, ruleset), promote stg và prd, bản ghi stg, rollback, bump commit chart và checker, xoay khoá App, nghi khoá App bị lộ |
 
 ## Sau sự cố
 

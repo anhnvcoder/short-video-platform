@@ -6,12 +6,16 @@
   `compose-obs`, `dev-k3d` trên runner 2026-10-25 (D15 ở mục Kết quả); phần 3 (GitOps, canary web, k6, Chaos Mesh, Velero; mục
   6–8) hiện thực và đã chạy trên runner 2026-10-26 đến 2026-10-28 (mục "Phần 3 theo dòng dời"; kịch bản `chaos`: (c) và
   (a) gateway đạt, (a) feed-service và (b) là phát hiện, D12), trừ D5 và D26 của `gitops` chỉ kiểm được trên `main` sau khi phần 3
-  merge (kiểm sau merge); chưa hiện thực: phần 4 (mục 5). Đích object store của Velero (§7, kịch bản `velero`) và của BAK-1 trong cluster
+  merge (kiểm sau merge); phần 4 (tách repo cấu hình `svp-gitops` theo [0025](0025-gitops-config-repo.md), mục 5) hiện thực và chạy
+  trên runner 2026-10-29 đến 2026-10-30 (mục "Phần 4"), trừ bản ghi stg và bước chờ phát hành trên `main` (kiểm sau merge PR-B); RAM
+  của đường GitOps sau khi tách vẫn không đạt (b) cuối kịch bản và đỉnh (a), ghi số, chưa kết luận. Đích object store của Velero (§7, kịch bản `velero`) và của BAK-1 trong cluster
   bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md): RustFS thay MinIO, Velero kiểm trên RustFS ở phần 3
   và đạt (mục 12 của kế hoạch kiểm 0022); kịch bản `compose-obs` (thêm `drill-duplicates`, `drill-kill-worker` sau `smoke`, ba test
   integration của output bất biến) chỉnh bởi [0029](0029-immutable-media-versions.md); kịch bản `gitops` (§6: bước
   `gitops-external-secrets`, `k8s-smoke` với `SVP_SMOKE_LEGACY_MEDIA=1` tới khi bản media-worker phát hành ghi key có version, ca `l`
-  của `drill-k8s-supplychain`) chỉnh bởi [0026](0026-secrets-gitops.md), [0027](0027-slsa-build-provenance.md) và 0029
+  của `drill-k8s-supplychain`) chỉnh bởi [0026](0026-secrets-gitops.md), [0027](0027-slsa-build-provenance.md) và 0029; §3 (job
+  `record-stg` có environment `promote`), §6 (Argo CD và kịch bản `gitops` đọc `svp-gitops`, bước chờ phát hành theo dõi `main` của
+  `svp-gitops`, bản phát hành tới không qua merge tay) chỉnh bởi 0025 và [0024](0024-multi-environment.md) §8
 - Chỉnh 2026-10-28 (phần 3): điều kiện mở script cloud trên k3d đi qua hàm `ci_hosted_runner` của adapter nền tảng (mục 7, Tên
   chốt); job `gitops` tách bước chờ phát hành khỏi bước kịch bản (mục 2, 6); kịch bản `chaos` chạy mỗi thí nghiệm một lượt k6 riêng
   có cửa sổ ổn định riêng, thay một lượt k6 chạy suốt (người học chốt, mục 7)
@@ -19,6 +23,11 @@
   [0031](0031-chaos-findings-feed-engagement-tempo.md), chạy lại `chaos` đạt cả (a), (b), (c) (D12); `k6-cloud-mini` chạy lại, mức
   cao nhất đạt vẫn 2 pod, mức 4 chạm trần CPU của runner (D11); kịch bản `chaos`, `k6-cloud-mini` thêm step `tempo-ingest-*`, sampler
   lấy thêm `svp-obs` vào `pods.tsv` (0031 §3)
+- Chỉnh 2026-10-30 (phần 4): kịch bản `gitops` dựng từ `main` của `svp-gitops` (clone ẩn danh bằng `make gitops-clone` trước bước
+  dựng), thôi đặt `SVP_SMOKE_LEGACY_MEDIA` ở `k8s-smoke` (mọi bản phát hành ghi key media có version, smoke chặt trên mọi đường);
+  thêm bước `release-set-before` (trước `k8s-smoke`) và `release-set` (sau `ram-rest-end`), `release-set.json` vào artifact; job mới
+  `record-stg` sau `gitops` (chỉ `main`) ghi bản ghi stg với environment `promote`, nên câu "không secret, không environment" của mục 3
+  chỉ còn đúng cho các job dựng và kiểm
 - Ngày: 2026-10-24
 
 ## Bối cảnh
@@ -275,7 +284,9 @@ Code, cấu hình và tài liệu dùng đúng các tên này; đổi tên nào 
   `gh run download`) từng lượt; lượt kế của một kịch bản chỉ dispatch khi lượt trước của nó đã xong.
 - **Quyền:** `permissions: {}` đầu file; `compose`, `k3d`: `contents: read`; `gitops`: `contents: read`, `actions: read` (tải artifact
   source map của lượt `images.yml`, mục 6), `pull-requests: read` (từ 2026-10-29: `merged_at` của PR promote có `merge_commit_sha`
-  là commit phát hành, mốc push của `make measure-gitops`, qua `GET commits/{sha}/pulls`). Không secret, không environment. `GH_TOKEN: ${{ github.token }}` chỉ ở bước gọi `gh`
+  là commit phát hành, mốc push của `make measure-gitops`, qua `GET commits/{sha}/pulls`). Không secret, không environment (từ phần 4
+  trừ job `record-stg`, không dựng, không chạy kịch bản: environment `promote`, token App chỉ `deployments` write trên `svp-gitops`;
+  [ADR-0025](0025-gitops-config-repo.md) §6). `GH_TOKEN: ${{ github.token }}` chỉ ở bước gọi `gh`
   (job `gitops`). Mọi action ghim SHA như ADR-0015 §1 (`checkout`, `setup-go`, `setup-node`, `cache`, `upload-artifact`,
   `download-artifact` đã ghim trong repo); `persist-credentials: false`; không `pull_request_target`, `workflow_run`.
 - **`concurrency: { group: verify-${{ inputs.scenario || github.event_name }}, cancel-in-progress: false }`** (sửa 2026-10-25;
@@ -1179,13 +1190,46 @@ của job chỉ `lighthouse`, `k6-summary`. Job này cũng bỏ hạn chế AppA
 `compose-obs`, nên Lighthouse có báo cáo. Sáu ca WebKit và upload (first-frame, feed, flow, WEB-1 trên WebKit, upload trên
 chromium-publishing, upload có rớt kết nối trên webkit-publishing) đạt ở cả ba lần chạy.
 
+### Phần 4: tách `svp-gitops`
+
+Chuẩn bị (PR-A: provenance, media có version, External Secrets; ADR 0026, 0027, 0029) rồi cắt (PR-B, nhánh `feat/stage6b-gitops-split`,
+PR #39: Argo CD và đường dev đọc `svp-gitops`, [ADR-0025](0025-gitops-config-repo.md)). Kết quả của từng giả định ở mục Kiểm chứng
+sau của 0024–0029; ở đây là các lượt và số của runner.
+
+| Kịch bản | Lượt (ngày, commit, link) | Kết quả chính |
+| --- | --- | --- |
+| `gitops` | PR-A 1: 2026-10-29, `3689648`, [40857855305](https://github.com/anhnvcoder/short-video-platform/actions/runs/40857855305) | Mọi bước; `k8s-gitops-up` 687 s, 26 Application Synced/Healthy (có `external-secrets`), 28 ExternalSecret Ready; `k8s-smoke` xanh với dòng `NOTE` của layout media cũ (bản phát hành của `main` khi đó); supplychain a–i PASS, (l) `SKIP policy off`; e2e 66/66; threats 17/18 (SEC-5/6/7 đỏ ở ca đối chứng, đã sửa); `drill-k8s-keda` lần 1 FAIL ở bước chuẩn bị (hai worker cùng transcode dài nhất 55 s, cần 60 s; không phải lỗi KEDA), lần 2 xanh |
+| `gitops` | PR-A 2: 2026-10-29, `bfbf29a`, [40873382301](https://github.com/anhnvcoder/short-video-platform/actions/runs/40873382301) (chỉ `drill-k8s-threats`) | SEC-5/6/7, `SEC-6-reader` PASS; IN-2/IN-4, FF-5 đỏ vì explore rỗng (lượt bỏ `k8s-smoke`), PASS ở lượt trên |
+| `gitops` | PR-A, lượt dừng ở dựng: [40868396800](https://github.com/anhnvcoder/short-video-platform/actions/runs/40868396800) | `kube-prometheus-stack` Progressing tới hết 1 800 s; cùng triệu chứng với lượt PR-B 1 dưới đây (lỗi lúc đó coi là của môi trường) |
+| `dev-k3d` | PR-A: 2026-10-29, `3689648`, [40857870284](https://github.com/anhnvcoder/short-video-platform/actions/runs/40857870284) | `k8s-up` 1 072 s, không `external-secrets`/`svp-secrets`; `k8s-smoke` 13 s, key có version và `Cache-Control … immutable`, không `NOTE`; k3d tối đa 5 724 MiB |
+| `compose-obs` | PR-A: 2026-10-29, `bfbf29a` [40868380823](https://github.com/anhnvcoder/short-video-platform/actions/runs/40868380823); `a3549f3` [40873923182](https://github.com/anhnvcoder/short-video-platform/actions/runs/40873923182) (chỉ bước chọn) | Smoke key có version, không `NOTE`; `drill-kill-worker` ok; `test-stack-objstore` 70 passed, 0 skipped; `drill-duplicates` ok (10 object, cùng ETag, không transcode) |
+| `gitops` | PR-B 1: 2026-10-29, [40938235138](https://github.com/anhnvcoder/short-video-platform/actions/runs/40938235138) | Dừng ở dựng: `kube-prometheus-stack` Progressing, không pod hay StatefulSet Prometheus nào. Nguyên nhân: Prometheus Operator chỉ dò CRD một lần lúc khởi động, operator lên trước CRD `prometheuses.monitoring.coreos.com` thì không dựng controller Prometheus. Sửa trong `svp-gitops` (PR #2, `cf28b34`): sync wave cho chart con, CRD wave 0, operator 1, CR Prometheus và Alertmanager 2. `k8s-gitops-up` từ nay hết hạn chờ thì in trạng thái từng Application, tài nguyên chưa Healthy (đọc thẳng từ cluster: Argo CD 3.x không ghi health của tài nguyên vào Application) và sự kiện |
+| `gitops` | PR-B 2: 2026-10-29, [40944295274](https://github.com/anhnvcoder/short-video-platform/actions/runs/40944295274) | Dựng qua; `release-set-before` đỏ 1 s sau khi mọi Application Healthy: HPA `feed-service` chưa có số của metrics-server làm Application Degraded thoáng qua; mọi bước sau đạt. Sửa: `release-set.sh snapshot --settle` chờ tới ~300 s cho tới khi mọi Application Synced, Healthy, không sync đang chạy qua hai lần đọc liền rồi mới chụp; hết hạn vẫn ghi bản chụp nhưng bước đỏ (hạn bước 2 → 8 phút) |
+| `dev-k3d` | PR-B: 2026-10-29, `f4b3e79`, [40937054425](https://github.com/anhnvcoder/short-video-platform/actions/runs/40937054425) (`k8s-smoke`, `drill-k8s-threats`; bản clone `svp-gitops` `a84e26d`) | `k8s-up` 1 054 s, `k8s-smoke` 12 s (key có version, `Cache-Control … immutable`), threats 15/15; k3d tối đa 7 268 MiB, `MemAvailable` thấp nhất 9 674 MiB. `f4b3e79` → `027f8bd` không đổi đường dev |
+| `gitops` | PR-B 3: 2026-10-29, `027f8bd` (`svp-gitops` `cf28b34`), [40954609229](https://github.com/anhnvcoder/short-video-platform/actions/runs/40954609229) | 17/17 target ok. Root theo `refs/heads/main` của `svp-gitops` qua HTTPS ẩn danh, chart ở `c59c7426663d`; 26/26 Application Synced/Healthy/Succeeded (610 s); overlay stg trên pod gateway; 28/28 ExternalSecret; `k8s-smoke` không `NOTE` (biến chuyển tiếp đã bỏ); policy Deny có kiểm provenance, ca (a) PASS hai lần, (l) PASS đúng message, b–i PASS, (k) SKIP; threats 16/16; e2e, `drill-k8s-web-obs` PASS; `release-set` trước và sau bằng nhau; bước chờ phát hành `skipped` (nhánh) |
+
+RAM của đường GitOps (D1, D2; cách đo và ngưỡng của mục 2: (b) 6,5 GiB = 6 656 MiB trừ `active_file`, pod 4,7 GiB; đỉnh (a)
+8,7 GiB = 8 909 MiB), ghi trung thực, **chưa kết luận đạt**:
+
+- [40954609229](https://github.com/anhnvcoder/short-video-platform/actions/runs/40954609229): điểm 60 s MEM USAGE trung vị 8 967 MiB, trừ `active_file` 6 558 MiB, pod 3 787 MiB: (b) đạt ở điểm này. Cuối kịch
+  bản 7 657 / **7 241** / 4 517 MiB: (b) **không đạt** (trên 6 656). Đỉnh: `ram-peak-2` trung vị **8 954 MiB**, trên 8,7 GiB (không đạt);
+  `ram-peak-1` không có cửa sổ 6 mẫu liền hai worker cùng transcode (`null`; `drill-k8s-keda` lần 1 dài nhất 5 mẫu, lần 2 9 mẫu), nên
+  `gitops_keda_two_transcoding=false` trong `runner.txt`.
+- [40857855305](https://github.com/anhnvcoder/short-video-platform/actions/runs/40857855305) (PR-A, trước khi tách): điểm 60 s 8 987 / 6 731 / 4 020 MiB (`external-secrets` 46 MiB); cuối 7 110,5 MiB; hai
+  `ram-peak` cũng không có cửa sổ hai worker, mẫu cao nhất 8 762 / 8 660 MiB. So với lượt 2026-10-28 (D2): 8 937 / 7 510 / 4 073 MiB ở
+  60 s, 9 863 MiB cuối.
+
+Còn mở, kiểm sau merge PR-B: lượt `gitops` trên `main` với job `record-stg` (bản ghi stg `success`, payload bằng digest trên pod), bước
+chờ phát hành trên `main` của `svp-gitops` và `measure-gitops` đo commit của repo đó, event GlitchTip mang environment `stg`.
+
 ## Hệ quả
 
 - **Được:**
   - Mọi việc dời vì máy 16 GB chạy được mà không cần dịch vụ cloud, không tốn tiền, trên môi trường sạch, lặp lại được bằng một
     lệnh dispatch; giai đoạn 7 chỉ còn việc của cloud.
   - Mỗi lượt có tiêu chí "runner đủ" đo được, nên lượt đỏ tách được lỗi code với giới hạn của runner, và B chỉ mở khi có số.
-  - Không secret nào trong workflow, kể cả đường GitOps; deploy key của Argo CD bỏ luôn ở máy.
+  - Không secret nào trong job dựng hay kiểm, kể cả đường GitOps; deploy key của Argo CD bỏ luôn ở máy (từ phần 4 job `record-stg`
+    cầm khoá App qua environment `promote`, không chạy kịch bản nào).
   - Script và manifest của giai đoạn 7 (Job k6, Chaos Mesh, Velero, lệnh gỡ) được chạy thật một lần trước buổi cloud tính tiền.
   - Cảnh báo misconfig có đường bỏ qua có lý do, có hạn, review được; lockfile npm có cổng CRITICAL; page `RateLimitFallbackActive`
     chỉ khi Redis mất thật.
@@ -1294,4 +1338,13 @@ Phần 3:
   `deploy/k8s/cloud/values/chaos-mesh.yaml` (chung cloud và runner), kiểm cả hai bản render ở `deploy/k8s/cloud/check.sh`.
 - Web (D17): font nạp sau `load` ở `web/app/styles/web-fonts.tsx`, `fonts.ts`, `globals.css`; `messages.precompile` ở `web/next.config.ts`.
 
-Phần 4 chưa hiện thực.
+Phần 4 (tách `svp-gitops`; danh sách đầy đủ ở mục Hiện thực ở của [ADR-0025](0025-gitops-config-repo.md)):
+
+- Các file `deploy/argocd/…`, `deploy/k8s/values/…` nêu ở phần 3 nằm ở repo `svp-gitops` (`argocd/`, `base/`); `canaryLimits.p99Ms`
+  của web ở `base/services/web.yaml` của repo đó.
+- Kịch bản `gitops`: `deploy/ci/verify/gitops.sh` (Argo CD theo `main` của `svp-gitops`, bỏ `SVP_SMOKE_LEGACY_MEDIA`, bước
+  `release-set-before`, `release-set`), `deploy/ci/verify-run.sh` (`make gitops-clone` trước kịch bản k3d), `release-set.json` ở
+  `deploy/ci/verify-collect.sh` (test ở `deploy/ci/verify-collect-test.sh`); `deploy/ci/release-set.sh` (`snapshot --settle`); chẩn đoán
+  khi dựng quá hạn: `gitops_timeout_report` của `deploy/k8s/lib.sh`, gọi từ `deploy/k8s/gitops.sh`.
+- Job `record-stg` của `.github/workflows/verify.yml`, `deploy/ci/record-stg.sh`.
+- Sync wave của `kube-prometheus-stack`: `base/kube-prometheus-stack.yaml` của repo `svp-gitops`.
