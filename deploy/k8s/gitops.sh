@@ -283,6 +283,7 @@ while :; do
   if ((SECONDS >= deadline)); then
     kc -n argocd get applications.argoproj.io \
       -o jsonpath='{range .items[*]}{.metadata.name}: {.status.operationState.message} {.status.conditions[*].message}{"\n"}{end}' >&2
+    gitops_timeout_report "$want_apps" || true
     fail "every Application Synced and Healthy within 1800s"
   fi
   sleep 10

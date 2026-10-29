@@ -52,7 +52,17 @@ cat >"$work/bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
 while [ $# -gt 0 ] && [ "$1" != get ]; do shift; done
 case $2 in
-applications.argoproj.io) cat "$FAKE_K8S/apps.json" ;;
+applications.argoproj.io)
+  # FAKE_SEQ: a file with one cluster folder per line, read n lines in on the n-th call (the last line from then on).
+  if [ -n "${FAKE_SEQ:-}" ]; then
+    n=$(( $(cat "$FAKE_SEQ.n" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" >"$FAKE_SEQ.n"
+    d=$(sed -n "${n}p" "$FAKE_SEQ")
+    [ -n "$d" ] || d=$(tail -n 1 "$FAKE_SEQ")
+    cat "$d/apps.json"
+  else
+    cat "$FAKE_K8S/apps.json"
+  fi ;;
 deployments.apps) cat "$FAKE_K8S/deployments.json" ;;
 rollouts.argoproj.io) cat "$FAKE_K8S/rollouts.json" ;;
 pods) cat "$FAKE_K8S/pods.json" ;;
@@ -82,12 +92,12 @@ r2=$(git -C "$config" rev-parse HEAD)
 # cluster DIR [VAR=VALUE...]: writes a made-up cluster into DIR. Every service runs release A on two Ready pods, its
 # Application synced svp-gitops at R (default R1) and the charts at C (charts), history entry 1 of R. Settings, each
 # VAR=VALUE: R, C (the charts of every Application), C_GATEWAY (those of the gateway's Application), HIST_GATEWAY
-# (the id of its last history entry), OP_GATEWAY (the phase of its last sync), PODS_GATEWAY (the gateway's pods,
+# (the id of its last history entry), OP_GATEWAY (the phase of its last sync), HEALTH_GATEWAY (its health), PODS_GATEWAY (the gateway's pods,
 # "<release>:<ready>" separated by spaces, release A or B or another name), EXTRA_POD (a pod of a drill's
 # Deployment), DEPLOY_UNHEALTHY (a service whose Deployment is not done), BIG (every Application lists 600 resources
 # in its status and its last sync's result, every pod carries an annotation of 10 000 bytes).
 cluster() {
-  local dir=$1 R=$r1 C=$charts C_GATEWAY= HIST_GATEWAY=1 OP_GATEWAY=Succeeded PODS_GATEWAY="A:true A:true" EXTRA_POD= \
+  local dir=$1 R=$r1 C=$charts C_GATEWAY= HIST_GATEWAY=1 OP_GATEWAY=Succeeded HEALTH_GATEWAY=Healthy PODS_GATEWAY="A:true A:true" EXTRA_POD= \
     DEPLOY_UNHEALTHY= BIG= kv svc pods='[]' p rel ready apps='[]' c
   shift
   for kv in "$@"; do local "$kv"; done
@@ -106,10 +116,11 @@ cluster() {
     [ "$svc" != gateway ] || c=${C_GATEWAY:-$C}
     apps=$(jq --arg s "$svc" --arg r "$R" --arg c "$c" --arg url "$gitops_url" --arg code "$code_url" \
       --argjson hist "$([ "$svc" = gateway ] && echo "$HIST_GATEWAY" || echo 1)" \
-      --arg op "$([ "$svc" = gateway ] && echo "$OP_GATEWAY" || echo Succeeded)" '. + [{metadata: {name: $s},
+      --arg op "$([ "$svc" = gateway ] && echo "$OP_GATEWAY" || echo Succeeded)" \
+      --arg health "$([ "$svc" = gateway ] && echo "$HEALTH_GATEWAY" || echo Healthy)" '. + [{metadata: {name: $s},
       spec: {sources: [{repoURL: $code, targetRevision: $c, path: "deploy/helm/svp-service"},
         {repoURL: $url, targetRevision: "refs/heads/main", ref: "values"}]},
-      status: {sync: {status: "Synced", revisions: [$c, $r]}, health: {status: "Healthy"},
+      status: {sync: {status: "Synced", revisions: [$c, $r]}, health: {status: $health},
         operationState: {phase: $op},
         history: [range(1; $hist + 1) | {id: ., revisions: [$c, $r], deployedAt: "2026-10-30T01:0\(.):00Z"}]}}]' \
       <<<"$apps")
@@ -147,7 +158,9 @@ cluster() {
 machine() {
   local script=$1
   shift
-  env -i PATH="$work/bin:$PATH" HOME="$work" TMPDIR="${TMPDIR:-/tmp}" FAKE_K8S="${FAKE_K8S:-}" SVP_GITOPS_DIR="$config" \
+  env -i PATH="$work/bin:$PATH" HOME="$work" TMPDIR="${TMPDIR:-/tmp}" FAKE_K8S="${FAKE_K8S:-}" FAKE_SEQ="${FAKE_SEQ:-}" \
+    SVP_RELEASE_SET_SETTLE_SECONDS="${SVP_RELEASE_SET_SETTLE_SECONDS:-}" \
+    SVP_RELEASE_SET_SETTLE_INTERVAL="${SVP_RELEASE_SET_SETTLE_INTERVAL:-}" SVP_GITOPS_DIR="$config" \
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$here/$script" "$@"
 }
 rs() { machine release-set.sh "$@"; }
@@ -263,6 +276,46 @@ FAKE_K8S=$work/k8s/now rs snapshot "$work/now.json" >/dev/null 2>"$work/now.err"
 same "snapshot of a cluster that cannot be recorded: exit 1" 1 "$rc"
 [ -s "$work/now.json" ] && ok "snapshot: the file is written all the same" || fail "snapshot: the file is written all the same"
 has "$work/now.err" "Application gateway: a sync is running" && ok "snapshot: says why" || fail "snapshot: says why"
+
+# --- snapshot --settle: waits for every Application to be Synced and Healthy on two reads in a row. The fake kubectl
+# answers the n-th read of the Applications from the n-th folder of FAKE_SEQ (the last one from then on).
+# settle_case NAME WANT_EXIT SECONDS FOLDER...: one snapshot --settle over the sequence; leaves the reads it took in
+# $settle_reads and its output in $work/settle.out, $work/settle.err.
+settle_case() {
+  local name=$1 want=$2 seconds=$3 rc=0
+  shift 3
+  rm -f "$work/seq" "$work/seq.n"
+  printf '%s\n' "$@" >"$work/seq"
+  FAKE_K8S=$work/k8s/healthy FAKE_SEQ=$work/seq SVP_RELEASE_SET_SETTLE_SECONDS=$seconds SVP_RELEASE_SET_SETTLE_INTERVAL=1 \
+    rs snapshot --settle "$work/settle.json" >"$work/settle.out" 2>"$work/settle.err" || rc=$?
+  settle_reads=$(cat "$work/seq.n")
+  same "$name: exit $want" "$want" "$rc"
+}
+rm -rf "$work/k8s" && cluster "$work/k8s/healthy" && cluster "$work/k8s/degraded" HEALTH_GATEWAY=Degraded
+h=$work/k8s/healthy
+d=$work/k8s/degraded
+
+settle_case "settle: Degraded, then Healthy before the deadline" 0 10 "$d" "$d" "$h" "$h"
+has "$work/settle.out" "after waiting " && ok "settle: says how long it waited" ||
+  fail "settle: says how long it waited: $(cat "$work/settle.out")"
+# 4 reads to settle (D, D, H, H) and one more for the snapshot itself.
+same "settle: two Healthy reads in a row, then the snapshot" 5 "$settle_reads"
+[ -s "$work/settle.json" ] && ok "settle: the snapshot is written" || fail "settle: the snapshot is written"
+
+settle_case "settle: Healthy, Degraded, Healthy does not settle on the first Healthy" 0 10 "$h" "$d" "$h" "$h"
+same "settle: flip: four reads to settle and one for the snapshot, not the first Healthy" 5 "$settle_reads"
+
+settle_case "settle: Degraded all along" 1 3 "$d"
+has "$work/settle.err" "not every Application settled within 3 s" && has "$work/settle.err" "gateway: Synced, Degraded" &&
+  ok "settle: runs out saying which Application and its state" || fail "settle: runs out saying which Application and its state"
+[ -s "$work/settle.json" ] && ok "settle: the snapshot is written all the same" || fail "settle: the snapshot is written all the same"
+has "$work/settle.err" "Application gateway: Synced, Degraded; Synced and Healthy wanted" &&
+  ok "settle: the snapshot says why too" || fail "settle: the snapshot says why too"
+
+# Without --settle nothing waits: one read of the Applications for the snapshot.
+rm -f "$work/seq" "$work/seq.n" && printf '%s\n' "$d" >"$work/seq"
+FAKE_K8S=$h FAKE_SEQ=$work/seq rs snapshot "$work/nowait.json" >/dev/null 2>&1 || :
+same "snapshot without --settle: one read, no wait" 1 "$(cat "$work/seq.n")"
 
 if [ "$failures" -gt 0 ]; then
   echo "FAIL  $failures check(s) failed" >&2

@@ -4,7 +4,8 @@
 # what it runs can change between the checks and the moment it is read: the set is read twice, once before smoke and
 # once after the last check, and recorded only when nothing moved in between and it is exactly what svp-gitops said.
 #
-#   release-set.sh snapshot FILE
+#   release-set.sh snapshot [--settle] FILE
+#     With --settle, first waits (settle below) for every Application to be Synced and Healthy on two reads in a row.
 #     Reads the cluster k3d-svp into FILE (JSON): every Application of namespace argocd (sync and health, the phase of
 #     its last operation, the revision each source synced, the last entry of status.history), and for each of the seven
 #     services its workload (Rollout or Deployment named after it in namespace svp) and every pod of it, chosen by its
@@ -79,6 +80,42 @@ payload_jq='
       "its charts are not revision (40 hex), podSecurityVersion and collectorConfigSha256"
     elif (.run_url | type) != "string" or (.deployed_at | type) != "string" then "it has no run_url or deployed_at"
     else "" end;'
+
+# settle: waits until every Application of namespace argocd is Synced and Healthy with no sync running, on two reads in
+# a row (one read can land on the moment a status flips), for at most SVP_RELEASE_SET_SETTLE_SECONDS (default 300),
+# reading every SVP_RELEASE_SET_SETTLE_INTERVAL seconds (default 10; the two variables are for the tests). Right after
+# a build Applications are briefly Degraded for reasons that pass on their own (the HorizontalPodAutoscaler of a
+# service has no metrics until metrics-server has a sample of its new pods). On timeout prints each Application not
+# settled with its last state and returns 1; the snapshot is taken all the same and judged as always.
+settle() {
+  local limit=${SVP_RELEASE_SET_SETTLE_SECONDS:-300} every=${SVP_RELEASE_SET_SETTLE_INTERVAL:-10} start now apps bad \
+    good=0
+  start=$(date +%s)
+  while :; do
+    apps=$(kc -n argocd get applications.argoproj.io -o json) || fail "read the Applications of namespace argocd"
+    bad=$(jq -r '.items[] | select((.status.sync.status // "") != "Synced" or (.status.health.status // "") != "Healthy"
+        or (.status.operationState.phase // "") == "Running")
+      | "      \(.metadata.name): \(.status.sync.status // "no sync status"), \(.status.health.status // "no health")\(
+          if (.status.operationState.phase // "") == "Running" then ", a sync is running" else "" end)"' <<<"$apps") ||
+      fail "read the Applications of namespace argocd"
+    now=$(date +%s)
+    if [ -z "$bad" ]; then
+      good=$((good + 1))
+      if [ "$good" -ge 2 ]; then
+        echo "ok    every Application Synced and Healthy on two reads in a row, after waiting $((now - start)) s"
+        return 0
+      fi
+    else
+      good=0
+    fi
+    if [ $((now - start + every)) -gt "$limit" ]; then
+      echo "FAIL  not every Application settled within $limit s (waited $((now - start)) s); last state:" >&2
+      echo "${bad:-      every Application Synced and Healthy on the last read only, not on two in a row}" >&2
+      return 1
+    fi
+    sleep "$every"
+  done
+}
 
 # snapshot FILE: see the top of this file.
 snapshot() {
@@ -311,8 +348,18 @@ check() {
 
 case ${1:-} in
 snapshot)
-  [ $# -eq 2 ] || fail "usage: release-set.sh snapshot FILE"
+  settle=0
+  if [ "${2:-}" = --settle ]; then
+    settle=1
+    shift
+  fi
+  [ $# -eq 2 ] || fail "usage: release-set.sh snapshot [--settle] FILE"
+  # A wait that ran out is no reason to skip the snapshot: it says the rest of what is wrong. The step is still red,
+  # even when the snapshot's own read happens to find every Application healthy a moment later.
+  unsettled=0
+  [ "$settle" = 0 ] || settle || unsettled=1
   snapshot "$2" || fail "the set of releases stg runs now could not be recorded (above); $2 written all the same"
+  [ "$unsettled" = 0 ] || fail "not every Application settled before the snapshot (above); $2 written all the same"
   echo "ok    $2: the set of releases stg runs now could be recorded"
   ;;
 verify)
@@ -327,5 +374,5 @@ check)
   [ $# -eq 2 ] || fail "usage: release-set.sh check FILE"
   check "$2"
   ;;
-*) fail "usage: release-set.sh snapshot FILE | verify BEFORE AFTER OUT [RESULTS] | records | check FILE" ;;
+*) fail "usage: release-set.sh snapshot [--settle] FILE | verify BEFORE AFTER OUT [RESULTS] | records | check FILE" ;;
 esac

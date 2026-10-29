@@ -581,6 +581,153 @@ unready_report() {
     done
 }
 
+# gitops_timeout_report APPS: when the GitOps path's wait for its Applications (APPS, one name per line) ran out,
+# prints to stderr what Argo CD's own status line leaves out, so a run on a machine thrown away right after still
+# shows why:
+#   - each Application of APPS that is not Healthy, and each resource it tracks that is not ready, read from the
+#     cluster: Argo CD 3 keeps the health of an Application's resources out of the Application (in its own cache,
+#     unless its controller runs with --persist-resource-health), and its API needs a login. Only the kinds of
+#     health_kinds below are read, each judged by a rule close to Argo CD's check of it: a Deployment, StatefulSet
+#     or DaemonSet by its ready and updated pods and the generation it observed, a Job by its conditions Complete and
+#     Failed, a PersistentVolumeClaim by its phase, any other kind by its conditions that say it is ready (Ready,
+#     Available, ...) when they are not True, or by having no status at all. One that is not there is "missing";
+#   - the CRDs of the Prometheus and Alertmanager objects, when they were created and when they became Established;
+#   - the status conditions of every Prometheus and Alertmanager object, or that it has none: no controller has
+#     reconciled it;
+#   - each container of the Prometheus operator's pods in svp-obs (label app.kubernetes.io/component of chart
+#     kube-prometheus-stack): when it started, and the last lines of its log, and of its attempt before when it
+#     restarted, marked as unready_report marks them. The operator asks the API server once, at its start, which of
+#     its CRDs it serves, and never starts the controller of a CRD that was missing then (it logs a warning "resource
+#     ... not installed in the cluster"): a Prometheus object it then never turns into a StatefulSet, with no event.
+# Nothing here reads a Secret. Each step that cannot read the cluster prints why and the others still run.
+gitops_timeout_report() {
+  local apps=$1 out sep=$'\x1f' what a b c d type got pod container restarts started
+  local -a list
+  # GROUP/KIND ("" for the core group) of the kinds the cluster's charts render that Argo CD judges by their status:
+  # with checks of its own (gitops-engine for the workloads, resource_customizations/ of v3.5.5 for the others) or of
+  # base/argo-cd.yaml of svp-gitops (Alertmanager, ImageValidatingPolicy). Never Secret, and none of the kinds whose
+  # objects are large (CRDs, ConfigMaps, PrometheusRules) and say nothing of readiness.
+  local health_kinds="apps/Deployment apps/StatefulSet apps/DaemonSet batch/Job /PersistentVolumeClaim
+    monitoring.coreos.com/Prometheus monitoring.coreos.com/Alertmanager postgresql.cnpg.io/Cluster
+    external-secrets.io/ExternalSecret external-secrets.io/SecretStore argoproj.io/Rollout cert-manager.io/Certificate
+    cert-manager.io/Issuer cert-manager.io/ClusterIssuer keda.sh/ScaledObject gateway.networking.k8s.io/GatewayClass
+    gateway.networking.k8s.io/Gateway gateway.networking.k8s.io/HTTPRoute policies.kyverno.io/ImageValidatingPolicy"
+  echo "Applications not Healthy, and their resources that are not ready:" >&2
+  # One record per Application: app, NAME, HEALTH; then one per namespace and kind of its resources to read:
+  # resource, NAMESPACE ("" when cluster-scoped), KIND, GROUP, NAMES (space-separated). Hooks are left out, as Argo CD
+  # leaves them out of the health.
+  if ! out=$(kc -n argocd get applications.argoproj.io -o json 2>&1); then
+    echo "  cannot list the Applications: $out" >&2
+  elif ! out=$(jq -r --arg want "$apps" --arg kinds "$health_kinds" '
+      [$want | split("\n")[] | select(. != "")] as $names
+      | [$kinds | splits("[[:space:]]+") | select(. != "")] as $judged
+      | .items[] | .metadata.name as $app | select(any($names[]; . == $app))
+      | select((.status.health.status // "-") != "Healthy")
+      | ["app", $app, (.status.health.status // "-")],
+        ((.status.resources // [])
+          | map(select(.hook != true and ("\(.group // "")/\(.kind)" as $k | any($judged[]; . == $k))))
+          | group_by([.namespace // "", .group // "", .kind])[]
+          | ["resource", (.[0].namespace // ""), .[0].kind, (.[0].group // ""), (map(.name) | join(" "))])
+      | map(gsub("[[:cntrl:]]"; " ")) | join("\u001f")' <<<"$out" 2>/dev/null); then
+    echo "  (Argo CD's answer is not JSON)" >&2
+  else
+    while IFS=$sep read -r what a b c d; do
+      case $what in
+        app) echo "  $a: $b" >&2 ;;
+        resource)
+          type=$b${c:+.$c}
+          read -r -a list <<<"$d"
+          if ! got=$(kc ${a:+-n "$a"} get "$type" "${list[@]}" --ignore-not-found -o json </dev/null 2>&1); then
+            echo "    cannot read $type${a:+ in $a}: $got" >&2
+            continue
+          fi
+          # -s: kubectl prints one object for one name, a List for several, nothing when none is there.
+          jq -rs --arg kind "$b" --arg ns "$a" --arg names "$d" '
+            def say: "\(.type)=\(.status)\(.reason // "" | if . != "" then " " + . else "" end)\(.message // "" | if . != "" then ": " + . else "" end)";
+            def not_ready:
+              (.status // {}) as $s
+              | if .kind == "Deployment" or .kind == "StatefulSet" or .kind == "DaemonSet" then
+                  (if .kind == "DaemonSet" then [$s.desiredNumberScheduled, $s.numberReady, $s.updatedNumberScheduled]
+                   else [.spec.replicas // 1, $s.readyReplicas, $s.updatedReplicas] end | map(. // 0))
+                    as [$want, $ready, $updated]
+                  | [if ($s.observedGeneration // 0) < (.metadata.generation // 0)
+                       then "generation \(.metadata.generation) not observed yet" else empty end,
+                     if $ready < $want or $updated < $want then "\($ready)/\($want) ready, \($updated) updated" else empty end,
+                     (($s.conditions // [])[] | select(.reason == "ProgressDeadlineExceeded") | say)]
+                elif .kind == "Job" then
+                  ($s.conditions // []) as $c
+                  | if any($c[]; .type == "Complete" and .status == "True") then []
+                    elif any($c[]; .type == "Failed" and .status == "True") then [$c[] | select(.type == "Failed") | say]
+                    else ["not complete: \($s.active // 0) active, \($s.failed // 0) failed"] end
+                elif .kind == "PersistentVolumeClaim" then
+                  if $s.phase == "Bound" then [] else ["phase \($s.phase // "-")"] end
+                elif $s == {} then ["no status (no controller has reconciled it)"]
+                else [(($s.conditions // []) + ($s.conditionStatus.conditions // []) + [($s.parents // [])[].conditions[]?])[]
+                    | select(.status != "True" and (.type | IN("Ready", "Available", "Reconciled", "Healthy", "Accepted",
+                        "Programmed", "ResolvedRefs", "WebhookConfigured", "RBACPermissionsGranted")))
+                    | say]
+                end;
+            [.[] | if has("items") then .items[] else . end] as $live
+            | $names | split(" ")[] as $name
+            | ([$live[] | select(.metadata.name == $name)][0]) as $o
+            | (if $o == null then ["missing"] else $o | not_ready end) as $why
+            | select($why != [])
+            | "    \($kind) \(if $ns != "" then $ns + "/" else "" end)\($name): \($why | join("; "))"
+            | gsub("[[:cntrl:]]"; " ")' <<<"$got" >&2 2>/dev/null ||
+            echo "    (the answer for $type${a:+ in $a} is not JSON)" >&2
+          ;;
+      esac
+    done <<<"$out"
+  fi
+  echo "CRDs of the Prometheus and Alertmanager objects:" >&2
+  if out=$(kc get customresourcedefinitions.apiextensions.k8s.io prometheuses.monitoring.coreos.com \
+    alertmanagers.monitoring.coreos.com --ignore-not-found -o json 2>&1); then
+    jq -rs '[.[] | if has("items") then .items[] else . end] as $crds
+      | if $crds == [] then "  none" else
+          ($crds[] | ((.status.conditions // []) | map(select(.type == "Established")) | .[0]) as $e
+            | "  \(.metadata.name): created \(.metadata.creationTimestamp // "-"), Established \($e.status // "-") since \($e.lastTransitionTime // "-")")
+        end' <<<"$out" >&2 2>/dev/null || echo "  (the answer is not JSON)" >&2
+  else
+    echo "  cannot read the CRDs: $out" >&2
+  fi
+  echo "Prometheus and Alertmanager objects (monitoring.coreos.com):" >&2
+  if out=$(kc get prometheuses.monitoring.coreos.com,alertmanagers.monitoring.coreos.com -A -o json 2>&1); then
+    jq -r 'if (.items // []) == [] then "  none" else
+        (.items[] | "  \(.kind) \(.metadata.namespace)/\(.metadata.name): "
+          + (if (.status.conditions // []) == [] then "no status conditions (no controller has reconciled it)"
+             else [.status.conditions[]
+                 | "\(.type)=\(.status)\(.reason // "" | if . != "" then " " + . else "" end)\(.message // "" | if . != "" then ": " + . else "" end)"]
+               | join("; ") end)
+          | gsub("[[:cntrl:]]"; " "))
+      end' <<<"$out" >&2 || echo "  (the answer is not JSON)" >&2
+  else
+    echo "  cannot list them: $out" >&2
+  fi
+  echo "The Prometheus operator (svp-obs):" >&2
+  if ! out=$(kc -n svp-obs get pods -o json 2>&1); then
+    echo "  cannot list the pods of svp-obs: $out" >&2
+    return 0
+  fi
+  jq -r '[.items[] | select((.metadata.labels // {})["app.kubernetes.io/component"] == "prometheus-operator")
+      | .metadata.name as $pod | (.status.containerStatuses // [])[]
+      | [$pod, .name, (.restartCount | tostring), (.state.running.startedAt // (.state | keys[0]) // "-")]
+      | map(gsub("[[:cntrl:]]"; " ")) | join("\u001f")]
+    | if . == [] then "-" else .[] end' <<<"$out" 2>/dev/null |
+    while IFS=$sep read -r pod container restarts started; do
+      if [ "$pod" = - ]; then
+        echo "  no pod of the operator in svp-obs" >&2
+        continue
+      fi
+      echo "  pod svp-obs/$pod, container $container: started $started, $restarts restart(s); last lines of its log:" >&2
+      { kc -n svp-obs logs "$pod" -c "$container" --tail=60 </dev/null 2>&1 || true; } | mark_log svp-obs >&2
+      if [ "$restarts" != 0 ]; then
+        echo "  last lines of the attempt before:" >&2
+        { kc -n svp-obs logs "$pod" -c "$container" --previous --tail=60 </dev/null 2>&1 || true; } |
+          mark_log svp-obs >&2
+      fi
+    done
+}
+
 # The seven services whose images the cluster runs, in the order they are built: web last, since the six Go images
 # share the Go module cache and build fast, so their errors show before the web build, the longest of all.
 svp_services=(gateway user-service video-service engagement-service feed-service media-worker web)

@@ -33,7 +33,9 @@
 #                          the type and exactly the keys
 #                          its ExternalSecret names (those of its template, or of its data without one): one line per
 #                          Secret. Only the names of the keys leave kubectl's pipe, never a value
-#   release-set-before     deploy/ci/release-set.sh snapshot: what stg runs right before k8s-smoke (the revision of
+#   release-set-before     deploy/ci/release-set.sh snapshot --settle: first waits, for up to 300 s, until every Application
+#                          is Synced and Healthy on two reads in a row (a service's autoscaler is briefly Degraded
+#                          until metrics-server has a sample of its new pods), then records what stg runs right before k8s-smoke (the revision of
 #                          svp-gitops and of the charts every Application synced, its last history entry, the image of
 #                          every pod of each service) into $SVP_VERIFY_OUT/release-set/before.json; fails when that could
 #                          not be recorded now (a sync running, a rollout not over, two digests for a service)
@@ -276,7 +278,9 @@ scenario_targets() {
   step k8s-gitops-up 60 bash -c gitops_up
   step gitops-env 2 bash -c gitops_env
   step gitops-external-secrets 2 bash -c gitops_external_secrets
-  step release-set-before 2 "$here/release-set.sh" snapshot "$SVP_VERIFY_OUT/release-set/before.json"
+  # Up to 300 s of waiting for the Applications to settle (see settle in release-set.sh), then the snapshot: the limit
+  # leaves the script time to name the Application that did not settle before the step is cut.
+  step release-set-before 8 "$here/release-set.sh" snapshot --settle "$SVP_VERIFY_OUT/release-set/before.json"
   before_status=$last_status
   step k8s-smoke 15 make k8s-smoke
   smoke_status=$last_status

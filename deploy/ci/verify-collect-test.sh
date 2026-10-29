@@ -76,14 +76,28 @@ EOF
 
 # The fake kubectl: kubectl --context k3d-svp --request-timeout=10s -n NS get secrets -o json. FAKE_KUBECTL_FAIL=1
 # makes it fail, as for a cluster that no longer answers. For unready_report: kubectl --context k3d-svp -n NS get pods
-# -o json prints pods-NS.json; kubectl --context k3d-svp -n NS logs POD -c CONTAINER [--previous] --tail=40 prints
-# logs/NS.POD.CONTAINER[.previous]; both are recorded in calls.
+# -o json prints pods-NS.json; kubectl --context k3d-svp -n NS logs POD -c CONTAINER [--previous] --tail=N prints
+# logs/NS.POD.CONTAINER[.previous]; both are recorded in calls. For gitops_timeout_report, kubectl --context k3d-svp
+# [-n NS] get TYPE [NAME...] [flags] prints the list of TYPE-NS.json (cluster.TYPE.json without -n), or fails as for a
+# resource type the server does not have; given names, as kubectl with --ignore-not-found: the one object for one name,
+# a List for several, nothing when none is there. Recorded in calls too.
 cat >"$work/bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
 [ "${FAKE_KUBECTL_FAIL:-}" = 1 ] && { echo "The connection to the server was refused" >&2; exit 1; }
+if [ "$1 $2" = "--context k3d-svp" ] && { [ "$3" = get ] || [ "$3 $5" = "-n get" ]; }; then
+  echo "$*" >>"$FAKE_KUBECTL_DIR/calls"
+  if [ "$3" = get ]; then type=$4 f=cluster.$4 && shift 4; else type=$6 f=$6-$4 && shift 6; fi
+  f=$FAKE_KUBECTL_DIR/$f.json
+  [ -f "$f" ] || { echo "error: the server doesn't have a resource type \"$type\"" >&2; exit 1; }
+  names=()
+  while [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; do names+=("$1") && shift; done
+  [ ${#names[@]} = 0 ] && { cat "$f"; exit; }
+  jq '[.items[] | select(.metadata.name | IN($ARGS.positional[]))]
+    | if ($ARGS.positional | length) > 1 then {kind: "List", items: .} else .[] end' --args "${names[@]}" <"$f"
+  exit
+fi
 if [ "$1 $2 $3" = "--context k3d-svp -n" ]; then
   echo "$*" >>"$FAKE_KUBECTL_DIR/calls"
-  if [ "$5 $6 $7 $8" = "get pods -o json" ]; then cat "$FAKE_KUBECTL_DIR/pods-$4.json"; exit; fi
   [ "$5 $7" = "logs -c" ] || exit 2
   f=$FAKE_KUBECTL_DIR/logs/$4.$6.$8
   case " $* " in *" --previous "*) f=$f.previous ;; esac
@@ -216,6 +230,162 @@ case $shown in
   *) ok "unready: log_tail_namespaces has neither svp, Envoy nor kube-system, and is not empty" ;;
 esac
 
+# --- gitops_timeout_report of deploy/k8s/lib.sh, which deploy/k8s/gitops.sh prints when its wait for the Applications
+# runs out. The Applications as Argo CD 3 writes them: no health on their resources. Two waited for that are not
+# Healthy (one Healthy left out, one not waited for left out), their resources read from the cluster and judged: a
+# Deployment not ready beside a ready one and a missing one (one call, a List), a DaemonSet of a generation not
+# observed, a Prometheus object without status beside a ready Alertmanager (one object each), a cluster-scoped
+# ClusterIssuer not Ready, an HTTPRoute whose parent has ResolvedRefs False, a PersistentVolumeClaim Pending, a failed
+# Job, a kind the server does not have; a hook, a Secret, a ConfigMap and a CRD never read. Then the CRDs of the
+# Prometheus and Alertmanager objects, by name (another group's left out, a missing one skipped), a Prometheus object
+# no controller reconciled beside a reconciled Alertmanager, and the operator's log and its attempt before, marked with
+# svp-obs (GlitchTip's pod beside it is not the operator's). Then the same with neither the CRDs nor any pod.
+gk=$work/kube-gitops
+mkdir -p "$gk/logs"
+jq -n '{items: [
+  {metadata: {name: "kube-prometheus-stack"}, status: {health: {status: "Progressing"}, resourceHealthSource: "appTree",
+   resources: [
+    {group: "apiextensions.k8s.io", kind: "CustomResourceDefinition", name: "prometheuses.monitoring.coreos.com", status: "Synced"},
+    {kind: "ConfigMap", namespace: "svp-obs", name: "kps-dashboards", status: "Synced"},
+    {kind: "Secret", namespace: "svp-obs", name: "alertmanager-kps", status: "Synced"},
+    {group: "apps", kind: "Deployment", namespace: "svp-obs", name: "kps-operator", status: "Synced"},
+    {group: "apps", kind: "Deployment", namespace: "svp-obs", name: "kps-kube-state-metrics", status: "Synced"},
+    {group: "apps", kind: "Deployment", namespace: "svp-obs", name: "kps-gone", status: "OutOfSync"},
+    {group: "apps", kind: "DaemonSet", namespace: "svp-obs", name: "kps-node-exporter", status: "Synced"},
+    {group: "monitoring.coreos.com", kind: "Prometheus", namespace: "svp-obs", name: "kps-prometheus", status: "Synced"},
+    {group: "monitoring.coreos.com", kind: "Alertmanager", namespace: "svp-obs", name: "kps-alertmanager", status: "Synced"},
+    {group: "batch", kind: "Job", namespace: "svp-obs", name: "kps-hook", hook: true, status: "Synced"}]}},
+  {metadata: {name: "svp-cluster"}, status: {health: {status: "Degraded"}, resourceHealthSource: "appTree", resources: [
+    {group: "cert-manager.io", kind: "ClusterIssuer", name: "svp-ca", status: "Synced"},
+    {kind: "PersistentVolumeClaim", namespace: "svp-data", name: "data-x", status: "Synced"},
+    {group: "batch", kind: "Job", namespace: "svp-data", name: "pg-init", status: "Synced"},
+    {group: "keda.sh", kind: "ScaledObject", namespace: "svp", name: "media-worker", status: "Synced"},
+    {group: "gateway.networking.k8s.io", kind: "HTTPRoute", namespace: "svp", name: "gateway", status: "Synced"}]}},
+  {metadata: {name: "svp-root"}, status: {health: {status: "Healthy"}, resources: [
+    {group: "argoproj.io", kind: "Application", namespace: "argocd", name: "loki", status: "Synced"}]}},
+  {metadata: {name: "not-waited-for"}, status: {health: {status: "Degraded"}, resources: [
+    {group: "apps", kind: "Deployment", namespace: "other", name: "other-deploy", status: "Synced"}]}}]}' \
+  >"$gk/applications.argoproj.io-argocd.json"
+jq -n '{items: [
+  {kind: "Deployment", metadata: {name: "kps-operator", generation: 1}, spec: {replicas: 1},
+   status: {observedGeneration: 1, replicas: 1, updatedReplicas: 1, conditions: [
+     {type: "Available", status: "False", reason: "MinimumReplicasUnavailable"},
+     {type: "Progressing", status: "False", reason: "ProgressDeadlineExceeded", message: "line one\nline two"}]}},
+  {kind: "Deployment", metadata: {name: "kps-kube-state-metrics", generation: 3}, spec: {replicas: 2},
+   status: {observedGeneration: 3, replicas: 2, readyReplicas: 2, updatedReplicas: 2}}]}' >"$gk/Deployment.apps-svp-obs.json"
+jq -n '{items: [{kind: "DaemonSet", metadata: {name: "kps-node-exporter", generation: 2},
+  status: {observedGeneration: 1, desiredNumberScheduled: 1, numberReady: 1, updatedNumberScheduled: 1}}]}' \
+  >"$gk/DaemonSet.apps-svp-obs.json"
+jq -n '{items: [{kind: "Prometheus", metadata: {name: "kps-prometheus", generation: 1}}]}' \
+  >"$gk/Prometheus.monitoring.coreos.com-svp-obs.json"
+jq -n '{items: [{kind: "Alertmanager", metadata: {name: "kps-alertmanager", generation: 1},
+  status: {conditions: [{type: "Available", status: "True"}, {type: "Reconciled", status: "True"}]}}]}' \
+  >"$gk/Alertmanager.monitoring.coreos.com-svp-obs.json"
+jq -n '{items: [{kind: "ClusterIssuer", metadata: {name: "svp-ca"},
+  status: {conditions: [{type: "Ready", status: "False", reason: "ErrInitIssuer", message: "no CA"}]}}]}' \
+  >"$gk/cluster.ClusterIssuer.cert-manager.io.json"
+jq -n '{items: [{kind: "HTTPRoute", metadata: {name: "gateway"}, status: {parents: [{conditions: [
+  {type: "Accepted", status: "True"}, {type: "ResolvedRefs", status: "False", reason: "BackendNotFound"}]}]}}]}' \
+  >"$gk/HTTPRoute.gateway.networking.k8s.io-svp.json"
+jq -n '{items: [{kind: "PersistentVolumeClaim", metadata: {name: "data-x"}, status: {phase: "Pending"}}]}' \
+  >"$gk/PersistentVolumeClaim-svp-data.json"
+jq -n '{items: [{kind: "Job", metadata: {name: "pg-init"}, status: {failed: 3, conditions: [
+  {type: "Failed", status: "True", reason: "BackoffLimitExceeded", message: "Job has reached the specified backoff limit"}]}}]}' \
+  >"$gk/Job.batch-svp-data.json"
+jq -n '{items: [
+  {metadata: {name: "prometheuses.monitoring.coreos.com", creationTimestamp: "2026-10-29T19:24:50Z"},
+   spec: {group: "monitoring.coreos.com"},
+   status: {conditions: [{type: "NamesAccepted", status: "True"},
+     {type: "Established", status: "True", lastTransitionTime: "2026-10-29T19:25:20Z"}]}},
+  {metadata: {name: "clusters.postgresql.cnpg.io", creationTimestamp: "2026-10-29T19:20:00Z"},
+   spec: {group: "postgresql.cnpg.io"}}]}' >"$gk/cluster.customresourcedefinitions.apiextensions.k8s.io.json"
+jq -n '{items: [
+  {kind: "Prometheus", metadata: {namespace: "svp-obs", name: "kps-prometheus"}},
+  {kind: "Alertmanager", metadata: {namespace: "svp-obs", name: "kps-alertmanager"},
+   status: {conditions: [{type: "Available", status: "True"}, {type: "Reconciled", status: "True", reason: "Ok", message: "m"}]}}]}' \
+  >"$gk/cluster.prometheuses.monitoring.coreos.com,alertmanagers.monitoring.coreos.com.json"
+jq -n '{items: [
+  {metadata: {name: "kps-operator-abc", labels: {"app.kubernetes.io/component": "prometheus-operator"}},
+   status: {containerStatuses: [{name: "kube-prometheus-stack", restartCount: 1,
+     state: {running: {startedAt: "2026-10-29T19:25:05Z"}}}]}},
+  {metadata: {name: "glitchtip-abc", labels: {"app.kubernetes.io/name": "glitchtip"}},
+   status: {containerStatuses: [{name: "glitchtip", restartCount: 0, state: {running: {}}}]}}]}' >"$gk/pods-svp-obs.json"
+echo 'level=warn msg="resource \"prometheuses\" (group: \"monitoring.coreos.com/v1\") not installed in the cluster" OPERATOR-LOG-MARKER' \
+  >"$gk/logs/svp-obs.kps-operator-abc.kube-prometheus-stack"
+echo OPERATOR-PREVIOUS-MARKER >"$gk/logs/svp-obs.kps-operator-abc.kube-prometheus-stack.previous"
+echo GLITCHTIP-MARKER >"$gk/logs/svp-obs.glitchtip-abc.glitchtip"
+: >"$gk/calls"
+timeout_report=$work/timeout-report.txt
+(
+  PATH=$work/bin:$PATH FAKE_KUBECTL_DIR=$gk
+  . "$here/../k8s/lib.sh"
+  gitops_timeout_report $'svp-root\nkube-prometheus-stack\nsvp-cluster\n'
+) 2>"$timeout_report" >/dev/null && ok "timeout report: exit 0" || fail "timeout report: exit 0"
+timeout_lines=$(sed -n '/^Applications not Healthy/,/^CRDs of/p' "$timeout_report")
+want_lines='Applications not Healthy, and their resources that are not ready:
+  kube-prometheus-stack: Progressing
+    DaemonSet svp-obs/kps-node-exporter: generation 2 not observed yet
+    Deployment svp-obs/kps-operator: 0/1 ready, 1 updated; Progressing=False ProgressDeadlineExceeded: line one line two
+    Deployment svp-obs/kps-gone: missing
+    Prometheus svp-obs/kps-prometheus: no status (no controller has reconciled it)
+  svp-cluster: Degraded
+    ClusterIssuer svp-ca: Ready=False ErrInitIssuer: no CA
+    HTTPRoute svp/gateway: ResolvedRefs=False BackendNotFound
+    cannot read ScaledObject.keda.sh in svp: error: the server doesn'"'"'t have a resource type "ScaledObject.keda.sh"
+    PersistentVolumeClaim svp-data/data-x: phase Pending
+    Job svp-data/pg-init: Failed=True BackoffLimitExceeded: Job has reached the specified backoff limit
+CRDs of the Prometheus and Alertmanager objects:'
+[ "$timeout_lines" = "$want_lines" ] &&
+  ok "timeout report: only the waited-for Applications not Healthy, only their resources not ready, read live, one line each" ||
+  fail "timeout report: only the waited-for Applications not Healthy, only their resources not ready, read live, one line each"
+has_report() { if grep -qxF -- "$2" "$timeout_report"; then ok "timeout report: $1"; else fail "timeout report: $1"; fi; }
+has_report "a CRD of monitoring.coreos.com, created and Established" \
+  "  prometheuses.monitoring.coreos.com: created 2026-10-29T19:24:50Z, Established True since 2026-10-29T19:25:20Z"
+has_report "a Prometheus object without conditions" \
+  "  Prometheus svp-obs/kps-prometheus: no status conditions (no controller has reconciled it)"
+has_report "an Alertmanager object's conditions" \
+  "  Alertmanager svp-obs/kps-alertmanager: Available=True; Reconciled=True Ok: m"
+has_report "the operator's container, when it started" \
+  "  pod svp-obs/kps-operator-abc, container kube-prometheus-stack: started 2026-10-29T19:25:05Z, 1 restart(s); last lines of its log:"
+has_report "the operator's log, marked with svp-obs" \
+  '    [svp-obs] level=warn msg="resource \"prometheuses\" (group: \"monitoring.coreos.com/v1\") not installed in the cluster" OPERATOR-LOG-MARKER'
+has_report "the operator's attempt before, marked with svp-obs" "    [svp-obs] OPERATOR-PREVIOUS-MARKER"
+for m in clusters.postgresql.cnpg.io not-waited-for loki kps-kube-state-metrics GLITCHTIP-MARKER; do
+  if grep -qF -- "$m" "$timeout_report"; then fail "timeout report: no $m"; else ok "timeout report: no $m"; fi
+done
+grep -qxF -- '--context k3d-svp -n svp-obs get Deployment.apps kps-operator kps-kube-state-metrics kps-gone --ignore-not-found -o json' \
+  "$gk/calls" && grep -qxF -- '--context k3d-svp get ClusterIssuer.cert-manager.io svp-ca --ignore-not-found -o json' "$gk/calls" &&
+  grep -qxF -- '--context k3d-svp get customresourcedefinitions.apiextensions.k8s.io prometheuses.monitoring.coreos.com alertmanagers.monitoring.coreos.com --ignore-not-found -o json' \
+    "$gk/calls" &&
+  ok "timeout report: one call per namespace and kind, cluster-scoped without -n, the two CRDs by name" ||
+  fail "timeout report: one call per namespace and kind, cluster-scoped without -n, the two CRDs by name"
+grep -q -- '-n svp-obs logs kps-operator-abc -c kube-prometheus-stack --tail=60$' "$gk/calls" &&
+  grep -q -- '-n svp-obs logs kps-operator-abc -c kube-prometheus-stack --previous --tail=60$' "$gk/calls" &&
+  ! grep -q 'logs glitchtip' "$gk/calls" && ! grep -qi secret "$gk/calls" &&
+  ! grep -qE 'get (ConfigMap|CustomResourceDefinition)|kps-hook|other-deploy|get Application\.' "$gk/calls" &&
+  ok "timeout report: reads the operator's logs only, no Secret, no hook, no kind it does not judge" ||
+  fail "timeout report: reads the operator's logs only, no Secret, no hook, no kind it does not judge"
+echo '{"items": []}' >"$gk/cluster.customresourcedefinitions.apiextensions.k8s.io.json"
+rm "$gk/cluster.prometheuses.monitoring.coreos.com,alertmanagers.monitoring.coreos.com.json" \
+  "$gk/Prometheus.monitoring.coreos.com-svp-obs.json"
+echo '{"items": []}' >"$gk/pods-svp-obs.json"
+(
+  PATH=$work/bin:$PATH FAKE_KUBECTL_DIR=$gk
+  . "$here/../k8s/lib.sh"
+  gitops_timeout_report kube-prometheus-stack
+) 2>"$work/timeout-report-bare.txt" >/dev/null && ok "timeout report without the CRDs: exit 0" ||
+  fail "timeout report without the CRDs: exit 0"
+grep -qxF '    cannot read Prometheus.monitoring.coreos.com in svp-obs: error: the server doesn'"'"'t have a resource type "Prometheus.monitoring.coreos.com"' \
+  "$work/timeout-report-bare.txt" &&
+  grep -A1 -xF 'CRDs of the Prometheus and Alertmanager objects:' "$work/timeout-report-bare.txt" | grep -qxF '  none' &&
+  grep -qxF '  cannot list them: error: the server doesn'"'"'t have a resource type "prometheuses.monitoring.coreos.com,alertmanagers.monitoring.coreos.com"' \
+    "$work/timeout-report-bare.txt" && grep -qxF '  no pod of the operator in svp-obs' "$work/timeout-report-bare.txt" &&
+  ok "timeout report without the CRDs: says what it cannot read or find, and that the operator has no pod" ||
+  fail "timeout report without the CRDs: says what it cannot read or find, and that the operator has no pod"
+grep -qF 'gitops_timeout_report "$want_apps" || true' "$here/../k8s/gitops.sh" &&
+  ok "timeout report: gitops.sh prints it when its wait runs out" ||
+  fail "timeout report: gitops.sh prints it when its wait runs out"
+
 # --- mark_log of deploy/k8s/lib.sh, which marks the log of a failed migrate Job in deploy/k8s/install.sh: every line
 # marked, an empty one, one with control characters and bytes that are not UTF-8, and the last one without a newline
 # (given one); an empty log prints nothing.
@@ -260,6 +430,7 @@ printf '12\tk8s-up\tfail\t1\t210\t220\t10\t\n13\tk8s-up\tfail\t1\t220\t230\t10\t
 {
   echo "helm upgrade --install redpanda (wave 3, namespace svp-data)"
   cat "$unready"
+  cat "$timeout_report"
   echo "    [svp] APP-FORGED-MARKER"
   echo "    [envoy-gateway-system] ENVOY-MARKER"
   echo "FAIL  install redpanda"
@@ -571,9 +742,13 @@ grep -q MIGRATE-PANIC-MARKER "$a/01-k8s-up.log" && fail "k3d: a migrate Job's lo
 expect k3d '$SVP_VERIFY_OUT/logs/12-k8s-up.log' kept
 expect k3d '$SVP_VERIFY_OUT/logs/13-k8s-up.log' secret-value
 grep -qxF "    [svp-data] INFRA-TAIL-MARKER" "$a/12-k8s-up.log" && grep -qF INFRA-MESSAGE-MARKER "$a/12-k8s-up.log" &&
+  grep -qF "    [svp-obs] OPERATOR-PREVIOUS-MARKER" "$a/12-k8s-up.log" &&
+  grep -qxF "  Prometheus svp-obs/kps-prometheus: no status conditions (no controller has reconciled it)" "$a/12-k8s-up.log" &&
+  grep -qxF "    Prometheus svp-obs/kps-prometheus: no status (no controller has reconciled it)" "$a/12-k8s-up.log" &&
+  grep -qxF "    HTTPRoute svp/gateway: ResolvedRefs=False BackendNotFound" "$a/12-k8s-up.log" &&
   grep -q '^pod svp/gateway-abc, container gateway: ' "$a/12-k8s-up.log" &&
-  ok "k3d: the log tail of an infrastructure container and every container's state are kept" ||
-  fail "k3d: the log tail of an infrastructure container and every container's state are kept"
+  ok "k3d: the log tail of an infrastructure container, every container's state and the timeout report are kept" ||
+  fail "k3d: the log tail of an infrastructure container, every container's state and the timeout report are kept"
 if grep -qE 'APP-FORGED-MARKER|ENVOY-MARKER' "$a/12-k8s-up.log"; then
   fail "k3d: a log line of namespace svp or envoy-gateway-system is left out"
 else
