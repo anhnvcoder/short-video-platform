@@ -1,6 +1,8 @@
 # 0030. DevSecOps bổ sung: govulncheck chặn lỗ hổng Go mà code gọi tới (ngoại lệ có hạn, image Go build bằng đúng bản Go đã quét), fuzz native của Go cho 10 hàm parse input không tin cậy, Schemathesis theo OpenAPI ở job `stack` (chỉ báo), CodeQL default setup bật bằng cài đặt repo (chỉ báo); không Semgrep/Opengrep, không ZAP; grype quét SBOM syft của mọi image trước push
 
-- Trạng thái: Đề xuất
+- Trạng thái: Chấp nhận (người học duyệt ADR, gồm mục 6, và phần hạ tầng ngày 2026-10-28); hiện thực và kiểm trên PR #28, SHA
+  `d58e67d`, ngày 2026-10-29 (mục Kết quả; rule Renovate của mục 1 thêm sau SHA đó, cùng PR). **Kiểm sau push:** SARIF grype lên tab Security, cảnh báo CodeQL #36, #37 đóng trên
+  `main`, lượt `stack` và CodeQL trên `main`, PR Renovate thật đầu tiên đổi cùng lúc directive `go`, image `golang` và `setup-go` (mục Kết quả)
 - Ngày: 2026-10-28
 
 ## Bối cảnh
@@ -14,7 +16,7 @@
 - Đây là hai dòng "để sau" của [ADR-0015](0015-cicd-devsecops-stage5.md) §12: govulncheck ("trivy đã đọc module trong binary Go;
   govulncheck bớt cảnh báo giả nhưng thêm một công cụ ghim") và DAST ("cần stack chạy trong CI; giai đoạn 6 có k6 và stack đo"). Job
   `stack` của `ci.yml` có từ giai đoạn 6 ([ADR-0020](0020-reliability-stage6.md) §15), nên điều kiện của DAST đã có.
-- **Lỗ hổng đang có** (lead chạy govulncheck v1.9.0 ngày 2026-10-28):
+- **Lỗ hổng đang có** (govulncheck v1.9.0 chạy ngày 2026-10-28 khi soạn ADR):
   - GO-2026-6809 (`crypto/x509`, `Certificate.Verify`, sửa ở go1.27.3 [N4]), mức symbol: code gọi tới qua đường TLS của
     `internal/objstore` (`Store.Download`). Máy dev có go1.27.2, CI ghim `go-version: 1.27.3` ở mọi job, còn
     `deploy/docker/service.Dockerfile` và `deploy/docker/media-worker.Dockerfile` vẫn build bằng `golang:1.27.2-trixie@sha256:…`: image
@@ -205,7 +207,7 @@ coverage instrumentation chỉ có trên AMD64 và ARM64; target phải nhanh, t
   | `services/user-service/internal/server` | `FuzzDisplayName(s string)` | `(n, empty, ok)`: `!ok` ⇒ `!empty`, không ràng buộc `n` (tên không có ký tự nhìn thấy như chỉ U+200D trả về `n` đã trim cùng `ok` false, và cả hai chỗ gọi bỏ `n` khi `!ok`); `empty` ⇒ `ok`, `n == ""`; `ok && !empty` ⇒ UTF-8 hợp lệ, `n == strings.TrimSpace(n)`, 1–50 rune, mỗi rune là U+200D hay thuộc `Variation_Selector` hoặc không thuộc Cc, Cf, `Other_Default_Ignorable_Code_Point`, U+2028, U+2029, U+2800 (bảng `unicode` viết lại trong test), có ít nhất một rune không phải khoảng trắng và không phải U+200D/`Variation_Selector`, và luỹ đẳng (`normalizeDisplayName(n) == (n, false, true)`). Seed: U+202E đầu tên, chỉ U+200D, U+3164, U+2800, emoji gia đình (có U+200D), 50 và 51 rune | WEB-18 |
   | `internal/objstore` | `FuzzIsMediaKey(key string, id []byte)` | `videoID` là chuỗi chuẩn của UUID từ 16 byte đầu của `id` (đệm 0), như mọi chỗ gọi (`id.String()`). `IsMediaKey(key, videoID)` đúng **khi và chỉ khi** `key` khớp `^media/<videoID>/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$` và không đoạn nào là `.` hay `..`; đúng ⇒ `path.Clean(key) == key`. Seed: `master.m3u8`, `720p/seg_000.ts`, `../x`, `%2e%2e/x`, `a\b`, `//x`, chuỗi rỗng sau prefix, `videoID` khác | FF-6 |
 
-  Đọc code thấy khác đề xuất của lead ở hai chỗ, đã ghi vào bảng: oracle của `FuzzVerify` không được là "chuỗi khác token đã cấp thì
+  Đọc code thấy khác đề xuất ban đầu của ADR ở hai chỗ, đã ghi vào bảng: oracle của `FuzzVerify` không được là "chuỗi khác token đã cấp thì
   không hợp lệ", vì `golang-jwt` mặc định giải base64 không strict [N31] nên 4 bit đệm của ký tự cuối đoạn chữ ký đổi được mà chữ ký vẫn
   đúng (cùng claim, cùng chữ ký: không phải giả mạo); và token cấp ở mỗi worker khác nhau (`iat`, `jti`), nên tính chất (2) chỉ so với
   token của chính tiến trình. Không bật `jwt.WithStrictDecoding()` ở phần này: không gì lưu hay so access token theo chuỗi (refresh
@@ -494,7 +496,10 @@ một nguồn.
 - **SARIF:** `grype.sarif` chỉ HIGH, CRITICAL không bị ngoại lệ che (như trivy), category `grype-image-<image>-<arch>/`. grype đặt tên rule
   `<lỗ hổng>-<tên gói>` và result không mang purl, nên một result được giữ khi có một match cùng rule được giữ: hai version của một gói mà
   một bị ngoại lệ thì cả hai vẫn hiện (không bao giờ ít hơn số cổng đếm). Artifact `sarif-<image>-<arch>` của job `build` trên `main` mang
-  cả `trivy.sarif` và `grype.sarif`; job `sarif` đã tải mọi `*.sarif`. PR chỉ có summary, như trivy.
+  cả `trivy.sarif` và `grype.sarif`; job `sarif` tải mọi `*.sarif` rồi upload **mỗi công cụ một lần** (mọi `trivy.sarif` cùng SARIF của
+  rescan, rồi mọi `grype.sarif`): `upload-sarif` gộp mọi file không phải CodeQL nó nhận thành một SARIF log [N44] và GitHub từ chối log
+  quá 20 run [N43], mà bảy image (14 chân) là 28 run; mỗi công cụ tối đa 14. Trước mỗi upload job đếm run bằng `jq` của runner, quá 20
+  thì công cụ đó không upload và job đỏ với số run và giới hạn (công cụ kia vẫn upload). PR chỉ có summary, như trivy.
 - **Trên máy:** `make grype SBOM=<đường tuyệt đối tới SPDX JSON>` (grype và cổng trên SBOM đó) và `make grype IMAGE=<ref@sha256:…>
   [ARCH=amd64|arm64]` (syft ghim đọc image của nền tảng đó từ registry, ẩn danh, rồi như trên); image ghim, `env -u DOCKER_DEFAULT_PLATFORM`.
   In số gói của SBOM và các binary ngoài trình quản lý gói (`node@26.12.0` với bản web ở trên).
@@ -543,7 +548,9 @@ một nguồn.
   - Cấu hình CodeQL nằm ngoài git; cảnh báo trùng với gosec phải dismiss tay; PR từ fork không được CodeQL quét.
   - Job CodeQL chạy `make` của commit được quét với token ghi được tab Security: một PR nội bộ sửa Makefile chạy lệnh của nó ở đó
     trước khi duyệt (rủi ro chấp nhận ở lab, mục 4).
-  - grype: mỗi chân image thêm vài giây (DB đã cache) hay ~2 phút (tải DB), một cache ~200 MB mỗi ngày; một nguồn lỗ hổng thứ hai có thể
+  - grype: mỗi chân image thêm vài giây (DB đã cache) hay ~2 phút (tải DB); cache DB ~480 MB mỗi entry (`grype-db-2026-10-29` 482 MB
+    theo `gh cache list`), một entry mỗi ngày trên `main` cộng mỗi ref PR, tức ~0,5–1 GB mỗi ngày của quota cache 10 GB của repo, nên
+    cache khác (tools, pnpm, trivy) bị đẩy ra sớm hơn; một nguồn lỗ hổng thứ hai có thể
     chặn image vì Critical mà trivy không xếp Critical; mục hết hạn của `.trivyignore.yaml` làm đỏ mọi chân image (mục 6).
 - Xem lại khi:
   - govulncheck đỏ vì `vuln.go.dev` (không phải vì lỗ hổng) quá 2 lượt `main` trong một tháng: cân nhắc cache DB theo ngày như trivy.
@@ -563,29 +570,131 @@ một nguồn.
 
 ## Hiện thực ở
 
-Dự kiến (phần tài liệu chỉnh lại theo file thật):
-
-- `Makefile`: `GOVULNCHECK_VERSION`, `SCHEMATHESIS_IMAGE`, `make tools`, `make vulncheck` trong `check-go`, `make fuzz`, `include
-  deploy/dast/dast.mk`.
-- `tools/vulngate/`: gate đọc luồng JSON của govulncheck, `.govulncheck-ignore.json` và dòng `FROM golang` của Dockerfile (mục 1).
-- `.govulncheck-ignore.json`: chỉ khi có ngoại lệ đầu tiên.
-- `go.mod`: directive `go 1.27.3`; `deploy/docker/service.Dockerfile`, `deploy/docker/media-worker.Dockerfile`: `golang:1.27.3`.
 - `renovate.json`: rule `rangeStrategy: bump` cho directive `go` (mục 1).
-- `internal/pagetoken/`, `internal/authtoken/`, `internal/objstore/`, `services/gateway/internal/httpx/`,
-  `services/user-service/internal/server/`: `fuzz_test.go`, `testdata/fuzz/` (mục 2); `TestMain` của
-  `services/user-service/internal/server/server_test.go` bỏ dựng database ở chế độ fuzz.
-- `deploy/dast/dast.mk`, `deploy/dast/run.sh`, `deploy/dast/schemathesis.toml`; `.gitignore` (`.dast/`) (mục 3).
-- `.github/workflows/ci.yml`: bước `make dast` và artifact `dast` của job `stack` (mục 3).
-- Cài đặt repo GitHub: CodeQL default setup (mục 4; lệnh ở `docs/ci-cd.md`).
+- `Makefile`: `GOVULNCHECK_VERSION`, `GRYPE_IMAGE`, `SCHEMATHESIS_IMAGE` (dòng `# renovate:` ngay trên); `make tools` cài
+  govulncheck; `make vulncheck` trong `check-go` trước `test`; `make fuzz` (`FUZZTIME`); `make grype`; `-include deploy/dast/dast.mk`.
+- `tools/vulngate/` (`main.go`, `main_test.go`): gate đọc luồng JSON của govulncheck, `.govulncheck-ignore.json` và dòng `FROM golang`
+  của Dockerfile (mục 1).
+- `.govulncheck-ignore.json`: chưa có, chỉ tạo khi có ngoại lệ đầu tiên.
+- `go.mod`: directive `go 1.27.3`; `deploy/docker/service.Dockerfile`, `deploy/docker/media-worker.Dockerfile`:
+  `golang:1.27.3-trixie@sha256:…`.
+- Fuzz (mục 2): `fuzz_test.go` ở `internal/pagetoken/`, `internal/authtoken/`, `internal/objstore/`,
+  `services/gateway/internal/httpx/`, `services/user-service/internal/server/`; `TestMain` của
+  `services/user-service/internal/server/server_test.go` bỏ dựng database ở chế độ fuzz; helper ký token của
+  `internal/authtoken/authtoken_test.go` và `services/gateway/internal/httpx/middleware_test.go` nhận `testing.TB`. Chưa có
+  `testdata/fuzz/` (fuzz chưa tìm ra lỗi).
+- DAST (mục 3): `deploy/dast/dast.mk`, `deploy/dast/run.sh`, `deploy/dast/schemathesis.toml`; `.gitignore` (`.dast/`);
+  `.github/workflows/ci.yml` (bước `dast`, chọn và tải artifact `dast` của job `stack`). Lỗi Schemathesis tìm ra, sửa ở
+  `services/gateway/internal/httpx/json.go` (`DecodeJSON` từ chối body không phải object và `null` ở cấp đầu),
+  `services/gateway/internal/api/api.go` (`page_size` có mặt mà rỗng là 400), `services/gateway/openapi.yaml`
+  (`RefreshTokenRequest`), `web/gen/api.d.ts` (sinh lại).
+- CodeQL (mục 4): cài đặt repo GitHub, không file nào; lệnh bật, tắt, đọc ở `docs/ci-cd.md` mục 7. Hai cảnh báo đầu tiên sửa ở
+  `services/gateway/cmd/gateway/main.go` (service config gRPC dựng bằng `json.Marshal`) và `web/e2e/security.e2e.ts` (regex cờ `i`).
 - grype (mục 6): `Makefile` (`GRYPE_IMAGE`, `make grype`); `deploy/ci/common.sh` (`grype_sbom`, `grype_sarif`, `trivyignore_json`,
   `grype_ignore_jq`, `sbom_binaries`, `grype_check`); `deploy/ci/build-image.sh` (bước grype sau syft, hai cổng); `deploy/ci/scan-gate.sh`
   (`--grype`); `deploy/ci/changed-services.sh` (dòng `GRYPE_IMAGE`); `deploy/ci/platform-test.sh` (ca cổng grype, `changed-services`);
-  `.github/workflows/images.yml` (cache DB grype, `grype.sarif` trong artifact `sarif-*`).
+  `.github/workflows/images.yml` (cache DB grype, `grype.sarif` trong artifact `sarif-*`, job `sarif` upload mỗi công cụ một lần).
+- Tài liệu: `CLAUDE.md` (mục Kiểm tra), `docs/ci-cd.md`, `docs/threat-model.md` (SC-1, SC-3, SC-10, SC-13 và các dòng có target
+  fuzz).
 
 ## Kết quả
 
-Chưa có: chờ số đo của phần hiện thực (govulncheck trước và sau khi sửa, thời gian của `make vulncheck`, số exec của từng target fuzz,
-lượt `make dast` trên máy và ở job `stack`, lượt CodeQL đầu tiên).
+Nguồn: lượt CI của PR #28 trên SHA `d58e67d` ngày 2026-10-29: `ci.yml` [40804508919](https://github.com/anhnvcoder/short-video-platform/actions/runs/40804508919),
+`images.yml` [40804508815](https://github.com/anhnvcoder/short-video-platform/actions/runs/40804508815), CodeQL
+[40804504269](https://github.com/anhnvcoder/short-video-platform/actions/runs/40804504269), cả ba xanh, `ci-ok` và `images-ok` đạt;
+số trên máy (Mac arm64) đo ngày 2026-10-28 đến 2026-10-29 lúc hiện thực.
+
+**govulncheck (mục 1).**
+
+- Trước khi sửa: `make vulncheck` với directive `go 1.27` dừng ở "the go directive of go.mod must name a patch release"; với
+  `go 1.27.2`: `FAIL GO-2026-6809 stdlib@v1.27.2 (fixed in v1.27.3)`, trace `internal/objstore.(*Store).Download objstore.go:275 → … →
+  crypto/x509.(*Certificate).Verify`; với `go 1.27.3` mà Dockerfile còn `golang:1.27.2`: hai dòng `FAIL deploy/docker/*.Dockerfile:
+  golang image is go1.27.2, govulncheck scanned go1.27.3`.
+- Xử lý: directive `go 1.27.3`, hai Dockerfile `golang:1.27.3-trixie@sha256:7b072c59…` (index có amd64, arm64). trivy của hai chân thử
+  (gateway, media-worker arm64) đọc `stdlib v1.27.3` trong binary. Không tạo `.govulncheck-ignore.json`.
+- Job `check` (job 123220104325, 6 phút 07 s): `ok govulncheck: no called vulnerability (go1.27.3, 2 golang images match, vuln.go.dev
+  modified 2026-10-27T21:16:18Z)`; mức module chỉ đếm: `INFO 3 vulnerabilities in required modules, not called: GO-2026-5932
+  x/crypto@v0.58.0, GO-2026-6860, GO-2026-6866 x/net@v0.60.0` (để Renovate nâng `x/net`; `x/crypto` chưa có bản vá).
+- Thời gian riêng của `make vulncheck`: chưa đo.
+
+**Renovate (mục 1).**
+
+- `renovate.json` có rule `rangeStrategy: bump` cho directive `go` của `gomod`, đặt cạnh nhóm "go toolchain and base images"; thêm
+  sau SHA `d58e67d`, cùng PR #28. Kiểm: `make renovate-check` xanh (`renovate-config-validator --strict`). **Kiểm sau push:** PR
+  Renovate thật đầu tiên đổi cùng lúc directive, image `golang` và `setup-go`, và xanh ở `check`.
+
+**Fuzz (mục 2).** 10 target như bảng mục 2, không target nào tìm ra lỗi nên không hàm nào đổi và không commit `testdata/fuzz/`.
+`make fuzz FUZZTIME=60s` (8 worker): 10 phút 34 s cả lượt; số exec trong 60 s: `FuzzDecode` 21,5 triệu, `FuzzRoundTrip` 20,2 triệu,
+`FuzzVerify` 8,80 triệu, `FuzzIsMediaKey` 3,24 triệu, `FuzzEmail` 1,94 triệu, `FuzzRequireAuth` 1,88 triệu, `FuzzClientAddr` 1,74
+triệu, `FuzzHandle` 1,70 triệu, `FuzzDisplayName` 0,76 triệu, `FuzzValidUTF8` 0,65 triệu. Đường lỗi kiểm bằng một target luôn đỏ
+viết tạm (đã xoá): `make fuzz` dừng, in tên target và tệp input, exit khác 0. Fuzz không chạm database: với `SVP_TEST_POSTGRES_URL=invalid`
+`make fuzz` cho user-service xanh, còn `go test` không `-fuzz` cùng gói đỏ ở `pgtest`.
+
+**Schemathesis (mục 3).**
+
+- Lỗi tìm ra ở hai lượt đầu trên máy (check `negative_data_rejection`), đã sửa: (1) `null` cho trường chuỗi được nhận như vắng
+  (`POST /auth/register` `display_name: null` → 201, `POST /auth/logout` `refresh_token: null` → 204); (2) body `null` đi qua: cả hai
+  giờ là 400 `INVALID_JSON`; (3) `GET /feed/explore?page_size=` → 200, giờ 400 `INVALID_PAGE_SIZE`; (4) `POST /auth/logout` `{}` →
+  204 trái `required: [refresh_token]` của spec, trong khi code cố ý chuyển token thiếu tới user-service: sửa spec (bỏ `required`).
+  Lỗi (1)–(3) có test đỏ trước, xanh sau.
+- Trên máy sau khi sửa, ba lượt xanh: 1 022 request 220 s, 1 021 request 220 s, 1 006 request 216 s; lượt cuối (sau khi sửa vòng canh
+  hạn): Schemathesis 4.32.4, 20/20 operation, 1 008 request, 216 s, 429 là 11,5 %. Phân bố status ở một lượt (1 006 test case): 200=99
+  201=1 202=24 204=68 400=297 401=181 404=98 405=116 409=2 429=120; 429 nhiều nhất ở `POST /auth/register` (~45/67) và `POST /videos`
+  (~46/67), tức hết burst `register` và `upload`: trên 50 % ở hai operation đó, mức của mục Xem lại khi (điều kiện tính trên 5 lượt
+  `stack` liên tiếp; phân bố theo operation của lượt CI có trong `summary.json` của artifact, chưa đọc); 405 là method lạ phase
+  `coverage` gửi.
+- Job `stack` (job 123220104204): bước `make dast` 3 phút 40 s, cả job 19 phút 14 s trên hạn 45 phút (không nới); seed 804157956,
+  exit 0, 20/20 operation, 1 007 test case, 0 lỗi, 1 007 request trong 220 s; status 200=89 201=2 202=19 204=73 400=287 401=208
+  404=93 405=116 409=1 429=119 (429 là 11,8 %). Artifact `dast` (`report.json`, `summary.json`) và log bước không khớp mẫu bí mật nào;
+  khoá `auth` của report chỉ có `reauth_count`, `reauth_broke`.
+- Khối lượng phase `coverage` riêng: chưa đo (chỉ có tổng ~1 000 request mỗi lượt cả ba phase). Tiêu đề nhóm lỗi của `report.json`: phép dò
+  bí mật trên mọi `report.json`, `summary.json` của các lượt trên máy, cả hai lượt đỏ, không khớp mẫu nào.
+
+**CodeQL (mục 4).**
+
+- Bật ngày 2026-10-29 bằng lệnh của mục 4 (response trả lượt [40801737073](https://github.com/anhnvcoder/short-video-platform/actions/runs/40801737073)).
+  Cấu hình đọc lại: `configured`, query suite `default`, threat model `remote`, lịch `weekly`, ngôn ngữ `actions`, `go`,
+  `javascript-typescript` (API liệt kê thêm `javascript`, `typescript`).
+- `sha_pinning_required: true` không chặn workflow động: lượt CodeQL của PR chạy và xanh, ba job `Analyze` (`javascript-typescript`
+  123220092900, `go` 123220093169, `actions` 123220093243).
+- **Quyền `GITHUB_TOKEN`** (khối "GITHUB_TOKEN Permissions", giống nhau ở cả ba job của lượt 40804504269): `Actions: read`,
+  `Contents: read`, `Metadata: read`, `Packages: read`, `SecurityEvents: write`. Quyền ghi duy nhất là `security-events`, nên điều
+  kiện chấp nhận của mục 4 giữ, default setup giữ bật.
+- Cảnh báo ban đầu: lượt đầu trên `main` để lại 2 cảnh báo CodeQL mở: #37 `go/unsafe-quoting` (service config gRPC ghép chuỗi
+  bằng `Sprintf` trong `services/gateway/cmd/gateway/main.go`) và #36 `js/bad-tag-filter` (regex tìm thẻ `<script>` thiếu cờ `i` trong
+  test CSP e2e). Cả hai sửa ở `d58e67d`: service config dựng từ struct Go bằng `json.Marshal` (test so cấu trúc với JSON cũ và
+  gRPC nhận config), regex thêm cờ `i`. Trên PR: analysis ở `refs/pull/28/head` (`go` 0 kết quả trên 34 rule, `javascript-typescript` 0 trên 87, `actions` 0
+  trên 17), check "No new alerts in code changed by this pull request"; #36, #37 vẫn mở trên `main` tới lượt CodeQL sau merge
+  (**kiểm sau push**).
+
+**grype (mục 6).**
+
+- Bản web `web@sha256:bc355bf1…` amd64 trên máy: package `node@26.12.0` là binary ngoài trình quản lý gói duy nhất; 130 gói,
+  Critical 0, High 13, Medium 10, Low 3, Negligible 7. Ca âm SBOM log4j-core 2.14.1: hai Critical (`GHSA-jfh8-c2jp-5v3q` /
+  CVE-2021-44228, `GHSA-7rjr-3q55-vv33` / CVE-2021-45046), exit khác 0.
+- `images.yml` 40804508815: 14 chân (7 image × amd64, arm64) đều qua cổng grype, không mục ngoại lệ nào được dùng; Critical/High/
+  Medium/Low/Negligible/Unknown mỗi chân, giống nhau ở hai kiến trúc: gateway, engagement-service, feed-service, video-service
+  0/0/0/0/0/2; user-service 0/0/0/0/0/3; media-worker 0/61/81/9/0/4; web 0/13/10/3/7/0 (`node@26.12.0`; chân Go: không binary nào
+  ngoài trình quản lý gói).
+- Thời gian thêm mỗi chân: trên máy 5 s (gateway arm64), 7 s (web arm64) khi DB đã cache, lần tải DB đầu 2 phút 13 s (archive 196 MB,
+  3,1 GB trên đĩa); trên CI 2–8 s mỗi chân, cả 14 chân dùng cache `grype-db-2026-10-29`.
+- SARIF grype lên tab Security: lượt PR không có artifact SARIF (job `sarif` chỉ chạy ở `main`): **kiểm sau push**. Final review của
+  thay đổi tìm ra job `sarif` ban đầu đưa cả hai công cụ cho một `upload-sarif`: lượt `main` [40733866890](https://github.com/anhnvcoder/short-video-platform/actions/runs/40733866890)
+  (chỉ trivy) ghi "Combining SARIF files" cho 14 file, nên lượt `main` đầu tiên build cả bảy image với grype (28 run) sẽ bị từ chối.
+  Sửa thành mỗi công cụ một upload (mục 6). Kiểm trên máy bằng file SARIF giả và chính script của bước: 7 image (14 trivy, 14 grype)
+  → hai upload 14 run; rescan 14 file → chỉ upload trivy; 21 run một công cụ → `::error::21 trivy SARIF runs in 21 files: GitHub
+  rejects an upload with more than 20 runs`, exit 1, công cụ kia vẫn upload; file lạ → dừng. Lượt `images.yml` trên `main` sau merge
+  (hai upload xanh, category `grype-image-…` có trên tab Security): **kiểm sau push**.
+
+**Lệch so với quyết định.**
+
+- Mục 3, hạn 10 phút: vòng canh nằm trong chính `run.sh` (mỗi giây) thay vì một tiến trình canh riêng; hạn tính từ lúc `docker run`
+  bắt đầu, gồm cả pull image; quá hạn thì `docker stop`, giết client docker và xoá container client kịp tạo. Kiểm: hạn 2 s khi image
+  chưa có, hạn 20 s giữa lượt, SIGINT và SIGTERM lúc pull: không container `svp-dast-*` nào còn lại.
+- Mục 3, cấu hình thêm: plugin coverage của image tắt (`SCHEMATHESIS_COVERAGE=false`), cache của Schemathesis tắt và thư mục làm việc
+  là `/tmp` của container (cache ghi dữ liệu request vào thư mục làm việc).
+- Mục 2, tham số: `FuzzClientAddr` lấy số header `X-Forwarded-For` từ `(hops/3)%3`; `FuzzDisplayName` so cả kết quả (`empty`, `ok`)
+  với oracle dựng từ quy tắc, chặt hơn các phép kéo theo một chiều của bảng.
 
 ## Nguồn
 
@@ -700,6 +809,12 @@ lượt `make dast` trên máy và ở job `stack`, lượt CodeQL đầu tiên)
 - [N42] GitLab, "Deprecations and removals by version", mục "Grype scanner for container scanning" ("deprecated in GitLab 16.9. From
   GitLab 17.0, the Grype analyzer will no longer be maintained"; image còn cập nhật "until GitLab 19.0, at which point the analyzer will
   stop working"; muốn dùng tiếp thì tự tích hợp theo "Security scanner integration"): <https://docs.gitlab.com/update/deprecations/>
+- [N43] GitHub, "SARIF support for code scanning", bảng giới hạn ("Runs per file | 20"; "If any of these objects exceeds its maximum
+  value the SARIF file is rejected"; đọc ngày 2026-10-29):
+  <https://docs.github.com/en/code-security/code-scanning/integrating-with-code-scanning/sarif-support-for-code-scanning>
+- [N44] `github/codeql-action` ở SHA ghim `6f2ac81f` (v4.39.0): `src/upload-lib.ts` (nhiều file mà không phải mọi run do CodeQL tạo thì
+  "Merging files in the action" bằng `combineSarifFiles`) và `src/sarif/index.ts` (`combineSarifFiles` nối `runs` của mọi file vào một log;
+  đọc ngày 2026-10-29): <https://github.com/github/codeql-action/blob/6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee/src/upload-lib.ts>
 
 Chưa kiểm được ở ngày viết: `sha_pinning_required` có áp cho workflow do default setup dựng hay không (mục 4, kiểm khi bật); quyền đầy
 đủ của `GITHUB_TOKEN` trong workflow CodeQL do GitHub quản (mục 4, đọc đầu log lượt đầu; có quyền ngoài `security-events` thì tắt); khối lượng

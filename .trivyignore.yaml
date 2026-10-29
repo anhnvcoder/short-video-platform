@@ -1,6 +1,9 @@
-# Vulnerabilities trivy leaves out of every scan: the lockfile of web/ and the seven images. Each entry names the exact
-# package and version (purls), so the same CVE in any other package or version is still reported, and expires within
-# 30 days, when it is checked again for a fix (deploy/ci/scan-gate.sh --check-ignorefile enforces the rules).
+# Vulnerabilities trivy and grype leave out of every scan: trivy on the lockfile of web/ and the seven images, grype on
+# the SBOM of each image (and make grype). Each entry names the exact package and version (purls), so the same CVE in
+# any other package or version is still reported, and expires within 30 days, when it is checked again for a fix
+# (deploy/ci/scan-gate.sh --check-ignorefile enforces the rules in the config job). The grype gate is stricter: from the
+# day of an entry's expired_at it fails every image leg, even with nothing left to cover, so renew or remove the entry
+# before that day.
 #
 # All of these come only through @lhci/cli 0.15.1, the dev dependency of make web-lighthouse; none reaches the web
 # image. @lhci/cli 0.15.1 is its latest release and pins lighthouse 12.6.1 (puppeteer-core 24.43.1, which pins

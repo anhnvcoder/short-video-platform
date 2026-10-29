@@ -111,13 +111,14 @@ Từ giai đoạn 1, cho code Go (`services/`, `internal/`, `tools/`), mọi l�
 liệt kê target):
 
 - `make tools`: cài một lần các công cụ ghim version (`protoc-gen-go`, `protoc-gen-go-grpc`, `sqlc`, `golangci-lint`,
-  `actionlint`, `gitleaks`, `sloth` sinh rule SLO, `k3d`); `buf`, Helm cài bằng Homebrew (CI cài hai thứ đó bằng
+  `actionlint`, `gitleaks`, `govulncheck`, `sloth` sinh rule SLO, `k3d`); `buf`, Helm cài bằng Homebrew (CI cài hai thứ đó bằng
   `make ci-tools`, chỉ chạy trên Linux amd64).
 - `make generate`: chạy sau khi sửa `proto/` hoặc SQL của `sqlc`; code sinh ra (`gen/go`, code `sqlc`) được commit.
 - `make generate-check`: chạy `make generate` trong bản sao tạm của working tree (file đã track và file chưa track không bị
   ignore, không `.env`), in file lệch và diff, exit ≠ 0 khi lệch; không bao giờ ghi vào working tree.
 - `make check` = `make check-go` + `make web-check`. `make check-go`: `gofmt`, `go vet`, `golangci-lint run` (gồm gosec),
-  `actionlint` (mọi file của `.github/workflows/`), `buf lint` + `buf build`, `go test -race ./...` (có integration test trên Postgres native `127.0.0.1:5432` qua
+  `actionlint` (mọi file của `.github/workflows/`), `buf lint` + `buf build`, `make vulncheck` (govulncheck, dưới đây),
+  `go test -race ./...` (có integration test trên Postgres native `127.0.0.1:5432` qua
   `SVP_TEST_POSTGRES_URL` và Redis native db 15 qua `SVP_TEST_REDIS_URL`, mặc định `redis://127.0.0.1:6379/15` trong
   `Makefile`). Thu hẹp bằng `make test PKGS=./services/user-service/...`; `TESTFLAGS` thêm cờ cho `go test` của
   `make test`, `make cover`, `make check` (`make test TESTFLAGS=-count=1` chạy lại không dùng cache, như CI), `LINTFLAGS`
@@ -163,6 +164,19 @@ liệt kê target):
   `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` của `.env`; gateway compose đặt `TRUST_TRACE_CONTEXT=true` (chỉ loopback, WEB-24).
 - `make cover`: `go test -race` như `make test` nhưng ghi coverage vào `cover.out` (đã gitignore) và in tổng; thu hẹp bằng
   `PKGS=`, xem từng dòng bằng `go tool cover -html=cover.out`.
+- `make vulncheck` ([ADR-0030](docs/adr/0030-devsecops-supplement.md) §1, trong `make check-go` trước test, cần mạng tới
+  `vuln.go.dev`, không biến bỏ qua): govulncheck `-format json ./...` bằng đúng Go của directive `go` trong `go.mod`
+  (`GOTOOLCHAIN=go<directive>`; directive phải có số patch, `go 1.27.3`), rồi gate `tools/vulngate` quyết: lỗ hổng mức symbol
+  (code gọi tới) đỏ, in id, module@version, bản sửa và trace; mức module, package chỉ một dòng `INFO`; mọi dòng `FROM golang:` của
+  `deploy/docker/*.Dockerfile` phải mang đúng bản Go đã quét (lệch, tag không đủ ba số, hay không còn dòng nào là đỏ). Nâng Go thì
+  cùng một PR đổi directive, hai Dockerfile và `go-version` của workflow. Ngoại lệ chỉ ở `.govulncheck-ignore.json` (gốc repo,
+  chỉ tạo khi có mục đầu tiên; hiện không có): khoá `ignore`, mỗi mục đúng `id`, `module`, `version` (như frame đầu, `stdlib`
+  cho thư viện chuẩn), `statement` có nội dung, `expired_at` sau hôm nay (UTC) và không quá 30 ngày; chỉ cho lỗ hổng chưa có bản
+  vá (có bản vá thì nâng), mục trùng, hết hạn hay không còn khớp finding nào là đỏ.
+- `make fuzz [FUZZTIME=30s] [PKGS=…]` (ADR-0030 §2): chạy lần lượt mọi `FuzzXxx` (mỗi gói một `fuzz_test.go`: `pagetoken`,
+  `authtoken`, `objstore`, `httpx` của gateway, `server` của user-service; 10 target) bằng `go test -fuzz`, không `-race`,
+  dừng ở target đầu tiên đỏ và in đường dẫn input go ghi ra dưới `testdata/fuzz/<target>/`; seed chạy trong `make test`. Lỗi
+  tìm ra thì sửa hàm và commit input đó (test đỏ trước khi sửa). Chỉ chạy tay, không có trong CI.
 - `make env`: sinh `.env` local (mode 600, mật khẩu DB, mật khẩu root của object store `SVP_S3_ROOT_PASSWORD`, secret key S3 của
   từng service và của user thử `svp-objstore-probe` (`SVP_S3_PROBE_SECRET_KEY`, chỉ compose và `make test-stack`) ngẫu nhiên,
   khoá JWT mới, khoá Server Action của web `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` (base64 của 32 byte); thêm
@@ -283,6 +297,19 @@ liệt kê target):
   `http://gateway:8080` và `http://web:3001` (`Host`, `Origin` là `http://localhost:3001`); tóm tắt ở
   `.k6/<profile>-<time>/summary.json` (gitignore; không `setup_data`, token, cookie, mật khẩu, grep kiểm), exit ≠ 0 khi một
   threshold trượt. **LOCAL LAB ONLY:** cả hai xoá khoá `svp:gw:rl:register:*` ở db 10 như `make smoke`.
+- `make dast` (giai đoạn 6b, DAST theo OpenAPI, [ADR-0030](docs/adr/0030-devsecops-supplement.md) §3, target ở
+  `deploy/dast/dast.mk`, logic ở `deploy/dast/run.sh`, cấu hình `deploy/dast/schemathesis.toml`): Schemathesis chỉ bằng
+  `SCHEMATHESIS_IMAGE` ghim của `Makefile`, trên stack `make up` đang chạy (`core` là đủ); từ chối khi gateway không chạy, mạng
+  `svp_web` không có hay cluster k3d chạy. Đăng ký và đăng nhập một user thử (token chỉ trong môi trường, không in), container
+  vào `svp_web` gọi `http://gateway:8080` với 20 operation của `services/gateway/openapi.yaml` (trừ `/healthz`, `/readyz`), phase
+  `examples`, `coverage`, `fuzzing`, check không 5xx, status, content type, schema và header của response, `ignored_auth`,
+  `negative_data_rejection`; `--rate-limit 5/s`, `--max-examples 25`, seed ngẫu nhiên (`SVP_DAST_SEED=<n>` chạy lại seed của
+  `report.json`), hạn cả lượt 10 phút (gồm pull image). Mọi output của Schemathesis vào `.dast/<time>/schemathesis.log` (mode 700,
+  gitignore; cùng `junit.xml`, `requests.har` mang body của response, không bao giờ rời máy), terminal chỉ có tóm tắt in từ
+  `report.json` và `summary.json` (phân bố status, tỷ lệ 429) sau khi hai tệp qua phép dò bí mật (JWT, token, cookie, chữ ký
+  presigned, chính token của lượt); exit theo Schemathesis (0 đạt, 1 check trượt, 2 không chạy được), quá hạn hay lộ bí mật là 1.
+  Một lượt ~3 phút 40 s, làm cạn rate limit theo IP và theo user: chạy sau các bước khác. **LOCAL LAB ONLY:** xoá khoá
+  `svp:gw:rl:register:*` ở db 10 trước và sau lượt như `make smoke`.
 - `make gameday`, `make gameday-mark M=diagnosed|mitigated|recovered`, `make gameday-end` (game day, ADR-0020 §13, script
   `deploy/compose/drills/gameday.sh`): chỉ trên stack `make up OBS=lgtm` có video `READY`. `gameday` chạy suốt buổi ở một
   terminal: tải nền k6 `local` (container `svp-gameday-k6`, giữ `SVP_K6_HOLD`, mặc định 60 phút), chờ 2 phút ổn định, **T0**
@@ -510,25 +537,30 @@ liệt kê target):
     `contents: read`, không secret; Postgres, Redis là service container publish trên `127.0.0.1` và IP bridge `172.17.0.1`
     (`make ci-bridge-check` dừng job khi gateway của network `bridge` khác địa chỉ đó; chỉ cho CI), gói apt
     `postgresql-client redis-tools ffmpeg jq`, rồi `make env`, `make up`, `make smoke`, `make web-install`, Playwright
-    Chromium và WebKit, `make web-e2e`, `make load-ci`, `make web-lighthouse` (đỏ không làm job đỏ), `make ps` khi lỗi,
-    `make down` luôn chạy; artifact chỉ `k6-summary` (`summary.json` đã grep bí mật) và `lighthouse` (báo cáo đã lọc
-    cookie). Trước `make web-lighthouse` job bỏ hạn chế AppArmor `kernel.apparmor_restrict_unprivileged_userns` của runner
+    Chromium và WebKit, `make web-e2e`, `make load-ci`, `make web-lighthouse` (đỏ không làm job đỏ), `make dast` (cuối cùng,
+    hạn bước 15 phút, đỏ không làm job đỏ), `make ps` khi lỗi, `make down` luôn chạy; artifact chỉ `k6-summary`
+    (`summary.json` đã grep bí mật), `lighthouse` (báo cáo đã lọc cookie) và `dast` (chỉ `report.json`, `summary.json`, dò bí
+    mật lại trước khi chép; tệp nghi bị bỏ kèm `::warning::`). Trước `make web-lighthouse` job bỏ hạn chế AppArmor `kernel.apparmor_restrict_unprivileged_userns` của runner
     (Chrome của Playwright cần user namespace cho sandbox). Đã kiểm ngày 2026-10-24 (lượt PR
     [40133806424](https://github.com/anhnvcoder/short-video-platform/actions/runs/40133806424), ba lần chạy liền xanh,
     quyền ở đầu log chỉ `Contents: read`, artifact chỉ hai loại).
   - `.github/workflows/images.yml` (PR, push `main`, dispatch, lịch hằng ngày): chỉ build service đổi so với base
     (`deploy/ci/changed-services.sh`; đổi `images.yml`, `deploy/ci/` (trừ `trivy-config-ignore.yaml`, script và test của
     `verify.yml`, `platform-test.sh`, `platform-guard.sh`: không job image nào đọc chúng), `deploy/k8s/lib.sh` hay dòng
-    `TRIVY_IMAGE`/`SYFT_IMAGE`/`COSIGN_IMAGE` của `Makefile` thì cả bảy; `web` chỉ build khi đổi file dưới `web/` hay
+    `TRIVY_IMAGE`/`SYFT_IMAGE`/`GRYPE_IMAGE`/`COSIGN_IMAGE` của `Makefile` thì cả bảy; `web` chỉ build khi đổi file dưới `web/` hay
     `deploy/docker/web.Dockerfile`, context `web/`, `SVP_BUILD_ID` là 12 hex của commit). Base: push `main` so với lượt
     push `main` thành
     công cuối (lượt dispatch không đẩy base, nên thay đổi chỉ dispatch đã phát hành, như push GitHub không chạy workflow,
     được build lại ở push kế); PR so với merge-base với nhánh base; dispatch so với merge-base với `origin/main` (trên
     `main` là chính HEAD, nên không build gì), input `services` (`all` hay tên cách bằng khoảng trắng) ghi đè phép so. Mỗi
     service hai chân amd64, arm64 build native,
-    trivy chặn bí mật (mọi severity) và CRITICAL **trước** push, push lên `ghcr.io/anhnvcoder/short-video-platform/<svc>`
-    đúng bản đã quét, ghép index, ký keyless bằng cosign kèm attestation `vuln` (kết quả quét hai nền tảng) và SBOM syft
-    mỗi nền tảng, rồi job `promote` mở PR cuộn. Lượt PR chỉ build và quét (`build-nopush`), `values-check` kiểm digest mà
+    trivy chặn bí mật (mọi severity) và CRITICAL **trước** push; grype ([ADR-0030](docs/adr/0030-devsecops-supplement.md) §6)
+    quét SBOM syft của chân đó, cũng trước push: CRITICAL còn lại sau `.trivyignore.yaml` chặn (`--allow-critical` chỉ cho image
+    diễn tập `drill-vulnerable`), HIGH trở xuống chỉ đếm, một hàng `(grype)` trong summary cạnh hàng trivy, thấy cả binary ngoài
+    trình quản lý gói (`node` của web) mà trivy không thấy; DB grype cache theo ngày (`SVP_GRYPE_CACHE`), SARIF category
+    `grype-image-<svc>-<arch>/` chỉ lên tab Security ở `main`; push lên `ghcr.io/anhnvcoder/short-video-platform/<svc>`
+    đúng bản đã quét, ghép index, ký keyless bằng cosign kèm attestation `vuln` (kết quả trivy của hai nền tảng; attestation,
+    Kyverno và rescan hằng ngày không đọc grype) và SBOM syft mỗi nền tảng, rồi job `promote` mở PR cuộn. Lượt PR chỉ build và quét (`build-nopush`), `values-check` kiểm digest mà
     PR đổi (đã ký, attestation không quá 48 giờ). Dispatch `-f services=<tên…|all>` build, ký và promote lại các service
     đó ở commit được dispatch, `-f rescan=true [-f values_ref=<ref>]` quét lại mọi digest phát hành (lịch hằng ngày làm
     việc này), `-f drill=true` đẩy hai image diễn tập; check tổng `images-ok`.
@@ -587,13 +619,21 @@ liệt kê target):
     requests"; Actions chỉ cho action của GitHub và `sigstore/cosign-installer`, ghim SHA bắt buộc; duyệt workflow của PR
     fork cho mọi người ngoài; secret scanning + push protection; Dependabot alerts) và package GHCR public do người học bật
     (ADR-0015 §5, §11): **kiểm sau push**.
+  - CodeQL **default setup** ([ADR-0030](docs/adr/0030-devsecops-supplement.md) §4): bật bằng cài đặt repo, không file workflow
+    trong repo (GitHub dựng và giữ workflow động "CodeQL"); ngôn ngữ `actions`, `go`, `javascript-typescript`, query suite
+    `default`, threat model `remote`; quét mỗi push `main`, PR từ nhánh của repo (không PR từ fork) và hằng tuần. **Chỉ báo:**
+    không là check bắt buộc, cảnh báo ở tab Security (giả thì dismiss kèm lý do), gosec vẫn là cổng chặn. Job CodeQL chạy `make`
+    không đối số của commit được quét (autobuild Go), token chỉ có quyền ghi `security-events` (đọc từ log ngày 2026-10-29).
+    Lệnh bật, tắt và đọc kết quả (người học chạy) ở [`docs/ci-cd.md`](docs/ci-cd.md) mục 7.
   - Chạy lại một job trên máy, từ gốc repo: `make check-go TESTFLAGS=-count=1`; `make web-check`,
     `make web-generate-check`, `make web-lockfile-scan`; `make generate-check`;
     `buf breaking --against '.git#ref=<base>'`; `deploy/ci/scan-gate.sh --check-ignorefile`, `deploy/ci/platform-guard.sh`,
     `deploy/ci/platform-test.sh`, `make slo-check`,
     `make otelcol-validate`, `make compose-config`, `make helm-check`, `deploy/k8s/check-image-digests.sh`, `make k6-check`,
     `make cloud-check`; `gitleaks git --redact --no-banner`; `make trivy-config`; một chân image (build, quét, cổng, không push):
-    `deploy/ci/build-image.sh <svc> arm64 "$(mktemp -d)"`; service nào sẽ build: `deploy/ci/changed-services.sh <base>
+    `deploy/ci/build-image.sh <svc> arm64 "$(mktemp -d)"`; riêng cổng grype của một chân: `make grype IMAGE=<ref>@sha256:<digest>
+    [ARCH=amd64|arm64]` (syft ghim đọc image từ registry, ẩn danh) hay `make grype SBOM=<đường tuyệt đối tới SPDX JSON>`, in số
+    gói và binary ngoài trình quản lý gói; bước `dast` của job `stack`: `make dast` trên stack `make up`; service nào sẽ build: `deploy/ci/changed-services.sh <base>
     HEAD`; bộ lọc artifact và sampler của `verify.yml`: `deploy/ci/verify-collect-test.sh`. Push GHCR, ký, attest chỉ chạy
     trong CI: không đăng nhập GHCR hay Sigstore từ máy. `deploy/ci/promote.sh` trên máy (chế độ `local` của
     `platform.sh`) không gọi API nào (in lệnh `gh` thay vì chạy) và chỉ push `bot/promote` khi push URL của `origin` là
@@ -609,13 +649,17 @@ liệt kê target):
     `scan-gate.sh --fs`: CRITICAL chặn (cả chưa có bản vá), HIGH trở xuống chỉ đếm; báo lỗi khi trivy đọc được 0 gói npm;
     `WEB_LOCKFILE=<đường tuyệt đối>` quét bản sao khác (ca âm), `WEB_LOCKFILE_SARIF=<đường tuyệt đối>` ghi SARIF HIGH/CRITICAL.
     `make renovate-check`: `renovate-config-validator --strict` trong `RENOVATE_IMAGE` ghim, không mạng. trivy, syft,
-    cosign, Renovate, k6, kubeconform chạy trên máy chỉ bằng image ghim digest của `Makefile` (`TRIVY_IMAGE`, `SYFT_IMAGE`,
-    `COSIGN_IMAGE`, `RENOVATE_IMAGE`, `K6_IMAGE`, `KUBECONFORM_IMAGE`), không cài. Riêng cosign, script (`cosign_` của `deploy/ci/common.sh`) dùng `cosign`
+    grype, cosign, Renovate, k6, Schemathesis, kubeconform chạy trên máy chỉ bằng image ghim digest của `Makefile` (`TRIVY_IMAGE`,
+    `SYFT_IMAGE`, `GRYPE_IMAGE`, `COSIGN_IMAGE`, `RENOVATE_IMAGE`, `K6_IMAGE`, `SCHEMATHESIS_IMAGE`, `KUBECONFORM_IMAGE`), không cài;
+    govulncheck là công cụ Go ghim `GOVULNCHECK_VERSION`, cài bằng `make tools`. Riêng cosign, script (`cosign_` của `deploy/ci/common.sh`) dùng `cosign`
     trên PATH trước nếu có (CI cài bằng `sigstore/cosign-installer`), không có thì `COSIGN_IMAGE`.
-  - `.trivyignore.yaml` ở gốc repo (cổng image và `make web-lockfile-scan` đọc; hiện có các mục của cây dev `@lhci/cli`,
+  - `.trivyignore.yaml` ở gốc repo (cổng trivy và cổng grype của image, `make grype`, `make web-lockfile-scan` đọc; hiện có các mục của cây dev `@lhci/cli`,
     [ADR-0016](docs/adr/0016-web-client.md) §10): chỉ phần `vulnerabilities`, mỗi mục có `id`, `statement` (lý do),
     `expired_at` không quá 30 ngày sau ngày chạy và `purls` đúng gói@version (cùng CVE ở gói hay version khác vẫn báo);
-    thêm qua PR; bí mật không bỏ qua được. `deploy/ci/trivy-config-ignore.yaml` (chỉ `make trivy-config` đọc,
+    thêm qua PR; bí mật không bỏ qua được. Cổng grype dùng cùng tệp: một mục che một match khi `id` bằng id của match hay một
+    id liên quan (grype hay báo GHSA, CVE nằm ở liên quan) và một `purls` bằng purl của match sau khi bỏ qualifier, subpath và
+    giải mã `%XX`; mục không có `purls` không che gì; **nghiêm hơn trivy:** một mục hết hạn (từ đúng ngày `expired_at`) làm cổng
+    grype đỏ cả khi report sạch. `deploy/ci/trivy-config-ignore.yaml` (chỉ `make trivy-config` đọc,
     [ADR-0021](docs/adr/0021-deferred-verification-stage6b.md) §9): chỉ phần `misconfigurations`, mỗi mục có `id` (`DS-…`,
     `KSV-…`), `paths` bắt buộc (file có thật, không pattern, thư mục hay `..`), `statement` có nội dung và `expired_at` không
     quá 90 ngày; chỉ lựa chọn có chủ đích vào đây, cảnh báo sửa được thì sửa. `scan-gate.sh --check-ignorefile` kiểm cả hai
@@ -632,6 +676,10 @@ Quy ước test:
   `svp_engagement_views_<x>_test`: mỗi test một database), tạo từ `SVP_TEST_POSTGRES_URL`; helper ở `internal/pgtest` từ
   chối tên không khớp `^svp_[a-z0-9_]+_test$`, nên test không chạm được database thật của service.
 - Test gateway gọi service qua `bufconn` (gRPC trong bộ nhớ), không mở cổng.
+- Fuzz test (`FuzzXxx` trong `fuzz_test.go` của gói) kiểm tính chất bằng oracle độc lập với hàm (regexp, bảng `unicode`,
+  `ed25519.Verify`, `proto.Marshal`), không chỉ "không panic"; tất định, không dựa trạng thái toàn cục. `TestMain` nào dựng
+  database (user-service) bỏ bước đó khi cờ `test.fuzz` khác rỗng hay `test.fuzzworker` bật: mỗi worker chạy lại `TestMain`
+  và `internal/pgtest` DROP rồi CREATE database theo tên cố định.
 - Test thử lại kết nối Postgres (`internal/pgretry`, `internal/pgpool`, `internal/dbmigrate`) dùng helper của
   `internal/pgretry/pgretrytest` (`ClosedPort`, `Blackhole`, `DelayedProxy`: proxy đóng mọi kết nối một lúc rồi mới chuyển tiếp
   tới database test), mọi cổng do chính test mở; test đo thời gian với cửa sổ thử lại rút ngắn còn 1,5 s.

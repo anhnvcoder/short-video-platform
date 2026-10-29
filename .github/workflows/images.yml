@@ -152,9 +152,10 @@ jobs:
           key: trivy-db-${{ steps.day.outputs.day }}
           restore-keys: trivy-db-
       - &grype-cache
-        # The grype DB, the same way: one entry per day (about 200 MB to download, 3 GB unpacked). grype checks for a
-        # newer DB on every scan that has not checked in the last two hours, and refuses one built more than five days
-        # ago.
+        # The grype DB, the same way: one entry per day (about 200 MB to download, 3 GB unpacked, about 480 MB as a cache
+        # entry). With main's entry and one per pull request ref that is about 0.5 to 1 GB a day of the repository's
+        # 10 GB cache quota, so the other caches are evicted sooner. grype checks for a newer DB on every scan that has
+        # not checked in the last two hours, and refuses one built more than five days ago.
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/grype-cache
@@ -504,7 +505,10 @@ jobs:
     steps: *sign
 
   sarif:
-    # Uploads the SARIF of main's builds and rescans to the Security tab, one category per image and architecture.
+    # Uploads the SARIF of main's builds and rescans to the Security tab, one category per tool, image and architecture.
+    # One upload per tool: upload-sarif merges every file it is given into a single SARIF log, and GitHub rejects a log
+    # with more than 20 runs. Each leg writes one trivy and one grype run, so all seven images (14 legs) would make 28
+    # runs in one log; per tool it is at most 14 (a rescan writes trivy runs only and never shares a run with a build).
     # The only job with security-events: write; it runs no code of the repository. A report, not a check: not in
     # images-ok (a failed upload still turns the run red).
     needs: [plan, build, rescan]
@@ -521,17 +525,51 @@ jobs:
         with:
           pattern: sarif-*
           path: ${{ runner.temp }}/sarif
-      - id: found
+      - id: split
+        # Sorts the files into one directory per tool and counts the runs with the runner's jq, so that a log over the
+        # limit stops here with its count instead of GitHub's rejection. A tool over the limit is not uploaded; the
+        # other one still is.
         run: |
-          if find "$RUNNER_TEMP/sarif" -name '*.sarif' 2>/dev/null | grep -q .; then
-            echo "any=true" >>"$GITHUB_OUTPUT"
-          else
-            echo "No SARIF to upload (no leg reached its scan)."
-          fi
-      - if: steps.found.outputs.any == 'true'
+          mkdir -p "$RUNNER_TEMP/sarif-trivy" "$RUNNER_TEMP/sarif-grype"
+          while IFS= read -r -d '' f; do
+            case "$f" in
+              */grype.sarif) tool=grype ;;
+              */trivy.sarif | */sarif-rescan/*.sarif) tool=trivy ;;
+              *)
+                echo "::error::Unexpected SARIF file ${f#"$RUNNER_TEMP"/}"
+                exit 1
+                ;;
+            esac
+            dir=${f%/*}
+            cp "$f" "$RUNNER_TEMP/sarif-$tool/${dir##*/}-${f##*/}"
+          done < <(find "$RUNNER_TEMP/sarif" -name '*.sarif' -print0 2>/dev/null)
+          over=0
+          for tool in trivy grype; do
+            files=("$RUNNER_TEMP/sarif-$tool"/*.sarif)
+            if [ ! -e "${files[0]}" ]; then
+              echo "No $tool SARIF to upload (no leg reached its scan)."
+              continue
+            fi
+            runs=$(jq -s 'map(.runs | length) | add' "${files[@]}")
+            if [ "$runs" -gt 20 ]; then
+              echo "::error::$runs $tool SARIF runs in ${#files[@]} files: GitHub rejects an upload with more than 20 runs"
+              over=1
+              continue
+            fi
+            echo "$tool: $runs SARIF runs in ${#files[@]} files"
+            echo "$tool=true" >>"$GITHUB_OUTPUT"
+          done
+          exit "$over"
+      - name: Upload the trivy SARIF
+        if: ${{ !cancelled() && steps.split.outputs.trivy == 'true' }}
         uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
-          sarif_file: ${{ runner.temp }}/sarif
+          sarif_file: ${{ runner.temp }}/sarif-trivy
+      - name: Upload the grype SARIF
+        if: ${{ !cancelled() && steps.split.outputs.grype == 'true' }}
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          sarif_file: ${{ runner.temp }}/sarif-grype
 
   images-ok:
     # The required check of this workflow. Green only when every job succeeded or was skipped for a reason this job
