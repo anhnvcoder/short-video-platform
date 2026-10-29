@@ -19,9 +19,9 @@ type limiter struct {
 
 // allow reports whether the event key may be sent at now, and counts it when it may not. The
 // first drop after a minute without a report is reported at once, in dropped. Later drops within
-// that minute are kept for flush: the first of them returns flushAt, the time at which the caller
-// must call flush, so the tail of a burst is reported even when no event follows it.
-func (l *limiter) allow(now time.Time, key fingerprint) (allowed bool, dropped uint64, flushAt time.Time) {
+// that minute are kept for flush: the first of them returns flushIn, the delay after which the
+// caller must call flush, so the tail of a burst is reported even when no event follows it.
+func (l *limiter) allow(now time.Time, key fingerprint) (allowed bool, dropped uint64, flushIn time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for len(l.sent) > 0 && now.Sub(l.sent[0]) >= time.Minute {
@@ -38,18 +38,25 @@ func (l *limiter) allow(now time.Time, key fingerprint) (allowed bool, dropped u
 		}
 		l.last[key] = now
 		l.sent = append(l.sent, now)
-		return true, 0, time.Time{}
+		return true, 0, 0
 	}
 	l.dropped++
 	if l.warned.IsZero() || now.Sub(l.warned) >= time.Minute {
 		dropped, l.dropped, l.warned = l.dropped, 0, now
-		return false, dropped, time.Time{}
+		return false, dropped, 0
 	}
 	if !l.flushing {
 		l.flushing = true
-		return false, 0, l.warned.Add(time.Minute)
+		// Callers read the clock before they wait for the lock, so now can be earlier than a
+		// warning recorded meanwhile by another caller. Counting from now would add that wait to
+		// the delay and push the flush past a minute after the warning.
+		from := now
+		if from.Before(l.warned) {
+			from = l.warned
+		}
+		return false, 0, l.warned.Add(time.Minute).Sub(from)
 	}
-	return false, 0, time.Time{}
+	return false, 0, 0
 }
 
 // flush returns the drops counted and not reported yet, and starts the minute of the next report
