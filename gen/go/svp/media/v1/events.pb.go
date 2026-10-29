@@ -88,8 +88,12 @@ func (TranscodeFailureReason) EnumDescriptor() ([]byte, []int) {
 // (media-worker has no database, hence no outbox). Record key: video_id.
 // Consumed by video-service. Dead letters go to `media.transcodes.v1.dlq`.
 //
-// Transcoding the same video again overwrites the same object keys, so a
-// redelivered video.uploaded yields the same result.
+// The output of a video.uploaded lives under a version, the event_id of that
+// video.uploaded: `media/<video_id>/<version>/`. Each try writes into a
+// directory of its own below it and the master playlist is created only once,
+// so no object under a published key is ever written again. A redelivered
+// video.uploaded writes nothing and yields the keys of the master already
+// there, with the same duration and renditions.
 type TranscodeEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Meta  *v1.EventMeta          `protobuf:"bytes,1,opt,name=meta,proto3" json:"meta,omitempty"`
@@ -183,13 +187,16 @@ func (*TranscodeEvent_TranscodeCompleted) isTranscodeEvent_Event() {}
 func (*TranscodeEvent_TranscodeFailed) isTranscodeEvent_Event() {}
 
 // TranscodeCompleted: the HLS output of video_id is fully written under
-// `media/<video_id>/`.
+// `media/<video_id>/<version>/`.
 type TranscodeCompleted struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	VideoId string                 `protobuf:"bytes,1,opt,name=video_id,json=videoId,proto3" json:"video_id,omitempty"`
-	// Object key of the HLS master playlist, `media/<video_id>/master.m3u8`.
+	// Object key of the HLS master playlist,
+	// `media/<video_id>/<version>/master.m3u8` (videos made before versions:
+	// `media/<video_id>/master.m3u8`).
 	PlaylistKey string `protobuf:"bytes,2,opt,name=playlist_key,json=playlistKey,proto3" json:"playlist_key,omitempty"`
-	// Object key of the thumbnail image under `media/<video_id>/`.
+	// Object key of the thumbnail image under `media/<video_id>/`, in the
+	// directory the master playlist names.
 	ThumbnailKey string `protobuf:"bytes,3,opt,name=thumbnail_key,json=thumbnailKey,proto3" json:"thumbnail_key,omitempty"`
 	// Length of the transcoded video.
 	Duration *durationpb.Duration `protobuf:"bytes,4,opt,name=duration,proto3" json:"duration,omitempty"`

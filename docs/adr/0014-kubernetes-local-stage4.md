@@ -15,7 +15,8 @@
   [0022](0022-local-object-store-minio-replacement.md) (RustFS, StatefulSet, Service và Job `s3`, `s3-init`, Secret `s3-root`, `s3-users`, CORS theo bucket; giới
   hạn 512 MiB, uid 10001); §10 (feed-service HPA 1–2 không PDB thành luôn 2 replica, PDB `minAvailable: 1`, ưu tiên trải hai
   node) và giới hạn RAM của Tempo trong bảng ngân sách (768 MiB thành 1 GiB) bị thay một phần bởi
-  [0031](0031-chaos-findings-feed-engagement-tempo.md)
+  [0031](0031-chaos-findings-feed-engagement-tempo.md); §8 (Secret của đường GitOps do External Secrets Operator dựng từ giai đoạn 6b
+  phần 4 thay vì giai đoạn 7; đường dev giữ `secrets.sh`; store AWS ở giai đoạn 7) chỉnh bởi [0026](0026-secrets-gitops.md)
 - Ngày: 2026-10-18
 
 ## Bối cảnh

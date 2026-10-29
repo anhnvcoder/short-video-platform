@@ -1,6 +1,6 @@
 // Package objstore talks to the S3-compatible object storage (the local object store, S3 later)
 // shared by video-service and media-worker: presigned POST forms for uploads and the HEAD, GET,
-// PUT and DELETE calls on the uploads and media buckets. Clients send the file straight to
+// PUT, DELETE and list calls on the uploads and media buckets. Clients send the file straight to
 // storage with a presigned POST whose signed policy fixes the key and caps the size, so storage
 // enforces the limit and the file never passes through a service.
 //
@@ -48,6 +48,8 @@ var (
 	ErrAccessDenied = errors.New("objstore: access denied")
 	// ErrTooLarge is returned by Download for an object larger than the limit.
 	ErrTooLarge = errors.New("objstore: object larger than the limit")
+	// ErrExists is returned by Create when the key already holds an object (HTTP 412).
+	ErrExists = errors.New("objstore: object already exists")
 )
 
 // IsMediaKey reports whether key names an object of video videoID in the media bucket:
@@ -282,8 +284,21 @@ func (s *Store) Download(ctx context.Context, key, path string, maxBytes int64) 
 	return nil
 }
 
-// Upload writes the file at path to key with the given content type.
-func (s *Store) Upload(ctx context.Context, key, path, contentType string) error {
+// Upload writes the file at path to key with the given content type, and with header
+// Cache-Control set to cacheControl unless it is empty. Storage keeps both and sends them back
+// with every GET of the object.
+func (s *Store) Upload(ctx context.Context, key, path, contentType, cacheControl string) error {
+	return s.put(ctx, key, path, contentType, cacheControl, false)
+}
+
+// Create is Upload that only writes when key holds no object yet (If-None-Match: *); otherwise it
+// returns ErrExists and leaves the object as it is. Storage lets exactly one of several creates
+// of the same key succeed.
+func (s *Store) Create(ctx context.Context, key, path, contentType, cacheControl string) error {
+	return s.put(ctx, key, path, contentType, cacheControl, true)
+}
+
+func (s *Store) put(ctx context.Context, key, path, contentType, cacheControl string, create bool) error {
 	bucket, err := s.bucket(key)
 	if err != nil {
 		return err
@@ -297,17 +312,42 @@ func (s *Store) Upload(ctx context.Context, key, path, contentType string) error
 	if err != nil {
 		return fmt.Errorf("objstore: upload %s: %w", key, err)
 	}
-	_, err = s.client.PutObject(ctx, &s3.PutObjectInput{
+	in := &s3.PutObjectInput{
 		Bucket:        aws.String(bucket),
 		Key:           aws.String(key),
 		Body:          f,
 		ContentLength: aws.Int64(st.Size()),
 		ContentType:   aws.String(contentType),
-	})
-	if err != nil {
+	}
+	if cacheControl != "" {
+		in.CacheControl = aws.String(cacheControl)
+	}
+	if create {
+		in.IfNoneMatch = aws.String("*")
+	}
+	if _, err := s.client.PutObject(ctx, in); err != nil {
 		return classify("upload "+key, err)
 	}
 	return nil
+}
+
+// Exists reports whether key holds an object, by listing the keys that start with key. Unlike
+// HEAD, which S3 answers with 403 instead of 404 when the credential may not list the bucket, a
+// missing key is an empty list, so "no" is never mistaken for a denied call: any error, 403
+// included, is returned as one.
+func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
+	bucket, err := s.bucket(key)
+	if err != nil {
+		return false, err
+	}
+	// Keys sort by bytes, so key itself comes before every longer key it starts.
+	out, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucket), Prefix: aws.String(key), MaxKeys: aws.Int32(1),
+	})
+	if err != nil {
+		return false, classify("list "+key, err)
+	}
+	return len(out.Contents) > 0 && aws.ToString(out.Contents[0].Key) == key, nil
 }
 
 // Delete removes key; a key that does not exist is not an error.
@@ -356,8 +396,10 @@ func (s *Store) DeletePrefix(ctx context.Context, prefix string) error {
 	return nil
 }
 
-// classify wraps an SDK error so that errors.Is finds ErrNotFound (HTTP 404) or ErrAccessDenied
-// (HTTP 403); anything else (5xx, network, timeout) is treated as temporary by the callers.
+// classify wraps an SDK error so that errors.Is finds ErrNotFound (HTTP 404), ErrAccessDenied
+// (HTTP 403) or ErrExists (HTTP 412, only a create sends a precondition); anything else (5xx,
+// network, timeout, 409 when a delete of the same key ran first) is treated as temporary by the
+// callers.
 func classify(op string, err error) error {
 	var re *awshttp.ResponseError
 	if errors.As(err, &re) {
@@ -366,6 +408,8 @@ func classify(op string, err error) error {
 			return fmt.Errorf("%s: %w: %w", op, ErrNotFound, err)
 		case http.StatusForbidden:
 			return fmt.Errorf("%s: %w: %w", op, ErrAccessDenied, err)
+		case http.StatusPreconditionFailed:
+			return fmt.Errorf("%s: %w: %w", op, ErrExists, err)
 		}
 	}
 	return fmt.Errorf("objstore: %s: %w", op, err)

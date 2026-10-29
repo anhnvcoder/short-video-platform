@@ -281,6 +281,9 @@ jobs:
       # need only bash, git and jq: no network, no token.
       - run: deploy/ci/platform-guard.sh
       - run: deploy/ci/platform-test.sh
+      # The build provenance predicate of a release and the step of sign-image.sh that attests it, which otherwise run
+      # only in the sign job on main: a made-up run, fake docker and cosign, a throwaway repository; bash, git and jq.
+      - run: deploy/ci/provenance-predicate-test.sh
       # The filter of the public artifact of verify.yml and the masks of its job's log, which only the weekly run on main
       # would use otherwise: a pull request that breaks one of their rules fails here. Fake secrets, kubectl, docker and
       # make in a temporary directory; bash, git, jq and openssl, no network.

@@ -1,21 +1,36 @@
 #!/usr/bin/env bash
-# verify-release.sh REPOSITORY DIGEST: true when the release REPOSITORY@DIGEST may enter main and the GitOps cluster:
-# REPOSITORY is an image of this repository, DIGEST carries a
+# verify-release.sh [--rev REV] [--env ENV] REPOSITORY DIGEST: true when the release REPOSITORY@DIGEST may enter main
+# and the GitOps cluster: REPOSITORY is an image of this repository, DIGEST carries a
 # signature and exactly one vuln attestation of images.yml on main, and that attestation covers linux/amd64 and
 # linux/arm64, lists no CRITICAL and is at most 48 hours old (SVP_ATTEST_MAX_AGE in drills). 48 hours leaves at least
 # 24 before Kyverno refuses new pods at 72. Anonymous: needs no token, so a pull request job (contents: read) and a
 # machine can run it; cosign from PATH, otherwise COSIGN_IMAGE.
+# When chart svp-policy checks build provenance (requireProvenance) at commit REV (the working tree without --rev) in
+# environment ENV (any environment without --env; provenance_required of common.sh), the release must also carry
+# exactly one provenance attestation of the same identity that passes what Kyverno checks (builder.id, workflow
+# repository and ref), whose source commit is the commit the certificate of its signature names (cosign
+# --certificate-github-workflow-sha): a provenance that claims another commit than the run that signed it is refused.
 set -euo pipefail
 
 # shellcheck source=deploy/ci/common.sh
 . "$(dirname "$0")/common.sh"
 
-[ $# -eq 2 ] || fail "usage: verify-release.sh REPOSITORY DIGEST"
+rev= env=
+while [ $# -gt 2 ]; do
+  case $1 in
+  --rev) rev=$2 ;;
+  --env) env=$2 ;;
+  *) break ;;
+  esac
+  shift 2
+done
+[ $# -eq 2 ] || fail "usage: verify-release.sh [--rev REV] [--env ENV] REPOSITORY DIGEST"
 repo=$1 digest=$2
 case $repo in "$ghcr_prefix"/*) ;; *) fail "$repo is not under $ghcr_prefix" ;; esac
 is_digest "$digest" || fail "$digest is not sha256:<64 hex>"
 max=$(attest_max_age)
 sign_identity
+provenance=$(provenance_required "$rev" "$env") || fail "read whether chart svp-policy checks build provenance (above)"
 
 verify_signature "$repo" "$digest" || fail "$repo@$digest has no signature of images.yml on main"
 envelopes=$(cosign_ verify-attestation --type vuln --certificate-oidc-issuer "$sign_issuer" \
@@ -26,4 +41,22 @@ count=$(printf '%s\n' "$envelopes" | grep -c . || true)
 [ "$count" -eq 1 ] || fail "$repo@$digest carries $count vuln attestations, not exactly one"
 problem=$(printf '%s\n' "$envelopes" | jq -r '.payload | @base64d' | check_vuln_statement "$digest" "$max") ||
   fail "$repo@$digest: vuln attestation $problem"
-echo "ok    $repo@$digest signed, one vuln attestation, both platforms, no CRITICAL, within $((max / 60)) minutes"
+if [ "$provenance" = true ]; then
+  provenance_source
+  rebuild=$(ci_dispatch_hint images.yml main "services=${repo##*/}") || exit 1
+  envelopes=$(cosign_ verify-attestation --type slsaprovenance1 --certificate-oidc-issuer "$sign_issuer" \
+    --certificate-identity "$sign_subject" "$repo@$digest" 2>/dev/null) ||
+    fail "$repo@$digest has no provenance attestation of images.yml on main, which the policy requires here: a release built before CI attested provenance; release it again ($rebuild)"
+  count=$(printf '%s\n' "$envelopes" | grep -c . || true)
+  # As for vuln: Kyverno keeps one payload per type, so with two it could read either.
+  [ "$count" -eq 1 ] || fail "$repo@$digest carries $count provenance attestations, not exactly one"
+  commit=$(printf '%s\n' "$envelopes" | jq -r '.payload | @base64d' | check_provenance_statement "$digest") ||
+    fail "$repo@$digest: provenance $commit"
+  cosign_ verify-attestation --type slsaprovenance1 --certificate-oidc-issuer "$sign_issuer" \
+    --certificate-identity "$sign_subject" --certificate-github-workflow-sha "$commit" "$repo@$digest" >/dev/null 2>&1 ||
+    fail "$repo@$digest: the provenance names commit $commit, the certificate of its signature another (or none)"
+  provenance=", provenance of ${commit:0:12} by $sign_subject"
+else
+  provenance=
+fi
+echo "ok    $repo@$digest signed, one vuln attestation, both platforms, no CRITICAL, within $((max / 60)) minutes$provenance"

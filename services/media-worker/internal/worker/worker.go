@@ -2,6 +2,12 @@
 // and publishes transcode.completed or transcode.failed to media.transcodes.v1 (architecture
 // §7.1).
 //
+// Output is immutable: a version is the event_id of the video.uploaded, and its objects live under
+// media/<video_id>/<version>/. Each try uploads into a directory of its own, <version>/<attempt>/,
+// and then creates <version>/master.m3u8 only if no try created it before, so no object a player
+// may already hold is ever written again and every object can be cached for a year. A try that
+// finds the master already there transcodes nothing and publishes the stored result again.
+//
 // Error classes (A-1-review, M-1-review): a bad event goes to the dead-letter topic; a file that
 // is not a usable video (whitelist refusal, corrupt data, limits, ffprobe or ffmpeg failing,
 // killed by a signal or timed out) is answered with transcode.failed at once, so a crafted file
@@ -76,6 +82,12 @@ const (
 
 	sourceName = "source"
 	outName    = "out"
+
+	// cacheControl goes on every object of a version: its keys never get other bytes.
+	cacheControl = "max-age=31536000, immutable"
+	// maxPlaylistBytes caps a stored playlist read back: a 3-minute video at 4 s segments has a
+	// few KB.
+	maxPlaylistBytes = 1 << 20
 )
 
 // instrumentationName names the tracer and meter of the worker.
@@ -86,10 +98,14 @@ const instrumentationName = "github.com/anhnvcoder/short-video-platform/services
 var transcodeBuckets = []float64{10, 20, 30, 45, 60, 90, 120, 180, 300, 600}
 
 // Storage is the part of objstore.Store the worker uses. Errors follow objstore: ErrNotFound,
-// ErrTooLarge and ErrAccessDenied wrapped; anything else is temporary.
+// ErrTooLarge, ErrAccessDenied and ErrExists wrapped; anything else is temporary.
 type Storage interface {
 	Download(ctx context.Context, key, path string, maxBytes int64) error
-	Upload(ctx context.Context, key, path, contentType string) error
+	Upload(ctx context.Context, key, path, contentType, cacheControl string) error
+	// Create is Upload only when key holds no object yet, ErrExists otherwise.
+	Create(ctx context.Context, key, path, contentType, cacheControl string) error
+	// Exists lists key: false only when storage answered that it holds no such object.
+	Exists(ctx context.Context, key string) (bool, error)
 }
 
 // Worker handles one video.uploaded at a time in its own directory under WorkDir.
@@ -169,13 +185,13 @@ func (w *Worker) CleanWorkDir() error {
 
 // Handle is the kafkax.Handler of InputTopic.
 func (w *Worker) Handle(ctx context.Context, r *kgo.Record, a kafkax.Attempt) error {
-	up, err := decode(r)
+	up, version, err := decode(r)
 	if err != nil || up == nil {
 		return err
 	}
-	ctx = logx.With(ctx, slog.String("video_id", up.GetVideoId()))
+	ctx = logx.With(ctx, slog.String("video_id", up.GetVideoId()), slog.String("version", version))
 
-	j := &job{w: w, up: up}
+	j := &job{w: w, up: up, version: version}
 	tryCtx, cancel := context.WithTimeout(ctx, w.tryTimeout)
 	ev, err := j.run(tryCtx)
 	cancel()
@@ -204,13 +220,13 @@ func (w *Worker) Handle(ctx context.Context, r *kgo.Record, a kafkax.Attempt) er
 	return nil
 }
 
-// decode returns the video.uploaded carried by r, nil for any other event (the topic carries the
-// whole video lifecycle; skipped and committed), or a permanent error for a record that
-// breaks the contract.
-func decode(r *kgo.Record) (*videov1.VideoUploaded, error) {
+// decode returns the video.uploaded carried by r with the version of its output (its event_id),
+// nil for any other event (the topic carries the whole video lifecycle; skipped and committed),
+// or a permanent error for a record that breaks the contract.
+func decode(r *kgo.Record) (*videov1.VideoUploaded, string, error) {
 	var ev videov1.VideoEvent
 	if err := proto.Unmarshal(r.Value, &ev); err != nil {
-		return nil, kafkax.Permanent(fmt.Errorf("decode VideoEvent: %w", err))
+		return nil, "", kafkax.Permanent(fmt.Errorf("decode VideoEvent: %w", err))
 	}
 	var up *videov1.VideoUploaded
 	switch e := ev.GetEvent().(type) {
@@ -218,21 +234,32 @@ func decode(r *kgo.Record) (*videov1.VideoUploaded, error) {
 		up = e.VideoUploaded
 	default:
 		// video_ready is for feed-service; an unknown branch decodes as nil.
-		return nil, nil
+		return nil, "", nil
 	}
+	if err := checkUploaded(r, &ev, up); err != nil {
+		return nil, "", kafkax.Permanent(err)
+	}
+	return up, ev.GetMeta().GetEventId(), nil
+}
+
+// checkUploaded checks the fields of a video.uploaded the worker relies on. The event_id becomes
+// a path segment of public keys: a canonical UUID only, like the video_id.
+func checkUploaded(r *kgo.Record, ev *videov1.VideoEvent, up *videov1.VideoUploaded) error {
 	switch {
 	case ev.GetMeta() == nil:
-		return nil, kafkax.Permanent(errors.New("video.uploaded has no meta"))
+		return errors.New("video.uploaded has no meta")
+	case !isID(ev.GetMeta().GetEventId()):
+		return errors.New("video.uploaded meta.event_id is not a canonical UUID")
 	case !isID(up.GetVideoId()):
-		return nil, kafkax.Permanent(errors.New("video.uploaded video_id is not a canonical UUID"))
+		return errors.New("video.uploaded video_id is not a canonical UUID")
 	case string(r.Key) != up.GetVideoId():
-		return nil, kafkax.Permanent(errors.New("video.uploaded record key differs from video_id"))
+		return errors.New("video.uploaded record key differs from video_id")
 	case up.GetSourceKey() != objstore.UploadsPrefix+up.GetVideoId():
-		return nil, kafkax.Permanent(errors.New("video.uploaded source_key is not uploads/<video_id>"))
+		return errors.New("video.uploaded source_key is not uploads/<video_id>")
 	case up.GetSizeBytes() < 1:
-		return nil, kafkax.Permanent(errors.New("video.uploaded size_bytes is not positive"))
+		return errors.New("video.uploaded size_bytes is not positive")
 	}
-	return up, nil
+	return nil
 }
 
 func isID(s string) bool {
@@ -242,16 +269,20 @@ func isID(s string) bool {
 
 // job is one try at one video.
 type job struct {
-	w  *Worker
-	up *videov1.VideoUploaded
+	w       *Worker
+	up      *videov1.VideoUploaded
+	version string
 
 	download, transcode, upload time.Duration
 }
 
-// run downloads, transcodes and uploads. It returns the event to publish, transcode.failed for
-// a permanent failure included, or a temporary error. The job directory is removed on return.
+// run looks for the version's master; when it is there it reads the stored result back,
+// otherwise it downloads, transcodes, uploads into a directory of this try and creates the
+// master. It returns the event to publish, transcode.failed for a permanent failure included, or
+// a temporary error. The job directory is removed on return.
 func (j *job) run(ctx context.Context) (*mediav1.TranscodeEvent, error) {
 	id := j.up.GetVideoId()
+	prefix := objstore.MediaPrefix + id + "/" + j.version + "/"
 	dir := filepath.Join(j.w.workDir, id)
 	// A redelivery after a crash finds the previous try's files: start clean.
 	if err := os.RemoveAll(dir); err != nil {
@@ -262,9 +293,23 @@ func (j *job) run(ctx context.Context) (*mediav1.TranscodeEvent, error) {
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 
+	// Only saves a transcode: an answer gone stale is caught when the master is created.
+	var exists bool
+	err := j.step(ctx, "check output", func(ctx context.Context) error {
+		var err error
+		exists, err = j.w.store.Exists(ctx, prefix+transcode.MasterPlaylist)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if exists {
+		return j.stored(ctx, dir, prefix)
+	}
+
 	src := filepath.Join(dir, sourceName)
 	start := time.Now()
-	err := j.step(ctx, "download source", func(ctx context.Context) error {
+	err = j.step(ctx, "download source", func(ctx context.Context) error {
 		return j.w.store.Download(ctx, j.up.GetSourceKey(), src, min(j.up.GetSizeBytes(), maxSourceBytes))
 	})
 	j.download = time.Since(start)
@@ -278,13 +323,16 @@ func (j *job) run(ctx context.Context) (*mediav1.TranscodeEvent, error) {
 		return nil, err
 	}
 
+	// A new directory for every try, never used again: a try still running elsewhere (a member
+	// that lost its session keeps its handler going) writes only into its own.
+	attempt := ids.New()
 	out := filepath.Join(dir, outName)
 	start = time.Now()
 	var res transcode.Result
 	// transcode.Run adds a span for each ffprobe and ffmpeg run under this one.
 	err = j.step(ctx, "transcode", func(ctx context.Context) error {
 		var err error
-		res, err = transcode.Run(ctx, src, out)
+		res, err = transcode.Run(ctx, src, out, attempt)
 		return err
 	})
 	j.transcode = time.Since(start)
@@ -298,22 +346,73 @@ func (j *job) run(ctx context.Context) (*mediav1.TranscodeEvent, error) {
 		return nil, err
 	}
 
-	prefix := objstore.MediaPrefix + id + "/"
 	start = time.Now()
 	err = j.step(ctx, "upload output", func(ctx context.Context) error {
-		// Files come segments first and master.m3u8 last: no playlist is visible before its parts.
+		// Files come segments first and master.m3u8 last: no playlist is visible before its parts,
+		// and the master, the only object of the version outside the attempt directory, is
+		// created only once everything it names is stored.
 		for _, f := range res.Files {
-			if err := j.w.store.Upload(ctx, prefix+f.Path, filepath.Join(out, filepath.FromSlash(f.Path)), f.ContentType); err != nil {
+			path := filepath.Join(out, filepath.FromSlash(f.Path))
+			if f.Path == transcode.MasterPlaylist {
+				return j.w.store.Create(ctx, prefix+f.Path, path, f.ContentType, cacheControl)
+			}
+			if err := j.w.store.Upload(ctx, prefix+attempt+"/"+f.Path, path, f.ContentType, cacheControl); err != nil {
 				return err
 			}
 		}
-		return nil
+		return errors.New("transcode output has no master playlist")
 	})
 	j.upload = time.Since(start)
+	switch {
+	case errors.Is(err, objstore.ErrExists):
+		// Another try created the master first; this try's directory stays unreferenced.
+		return j.stored(ctx, dir, prefix)
+	case err != nil:
+		return nil, err
+	}
+	return completed(j.up, prefix, attempt, res.Duration, res.Renditions), nil
+}
+
+// stored reads back the master of the version under prefix and the playlist of its lowest
+// rendition, and returns the transcode.completed they describe, as the try that created the
+// master published it. It writes nothing; every error is temporary, as the result is there.
+func (j *job) stored(ctx context.Context, dir, prefix string) (*mediav1.TranscodeEvent, error) {
+	var ev *mediav1.TranscodeEvent
+	err := j.step(ctx, "read output", func(ctx context.Context) error {
+		path := filepath.Join(dir, transcode.MasterPlaylist)
+		if err := j.w.store.Download(ctx, prefix+transcode.MasterPlaylist, path, maxPlaylistBytes); err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path) //nolint:gosec // the file just downloaded into the job directory
+		if err != nil {
+			return err
+		}
+		m, err := transcode.ParseMaster(data)
+		if err != nil {
+			return err
+		}
+		path = filepath.Join(dir, "lowest.m3u8")
+		if err := j.w.store.Download(ctx, prefix+m.LowestPlaylist(), path, maxPlaylistBytes); err != nil {
+			return err
+		}
+		if data, err = os.ReadFile(path); err != nil { //nolint:gosec // the file just downloaded into the job directory
+			return err
+		}
+		duration, err := transcode.PlaylistDuration(data)
+		if err != nil {
+			return err
+		}
+		if duration <= 0 {
+			return errors.New("stored rendition playlist has no duration")
+		}
+		ev = completed(j.up, prefix, m.Attempt, duration, m.Renditions)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	return completed(j.up, prefix, res), nil
+	j.w.logger.LogAttrs(ctx, slog.LevelInfo, "transcode output exists")
+	return ev, nil
 }
 
 // step runs fn in a child span of ctx named name. The span carries the video id and nothing
@@ -348,9 +447,10 @@ func permanentReason(err error) (mediav1.TranscodeFailureReason, bool) {
 	return mediav1.TranscodeFailureReason_TRANSCODE_FAILURE_REASON_UNSPECIFIED, false
 }
 
-func completed(up *videov1.VideoUploaded, prefix string, res transcode.Result) *mediav1.TranscodeEvent {
-	renditions := make([]*mediav1.Rendition, 0, len(res.Renditions))
-	for _, r := range res.Renditions {
+// completed is the transcode.completed of the version under prefix whose master names attempt.
+func completed(up *videov1.VideoUploaded, prefix, attempt string, duration time.Duration, rs []transcode.Rendition) *mediav1.TranscodeEvent {
+	renditions := make([]*mediav1.Rendition, 0, len(rs))
+	for _, r := range rs {
 		renditions = append(renditions, &mediav1.Rendition{
 			Name:       r.Name,
 			Width:      int32(r.Width),   //nolint:gosec // at most 4096, checked by the probe
@@ -362,8 +462,8 @@ func completed(up *videov1.VideoUploaded, prefix string, res transcode.Result) *
 		TranscodeCompleted: &mediav1.TranscodeCompleted{
 			VideoId:      up.GetVideoId(),
 			PlaylistKey:  prefix + transcode.MasterPlaylist,
-			ThumbnailKey: prefix + transcode.Thumbnail,
-			Duration:     durationpb.New(res.Duration),
+			ThumbnailKey: prefix + attempt + "/" + transcode.Thumbnail,
+			Duration:     durationpb.New(duration),
 			Renditions:   renditions,
 		},
 	}}

@@ -8,9 +8,17 @@ the audit log name what enforce rejected. The platform namespaces of values.yaml
 nothing else. deploy/k8s/install.sh and deploy/k8s/gitops.sh render this template alone (no release) for the
 namespaces they make before this chart, so those carry the same labels: both make the project's namespaces before wave
 0, Envoy Gateway binding a Role in each one it watches; install.sh also those of wave 0 (platformNamespaces set to
-them), gitops.sh argocd. This chart then takes the project's over.
+them), gitops.sh argocd. This chart then takes the project's over. With externalSecrets on and its store kubernetes
+(the GitOps path's stg), namespace externalSecrets.sourceNamespace too: the source Secrets of templates/external-secrets.yaml,
+no pod; deploy/k8s/gitops.sh renders this template with that overlay, so it exists before deploy/k8s/secrets.sh fills it.
 */}}
-{{- range concat .Values.namespaces .Values.platformNamespaces }}
+{{- $sources := list }}
+{{- with .Values.externalSecrets }}
+{{- if and .enabled (eq .store "kubernetes") }}
+{{- $sources = list (dict "name" .sourceNamespace) }}
+{{- end }}
+{{- end }}
+{{- range concat .Values.namespaces $sources .Values.platformNamespaces }}
 ---
 apiVersion: v1
 kind: Namespace

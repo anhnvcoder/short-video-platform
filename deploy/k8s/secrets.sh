@@ -15,6 +15,16 @@
 # changed password of Redpanda's superuser is set in the running broker before any Secret is applied, and the script
 # stops when the broker does not run to take it (see redpanda_admin below). The object store or Redpanda running with
 # another password than the one now in .env is restarted (see the end of this script).
+#
+# The GitOps path's staging (a cluster with namespace svp-secrets, which chart svp-cluster makes with its externalSecrets
+# on and deploy/k8s/gitops.sh before Argo CD): there External Secrets Operator builds the same Secrets from the
+# ExternalSecrets of chart svp-cluster, and this script writes only their source, one Secret of svp-secrets per entry of
+# chart svp-cluster's files/external-secrets.yaml, keys named as in .env (source_manifests below). Entry
+# glitchtip-runtime it creates empty when it is missing and never changes: deploy/k8s/glitchtip-init.sh fills it. Once
+# the ExternalSecrets exist (a run after gitops.sh's first), it has each built again from the new source and waits
+# for it (es_force_sync of deploy/k8s/lib.sh), before the restarts at the end. gitops.sh runs it as the dev path does;
+# `make k8s-secrets` finds the mode by the namespace. A cluster of the GitOps path from a revision without External
+# Secrets has no svp-secrets and gets the Secrets themselves, as on the dev path.
 set -euo pipefail
 
 # shellcheck source=deploy/k8s/lib.sh
@@ -56,6 +66,9 @@ SVP_ALERT_TELEGRAM_CHAT_ID=$(dotenv_value "$env_file" SVP_ALERT_TELEGRAM_CHAT_ID
 for ns in svp-data svp svp-obs; do
   kc get namespace "$ns" >/dev/null 2>&1 || fail "namespace $ns not found; run make k8s-up"
 done
+source_ns=svp-secrets
+gitops=
+if kc get namespace "$source_ns" >/dev/null 2>&1; then gitops=yes; fi
 
 manifests() {
   # Superuser of the Postgres svp-pg: CloudNativePG sets its password from this Secret, and the pg-bootstrap Job logs
@@ -227,6 +240,46 @@ obs_manifests() {
     GLITCHTIP_ADMIN_EMAIL="$GLITCHTIP_ADMIN_EMAIL" GLITCHTIP_ADMIN_PASSWORD="$GLITCHTIP_ADMIN_PASSWORD"
 }
 
+# The source of the GitOps path's ExternalSecrets in namespace svp-secrets: one Secret per entry, which the store of
+# each namespace may read only when an ExternalSecret of that namespace needs it (chart svp-cluster,
+# templates/external-secrets.yaml). The Telegram variables go as they are, empty or not: the ExternalSecrets of
+# Alertmanager check them as alertmanager_config above does.
+source_manifests() {
+  secret "$source_ns" pg-superuser Opaque SVP_PG_SUPERUSER_PASSWORD="$SVP_PG_SUPERUSER_PASSWORD"
+  secret "$source_ns" pg-roles Opaque \
+    SVP_USER_MIGRATOR_DB_PASSWORD="$SVP_USER_MIGRATOR_DB_PASSWORD" \
+    SVP_USER_APP_DB_PASSWORD="$SVP_USER_APP_DB_PASSWORD" \
+    SVP_VIDEO_MIGRATOR_DB_PASSWORD="$SVP_VIDEO_MIGRATOR_DB_PASSWORD" \
+    SVP_VIDEO_APP_DB_PASSWORD="$SVP_VIDEO_APP_DB_PASSWORD" \
+    SVP_ENGAGEMENT_MIGRATOR_DB_PASSWORD="$SVP_ENGAGEMENT_MIGRATOR_DB_PASSWORD" \
+    SVP_ENGAGEMENT_APP_DB_PASSWORD="$SVP_ENGAGEMENT_APP_DB_PASSWORD" \
+    SVP_FEED_MIGRATOR_DB_PASSWORD="$SVP_FEED_MIGRATOR_DB_PASSWORD" \
+    SVP_FEED_APP_DB_PASSWORD="$SVP_FEED_APP_DB_PASSWORD" \
+    SVP_GLITCHTIP_MIGRATOR_DB_PASSWORD="$SVP_GLITCHTIP_MIGRATOR_DB_PASSWORD" \
+    SVP_GLITCHTIP_APP_DB_PASSWORD="$SVP_GLITCHTIP_APP_DB_PASSWORD"
+  secret "$source_ns" s3-root Opaque SVP_S3_ROOT_PASSWORD="$SVP_S3_ROOT_PASSWORD"
+  secret "$source_ns" s3-users Opaque \
+    SVP_VIDEO_S3_SECRET_KEY="$SVP_VIDEO_S3_SECRET_KEY" \
+    SVP_MEDIA_WORKER_S3_SECRET_KEY="$SVP_MEDIA_WORKER_S3_SECRET_KEY" \
+    SVP_PG_BACKUP_S3_SECRET_KEY="$SVP_PG_BACKUP_S3_SECRET_KEY"
+  secret "$source_ns" kafka-admin Opaque SVP_KAFKA_ADMIN_PASSWORD="$SVP_KAFKA_ADMIN_PASSWORD"
+  secret "$source_ns" kafka-users Opaque \
+    SVP_KAFKA_KEDA_PASSWORD="$SVP_KAFKA_KEDA_PASSWORD" \
+    SVP_KAFKA_USER_SERVICE_PASSWORD="$SVP_KAFKA_USER_SERVICE_PASSWORD" \
+    SVP_KAFKA_VIDEO_SERVICE_PASSWORD="$SVP_KAFKA_VIDEO_SERVICE_PASSWORD" \
+    SVP_KAFKA_ENGAGEMENT_SERVICE_PASSWORD="$SVP_KAFKA_ENGAGEMENT_SERVICE_PASSWORD" \
+    SVP_KAFKA_FEED_SERVICE_PASSWORD="$SVP_KAFKA_FEED_SERVICE_PASSWORD" \
+    SVP_KAFKA_MEDIA_WORKER_PASSWORD="$SVP_KAFKA_MEDIA_WORKER_PASSWORD"
+  secret "$source_ns" jwt-signing Opaque JWT_SIGNING_KID="$JWT_SIGNING_KID" JWT_SIGNING_KEY="$JWT_SIGNING_KEY"
+  secret "$source_ns" jwt-verify Opaque JWT_VERIFY_KEYS="$JWT_VERIFY_KEYS"
+  secret "$source_ns" web Opaque NEXT_SERVER_ACTIONS_ENCRYPTION_KEY="$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY"
+  secret "$source_ns" obs Opaque \
+    SVP_GRAFANA_ADMIN_PASSWORD="$SVP_GRAFANA_ADMIN_PASSWORD" \
+    GLITCHTIP_SECRET_KEY="$GLITCHTIP_SECRET_KEY" \
+    GLITCHTIP_ADMIN_EMAIL="$GLITCHTIP_ADMIN_EMAIL" GLITCHTIP_ADMIN_PASSWORD="$GLITCHTIP_ADMIN_PASSWORD" \
+    SVP_ALERT_TELEGRAM_BOT_TOKEN="$SVP_ALERT_TELEGRAM_BOT_TOKEN" SVP_ALERT_TELEGRAM_CHAT_ID="$SVP_ALERT_TELEGRAM_CHAT_ID"
+}
+
 # Redpanda, unlike the object store, keeps its superuser svp-admin with its password in its own data: it creates it
 # from Secret redpanda-bootstrap once, when the cluster forms, and never reads that Secret again. Every container that
 # logs in as svp-admin (the broker's rpk, the sidecar that keeps the superusers in step, the redpanda-init Job) takes
@@ -292,34 +345,52 @@ redpanda_admin() {
 }
 redpanda_admin
 
-# kubectl prints only the kind and name of each object it applied.
-manifests | kc apply --server-side --field-manager=svp-secrets --force-conflicts -f - >/dev/null ||
-  fail "apply the Secrets of namespace svp-data"
-ok "Secrets of svp-data applied from .env: pg-superuser, pg-roles, s3-root, s3-users, pg-backup-s3, redpanda-bootstrap, redpanda-superusers, kafka-users"
+if [ -n "$gitops" ]; then
+  source_manifests | kc apply --server-side --field-manager=svp-secrets --force-conflicts -f - >/dev/null ||
+    fail "apply the source Secrets of namespace $source_ns"
+  ok "source Secrets of $source_ns applied from .env: pg-superuser, pg-roles, s3-root, s3-users, kafka-admin, kafka-users, jwt-signing, jwt-verify, web, obs"
+  if ! kc -n "$source_ns" get secret glitchtip-runtime >/dev/null 2>&1; then
+    secret "$source_ns" glitchtip-runtime Opaque SENTRY_DSN= SENTRY_AUTH_TOKEN= SENTRY_SOURCEMAPS_TOKEN= |
+      kc create -f - >/dev/null || fail "create the empty source Secret $source_ns/glitchtip-runtime"
+    ok "source Secret $source_ns/glitchtip-runtime created empty (deploy/k8s/glitchtip-init.sh fills it once GlitchTip runs)"
+  fi
+  if kc get crd externalsecrets.external-secrets.io >/dev/null 2>&1 &&
+    [ -n "$(kc get externalsecrets.external-secrets.io -A -o name)" ]; then
+    es_force_sync
+    ok "every ExternalSecret built again from $source_ns"
+  else
+    echo "skip  ExternalSecrets: none yet; Argo CD creates them (chart svp-cluster), each built from $source_ns then"
+  fi
+else
+  # kubectl prints only the kind and name of each object it applied.
+  manifests | kc apply --server-side --field-manager=svp-secrets --force-conflicts -f - >/dev/null ||
+    fail "apply the Secrets of namespace svp-data"
+  ok "Secrets of svp-data applied from .env: pg-superuser, pg-roles, s3-root, s3-users, pg-backup-s3, redpanda-bootstrap, redpanda-superusers, kafka-users"
 
-svp_manifests | kc apply --server-side --field-manager=svp-secrets --force-conflicts -f - >/dev/null ||
-  fail "apply the Secrets of namespace svp"
-ok "Secrets of svp applied from .env: <service>-env of each service and of web, <service>-migrate-env of each with a database"
+  svp_manifests | kc apply --server-side --field-manager=svp-secrets --force-conflicts -f - >/dev/null ||
+    fail "apply the Secrets of namespace svp"
+  ok "Secrets of svp applied from .env: <service>-env of each service and of web, <service>-migrate-env of each with a database"
 
-obs_manifests | kc apply --server-side --field-manager=svp-secrets --force-conflicts -f - >/dev/null ||
-  fail "apply the Secrets of namespace svp-obs"
-ok "Secrets of svp-obs applied from .env: grafana-admin, alertmanager-svp, alertmanager-telegram, glitchtip-env, glitchtip-admin"
+  obs_manifests | kc apply --server-side --field-manager=svp-secrets --force-conflicts -f - >/dev/null ||
+    fail "apply the Secrets of namespace svp-obs"
+  ok "Secrets of svp-obs applied from .env: grafana-admin, alertmanager-svp, alertmanager-telegram, glitchtip-env, glitchtip-admin"
+
+  # Namespace keda is made by chart svp-cluster (wave 1, with its Pod Security labels), which deploy/k8s/install.sh
+  # installs before it runs this script. deploy/k8s/gitops.sh runs it before Argo CD applies anything, so there it is
+  # made bare here; Argo CD's apply of svp-cluster then adds the labels, before KEDA's first pod (wave 2).
+  if ! kc get namespace keda >/dev/null 2>&1; then
+    kc create namespace keda >/dev/null || fail "create namespace keda"
+    ok "namespace keda created for Secret keda-kafka"
+  fi
+  keda_manifests | kc apply --server-side --field-manager=svp-secrets --force-conflicts -f - >/dev/null ||
+    fail "apply the Secret of namespace keda"
+  ok "Secret of keda applied from .env: keda-kafka"
+fi
 if [ "$telegram" = on ]; then
   ok "Alertmanager: severity=page goes to Telegram"
 else
   ok "Alertmanager: Telegram receiver off (SVP_ALERT_TELEGRAM_BOT_TOKEN or SVP_ALERT_TELEGRAM_CHAT_ID empty or invalid); alerts are only listed in its UI (make k8s-ui-alertmanager)"
 fi
-
-# Namespace keda is made by chart svp-cluster (wave 1, with its Pod Security labels), which deploy/k8s/install.sh
-# installs before it runs this script. deploy/k8s/gitops.sh runs it before Argo CD applies anything, so there it is
-# made bare here; Argo CD's apply of svp-cluster then adds the labels, before KEDA's first pod (wave 2).
-if ! kc get namespace keda >/dev/null 2>&1; then
-  kc create namespace keda >/dev/null || fail "create namespace keda"
-  ok "namespace keda created for Secret keda-kafka"
-fi
-keda_manifests | kc apply --server-side --field-manager=svp-secrets --force-conflicts -f - >/dev/null ||
-  fail "apply the Secret of namespace keda"
-ok "Secret of keda applied from .env: keda-kafka"
 
 # A process reads a Secret given to it as an environment variable only when it starts: a changed Secret reaches a
 # running pod only through a restart, which Kubernetes does not do by itself. No chart can do it either, by a checksum

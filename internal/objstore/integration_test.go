@@ -417,7 +417,7 @@ func TestIntegrationWorkerPermissions(t *testing.T) {
 	id := ids.New()
 	cleanup(t, video, id)
 	content := []byte("source video bytes")
-	if err := video.Upload(t.Context(), UploadsPrefix+id, writeFile(t, content), "video/mp4"); err != nil {
+	if err := video.Upload(t.Context(), UploadsPrefix+id, writeFile(t, content), "video/mp4", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -439,7 +439,7 @@ func TestIntegrationWorkerPermissions(t *testing.T) {
 	}
 
 	segment := MediaPrefix + id + "/720p/seg_000.ts"
-	if err := worker.Upload(t.Context(), segment, writeFile(t, []byte("ts")), "video/mp2t"); err != nil {
+	if err := worker.Upload(t.Context(), segment, writeFile(t, []byte("ts")), "video/mp2t", ""); err != nil {
 		t.Errorf("worker Upload(media) error = %v", err)
 	}
 	if keys := mediaKeys(t, video, MediaPrefix+id+"/"); !slices.Equal(keys, []string{segment}) {
@@ -448,7 +448,7 @@ func TestIntegrationWorkerPermissions(t *testing.T) {
 
 	otherID := ids.New()
 	cleanup(t, video, otherID)
-	if err := worker.Upload(t.Context(), UploadsPrefix+otherID, writeFile(t, []byte("x")), "video/mp4"); !errors.Is(err, ErrAccessDenied) {
+	if err := worker.Upload(t.Context(), UploadsPrefix+otherID, writeFile(t, []byte("x")), "video/mp4", ""); !errors.Is(err, ErrAccessDenied) {
 		t.Errorf("worker Upload(uploads) error = %v, want ErrAccessDenied", err)
 	}
 	if _, err := video.Head(t.Context(), UploadsPrefix+otherID); !errors.Is(err, ErrNotFound) {
@@ -462,12 +462,12 @@ func TestIntegrationVideoServicePermissions(t *testing.T) {
 	id := ids.New()
 	cleanup(t, video, id)
 
-	if err := video.Upload(t.Context(), MediaPrefix+id+"/master.m3u8", writeFile(t, []byte("#EXTM3U")), "application/vnd.apple.mpegurl"); !errors.Is(err, ErrAccessDenied) {
+	if err := video.Upload(t.Context(), MediaPrefix+id+"/master.m3u8", writeFile(t, []byte("#EXTM3U")), "application/vnd.apple.mpegurl", ""); !errors.Is(err, ErrAccessDenied) {
 		t.Errorf("video-service Upload(media) error = %v, want ErrAccessDenied", err)
 	}
 
 	upload := UploadsPrefix + id
-	if err := video.Upload(t.Context(), upload, writeFile(t, []byte("x")), "video/mp4"); err != nil {
+	if err := video.Upload(t.Context(), upload, writeFile(t, []byte("x")), "video/mp4", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := video.Delete(t.Context(), upload); err != nil {
@@ -478,7 +478,7 @@ func TestIntegrationVideoServicePermissions(t *testing.T) {
 	}
 
 	playlist := MediaPrefix + id + "/master.m3u8"
-	if err := worker.Upload(t.Context(), playlist, writeFile(t, []byte("#EXTM3U")), "application/vnd.apple.mpegurl"); err != nil {
+	if err := worker.Upload(t.Context(), playlist, writeFile(t, []byte("#EXTM3U")), "application/vnd.apple.mpegurl", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := video.Delete(t.Context(), playlist); err != nil {
@@ -516,7 +516,7 @@ func TestIntegrationDeletePrefix(t *testing.T) {
 	kept := MediaPrefix + otherID + "/master.m3u8"
 	f := writeFile(t, []byte("data"))
 	for _, k := range append(slices.Clone(keys), kept) {
-		if err := worker.Upload(t.Context(), k, f, "application/octet-stream"); err != nil {
+		if err := worker.Upload(t.Context(), k, f, "application/octet-stream", ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -531,6 +531,129 @@ func TestIntegrationDeletePrefix(t *testing.T) {
 	}
 	if other := mediaKeys(t, video, MediaPrefix+otherID+"/"); !slices.Equal(other, []string{kept}) {
 		t.Errorf("other video keys = %v, want [%s]", other, kept)
+	}
+}
+
+// TestIntegrationCacheControl uploads a media object as media-worker does, with Cache-Control,
+// and reads it back anonymously, as a player does: the store keeps the header and sends it.
+func TestIntegrationCacheControl(t *testing.T) {
+	video, endpoint := videoStore(t)
+	worker := workerStore(t)
+	id := ids.New()
+	cleanup(t, video, id)
+	const immutable = "max-age=31536000, immutable"
+	key := MediaPrefix + id + "/" + ids.New() + "/" + ids.New() + "/360p/seg_000.ts"
+	if err := worker.Upload(t.Context(), key, writeFile(t, []byte("ts")), "video/mp2t", immutable); err != nil {
+		t.Fatalf("worker Upload() error = %v", err)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, endpoint+"/media/"+key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != immutable ||
+		resp.Header.Get("Content-Type") != "video/mp2t" {
+		t.Errorf("anonymous GET: %d, Cache-Control %q, Content-Type %q; want 200, %q, video/mp2t",
+			resp.StatusCode, resp.Header.Get("Cache-Control"), resp.Header.Get("Content-Type"), immutable)
+	}
+}
+
+// TestIntegrationCreateOnce checks the store makes a create conditional: of two creates of one
+// key sent together exactly one succeeds and the other gets ErrExists, a third one too, and the
+// object is the winner's.
+func TestIntegrationCreateOnce(t *testing.T) {
+	video, _ := videoStore(t)
+	worker := workerStore(t)
+	id := ids.New()
+	cleanup(t, video, id)
+	key := MediaPrefix + id + "/" + ids.New() + "/master.m3u8"
+	contents := [][]byte{[]byte("#EXTM3U\n# first\n"), []byte("#EXTM3U\n# second\n")}
+	errs := make([]error, len(contents))
+	var wg sync.WaitGroup
+	for i, c := range contents {
+		f := writeFile(t, c)
+		wg.Go(func() { errs[i] = worker.Create(t.Context(), key, f, "application/vnd.apple.mpegurl", "") })
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil && !errors.Is(err, ErrExists) {
+			t.Errorf("Create() %d error = %v, want nil or ErrExists", i, err)
+		}
+	}
+	if (errs[0] == nil) == (errs[1] == nil) {
+		t.Fatalf("Create() errors = %v, want exactly one success", errs)
+	}
+	winner := contents[0]
+	if errs[1] == nil {
+		winner = contents[1]
+	}
+	if err := worker.Create(t.Context(), key, writeFile(t, []byte("third")), "application/vnd.apple.mpegurl", ""); !errors.Is(err, ErrExists) {
+		t.Errorf("third Create() error = %v, want ErrExists", err)
+	}
+	dst := filepath.Join(t.TempDir(), "master")
+	if err := worker.Download(t.Context(), key, dst, 1<<10); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(dst); err != nil || !bytes.Equal(got, winner) { //nolint:gosec // a file this test downloaded
+		t.Errorf("object = %q, %v; want the winner's %q", got, err, winner)
+	}
+}
+
+// TestIntegrationWorkerReadsMedia checks media-worker's policy allows what it does when a
+// version's master already exists: list one key under media/ (present and absent both answered,
+// never an error) and read a playlist back; listing outside media/, in the uploads bucket or in
+// the media bucket without a prefix or under another one, stays refused.
+func TestIntegrationWorkerReadsMedia(t *testing.T) {
+	video, _ := videoStore(t)
+	worker := workerStore(t)
+	id := ids.New()
+	cleanup(t, video, id)
+	master := MediaPrefix + id + "/" + ids.New() + "/master.m3u8"
+	content := []byte("#EXTM3U\n")
+	if err := worker.Upload(t.Context(), master, writeFile(t, content), "application/vnd.apple.mpegurl", ""); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]bool{master: true, MediaPrefix + id + "/" + ids.New() + "/master.m3u8": false} {
+		if got, err := worker.Exists(t.Context(), key); err != nil || got != want {
+			t.Errorf("worker Exists(%s) = %v, %v; want %v, nil", key, got, err, want)
+		}
+	}
+	dst := filepath.Join(t.TempDir(), "master")
+	if err := worker.Download(t.Context(), master, dst, 1<<10); err != nil {
+		t.Errorf("worker Download(media) error = %v", err)
+	} else if got, err := os.ReadFile(dst); err != nil || !bytes.Equal(got, content) { //nolint:gosec // a file this test downloaded
+		t.Errorf("downloaded %q, %v; want %q", got, err, content)
+	}
+	if _, err := worker.Exists(t.Context(), UploadsPrefix+id); !errors.Is(err, ErrAccessDenied) {
+		t.Errorf("worker Exists(uploads) error = %v, want ErrAccessDenied", err)
+	}
+	// Exists always lists under media/, so these requests go to the client: the policy lets the
+	// worker list the media bucket only under the media/ prefix. A nil prefix sends none.
+	for _, c := range []struct {
+		prefix  *string
+		allowed bool
+	}{
+		{aws.String(MediaPrefix), true},
+		{nil, false},
+		{aws.String(UploadsPrefix), false},
+		{aws.String("other/"), false},
+	} {
+		_, err := worker.client.ListObjectsV2(t.Context(), &s3.ListObjectsV2Input{
+			Bucket: aws.String(worker.mediaBucket), Prefix: c.prefix, MaxKeys: aws.Int32(1),
+		})
+		if err != nil {
+			err = classify("list", err)
+		}
+		if c.allowed && err != nil {
+			t.Errorf("worker list media bucket, prefix %q: error = %v, want nil", aws.ToString(c.prefix), err)
+		}
+		if !c.allowed && !errors.Is(err, ErrAccessDenied) {
+			t.Errorf("worker list media bucket, prefix %q: error = %v, want ErrAccessDenied", aws.ToString(c.prefix), err)
+		}
 	}
 }
 
@@ -555,7 +678,7 @@ func TestIntegrationMultipartChecksum(t *testing.T) {
 		f := writeFile(t, []byte("x"))
 		upload, playlist := UploadsPrefix+id, MediaPrefix+id+"/master.m3u8"
 		for _, key := range []string{upload, playlist} {
-			if err := probe.Upload(t.Context(), key, f, "video/mp4"); !errors.Is(err, ErrAccessDenied) {
+			if err := probe.Upload(t.Context(), key, f, "video/mp4", ""); !errors.Is(err, ErrAccessDenied) {
 				t.Errorf("probe Upload(%s) error = %v, want ErrAccessDenied", key, err)
 			}
 		}

@@ -9,10 +9,22 @@ Not needed despite the deny: kubelet probes and kubectl port-forward come from t
 NetworkPolicy cannot block.
 
 Namespace kyverno gets the same three (its pods that call the API server carry svp-kube-api=allow), and two more at the
-end of this file.
+end of this file. With externalSecrets on (GitOps path), so does namespace external-secrets of External Secrets
+Operator: its controller (labelled svp-kube-api=allow) talks to the API server only, and nothing comes in (it serves no
+webhook, and nothing scrapes its metrics); with store aws it also gets TCP 443 out to public addresses (Secrets
+Manager, STS) and TCP 80 to the EKS Pod Identity Agent, at the end of this file. The source namespace of store
+kubernetes has no pod, and is denied all the same.
 */}}
 {{- $kyverno := dict "name" .Values.kyverno.namespace "kubeAPI" true }}
-{{- range concat .Values.namespaces (list $kyverno) }}
+{{- $es := .Values.externalSecrets }}
+{{- $esNamespaces := list }}
+{{- if $es.enabled }}
+{{- $esNamespaces = append $esNamespaces (dict "name" $es.controller.namespace "kubeAPI" true) }}
+{{- if eq $es.store "kubernetes" }}
+{{- $esNamespaces = append $esNamespaces (dict "name" $es.sourceNamespace "kubeAPI" false) }}
+{{- end }}
+{{- end }}
+{{- range concat .Values.namespaces (list $kyverno) $esNamespaces }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -129,3 +141,48 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+{{- if and $es.enabled (eq $es.store "aws") }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-public-https
+  namespace: {{ $es.controller.namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: external-secrets
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- toYaml .Values.kyverno.privateRanges | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# The store aws has no auth block: the controller takes its AWS credentials from the EKS Pod Identity Agent, which
+# listens on the node at the link-local address 169.254.170.23, port 80 (the address AWS_CONTAINER_CREDENTIALS_FULL_URI
+# points the SDK to). The policy above leaves out every private range, link-local included, so this one opens that
+# single address and port, for this pod only. The agent also answers on [fd00:ec2::23]:80; an IPv6 cluster needs that
+# address here instead.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-pod-identity-agent
+  namespace: {{ $es.controller.namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: external-secrets
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 169.254.170.23/32
+      ports:
+        - protocol: TCP
+          port: 80
+{{- end }}

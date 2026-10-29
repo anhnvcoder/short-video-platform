@@ -12,14 +12,30 @@ order and stop at the first that fails, each with its own message naming the ima
      deploy/ci/vuln-predicate.sh);
   5. no CRITICAL vulnerability on either platform;
   6. metadata.scanFinishedOn at most maxAttestationAge ago.
+With requireProvenance (off by default, so the policy renders as without these), four more, after the six: an image
+without provenance is refused only once it passes every other check, so the message of a missing provenance never
+hides another fault:
+  7. a build provenance attestation (https://slsa.dev/provenance/v1, which cosign attest --type slsaprovenance1 writes)
+     signed by the same identity;
+  8. its runDetails.builder.id is the subject of that identity;
+  9. its buildDefinition.externalParameters.workflow.repository is provenanceRepository;
+ 10. its buildDefinition.externalParameters.workflow.ref is provenanceRef.
 The payload of an attestation is the whole in-toto statement, so its paths start at .predicate; extractPayload reads it
-only once verifyAttestationSignatures has verified it in the same evaluation (check 3 comes first).
+only once verifyAttestationSignatures has verified it in the same evaluation (check 3 comes first for vuln, check 7 for
+provenance). Each image then costs a third verification when Kyverno has not cached it.
 */}}
 {{- $iv := .Values.imageVerification }}
 {{- if not (has $iv.mode (list "Enforce" "Audit")) }}
 {{- fail (printf "imageVerification.mode must be Enforce or Audit, not %q" $iv.mode) }}
 {{- end }}
-{{- range $key := list "imagePrefix" "issuer" "subject" "maxAttestationAge" }}
+{{- if not (kindIs "bool" $iv.requireProvenance) }}
+{{- fail "imageVerification.requireProvenance must be true or false" }}
+{{- end }}
+{{- $keys := list "imagePrefix" "issuer" "subject" "maxAttestationAge" }}
+{{- if $iv.requireProvenance }}
+{{- $keys = concat $keys (list "provenanceRepository" "provenanceRef") }}
+{{- end }}
+{{- range $key := $keys }}
 {{- $value := required (printf "imageVerification.%s is required" $key) (get $iv $key) }}
 {{- if regexMatch "['\\\\\n]" $value }}
 {{- fail (printf "imageVerification.%s goes into CEL string literals: no quote, backslash or newline" $key) }}
@@ -45,7 +61,13 @@ spec:
   # 30 s, the most the API server allows (Kyverno's default is 10). A verification Kyverno has not cached reaches
   # Sigstore's TUF and GHCR (Rekor is not called: the policy sets no ctlog, so Kyverno v1.19.1 checks the transparency
   # log proof embedded in the signature bundle offline), and a single signature took 6-8 s on the lab's cluster; each
+  {{- if $iv.requireProvenance }}
+  # image is verified three times (signature, vuln attestation, provenance attestation), so three uncached 6-8 s
+  # verifications come close to the limit (not measured yet with provenance). Under Enforce a webhook call that times
+  # out refuses the pod.
+  {{- else }}
   # image is verified twice (signature, then vuln attestation). Under Enforce a webhook call that times out refuses the pod.
+  {{- end }}
   webhookConfiguration:
     timeoutSeconds: 30
   evaluation:
@@ -94,6 +116,11 @@ spec:
     - name: vuln
       intoto:
         type: https://cosign.sigstore.dev/attestation/vuln/v1
+    {{- if $iv.requireProvenance }}
+    - name: provenance
+      intoto:
+        type: https://slsa.dev/provenance/v1
+    {{- end }}
   variables:
     # Every image of the pod, whatever its registry: what check 1 reads.
     - name: podImages
@@ -129,6 +156,22 @@ spec:
       expression: >-
         variables.matched.filter(i,
           time.now() - timestamp(extractPayload(i, attestations.vuln).predicate.metadata.scanFinishedOn) > duration('{{ $iv.maxAttestationAge }}'))
+    {{- if $iv.requireProvenance }}
+    - name: unproven
+      expression: variables.matched.filter(i, verifyAttestationSignatures(i, attestations.provenance, [attestors.images]) == 0)
+    - name: wrongBuilder
+      expression: >-
+        variables.matched.filter(i,
+          extractPayload(i, attestations.provenance).?predicate.?runDetails.?builder.?id.orValue('') != '{{ $iv.subject }}')
+    - name: wrongRepository
+      expression: >-
+        variables.matched.filter(i,
+          extractPayload(i, attestations.provenance).?predicate.?buildDefinition.?externalParameters.?workflow.?repository.orValue('') != '{{ $iv.provenanceRepository }}')
+    - name: wrongRef
+      expression: >-
+        variables.matched.filter(i,
+          extractPayload(i, attestations.provenance).?predicate.?buildDefinition.?externalParameters.?workflow.?ref.orValue('') != '{{ $iv.provenanceRef }}')
+    {{- end }}
   validations:
     - expression: size(variables.foreign) == 0
       messageExpression: >-
@@ -148,3 +191,17 @@ spec:
     - expression: size(variables.stale) == 0
       messageExpression: >-
         'vuln attestation older than {{ $iv.maxAttestationAge }} (scanFinishedOn): ' + variables.stale.join(', ')
+    {{- if $iv.requireProvenance }}
+    - expression: size(variables.unproven) == 0
+      messageExpression: >-
+        'image without a provenance attestation signed by {{ $iv.subject }}: ' + variables.unproven.join(', ')
+    - expression: size(variables.wrongBuilder) == 0
+      messageExpression: >-
+        'provenance builder.id is not {{ $iv.subject }}: ' + variables.wrongBuilder.join(', ')
+    - expression: size(variables.wrongRepository) == 0
+      messageExpression: >-
+        'provenance workflow repository is not {{ $iv.provenanceRepository }}: ' + variables.wrongRepository.join(', ')
+    - expression: size(variables.wrongRef) == 0
+      messageExpression: >-
+        'provenance workflow ref is not {{ $iv.provenanceRef }}: ' + variables.wrongRef.join(', ')
+    {{- end }}

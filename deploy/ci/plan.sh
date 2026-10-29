@@ -6,8 +6,9 @@
 #   legs            JSON matrix {"include": [{image, arch, runner}]}, every image on amd64 and arm64 (native runners)
 #   has_images      true | false
 #   base            the commit the changes were compared with ("" when none could be used)
-#   values_changed  true when a file of deploy/k8s/values/services/ changed since base (or base is unknown); read only
-#                   off main, where the values check runs
+#   values_changed  true when a file of deploy/k8s/values/services/ or a values file of chart svp-policy
+#                   (policy_values_paths of common.sh: what the releases must carry) changed since base (or base is
+#                   unknown); read only off main, where the values check runs
 #   values_ref      the dispatch input values_ref, checked (rescan only)
 #
 # Inputs come from the environment only, never interpolated into a script: EVENT_NAME, GIT_REF (github.ref),
@@ -87,7 +88,7 @@ build)
   fi
   if [ "$on_main" != true ]; then
     if [ -z "$base" ] ||
-      [ -n "$(git -C "$repo_root" diff --name-only "$base" HEAD -- deploy/k8s/values/services/)" ]; then
+      [ -n "$(git -C "$repo_root" diff --name-only "$base" HEAD -- deploy/k8s/values/services/ "${policy_values_paths[@]}")" ]; then
       values_changed=true
     fi
   fi

@@ -31,6 +31,148 @@ sign_identity() {
   [[ $sign_issuer =~ ^https://[^[:space:]]+$ && $sign_subject =~ ^https://[^[:space:]]+$ ]] ||
     fail "imageVerification.issuer and subject of $values must each be one plain https:// URL"
 }
+# provenance_source: sets provenance_repository and provenance_ref, what the workflow of a release's build provenance
+# must name, read from imageVerification.provenanceRepository and .provenanceRef of the same values file (Kyverno
+# checks the same two). Fails unless the first is one https:// URL and the second one refs/... without a space.
+provenance_source() {
+  local values=$repo_root/deploy/helm/svp-policy/values.yaml
+  provenance_repository=$(sed -n 's/^  provenanceRepository: *//p' "$values") &&
+    provenance_ref=$(sed -n 's/^  provenanceRef: *//p' "$values") || fail "read $values"
+  [[ $provenance_repository =~ ^https://[^[:space:]]+$ && $provenance_ref =~ ^refs/[^[:space:]]+$ ]] ||
+    fail "imageVerification.provenanceRepository and provenanceRef of $values must be one https:// URL and one refs/... each"
+}
+
+# _policy_file REV PATH: prints file PATH of the repository at commit REV, or of the working tree when REV is empty;
+# status 1 when there is no such file.
+_policy_file() {
+  if [ -n "$1" ]; then
+    git -C "$repo_root" cat-file -e "$1:$2" 2>/dev/null || return 1
+    git -C "$repo_root" show "$1:$2"
+  else
+    [ -f "$repo_root/$2" ] || return 1
+    cat "$repo_root/$2"
+  fi
+}
+
+# _require_provenance WHERE [OVERLAY]: reads a values file of chart svp-policy on stdin and prints true or false, the
+# value of its line `  requireProvenance: ...` in the top-level imageVerification block, or nothing without one. Only
+# that shape is read (the value bare, no quote or comment after it); another line naming requireProvenance fails,
+# naming WHERE, rather than guess what Kyverno gets. With OVERLAY set the file may hold nothing else (blank lines and
+# comments aside): an overlay setting another key of the policy would make Kyverno check what no script here reads.
+_require_provenance() {
+  local value rc=0
+  value=$(awk -v overlay="${2:-}" '
+    /^[ ]*(#.*)?$/ { next }
+    /^imageVerification:[ ]*$/ { block = 1; next }
+    /^[^ ]/ { block = 0; if (overlay) bad = 1; next }
+    /requireProvenance/ {
+      if (block && $0 ~ /^  requireProvenance: (true|false)$/) {
+        v = $0
+        sub(/^  requireProvenance: /, "", v)
+        found++
+      } else bad = 1
+      next
+    }
+    overlay { bad = 1 }
+    END {
+      if (bad || found > 1) exit 5
+      if (found) print v
+    }') || rc=$?
+  if [ "$rc" != 0 ]; then
+    if [ -n "${2:-}" ]; then
+      echo "FAIL  $1: the overlay of svp-policy holds exactly 'imageVerification:' then '  requireProvenance: true' (or false), nothing else" >&2
+    else
+      echo "FAIL  $1: imageVerification.requireProvenance must be one line '  requireProvenance: true' (or false) in the imageVerification block" >&2
+    fi
+    return 1
+  fi
+  echo "$value"
+}
+
+# provenance_required [REV [ENV]]: prints true when chart svp-policy checks build provenance (requireProvenance) at
+# commit REV (the working tree when REV is empty) in environment ENV, false otherwise, from the files Argo CD hands
+# the chart there: its values.yaml, then deploy/k8s/envs/<ENV>/svp-policy.yaml when there is one. Without ENV: true
+# when any environment of deploy/k8s/envs at REV turns it on (the base alone when there is none), as the release
+# images are the same in every environment. A revision from before the key reads false. Fails, printing nothing on
+# stdout, when a file is not of the shape _require_provenance reads: callers must stop then, not read it as false.
+provenance_required() {
+  local rev=${1:-} env=${2:-} at=${1:+ at ${1:0:12}} file content base value envs e
+  file=deploy/helm/svp-policy/values.yaml
+  content=$(_policy_file "$rev" "$file") || {
+    echo "FAIL  no $file$at" >&2
+    return 1
+  }
+  base=$(_require_provenance "$file$at" <<<"$content") || return 1
+  base=${base:-false}
+  if [ -n "$env" ]; then
+    envs=$env
+  elif [ -n "$rev" ]; then
+    envs=$(git -C "$repo_root" ls-tree --name-only "$rev:deploy/k8s/envs" 2>/dev/null) || envs=
+  else
+    envs=$(cd "$repo_root/deploy/k8s/envs" 2>/dev/null && for e in */; do [ -d "$e" ] && echo "${e%/}"; done) || envs=
+  fi
+  for e in $envs; do
+    file=deploy/k8s/envs/$e/svp-policy.yaml
+    value=
+    if content=$(_policy_file "$rev" "$file"); then
+      value=$(_require_provenance "$file$at" overlay <<<"$content") || return 1
+    fi
+    if [ "${value:-$base}" = true ]; then
+      echo true
+      return 0
+    fi
+  done
+  if [ -z "$envs" ]; then echo "$base"; else echo false; fi
+}
+
+# The values files of chart svp-policy that verify-release.sh reads (sign_identity, provenance_source,
+# provenance_required), as git pathspecs. A change of one can change what every release must carry (turning
+# requireProvenance on, above all), so values-check.sh then checks all seven releases, and plan.sh runs it.
+# shellcheck disable=SC2034 # read by the scripts that source this file
+policy_values_paths=(deploy/helm/svp-policy/values.yaml 'deploy/k8s/envs/*/svp-policy.yaml')
+
+# provenance_absent ISSUER SUBJECT IMAGE: status 0 when cosign verifies attestations of that identity on IMAGE
+# (REPOSITORY@DIGEST) and none of them is a build provenance (cosign's "none of the attestations matched the predicate
+# type", what a release from before CI attested provenance answers, as it carries vuln), 1 when one is, 2 when cosign
+# could not tell (registry or Sigstore out of reach, no attestation of the identity at all), its last line on stderr.
+# Only that answer of cosign counts as no provenance: an error never does.
+provenance_absent() {
+  local err rc=0
+  err=$(cosign_ verify-attestation --type slsaprovenance1 --certificate-oidc-issuer "$1" --certificate-identity "$2" \
+    "$3" 2>&1 >/dev/null) || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  case $err in *"none of the attestations matched the predicate type"*) return 0 ;; esac
+  printf '%s\n' "${err:-cosign exited $rc}" | tail -n 1 >&2
+  return 2
+}
+
+# check_provenance_statement DIGEST: reads one in-toto statement (the decoded payload of a provenance attestation) on
+# stdin and checks what Kyverno checks when requireProvenance is on: predicate type SLSA v1, subject DIGEST,
+# runDetails.builder.id the signing subject, buildDefinition.externalParameters.workflow the repository and ref of
+# provenance_source; and that resolvedDependencies names exactly one source commit (40 hex). Prints that commit when
+# all hold, the first problem otherwise (status 1). Needs sign_identity and provenance_source first.
+check_provenance_statement() {
+  local verdict
+  verdict=$(jq -r --arg d "${1#sha256:}" --arg builder "$sign_subject" --arg repo "$provenance_repository" \
+    --arg ref "$provenance_ref" '
+    def wf: .predicate.buildDefinition.externalParameters.workflow;
+    [.predicate.buildDefinition.resolvedDependencies[]?.digest.gitCommit] as $commits
+    | if .predicateType != "https://slsa.dev/provenance/v1" then "not a SLSA v1 provenance"
+    elif ([.subject[]?.digest.sha256] | index($d)) == null then "the attestation is not about this digest"
+    elif .predicate.runDetails.builder.id != $builder then "builder.id is \(.predicate.runDetails.builder.id), not \($builder)"
+    elif wf.repository != $repo then "workflow repository is \(wf.repository), not \($repo)"
+    elif wf.ref != $ref then "workflow ref is \(wf.ref), not \($ref)"
+    elif ($commits | length) != 1 or ($commits[0] | type) != "string" or ($commits[0] | test("^[0-9a-f]{40}$") | not)
+      then "resolvedDependencies does not name exactly one commit (gitCommit, 40 hex)"
+    else "ok \($commits[0])" end' 2>/dev/null) || verdict="is not readable JSON"
+  case $verdict in
+  "ok "*) echo "${verdict#ok }" ;;
+  *)
+    echo "$verdict"
+    return 1
+    ;;
+  esac
+}
 # Where trivy looks for its vulnerability DB, in this order (its default for v0.76.0, written out so the attestation
 # can name it): mirror.gcr.io first, GHCR on 429 or 5xx.
 trivy_db_repository=mirror.gcr.io/aquasec/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2

@@ -8,7 +8,10 @@
   (a) gateway đạt, (a) feed-service và (b) là phát hiện, D12), trừ D5 và D26 của `gitops` chỉ kiểm được trên `main` sau khi phần 3
   merge (kiểm sau merge); chưa hiện thực: phần 4 (mục 5). Đích object store của Velero (§7, kịch bản `velero`) và của BAK-1 trong cluster
   bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md): RustFS thay MinIO, Velero kiểm trên RustFS ở phần 3
-  và đạt (mục 12 của kế hoạch kiểm 0022)
+  và đạt (mục 12 của kế hoạch kiểm 0022); kịch bản `compose-obs` (thêm `drill-duplicates`, `drill-kill-worker` sau `smoke`, ba test
+  integration của output bất biến) chỉnh bởi [0029](0029-immutable-media-versions.md); kịch bản `gitops` (§6: bước
+  `gitops-external-secrets`, `k8s-smoke` với `SVP_SMOKE_LEGACY_MEDIA=1` tới khi bản media-worker phát hành ghi key có version, ca `l`
+  của `drill-k8s-supplychain`) chỉnh bởi [0026](0026-secrets-gitops.md), [0027](0027-slsa-build-provenance.md) và 0029
 - Chỉnh 2026-10-28 (phần 3): điều kiện mở script cloud trên k3d đi qua hàm `ci_hosted_runner` của adapter nền tảng (mục 7, Tên
   chốt); job `gitops` tách bước chờ phát hành khỏi bước kịch bản (mục 2, 6); kịch bản `chaos` chạy mỗi thí nghiệm một lượt k6 riêng
   có cửa sổ ổn định riêng, thay một lượt k6 chạy suốt (người học chốt, mục 7)

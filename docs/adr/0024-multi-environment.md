@@ -2,7 +2,8 @@
 
 - Trạng thái: Chấp nhận (người học duyệt 2026-10-26, chọn (a) ở cả bảy dòng "Cần người học chọn"). Phần 3 của giai đoạn 6b
   hiện thực 2026-10-26; "k3d đóng vai stg" chạy trên runner 2026-10-28 (kịch bản `gitops`, mục Kiểm chứng sau); phần 4 và giai
-  đoạn 7 chưa hiện thực
+  đoạn 7 chưa hiện thực; §9 (Secret mỗi env: ExternalSecret của từng namespace qua store riêng, ở prd mỗi store assume một role chỉ
+  đọc entry namespace đó cần) chỉnh bởi [0026](0026-secrets-gitops.md)
 - Ngày: 2026-10-26
 
 ## Bối cảnh

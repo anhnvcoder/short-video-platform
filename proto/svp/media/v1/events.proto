@@ -10,8 +10,12 @@ import "svp/event/v1/event.proto";
 // (media-worker has no database, hence no outbox). Record key: video_id.
 // Consumed by video-service. Dead letters go to `media.transcodes.v1.dlq`.
 //
-// Transcoding the same video again overwrites the same object keys, so a
-// redelivered video.uploaded yields the same result.
+// The output of a video.uploaded lives under a version, the event_id of that
+// video.uploaded: `media/<video_id>/<version>/`. Each try writes into a
+// directory of its own below it and the master playlist is created only once,
+// so no object under a published key is ever written again. A redelivered
+// video.uploaded writes nothing and yields the keys of the master already
+// there, with the same duration and renditions.
 message TranscodeEvent {
   svp.event.v1.EventMeta meta = 1;
 
@@ -24,12 +28,15 @@ message TranscodeEvent {
 }
 
 // TranscodeCompleted: the HLS output of video_id is fully written under
-// `media/<video_id>/`.
+// `media/<video_id>/<version>/`.
 message TranscodeCompleted {
   string video_id = 1;
-  // Object key of the HLS master playlist, `media/<video_id>/master.m3u8`.
+  // Object key of the HLS master playlist,
+  // `media/<video_id>/<version>/master.m3u8` (videos made before versions:
+  // `media/<video_id>/master.m3u8`).
   string playlist_key = 2;
-  // Object key of the thumbnail image under `media/<video_id>/`.
+  // Object key of the thumbnail image under `media/<video_id>/`, in the
+  // directory the master playlist names.
   string thumbnail_key = 3;
   // Length of the transcoded video.
   google.protobuf.Duration duration = 4;

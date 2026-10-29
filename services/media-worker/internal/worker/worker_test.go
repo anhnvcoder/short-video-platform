@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,13 +32,22 @@ import (
 	"github.com/anhnvcoder/short-video-platform/services/media-worker/internal/transcode"
 )
 
-// fakeStore keeps objects in memory and follows objstore's error contract.
+// fakeStore keeps objects in memory and follows objstore's error contract, Create's
+// If-None-Match: * included.
 type fakeStore struct {
 	mu      sync.Mutex
 	objects map[string][]byte
 	types   map[string]string
-	// uploads lists every Upload key in call order.
+	caches  map[string]string
+	// uploads lists every key written, by Upload or a successful Create, in call order.
 	uploads []string
+	// existsErr, when set, is what Exists returns.
+	existsErr error
+	// beforeUpload, when set, runs before each Upload and Create; an error it returns fails the
+	// call without writing.
+	beforeUpload func(key string) error
+	// afterCreate, when set, runs after a successful Create.
+	afterCreate func()
 	// downloads counts Download calls; maxBytes is the limit of the last one.
 	downloads int
 	maxBytes  int64
@@ -50,7 +60,7 @@ type fakeStore struct {
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{objects: map[string][]byte{}, types: map[string]string{}}
+	return &fakeStore{objects: map[string][]byte{}, types: map[string]string{}, caches: map[string]string{}}
 }
 
 func (s *fakeStore) put(key string, data []byte) {
@@ -93,17 +103,57 @@ func (s *fakeStore) Download(ctx context.Context, key, path string, maxBytes int
 	return nil
 }
 
-func (s *fakeStore) Upload(_ context.Context, key, path, contentType string) error {
+func (s *fakeStore) Upload(_ context.Context, key, path, contentType, cacheControl string) error {
+	return s.write(key, path, contentType, cacheControl, false)
+}
+
+func (s *fakeStore) Create(_ context.Context, key, path, contentType, cacheControl string) error {
+	if err := s.write(key, path, contentType, cacheControl, true); err != nil {
+		return err
+	}
+	if s.afterCreate != nil {
+		s.afterCreate()
+	}
+	return nil
+}
+
+func (s *fakeStore) write(key, path, contentType, cacheControl string, create bool) error {
+	if s.beforeUpload != nil {
+		if err := s.beforeUpload(key); err != nil {
+			return err
+		}
+	}
 	data, err := os.ReadFile(path) //nolint:gosec // a file of the job under test
 	if err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, taken := s.objects[key]; create && taken {
+		return fmt.Errorf("upload %s: %w", key, objstore.ErrExists)
+	}
 	s.objects[key] = data
 	s.types[key] = contentType
+	s.caches[key] = cacheControl
 	s.uploads = append(s.uploads, key)
 	return nil
+}
+
+func (s *fakeStore) Exists(_ context.Context, key string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.existsErr != nil {
+		return false, s.existsErr
+	}
+	_, ok := s.objects[key]
+	return ok, nil
+}
+
+// get returns the object at key, nil when there is none.
+func (s *fakeStore) get(key string) []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.objects[key]
 }
 
 func (s *fakeStore) snapshot() (uploads []string, downloads int) {
@@ -291,29 +341,91 @@ func (e *env) requireCleanWorkDir(t *testing.T) {
 	}
 }
 
+// versionOf returns the version a record's output goes under: its event_id.
+func versionOf(t *testing.T, r *kgo.Record) string {
+	t.Helper()
+	var ev videov1.VideoEvent
+	if err := proto.Unmarshal(r.Value, &ev); err != nil {
+		t.Fatal(err)
+	}
+	return ev.GetMeta().GetEventId()
+}
+
+// attemptOf returns the attempt directory the stored master of prefix names.
+func (e *env) attemptOf(t *testing.T, prefix string) string {
+	t.Helper()
+	m, err := transcode.ParseMaster(e.store.get(prefix + transcode.MasterPlaylist))
+	if err != nil {
+		t.Fatalf("stored master: %v", err)
+	}
+	return m.Attempt
+}
+
+// completedOf decodes a transcode.completed for id, without its envelope.
+func completedOf(t *testing.T, r *kgo.Record, id string) *mediav1.TranscodeCompleted {
+	t.Helper()
+	if string(r.Key) != id {
+		t.Errorf("record key %q, want %s", r.Key, id)
+	}
+	c := decodeOut(t, r).GetTranscodeCompleted()
+	if c == nil {
+		t.Fatal("event is not transcode.completed")
+	}
+	return c
+}
+
+func renditionsOf(c *mediav1.TranscodeCompleted) []string {
+	var names []string
+	for _, rd := range c.GetRenditions() {
+		names = append(names, fmt.Sprintf("%s %dx%d %d", rd.GetName(), rd.GetWidth(), rd.GetHeight(), rd.GetBitrateBps()))
+	}
+	return names
+}
+
+// checkCompleted checks c is the result of the 2 s 1280x720 clip under prefix, its master naming
+// attempt.
+func checkCompleted(t *testing.T, c *mediav1.TranscodeCompleted, id, prefix, attempt string) {
+	t.Helper()
+	if c.GetVideoId() != id || c.GetPlaylistKey() != prefix+"master.m3u8" || c.GetThumbnailKey() != prefix+attempt+"/thumbnail.jpg" {
+		t.Errorf("completed = %v, want keys %smaster.m3u8 and %s%s/thumbnail.jpg", c, prefix, prefix, attempt)
+	}
+	for _, key := range []string{c.GetPlaylistKey(), c.GetThumbnailKey()} {
+		if !objstore.IsMediaKey(key, id) {
+			t.Errorf("%s is not a media key of %s", key, id)
+		}
+	}
+	if d := c.GetDuration().AsDuration(); d < 1900*time.Millisecond || d > 2100*time.Millisecond {
+		t.Errorf("duration = %v, want about 2 s", d)
+	}
+	if got, want := renditionsOf(c), []string{"360p 640x360 800000", "720p 1280x720 2500000"}; !slices.Equal(got, want) {
+		t.Errorf("renditions = %v, want %v", got, want)
+	}
+}
+
+// The first delivery writes the version: every object of the try under its attempt directory,
+// segments first, the master last at the version's root, all of them immutable. A redelivery
+// finds the master, downloads no source and writes nothing, and publishes the same result read
+// back from the stored playlists.
 func TestHandleValidUploadTwiceGivesSameResult(t *testing.T) {
 	t.Parallel()
 	requireFFmpeg(t)
 	e := newEnv(t)
 	id, r := e.withSource(t, clip(t, "1280x720", 2))
+	prefix := "media/" + id + "/" + versionOf(t, r) + "/"
 
 	e.handle(t, r)
-	first, _ := e.store.snapshot()
-	e.handle(t, r)
-	all, downloads := e.store.snapshot()
-	second := all[len(first):]
-
-	if downloads != 2 {
-		t.Errorf("downloads = %d, want 2", downloads)
+	first, downloads := e.store.snapshot()
+	if downloads != 1 {
+		t.Errorf("downloads = %d, want the source only", downloads)
 	}
-	prefix := "media/" + id + "/"
 	if len(first) == 0 || first[len(first)-1] != prefix+transcode.MasterPlaylist {
-		t.Fatalf("uploads %v: want %s last", first, transcode.MasterPlaylist)
+		t.Fatalf("uploads %v: want %smaster.m3u8 last", first, prefix)
 	}
+	attempt := e.attemptOf(t, prefix)
 	lastSegment, firstPlaylist := -1, len(first)
-	for i, k := range first {
-		if !strings.HasPrefix(k, prefix) {
-			t.Errorf("upload key %s outside %s", k, prefix)
+	for i, k := range first[:len(first)-1] {
+		if !strings.HasPrefix(k, prefix+attempt+"/") {
+			t.Errorf("upload key %s outside %s%s/", k, prefix, attempt)
 		}
 		if strings.HasSuffix(k, ".ts") {
 			lastSegment = i
@@ -325,49 +437,218 @@ func TestHandleValidUploadTwiceGivesSameResult(t *testing.T) {
 	if lastSegment < 0 || lastSegment > firstPlaylist {
 		t.Errorf("uploads %v: want every segment before the rendition playlists", first)
 	}
-	if !slices.Contains(first, prefix+transcode.Thumbnail) {
+	if !slices.Contains(first, prefix+attempt+"/"+transcode.Thumbnail) {
 		t.Errorf("uploads %v: no thumbnail", first)
 	}
-	if !slices.Equal(first, second) {
-		t.Errorf("second run wrote other keys:\n%v\n%v", first, second)
+	for _, k := range first {
+		if c := e.store.caches[k]; c != "max-age=31536000, immutable" {
+			t.Errorf("%s Cache-Control %q", k, c)
+		}
 	}
 	if typ := e.store.types[prefix+transcode.MasterPlaylist]; typ != "application/vnd.apple.mpegurl" {
 		t.Errorf("master content type %q", typ)
 	}
+	if !strings.Contains(string(e.store.get(prefix+transcode.MasterPlaylist)), "\n"+attempt+"/360p/index.m3u8") {
+		t.Errorf("master does not name %s/360p/index.m3u8:\n%s", attempt, e.store.get(prefix+transcode.MasterPlaylist))
+	}
+
+	e.handle(t, r)
+	all, downloads := e.store.snapshot()
+	if len(all) != len(first) {
+		t.Errorf("redelivery wrote %v", all[len(first):])
+	}
+	// The master and the lowest rendition's playlist, no source.
+	if downloads != 3 {
+		t.Errorf("downloads = %d, want 3", downloads)
+	}
 
 	outs := e.read(t, OutputTopic, 2)
-	var events []*mediav1.TranscodeEvent
-	for _, out := range outs {
-		if string(out.Key) != id {
-			t.Errorf("record key %q, want %s", out.Key, id)
-		}
-		events = append(events, decodeOut(t, out))
-	}
-	c := events[0].GetTranscodeCompleted()
-	if c == nil {
-		t.Fatal("first event is not transcode.completed")
-	}
-	if c.GetVideoId() != id || c.GetPlaylistKey() != prefix+"master.m3u8" || c.GetThumbnailKey() != prefix+"thumbnail.jpg" {
-		t.Errorf("completed = %v", c)
-	}
-	if d := c.GetDuration().AsDuration(); d < 1900*time.Millisecond || d > 2100*time.Millisecond {
-		t.Errorf("duration = %v, want about 2 s", d)
-	}
-	var names []string
-	for _, rd := range c.GetRenditions() {
-		names = append(names, fmt.Sprintf("%s %dx%d %d", rd.GetName(), rd.GetWidth(), rd.GetHeight(), rd.GetBitrateBps()))
-	}
-	if want := []string{"360p 640x360 800000", "720p 1280x720 2500000"}; !slices.Equal(names, want) {
-		t.Errorf("renditions = %v, want %v", names, want)
-	}
-	if events[0].GetMeta().GetEventId() == events[1].GetMeta().GetEventId() {
-		t.Error("both events share an event_id")
-	}
-	events[0].Meta, events[1].Meta = nil, nil
-	if !proto.Equal(events[0], events[1]) {
-		t.Errorf("redelivery gave another result:\n%v\n%v", events[0], events[1])
+	c1, c2 := completedOf(t, outs[0], id), completedOf(t, outs[1], id)
+	checkCompleted(t, c1, id, prefix, attempt)
+	if !proto.Equal(c1, c2) {
+		t.Errorf("redelivery gave another result:\n%v\n%v", c1, c2)
 	}
 	e.requireCleanWorkDir(t)
+}
+
+// A try that dies before the master leaves objects no playlist names; the next try transcodes
+// again into a directory of its own and the master names that one.
+func TestHandleRetryBeforeMasterUsesNewDirectory(t *testing.T) {
+	t.Parallel()
+	requireFFmpeg(t)
+	e := newEnv(t)
+	id, r := e.withSource(t, clip(t, "1280x720", 2))
+	prefix := "media/" + id + "/" + versionOf(t, r) + "/"
+	var calls int
+	e.store.beforeUpload = func(string) error {
+		if calls++; calls == 3 {
+			return errors.New("objstore: upload: 503 Service Unavailable")
+		}
+		return nil
+	}
+	if err := e.w.Handle(t.Context(), r, kafkax.Attempt{Number: 1}); err == nil {
+		t.Fatal("Handle succeeded with a failed upload")
+	}
+	partial, _ := e.store.snapshot()
+	if len(partial) != 2 || e.store.get(prefix+transcode.MasterPlaylist) != nil {
+		t.Fatalf("after the failed try: uploads %v, want 2 and no master", partial)
+	}
+
+	e.handle(t, r)
+	all, downloads := e.store.snapshot()
+	if downloads != 2 {
+		t.Errorf("downloads = %d, want the source twice", downloads)
+	}
+	attempt := e.attemptOf(t, prefix)
+	for _, k := range partial {
+		if strings.HasPrefix(k, prefix+attempt+"/") {
+			t.Errorf("the master names %s, the directory of the failed try (%s)", attempt, k)
+		}
+	}
+	for _, k := range all[len(partial):] {
+		if k != prefix+transcode.MasterPlaylist && !strings.HasPrefix(k, prefix+attempt+"/") {
+			t.Errorf("second try wrote %s outside its directory %s", k, attempt)
+		}
+	}
+	checkCompleted(t, completedOf(t, e.read(t, OutputTopic, 1)[0], id), id, prefix, attempt)
+	if n := e.count(t, OutputTopic); n != 1 {
+		t.Errorf("%d events published, want 1", n)
+	}
+}
+
+// A try that dies after creating the master but before publishing: the redelivery publishes
+// the result from the stored playlists, writing and transcoding nothing.
+func TestHandleRedeliveryAfterMasterPublishesStoredResult(t *testing.T) {
+	t.Parallel()
+	requireFFmpeg(t)
+	e := newEnv(t)
+	id, r := e.withSource(t, clip(t, "1280x720", 2))
+	prefix := "media/" + id + "/" + versionOf(t, r) + "/"
+	ctx, cancel := context.WithCancel(t.Context())
+	e.store.afterCreate = cancel
+	if err := e.w.Handle(ctx, r, kafkax.Attempt{Number: 1}); err == nil {
+		t.Fatal("Handle succeeded although it stopped before publishing")
+	}
+	if n := e.count(t, OutputTopic); n != 0 {
+		t.Fatalf("%d events published before the redelivery", n)
+	}
+	stored, downloads := e.store.snapshot()
+	attempt := e.attemptOf(t, prefix)
+
+	e.handle(t, r)
+	all, after := e.store.snapshot()
+	if len(all) != len(stored) {
+		t.Errorf("redelivery wrote %v", all[len(stored):])
+	}
+	if after-downloads != 2 {
+		t.Errorf("redelivery downloaded %d objects, want the master and one playlist", after-downloads)
+	}
+	// The marker of the count above, then the only result.
+	outs := e.read(t, OutputTopic, 2)
+	if string(outs[0].Key) != "marker" {
+		t.Fatalf("first record has key %q, want the marker", outs[0].Key)
+	}
+	checkCompleted(t, completedOf(t, outs[1], id), id, prefix, attempt)
+	e.requireCleanWorkDir(t)
+}
+
+// Two tries of one event at once, as when a member that lost its session keeps its handler
+// going: A stops before its first upload, B runs to the end, then A goes on. B's master is the
+// only one, nothing under B's directory is written after it, and A publishes B's result.
+func TestHandleConcurrentTriesPublishOneVersion(t *testing.T) {
+	t.Parallel()
+	requireFFmpeg(t)
+	e := newEnv(t)
+	id, r := e.withSource(t, clip(t, "1280x720", 2))
+	prefix := "media/" + id + "/" + versionOf(t, r) + "/"
+	blocked, release := make(chan struct{}), make(chan struct{})
+	// Only the first upload, A's, waits; B's go through while A waits.
+	var first atomic.Bool
+	e.store.beforeUpload = func(string) error {
+		if first.CompareAndSwap(false, true) {
+			close(blocked)
+			<-release
+		}
+		return nil
+	}
+	other := New(e.store, e.client, t.TempDir(), slog.New(slog.DiscardHandler))
+	errA := make(chan error, 1)
+	go func() { errA <- e.w.Handle(t.Context(), r, kafkax.Attempt{Number: 1}) }()
+	<-blocked
+	if err := other.Handle(t.Context(), r, kafkax.Attempt{Number: 1}); err != nil {
+		t.Fatalf("try B: %v", err)
+	}
+	afterB, _ := e.store.snapshot()
+	attemptB := e.attemptOf(t, prefix)
+	master := e.store.get(prefix + transcode.MasterPlaylist)
+	close(release)
+	if err := <-errA; err != nil {
+		t.Fatalf("try A: %v", err)
+	}
+
+	all, _ := e.store.snapshot()
+	var attemptA string
+	for _, k := range all[len(afterB):] {
+		rest, ok := strings.CutPrefix(k, prefix)
+		dir, _, _ := strings.Cut(rest, "/")
+		switch {
+		case !ok || dir == attemptB || rest == transcode.MasterPlaylist:
+			t.Errorf("try A wrote %s after B's master", k)
+		case attemptA == "":
+			attemptA = dir
+		case dir != attemptA:
+			t.Errorf("try A wrote under two directories: %s, %s", attemptA, dir)
+		}
+	}
+	if attemptA == "" {
+		t.Error("try A uploaded nothing")
+	}
+	if got := e.store.get(prefix + transcode.MasterPlaylist); !slices.Equal(got, master) {
+		t.Errorf("master changed after B created it")
+	}
+	outs := e.read(t, OutputTopic, 2)
+	cB, cA := completedOf(t, outs[0], id), completedOf(t, outs[1], id)
+	checkCompleted(t, cB, id, prefix, attemptB)
+	if !proto.Equal(cA, cB) {
+		t.Errorf("try A published another result:\n%v\n%v", cA, cB)
+	}
+}
+
+// A master the worker cannot read back is never replaced: the try fails as temporary and
+// writes nothing.
+func TestHandleUnreadableStoredMasterIsTemporary(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	id := ids.New()
+	version := ids.New()
+	e.store.put(objstore.UploadsPrefix+id, []byte("never read"))
+	e.store.put("media/"+id+"/"+version+"/master.m3u8", []byte("#EXTM3U\n#EXT-X-STREAM-INF:RESOLUTION=640x360\n360p/index.m3u8\n"))
+	r := uploaded(t, id, 10, func(ev *videov1.VideoEvent, _ *videov1.VideoUploaded) { ev.Meta.EventId = version })
+	if err := e.w.Handle(t.Context(), r, kafkax.Attempt{Number: 1}); err == nil {
+		t.Fatal("Handle succeeded with a master it cannot parse")
+	}
+	uploads, downloads := e.store.snapshot()
+	if len(uploads) != 0 || downloads != 1 {
+		t.Errorf("uploads %v, downloads %d; want none and the master only", uploads, downloads)
+	}
+	if n := e.count(t, OutputTopic); n != 0 {
+		t.Errorf("%d events published", n)
+	}
+}
+
+// A refused check of the master is an error, never "not there": nothing is downloaded or
+// written.
+func TestHandleExistsErrorIsTemporary(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	e.store.existsErr = fmt.Errorf("list: %w", objstore.ErrAccessDenied)
+	_, r := e.withSource(t, []byte("never read"))
+	if err := e.w.Handle(t.Context(), r, kafkax.Attempt{Number: 1}); !errors.Is(err, objstore.ErrAccessDenied) {
+		t.Fatalf("Handle = %v, want the temporary ErrAccessDenied", err)
+	}
+	if uploads, downloads := e.store.snapshot(); len(uploads) != 0 || downloads != 0 {
+		t.Errorf("uploads %v, downloads %d; want none", uploads, downloads)
+	}
 }
 
 func TestHandleSourceMissing(t *testing.T) {
@@ -732,6 +1013,15 @@ func TestConsumerSendsBadEventsToDLQAndSkipsOthers(t *testing.T) {
 			up.SourceKey = "media/" + id
 		}),
 		"zero size": uploaded(t, id, 0, nil),
+		"no event_id": uploaded(t, id, 10, func(ev *videov1.VideoEvent, _ *videov1.VideoUploaded) {
+			ev.Meta.EventId = ""
+		}),
+		"event_id not canonical": uploaded(t, id, 10, func(ev *videov1.VideoEvent, _ *videov1.VideoUploaded) {
+			ev.Meta.EventId = strings.ToUpper(ids.New())
+		}),
+		"event_id a path": uploaded(t, id, 10, func(ev *videov1.VideoEvent, _ *videov1.VideoUploaded) {
+			ev.Meta.EventId = "../" + id
+		}),
 	}
 	for name, r := range bad {
 		r.Headers = append(r.Headers, kgo.RecordHeader{Key: "case", Value: []byte(name)})

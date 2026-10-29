@@ -67,7 +67,7 @@ flowchart LR
     plan["plan<br/>so với lượt push<br/>thành công cuối"]
     build["build<br/>amd64 + arm64,<br/>cổng trivy và grype<br/>trước push, push GHCR"]
     merge["merge<br/>index đa kiến trúc"]
-    sign["sign<br/>cosign keyless,<br/>attestation vuln, SBOM"]
+    sign["sign<br/>cosign keyless,<br/>attestation vuln, SBOM,<br/>build provenance"]
     promote["promote<br/>PR bot/promote"]
     review["PR promote chạy luồng 1.1;<br/>người học duyệt lượt chạy, merge"]
     argo["Argo CD poll git,<br/>sync; Kyverno kiểm<br/>chữ ký trước khi tạo pod"]
@@ -108,6 +108,10 @@ flowchart LR
 ```
 
 - `rescan` và `drill` chỉ chạy trên `main` và không chạy cùng lượt; `plan` từ chối (lượt đỏ) thay vì đoán.
+- `rescan` chỉ quét các digest có trong values ở `values_ref` (mặc định `main`). Ca `l` của `make drill-k8s-supplychain` cần một bản
+  phát hành cũ, trước build provenance, có `vuln` không quá 72 giờ: dispatch `-f rescan=true -f values_ref=<commit có digest đó
+  trong values>` trong 72 giờ trước lượt diễn tập (diễn tập in đúng lệnh khi `vuln` quá hạn). Provenance trên bản phát hành thật
+  có sau lượt `-f services=all` đầu tiên trên `main` sau khi merge đường ký (**kiểm sau push**).
 - `verify.yml` nhận `--ref main` hay nhánh `feat/stage6b-*`, ref khác dừng ở bước đầu; `targets` rỗng là mọi bước, bước dựng
   (`up`, `k8s-up`, `k8s-gitops-up`) luôn chạy. Lệnh đầy đủ ở [`CLAUDE.md`](../CLAUDE.md#kiểm-tra).
 
@@ -125,7 +129,7 @@ Trigger: `pull_request`, `push` vào `main`, `workflow_dispatch`. Không trigger
 | `web` | `make web-install`, `make web-check`, `make web-generate-check`, `make web-lockfile-scan` (trivy trên `web/pnpm-lock.yaml`, gồm dev dependency vì chúng chạy trong CI và tạo ra bundle: CRITICAL làm job đỏ, HIGH trở xuống chỉ vào summary và SARIF; bỏ qua chỉ qua `.trivyignore.yaml`, mỗi mục đúng gói@version (`purls`), tối đa 30 ngày; bước này chạy cả khi bước trước đỏ) | Mọi lượt | Không bao giờ | Có |
 | `generate` | `make generate-check`: code sinh đã commit khớp | Mọi lượt | Không bao giờ | Có |
 | `buf` | `buf breaking` so với base | Mọi lượt | Không skip; push tạo nhánh mới thì bước in "buf breaking skipped" (không có gì để so) và xanh | Có |
-| `config` | Quy tắc hai tệp bỏ qua của trivy, `platform-guard.sh`, `platform-test.sh`, `verify-collect-test.sh`, rule Prometheus, Collector, compose, chart, digest bên thứ ba, k6, manifest cloud | Mọi lượt | Không bao giờ | Có |
+| `config` | Quy tắc hai tệp bỏ qua của trivy, `platform-guard.sh`, `platform-test.sh`, `verify-collect-test.sh`, `provenance-predicate-test.sh` (predicate build provenance và bước attest của `sign-image.sh` với docker, cosign giả), rule Prometheus, Collector, compose, chart (gồm ExternalSecret, SecretStore của mỗi env qua kubeconform theo CRD của chart External Secrets ghim), digest bên thứ ba, k6, manifest cloud | Mọi lượt | Không bao giờ | Có |
 | `gitleaks` | Quét bí mật toàn lịch sử, `--redact` | Mọi lượt | Không bao giờ | Có |
 | `trivy-config` | Quét misconfig, chỉ báo (phát hiện không làm job đỏ; trừ các mục có hạn của `deploy/ci/trivy-config-ignore.yaml`) | Mọi lượt | Không bao giờ | Có (chỉ khi lệnh lỗi, không khi có phát hiện) |
 | `stack` | Stack compose đầu-cuối: smoke, e2e Chromium và WebKit, k6 `ci`, Lighthouse, rồi `make dast` cuối cùng (Schemathesis theo `services/gateway/openapi.yaml`, bước `continue-on-error`, hạn 15 phút; artifact `dast` chỉ `report.json`, `summary.json` đã dò bí mật) | Mọi lượt | Không bao giờ | Không |
@@ -143,10 +147,10 @@ dưới đây là `github.ref == 'refs/heads/main'` và sự kiện không phả
 | `last-success` | Đọc commit của lượt push `main` thành công cuối (base để so), job duy nhất có `actions: read` | `push` vào `main` | Mọi sự kiện khác: chỉ push cần base này | Có (`images-ok` tính skip này là đúng) |
 | `plan` | Chế độ, base, danh sách image, ma trận chân build (`deploy/ci/plan.sh`, `changed-services.sh`) | Trừ khi lượt bị huỷ | — | Có |
 | `build-nopush` | Build, quét, cổng trivy (image) và grype (SBOM syft) từng image × kiến trúc, không push | Chế độ `build`, có image, PR hay ref khác `main` | Không image nào đổi; hay đang trên `main` (job `build` làm) | Có |
-| `values-check` | Digest PR ghi vào values đã ký đúng identity, attestation ≤ 48 giờ | PR hay ref khác `main` có đổi `deploy/k8s/values/services/` | PR không đổi values | Có |
+| `values-check` | Digest PR ghi vào values đã ký đúng identity, attestation ≤ 48 giờ, và có build provenance đúng identity, commit khớp chứng chỉ khi `svp-policy` bật `requireProvenance` ở một env nào đó (`deploy/ci/verify-release.sh`) | PR hay ref khác `main` có đổi `deploy/k8s/values/services/`, hay values, overlay `deploy/k8s/envs/*/svp-policy.yaml` của `svp-policy` (khi đó kiểm cả bảy) | PR không đổi values nào trong hai nhóm đó | Có |
 | `build` | Như `build-nopush` rồi push GHCR đúng bản đã quét | Chế độ `build`, có image, trên `main` | PR, nhánh khác, hay không image nào đổi | Có |
 | `merge` | Ghép hai chân thành index đa kiến trúc | Như `build` | Như `build` | Có |
-| `sign` | Ký keyless, attestation `vuln` và SBOM | Như `build` | Như `build` | Có |
+| `sign` | Ký keyless, attestation `vuln` và SBOM, rồi build provenance SLSA v1 (`slsaprovenance1`, digest index, sau `vuln`; [ADR-0027](adr/0027-slsa-build-provenance.md)): predicate dựng từ ngữ cảnh của lượt chạy (`deploy/ci/provenance-predicate.sh`) trước khi ký gì, chỉ khi `builder.id` bằng identity ký; image diễn tập không có | Như `build` | Như `build` | Có |
 | `promote` | Dựng lại `bot/promote`, mở hay cập nhật PR promote | Như `build` | Như `build` | Có |
 | `rescan` | Quét lại mọi digest phát hành, thay attestation `vuln` | Chế độ `rescan`, trên `main` | Mọi chế độ khác | Có |
 | `drill-build`, `drill-merge`, `drill-sign` | Hai image diễn tập `drill-vulnerable` (có CRITICAL, ký) và `drill-unsigned` (không ký), cùng các bước của bản phát hành | Chế độ `drill`, trên `main` | Mọi chế độ khác, nên luôn skip ở PR và push | Có |
@@ -159,9 +163,9 @@ Trigger: `workflow_dispatch` (input `scenario`, `targets`) và `schedule` hằng
 
 | Job | Làm gì | Chạy khi | Skip khi |
 | --- | --- | --- | --- |
-| `compose` | Kịch bản `compose-obs`: `make up OBS=lgtm`, smoke, `drill-obs-threats`, `load-local` dưới quan sát Alertmanager, Lighthouse ×3, test tích hợp của object store (`test-stack-objstore`), `drill-upload-cleanup`, `measure-upload` và RAM đỉnh của `s3` (`ram-s3-upload`), `drill-alert-to-sentry`, đường quay lại MinIO (`object-store-roundtrip`: chép ngược, `make up` lần hai, smoke); hạn 120 phút | `github.event_name == 'schedule' \|\| inputs.scenario == 'compose-obs'` | Dispatch kịch bản khác |
+| `compose` | Kịch bản `compose-obs`: `make up OBS=lgtm`, smoke, `drill-duplicates`, `drill-kill-worker` (output HLS bất biến, [ADR-0029](adr/0029-immutable-media-versions.md)), `drill-obs-threats`, `load-local` dưới quan sát Alertmanager, Lighthouse ×3, test tích hợp của object store (`test-stack-objstore`), `drill-upload-cleanup`, `measure-upload` và RAM đỉnh của `s3` (`ram-s3-upload`), `drill-alert-to-sentry`, đường quay lại MinIO (`object-store-roundtrip`: chép ngược, `make up` lần hai, smoke); hạn 120 phút | `github.event_name == 'schedule' \|\| inputs.scenario == 'compose-obs'` | Dispatch kịch bản khác |
 | `k3d` | Kịch bản `dev-k3d`: `make k8s-up`, smoke, RAM nghỉ, diễn tập threat model, PDB, canary, source map, e2e web, `drill-k8s-web-obs`, KEDA và RAM đỉnh, backup hai chế độ. Từ phần 3 cũng chạy `web-canary` (canary web với hai bản build thật), `k6-cloud-mini` (Job k6 1, 2, 4, 8 pod), `chaos` (Chaos Mesh, mỗi thí nghiệm một lượt k6), `velero` (driver CSI hostpath, Velero đích object store trong cluster); hạn 330 phút | `github.event_name == 'schedule' \|\| inputs.scenario` là một trong năm kịch bản đó | Dispatch `compose-obs`, `gitops` |
-| `gitops` | Kịch bản `gitops` (phần 3, chỉ dispatch): bước tìm source map của image web (`GH_TOKEN`), bước kịch bản 175 phút (`make k8s-gitops-up` vai stg qua HTTPS ẩn danh, smoke, supplychain, threats, source map của image CI, e2e, `drill-k8s-web-obs`, KEDA hai lượt, RAM), bước "Waiting for a release on main" 115 phút (`GH_TOKEN`, chỉ có nghĩa trên `main`); `contents: read`, `actions: read`, `pull-requests: read` (`merged_at` của PR promote cho mốc push của `measure-gitops`); hạn 330 phút | `inputs.scenario == 'gitops'` | Mọi lượt khác |
+| `gitops` | Kịch bản `gitops` (phần 3, chỉ dispatch): bước tìm source map của image web (`GH_TOKEN`), bước kịch bản 175 phút (`make k8s-gitops-up` vai stg qua HTTPS ẩn danh, `gitops-external-secrets` (28 ExternalSecret `Ready`, Secret đích đúng type và tên key), smoke với `SVP_SMOKE_LEGACY_MEDIA=1` tới khi bản media-worker phát hành ghi key có version, supplychain (gồm ca `l`: bản web thiếu provenance), threats (gồm SEC-5/6/7), source map của image CI, e2e, `drill-k8s-web-obs`, KEDA hai lượt, RAM), bước "Waiting for a release on main" 115 phút (`GH_TOKEN`, chỉ có nghĩa trên `main`); `contents: read`, `actions: read`, `pull-requests: read` (`merged_at` của PR promote cho mốc push của `measure-gitops`); hạn 330 phút | `inputs.scenario == 'gitops'` | Mọi lượt khác |
 
 Mỗi job: kiểm ref, cài công cụ, `make env`, `deploy/ci/verify-mask.sh`, `verify-host.sh`, `verify-sample.sh start`, bước
 "Scenario" (`verify-run.sh`), rồi các bước `if: always()` dừng sampler, lọc và tải artifact `verify-<kịch bản>`, gỡ stack hay

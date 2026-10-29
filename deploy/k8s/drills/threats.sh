@@ -150,7 +150,27 @@
 #              nothing of a backup is downloaded. Controls: svp-pg-backup lists pg-backups (200) and reads there (404
 #              NoSuchKey), each service's user reads its own prefix uploads/uploads/ (404 NoSuchKey). Other pods cannot
 #              reach the store (IN-2, FF-5, WEB-13), and the Barman Cloud plugin's RBAC is printed with its reason
-#              (RBAC).
+#              (RBAC);
+#   SEC-5/6/7  only on a cluster with External Secrets Operator (the GitOps path's staging; skipped with a line
+#              elsewhere): SEC-6, the ServiceAccount of the SecretStore of each namespace with ExternalSecrets may get
+#              exactly the source Secrets of svp-secrets that files/external-secrets.yaml of chart svp-cluster has that
+#              namespace read, by name, and neither list nor watch them nor get a Secret of its own or any namespace
+#              (so the store of svp may not get pg-superuser; control: it may get pg-roles); no ClusterSecretStore kind
+#              exists. SEC-5, the controller (external-secrets/external-secrets) may create a token for the stores'
+#              ServiceAccounts only (Argo CD's application controller, svp/default and a ServiceAccount of that name in
+#              svp-secrets refused; control: the store of svp); as it, server-side dry runs: an Opaque Secret in argocd
+#              and a token Secret in svp are refused by ValidatingAdmissionPolicy svp-external-secrets-writes (control:
+#              an Opaque Secret in svp passes it); its right to read every Secret is printed as the SEC-5 exception with
+#              its reason; no webhook configuration of ESO and no pod but the controller in external-secrets; the probe
+#              pod of svp-probe cannot open the controller's metrics port 8080 (control: a port-forward to it, through
+#              the kubelet, gets /metrics 200). SEC-7, no ServiceAccount of svp may create ExternalSecrets or
+#              SecretStores in svp, and ClusterRoles view, edit and admin grant nothing on external-secrets.io;
+#   SEC-6-reader on the same clusters (skipped with a line elsewhere): as server-side dry runs in svp-data, which has
+#              the stores' ServiceAccount svp-secrets-reader, a pod running as it with its token mounted is refused by
+#              ValidatingAdmissionPolicy svp-store-serviceaccount-pods and a token Secret of it by
+#              svp-store-serviceaccount-tokens, each with the policy's message (controls: the same pod as svp-data/default
+#              and a token Secret of default are admitted). The controller takes the store's token through TokenRequest,
+#              which neither policy sees.
 #
 # Test records: the drill writes one empty record (key drill-threats-<run>, header svp-drill=threats) to the
 # dead-letter topic of each user that has one; nothing consumes a dead-letter topic, and the dead-letter metric is
@@ -1068,6 +1088,13 @@ rbac() {
   local sas nss
   sas=$(kc -n svp get serviceaccounts -o jsonpath='{.items[*].metadata.name}')
   [[ -n $sas ]] || fail "RBAC: list the ServiceAccounts of svp"
+  # The ServiceAccount of the SecretStore of svp (GitOps path) gets named source Secrets of svp-secrets by design:
+  # item SEC-5/6/7 checks it gets exactly those, and item SEC-6-reader that no pod may run as it and no Secret hold its
+  # token.
+  if [[ " $sas " == *" $eso_store_sa "* ]]; then
+    sas=$(tr ' ' '\n' <<<"$sas" | grep -vx "$eso_store_sa" | paste -sd ' ' -)
+    info "RBAC: ServiceAccount svp/$eso_store_sa (the SecretStore's, External Secrets Operator) is left to items SEC-5/6/7 (its rights) and SEC-6-reader (no pod runs as it)"
+  fi
   # Every namespace the cluster has now, not a fixed list: a RoleBinding in any of them, a platform namespace's
   # included, can grant a ServiceAccount of svp access there, and kubectl auth can-i -A answers only for a right that
   # holds in every namespace at once.
@@ -1659,7 +1686,11 @@ psa_platform() {
     [[ $level == restricted && $got == "$version" ]] && ok "PSA-platform: namespace $ns enforces PSA restricted $version" ||
       miss "PSA-platform: namespace $ns enforces PSA restricted $version (got enforce '$level', version '$got')"
   done <"$work/psa-namespaces"
-  for ns in $(jq -r '.components[].namespace' "$repo_root/deploy/argocd/apps/components.json" | sort -u); do
+  # A component of the GitOps path only (gitopsOnly: External Secrets Operator) has its namespace there only.
+  local gitops=false
+  if kc get namespace argocd >/dev/null 2>&1; then gitops=true; fi
+  for ns in $(jq -r --argjson gitops "$gitops" '.components[] | select($gitops or .gitopsOnly != true) | .namespace' \
+    "$repo_root/deploy/argocd/apps/components.json" | sort -u); do
     awk -F '\t' -v ns="$ns" '$1 == ns { found = 1 } END { exit !found }' "$work/psa-namespaces" ||
       miss "PSA-platform: namespace $ns of deploy/argocd/apps/components.json exists"
   done
@@ -1679,6 +1710,188 @@ psa_platform() {
       miss "control: a restricted pod is admitted in $ns (got: $(head -n 1 <<<"$out"))"
   done
   info "PSA-platform: kube-system is exempt from the cluster default (deploy/k8s/pod-security-admission.yaml): k3s's svclb-* pods need NET_ADMIN, local-path-provisioner's helper pods a hostPath of the node; whoever may create pods there (cert-manager's controller, which may in every namespace, among them) can still start a privileged pod"
+}
+
+# External Secrets Operator of the GitOps path (chart svp-cluster, templates/external-secrets.yaml): the controller's
+# ServiceAccount and the one of each namespace's SecretStore, and the source namespace of their store.
+eso_controller=system:serviceaccount:external-secrets:external-secrets
+eso_store_sa=svp-secrets-reader
+eso_source=svp-secrets
+# A namespace with a SecretStore, and so with the stores' ServiceAccount, where Kyverno's image policy (namespace svp
+# only) does not refuse the drill's pods first.
+eso_reader_ns=svp-data
+eso_metrics_port=18080
+
+# eso_entries: "NAMESPACE ENTRY" per source entry the ExternalSecrets of NAMESPACE read, from the list the chart renders
+# them from (values: NAME: ENTRY/KEY), not from the Roles it renders.
+eso_entries() {
+  awk '/^- namespace: / { ns = $3; vals = 0; next }
+    /^  values:$/ { vals = 1; next }
+    /^  [^ ]/ { vals = 0 }
+    vals && /^    [^ :]+: [a-z0-9-]+\/[A-Za-z0-9_]+$/ { e = $2; sub(/\/.*/, "", e); print ns, e }' \
+    "$repo_root/deploy/helm/svp-cluster/files/external-secrets.yaml" | sort -u
+}
+
+# eso_secret NAMESPACE NAME TYPE: Secret NAME of type TYPE in NAMESPACE, as JSON for a server-side dry run; a token
+# Secret names ServiceAccount default.
+eso_secret() {
+  jq -n --arg ns "$1" --arg name "$2" --arg type "$3" '{apiVersion: "v1", kind: "Secret", type: $type,
+    metadata: {name: $name, namespace: $ns, annotations: {"kubernetes.io/service-account.name": "default"}}}'
+}
+
+# eso_can NAMESPACE/SA WANT LABEL CAN-I-ARGS...: kubectl auth can-i CAN-I-ARGS as ServiceAccount NAMESPACE/SA answers
+# WANT (yes or no); LABEL names the check.
+eso_can() {
+  local sa=$1 want=$2 label=$3 out
+  shift 3
+  out=$(kc auth can-i "$@" --as="system:serviceaccount:${sa%/*}:${sa#*/}" 2>&1 || true)
+  [[ $out == "$want" ]] && ok "$label" || miss "$label (can-i '$out', want $want)"
+}
+
+# eso: SEC-5, SEC-6 and SEC-7 of the threat model, on a cluster with External Secrets Operator.
+eso() {
+  local ns entry want out sas sa r pod ip pf_pid status sources
+  local vap="ValidatingAdmissionPolicy 'svp-external-secrets-writes'" ctl=external-secrets/external-secrets
+  eso_entries >"$work/eso-entries"
+  [[ -s $work/eso-entries ]] || fail "SEC-6: read the entries of deploy/helm/svp-cluster/files/external-secrets.yaml"
+  sources=$(kc -n "$eso_source" get secrets -o jsonpath='{.items[*].metadata.name}') ||
+    fail "SEC-6: list the source Secrets of $eso_source"
+  [[ -n $sources ]] || fail "SEC-6: namespace $eso_source holds no source Secret"
+  # SEC-6: each store's ServiceAccount gets exactly its namespace's entries, by name, and nothing else.
+  for ns in $(cut -d ' ' -f 1 "$work/eso-entries" | sort -u); do
+    for entry in $sources; do
+      if grep -qx "$ns $entry" "$work/eso-entries"; then want=yes; else want=no; fi
+      if [[ $ns == svp && $entry == pg-roles ]]; then
+        out=$(kc auth can-i get "secrets/$entry" -n "$eso_source" --as="system:serviceaccount:$ns:$eso_store_sa" 2>&1 || true)
+        [[ $out == yes ]] && control "the store of svp may get $eso_source/pg-roles, which its ExternalSecrets read" ||
+          miss "control: the store of svp may get $eso_source/pg-roles (got '$out')"
+      else
+        eso_can "$ns/$eso_store_sa" "$want" "SEC-6: the store of $ns may $([[ $want == yes ]] || echo 'not ')get $eso_source/$entry" \
+          get "secrets/$entry" -n "$eso_source"
+      fi
+    done
+    eso_can "$ns/$eso_store_sa" no "SEC-6: the store of $ns may not list secrets in $eso_source" list secrets -n "$eso_source"
+    eso_can "$ns/$eso_store_sa" no "SEC-6: the store of $ns may not watch secrets in $eso_source" watch secrets -n "$eso_source"
+    eso_can "$ns/$eso_store_sa" no "SEC-6: the store of $ns may not get secrets in $ns" get secrets -n "$ns"
+    eso_can "$ns/$eso_store_sa" no "SEC-6: the store of $ns may not get secrets in every namespace" get secrets -A
+  done
+  out=$(kc get crd clustersecretstores.external-secrets.io 2>&1 || true)
+  [[ $out == *NotFound* || $out == *'not found'* ]] &&
+    ok "SEC-6: no ClusterSecretStore kind: no store reads the source for every namespace" ||
+    miss "SEC-6: no ClusterSecretStore kind (got: $(head -n 1 <<<"$out"))"
+
+  # SEC-5: tokens only for the stores' ServiceAccounts.
+  eso_can "$ctl" no "SEC-5: the controller may not create a token for argocd/argocd-application-controller" \
+    create serviceaccounts/argocd-application-controller --subresource=token -n argocd
+  eso_can "$ctl" no "SEC-5: the controller may not create a token for svp/default" \
+    create serviceaccounts/default --subresource=token -n svp
+  eso_can "$ctl" no "SEC-5: the controller may not create a token for $eso_source/$eso_store_sa" \
+    create "serviceaccounts/$eso_store_sa" --subresource=token -n "$eso_source"
+  out=$(kc auth can-i create "serviceaccounts/$eso_store_sa" --subresource=token -n svp --as="$eso_controller" 2>&1 || true)
+  [[ $out == yes ]] && control "the controller may create a token for svp/$eso_store_sa, the store's" ||
+    miss "control: the controller may create a token for svp/$eso_store_sa (got '$out')"
+  # Its Secret writes: held by the admission policy, which RBAC cannot do.
+  out=$(eso_secret argocd svp-drill-threats Opaque | kc create --dry-run=server -f - --as="$eso_controller" 2>&1 || true)
+  [[ $out == *"$vap"*denied* ]] && ok "SEC-5: as the controller, an Opaque Secret in argocd is refused by $vap" ||
+    miss "SEC-5: as the controller, an Opaque Secret in argocd is refused by $vap (got: $(head -n 1 <<<"$out"))"
+  out=$(eso_secret svp svp-drill-threats kubernetes.io/service-account-token |
+    kc create --dry-run=server -f - --as="$eso_controller" 2>&1 || true)
+  [[ $out == *"$vap"*denied* ]] && ok "SEC-5: as the controller, a token Secret in svp is refused by $vap" ||
+    miss "SEC-5: as the controller, a token Secret in svp is refused by $vap (got: $(head -n 1 <<<"$out"))"
+  out=$(eso_secret svp svp-drill-threats Opaque | kc create --dry-run=server -f - --as="$eso_controller" 2>&1 || true)
+  [[ $out == *'created (server dry run)'* ]] && control "as the controller, an Opaque Secret in svp passes $vap" ||
+    miss "control: as the controller, an Opaque Secret in svp passes $vap (got: $(head -n 1 <<<"$out"))"
+  out=$(kc auth can-i list secrets -n argocd --as="$eso_controller" 2>&1 || true)
+  info "SEC-5 exception: External Secrets Operator's controller reads every Secret of the cluster (can-i list secrets in argocd: $out): it watches the metadata of every Secret whatever its flags (WatchesMetadata of Secret, externalsecret_controller.go of v2.14.0), and a right to list is a right to read; its writes are held to the namespaces of its ExternalSecrets by $vap and its tokens to the stores' ServiceAccounts (checked above; deploy/k8s/values/external-secrets.yaml)"
+  out=$(kc get validatingwebhookconfigurations,mutatingwebhookconfigurations -o json | jq -r '.items[]
+    | select((.metadata.name | test("external-secrets")) or ((.metadata.labels // {})["app.kubernetes.io/instance"] == "external-secrets"))
+    | .metadata.name')
+  [[ -z $out ]] && ok "SEC-5: no webhook configuration of External Secrets Operator" ||
+    miss "SEC-5: no webhook configuration of External Secrets Operator (got: $(tr '\n' ' ' <<<"$out"))"
+  out=$(kc -n external-secrets get pods -o json |
+    jq -r '.items[] | "\(.metadata.name) \(.metadata.labels["app.kubernetes.io/name"] // "-") \(.status.podIP // "-")"')
+  if [[ $(grep -c . <<<"$out") == 1 && $(awk '{ print $2 }' <<<"$out") == external-secrets ]]; then
+    ok "SEC-5: the only pod of external-secrets is the controller ($(awk '{ print $1 }' <<<"$out")): no webhook, no cert-controller"
+  else
+    miss "SEC-5: the only pod of external-secrets is the controller (got: $(tr '\n' ';' <<<"$out"))"
+  fi
+  pod=$(awk '$2 == "external-secrets" { print $1; exit }' <<<"$out")
+  ip=$(awk '$2 == "external-secrets" { print $3; exit }' <<<"$out")
+  if [[ -n $pod && -n $ip && $ip != - ]]; then
+    reach "$probe_ns" pod/probe "$ip:8080"
+    expect_reach "$ip:8080" closed "SEC-5: probe pod of $probe_ns to the controller's metrics"
+    if port_free "$eso_metrics_port"; then
+      # kubectl itself in the background, so $! is its pid (as prometheus_forward).
+      kubectl --context k3d-svp -n external-secrets port-forward --address 127.0.0.1 "pod/$pod" "$eso_metrics_port:8080" \
+        >"$work/eso-forward.log" 2>&1 &
+      pf_pid=$!
+      status=000
+      for _ in 1 2 3 4 5 6 7 8 9 10; do
+        status=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$eso_metrics_port/metrics" || true)
+        [[ $status == 200 ]] && break
+        sleep 1
+      done
+      kill "$pf_pid" 2>/dev/null || true
+      wait "$pf_pid" 2>/dev/null || true
+      [[ $status == 200 ]] &&
+        control "a port-forward to the controller's 8080 (through the kubelet) gets /metrics 200: the port answers, the policy closes it" ||
+        miss "control: a port-forward to the controller's 8080 gets /metrics 200 (status $status)"
+    else
+      miss "control: 127.0.0.1:$eso_metrics_port is in use, so no port-forward to the controller's metrics opens"
+    fi
+  else
+    miss "SEC-5: find the running controller pod of external-secrets and its address (got: $(tr '\n' ';' <<<"$out"))"
+  fi
+
+  # SEC-7: creating an ExternalSecret is reading what its store reads.
+  sas=$(kc -n svp get serviceaccounts -o jsonpath='{.items[*].metadata.name}')
+  [[ -n $sas ]] || fail "SEC-7: list the ServiceAccounts of svp"
+  for sa in $sas; do
+    for r in externalsecrets secretstores; do
+      eso_can "svp/$sa" no "SEC-7: ServiceAccount svp/$sa may not create $r in svp" create "$r.external-secrets.io" -n svp
+    done
+  done
+  out=$(kc get clusterroles view edit admin -o json | jq -r '[.items[] | .metadata.name as $n
+    | .rules[]? | select(any(.apiGroups[]?; . == "external-secrets.io" or . == "*")) | $n] | unique | join(" ")')
+  [[ -z $out ]] && ok "SEC-7: ClusterRoles view, edit and admin grant nothing on external-secrets.io (aggregation off)" ||
+    miss "SEC-7: ClusterRoles view, edit and admin grant nothing on external-secrets.io (got: $out)"
+}
+
+# eso_reader_pod SERVICEACCOUNT: psa_pod in $eso_reader_ns running as SERVICEACCOUNT with its token mounted, the way a
+# pod after the store's source entries would ask for it.
+eso_reader_pod() {
+  psa_pod 65532 "$eso_reader_ns" | awk -v sa="$1" '
+    /^  automountServiceAccountToken: false$/ { print "  automountServiceAccountToken: true"; print "  serviceAccountName: " sa; next }
+    { print }'
+}
+
+# eso_reader: SEC-6, nothing but the controller gets a token of the stores' ServiceAccount, on a cluster with External
+# Secrets Operator. Each case is a server-side dry run in a namespace that has that ServiceAccount: in a namespace
+# without it, the ServiceAccount admission plugin refuses the pod before any policy sees it, which proves nothing.
+eso_reader() {
+  local out pods="ValidatingAdmissionPolicy 'svp-store-serviceaccount-pods'"
+  local tokens="ValidatingAdmissionPolicy 'svp-store-serviceaccount-tokens'"
+  kc -n "$eso_reader_ns" get serviceaccount "$eso_store_sa" >/dev/null ||
+    fail "SEC-6: read ServiceAccount $eso_reader_ns/$eso_store_sa"
+  out=$(eso_reader_pod "$eso_store_sa" | kc create --dry-run=server -f - 2>&1 || true)
+  [[ $out == *"$pods"*denied*"No pod may run as ServiceAccount $eso_store_sa"* ]] &&
+    ok "SEC-6: a pod in $eso_reader_ns running as $eso_store_sa (token mounted) is refused by $pods" ||
+    miss "SEC-6: a pod in $eso_reader_ns running as $eso_store_sa is refused by $pods (got: $(head -n 1 <<<"$out"))"
+  out=$(eso_reader_pod default | kc create --dry-run=server -f - 2>&1 || true)
+  [[ $out == *'created (server dry run)'* ]] &&
+    control "the same pod running as $eso_reader_ns/default is admitted (server-side dry run)" ||
+    miss "control: the same pod running as $eso_reader_ns/default is admitted (got: $(head -n 1 <<<"$out"))"
+  out=$(jq -n --arg ns "$eso_reader_ns" --arg sa "$eso_store_sa" '{apiVersion: "v1", kind: "Secret",
+    type: "kubernetes.io/service-account-token", metadata: {name: "svp-drill-threats", namespace: $ns,
+    annotations: {"kubernetes.io/service-account.name": $sa}}}' | kc create --dry-run=server -f - 2>&1 || true)
+  [[ $out == *"$tokens"*denied*"No Secret may hold a token of ServiceAccount $eso_store_sa"* ]] &&
+    ok "SEC-6: a token Secret of $eso_reader_ns/$eso_store_sa is refused by $tokens" ||
+    miss "SEC-6: a token Secret of $eso_reader_ns/$eso_store_sa is refused by $tokens (got: $(head -n 1 <<<"$out"))"
+  out=$(eso_secret "$eso_reader_ns" svp-drill-threats kubernetes.io/service-account-token |
+    kc create --dry-run=server -f - 2>&1 || true)
+  [[ $out == *'created (server dry run)'* ]] &&
+    control "a token Secret of $eso_reader_ns/default is admitted (server-side dry run)" ||
+    miss "control: a token Secret of $eso_reader_ns/default is admitted (got: $(head -n 1 <<<"$out"))"
 }
 
 # rand_uuid: a random id in the canonical UUID form (the BFF's id pattern).
@@ -2168,6 +2381,13 @@ run_item RL-1 rl1
 run_item WEB-8 web8
 run_item PSA-platform psa_platform
 run_item BAK-1 bak1
+if kc get crd externalsecrets.external-secrets.io >/dev/null 2>&1; then
+  run_item SEC-5/6/7 eso
+  run_item SEC-6-reader eso_reader
+else
+  echo "skip  SEC-5/6/7: no External Secrets Operator on this cluster (dev path: its Secrets come from .env)"
+  echo "skip  SEC-6-reader: no External Secrets Operator on this cluster (dev path: its Secrets come from .env)"
+fi
 
 echo
 echo "drill-k8s-threats ($run_id)"

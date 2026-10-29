@@ -18,9 +18,11 @@ too, so both paths install the same charts, versions and values in the same orde
 - archValues maps a node architecture to one more values file, read after values on a cluster whose nodes run it
   (value nodeArch): Argo Rollouts' Gateway API plugin is a native binary that the controller downloads and runs, so the
   nodes of a Linux x86_64 host need another file than those of a Mac. deploy/k8s/install.sh reads the same entry on the
-  dev path.
-Nothing here names the Secrets deploy/k8s/secrets.sh and deploy/k8s/glitchtip-init.sh make: no chart renders them, so
-no Application tracks them and pruning never deletes them.
+  dev path;
+- gitopsOnly marks a component of this path alone, which deploy/k8s/install.sh skips: External Secrets Operator, which
+  builds the Secrets here from the ExternalSecrets of chart svp-cluster, where the dev path applies them from .env.
+Nothing here names the source Secrets deploy/k8s/secrets.sh and deploy/k8s/glitchtip-init.sh write into namespace
+svp-secrets: no chart renders them, so no Application tracks them and pruning never deletes them.
 */}}
 {{- $components := (.Files.Get "components.json" | fromJson).components }}
 {{- /*
@@ -174,9 +176,10 @@ spec:
       prune: true
       selfHeal: true
     {{- if eq (int .wave) 0 }}
-    # Pod Security "restricted" on the namespace of a component of wave 0 (cert-manager, envoy-gateway-system) from its
-    # chart's first pod on: Argo CD creates the namespace with these labels (CreateNamespace below) in phase PreSync,
-    # ahead of every object of the chart in it, hooks included, and sets them again at every sync. Chart svp-cluster
+    # Pod Security "restricted" on the namespace of a component of wave 0 (cert-manager, envoy-gateway-system,
+    # external-secrets) from its chart's first pod on: Argo CD creates the namespace with these labels
+    # (CreateNamespace below) in phase PreSync, ahead of every object of the chart in it, hooks included, and sets them
+    # again at every sync. Chart svp-cluster
     # labels the namespaces of every later wave, but comes after these charts, whose CRDs it needs. The same labels as
     # svp-cluster's.
     managedNamespaceMetadata:

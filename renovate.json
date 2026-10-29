@@ -222,6 +222,8 @@
     { "matchFileNames": ["deploy/argocd/apps/components.json"], "matchDepNames": ["argo-rollouts"], "groupName": "argo-rollouts chart" },
     { "matchFileNames": ["deploy/k8s/values/kyverno.yaml"], "groupName": "kyverno chart" },
     { "matchFileNames": ["deploy/argocd/apps/components.json"], "matchDepNames": ["kyverno"], "groupName": "kyverno chart" },
+    { "matchFileNames": ["deploy/k8s/values/external-secrets.yaml"], "groupName": "external-secrets chart" },
+    { "matchFileNames": ["deploy/argocd/apps/components.json"], "matchDepNames": ["external-secrets"], "groupName": "external-secrets chart" },
     {
       "matchFileNames": ["deploy/argocd/apps/components.json", "deploy/k8s/values/kyverno.yaml"],
       "matchDepNames": ["kyverno", "ghcr.io/kyverno/**"],

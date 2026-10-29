@@ -15,6 +15,9 @@ import (
 	"time"
 )
 
+// testAttempt is the attempt directory the tests' masters name.
+const testAttempt = "0190a6e4-7b2c-7d3e-9f40-123456789abc"
+
 // requireFFmpeg skips the test when the host has no ffmpeg or ffprobe in PATH.
 func requireFFmpeg(t *testing.T) {
 	t.Helper()
@@ -55,7 +58,7 @@ func h264AAC(size string, seconds int) []string {
 func runOK(t *testing.T, input string) (Result, string) {
 	t.Helper()
 	out := filepath.Join(t.TempDir(), "out")
-	res, err := Run(context.Background(), input, out)
+	res, err := Run(context.Background(), input, out, testAttempt)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -109,10 +112,15 @@ func TestRunLandscape1080pGivesThreeRenditions(t *testing.T) {
 	if n := strings.Count(string(master), "#EXT-X-STREAM-INF:"); n != 3 {
 		t.Errorf("master lists %d variants, want 3:\n%s", n, master)
 	}
+	// Each variant is named under the attempt directory, and the master as stored reads back to
+	// the same renditions.
 	for _, r := range []string{"360p", "720p", "1080p"} {
-		if !strings.Contains(string(master), r+"/"+playlistName) {
-			t.Errorf("master does not list %s/%s", r, playlistName)
+		if !strings.Contains(string(master), "\n"+testAttempt+"/"+r+"/"+playlistName+"\n") {
+			t.Errorf("master does not list %s/%s/%s:\n%s", testAttempt, r, playlistName, master)
 		}
+	}
+	if m, err := ParseMaster(master); err != nil || m.Attempt != testAttempt || fmt.Sprint(m.Renditions) != fmt.Sprint(res.Renditions) {
+		t.Errorf("ParseMaster() = %+v, %v; want attempt %s and %v", m, err, testAttempt, res.Renditions)
 	}
 
 	// Upload order: every segment before any playlist, master last, content types set.
@@ -243,7 +251,7 @@ func TestRunWithoutAudio(t *testing.T) {
 func runErr(t *testing.T, input string, lim limits) (string, error) {
 	t.Helper()
 	out := filepath.Join(t.TempDir(), "out")
-	_, err := run(context.Background(), input, out, lim)
+	_, err := run(context.Background(), input, out, testAttempt, lim)
 	if err == nil {
 		t.Fatal("run succeeded, want an error")
 	}
@@ -458,5 +466,103 @@ func TestLastLineStripsJobPaths(t *testing.T) {
 	_, _ = fmt.Fprint(long, strings.Repeat("y", 2000))
 	if got := long.lastLine(nil); len(got) != maxDetail {
 		t.Errorf("len(lastLine) = %d, want %d", len(got), maxDetail)
+	}
+}
+
+// masterOf is a master playlist as ffmpeg writes it for the given variants, each "<uri> <w>x<h>".
+func masterOf(variants ...string) string {
+	var b strings.Builder
+	b.WriteString("#EXTM3U\n#EXT-X-VERSION:3\n")
+	for _, v := range variants {
+		uri, size, _ := strings.Cut(v, " ")
+		fmt.Fprintf(&b, "#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=%s,CODECS=\"avc1.640020,mp4a.40.2\"\n%s\n\n", size, uri)
+	}
+	return b.String()
+}
+
+// The master stored by an earlier attempt reads back to what Run reported for it; anything
+// Run cannot have written is an error, so it is never published.
+func TestParseMaster(t *testing.T) {
+	const a, other = testAttempt, "0190a6e4-7b2c-7d3e-9f40-123456789abd"
+	m, err := ParseMaster([]byte(strings.ReplaceAll(masterOf(a+"/720p/index.m3u8 1280x720", a+"/360p/index.m3u8 640x360"), "\n", "\r\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkRenditions(t, m.Renditions, []Rendition{{"360p", 640, 360, 800_000}, {"720p", 1280, 720, 2_500_000}})
+	if m.Attempt != a || m.LowestPlaylist() != a+"/360p/index.m3u8" {
+		t.Errorf("attempt %s, lowest %s", m.Attempt, m.LowestPlaylist())
+	}
+	if m, err := ParseMaster([]byte(masterOf(a + "/source/index.m3u8 320x240"))); err != nil || fmt.Sprint(m.Renditions) != "[{source 320 240 800000}]" {
+		t.Errorf("source rendition: %+v, %v", m, err)
+	}
+
+	for name, master := range map[string]string{
+		"no attempt directory":  masterOf("360p/index.m3u8 640x360"),
+		"attempt not a UUID":    masterOf("x/360p/index.m3u8 640x360"),
+		"uppercase attempt":     masterOf(strings.ToUpper(a) + "/360p/index.m3u8 640x360"),
+		"two attempts":          masterOf(a+"/360p/index.m3u8 640x360", other+"/720p/index.m3u8 1280x720"),
+		"unknown rendition":     masterOf(a + "/480p/index.m3u8 854x480"),
+		"rendition twice":       masterOf(a+"/360p/index.m3u8 640x360", a+"/360p/index.m3u8 640x360"),
+		"other playlist name":   masterOf(a + "/360p/live.m3u8 640x360"),
+		"deeper path":           masterOf(a + "/360p/x/index.m3u8 640x360"),
+		"traversal":             masterOf(a + "/../index.m3u8 640x360"),
+		"no resolution":         masterOf(a + "/360p/index.m3u8 x"),
+		"no variant":            "#EXTM3U\n#EXT-X-VERSION:3\n",
+		"empty":                 "",
+		"stray URI":             masterOf(a+"/360p/index.m3u8 640x360") + a + "/720p/index.m3u8\n",
+		"variant without a URI": "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=640x360",
+		"media tag": masterOf(a+"/360p/index.m3u8 640x360") +
+			`#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="en",URI="audio/index.m3u8"` + "\n",
+		"i-frame tag": masterOf(a+"/360p/index.m3u8 640x360") +
+			`#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=1,URI="360p/iframes.m3u8"` + "\n",
+	} {
+		if m, err := ParseMaster([]byte(master)); err == nil {
+			t.Errorf("%s: ParseMaster() = %+v, want an error", name, m)
+		}
+	}
+}
+
+func TestRewriteMaster(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, MasterPlaylist, masterOf("360p/index.m3u8 640x360", "720p/index.m3u8 1280x720"))
+	m, err := rewriteMaster(path, testAttempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := masterOf(testAttempt+"/360p/index.m3u8 640x360", testAttempt+"/720p/index.m3u8 1280x720"); string(readFile(t, path)) != want {
+		t.Errorf("master =\n%s\nwant\n%s", readFile(t, path), want)
+	}
+	if m.Attempt != testAttempt || len(m.Renditions) != 2 {
+		t.Errorf("rewriteMaster() = %+v", m)
+	}
+
+	for name, master := range map[string]string{
+		"media tag":   masterOf("360p/index.m3u8 640x360") + `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="en",URI="a/index.m3u8"` + "\n",
+		"bad attempt": masterOf("360p/index.m3u8 640x360"),
+	} {
+		attempt := testAttempt
+		if name == "bad attempt" {
+			attempt = "../x"
+		}
+		path := writeFile(t, t.TempDir(), MasterPlaylist, master)
+		if _, err := rewriteMaster(path, attempt); err == nil {
+			t.Errorf("%s: rewriteMaster() succeeded", name)
+		}
+		if string(readFile(t, path)) != master {
+			t.Errorf("%s: master changed although the rewrite failed", name)
+		}
+	}
+}
+
+func TestPlaylistDuration(t *testing.T) {
+	d, err := PlaylistDuration([]byte("#EXTM3U\r\n#EXT-X-TARGETDURATION:4\r\n#EXTINF:4.000000,\r\nseg_000.ts\r\n#EXTINF:2.033333,\r\nseg_001.ts\r\n#EXT-X-ENDLIST\r\n"))
+	if err != nil || d != 6033*time.Millisecond {
+		t.Errorf("PlaylistDuration() = %v, %v; want 6.033s", d, err)
+	}
+	if d, err := PlaylistDuration([]byte("#EXTM3U\n#EXT-X-ENDLIST\n")); err != nil || d != 0 {
+		t.Errorf("empty playlist: %v, %v; want 0", d, err)
+	}
+	if _, err := PlaylistDuration([]byte("#EXTINF:x,\nseg_000.ts\n")); err == nil {
+		t.Error("bad #EXTINF: no error")
 	}
 }

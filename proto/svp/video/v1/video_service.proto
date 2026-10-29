@@ -14,7 +14,8 @@ import "google/protobuf/timestamp.proto";
 // missing or not a valid UUID.
 //
 // All ids are UUIDv7 strings in canonical lowercase form (36 chars). Media
-// locations are object keys (for example `media/<video_id>/master.m3u8`),
+// locations are object keys (for example
+// `media/<video_id>/<version>/master.m3u8`),
 // never absolute URLs: the gateway builds public URLs from per-environment
 // configuration (the local object store, a CDN in the cloud).
 service VideoService {
@@ -110,11 +111,12 @@ message Video {
   VideoStatus status = 4;
   // Length of the transcoded video. Set once READY.
   google.protobuf.Duration duration = 5;
-  // Object key of the HLS master playlist, `media/<video_id>/master.m3u8`.
-  // Set once READY.
+  // Object key of the HLS master playlist,
+  // `media/<video_id>/<version>/master.m3u8` (videos made before versions:
+  // `media/<video_id>/master.m3u8`). Set once READY.
   string playlist_key = 6;
-  // Object key of the thumbnail image under `media/<video_id>/`. Set once
-  // READY.
+  // Object key of the thumbnail image under `media/<video_id>/`, in the
+  // directory the master playlist names. Set once READY.
   string thumbnail_key = 7;
   // When InitUpload created the video.
   google.protobuf.Timestamp created_at = 8;

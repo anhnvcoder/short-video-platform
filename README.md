@@ -97,4 +97,6 @@ Bảng service: database và Redis db của từng service nằm ở `CLAUDE.md`
 | 6 | Độ tin cậy: k6 theo SLO, SLO web, backup và phục hồi Postgres, runbook, game day | [0020](docs/adr/0020-reliability-stage6.md) |
 
 Các ADR sau giai đoạn 6 (kiểm chứng dồn trên runner, object store của đường local, CI trung lập nền tảng, nhiều môi trường
-dev, stg, prd, DevSecOps bổ sung: govulncheck, fuzz, DAST, CodeQL, grype) có trong [`docs/adr/`](docs/adr/).
+dev, stg, prd, repo cấu hình GitOps riêng, Secret của đường GitOps bằng External Secrets Operator, build provenance SLSA,
+DORA metrics, output HLS bất biến theo version, DevSecOps bổ sung: govulncheck, fuzz, DAST, CodeQL, grype, sửa các phát
+hiện của chaos và k6) có trong [`docs/adr/`](docs/adr/).

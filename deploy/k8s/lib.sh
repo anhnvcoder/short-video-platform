@@ -217,7 +217,8 @@ export_ca() {
 # the call sets it (label=... secret ...). The values are base64-encoded through a pipe; none is an argument of any
 # program. For `kc apply --server-side -f -` on stdin: no value goes through a file or a command line, and a
 # server-side apply keeps them out of the last-applied-configuration annotation a client-side apply would copy them
-# into.
+# into. An empty value is written "", so its key is there all the same: an ExternalSecret that names it would
+# otherwise fail on a key that does not exist.
 secret() {
   local ns=$1 name=$2 type=$3 kv
   shift 3
@@ -225,7 +226,58 @@ secret() {
   if [ -n "${label:-}" ]; then printf '  labels:\n    %s\n' "$label"; fi
   printf 'type: %s\ndata:\n' "$type"
   for kv in "$@"; do
-    printf '  %s: %s\n' "${kv%%=*}" "$(printf '%s' "${kv#*=}" | base64 | tr -d '\n')"
+    printf '  %s: "%s"\n' "${kv%%=*}" "$(printf '%s' "${kv#*=}" | base64 | tr -d '\n')"
+  done
+}
+
+# es_force_sync [NAMESPACE/NAME...]: has External Secrets Operator build ExternalSecrets NAME (every ExternalSecret of
+# the cluster when none is named) again from their store, and waits up to 120 s until each has. Their refreshPolicy is
+# OnChange (chart svp-cluster, templates/external-secrets.yaml): a changed source reaches a Secret only through a
+# change of its ExternalSecret, here a new value of annotation force-sync. ESO then syncs once and writes
+# status.syncedResourceVersion (<generation>-<hash of labels and annotations>), new with the annotation, as soon as
+# that sync succeeds, whether or not the Secret it builds differs from the one there: an unchanged Secret is left as it
+# is (no new resourceVersion, so no pod restarts for it). Waiting for a new resourceVersion of every Secret would hang
+# on each whose values did not change. An ExternalSecret whose generation changes meanwhile (Argo CD applied another
+# revision) stops the wait, since the sync seen may be of that spec; so does one that is gone. Prints nothing but a
+# failure: the reason and message of the Ready condition of each ExternalSecret not done, which ESO keeps to what is
+# safe to show.
+es_force_sync() {
+  local want=" $* " stamp list before id left deadline=$((SECONDS + 120))
+  list=$(kc get externalsecrets.external-secrets.io -A -o json) || fail "list the ExternalSecrets of the cluster"
+  before=$(jq -c --arg want "$want" '[.items[] | {id: "\(.metadata.namespace)/\(.metadata.name)",
+    gen: .metadata.generation, rv: (.status.syncedResourceVersion // "")}
+    | .id as $id | select($want == "  " or ($want | contains(" " + $id + " ")))] | map({key: .id, value: .})
+    | from_entries' \
+    <<<"$list") || fail "read the ExternalSecrets of the cluster"
+  for id in "$@"; do
+    jq -e --arg id "$id" 'has($id)' <<<"$before" >/dev/null || fail "ExternalSecret $id not found"
+  done
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)-$(openssl rand -hex 4)
+  for id in $(jq -r 'keys[]' <<<"$before"); do
+    kc -n "${id%%/*}" annotate externalsecrets.external-secrets.io "${id#*/}" --overwrite "force-sync=$stamp" \
+      >/dev/null || fail "annotate ExternalSecret $id with force-sync"
+  done
+  while :; do
+    list=$(kc get externalsecrets.external-secrets.io -A -o json) || fail "list the ExternalSecrets of the cluster"
+    left=$(jq -r --argjson before "$before" '
+      (.items | map({key: "\(.metadata.namespace)/\(.metadata.name)", value: .}) | from_entries) as $now
+      | $before | to_entries[] | .key as $id | .value as $b | $now[$id] as $es
+      | if $es == null then "stop \($id): gone"
+        elif $es.metadata.generation != $b.gen then "stop \($id): its spec changed (generation \($b.gen) to \($es.metadata.generation))"
+        else (($es.status.conditions // []) | map(select(.type == "Ready")) | first // {}) as $r
+          | if ($es.status.syncedResourceVersion // "") != $b.rv and $r.status == "True" then empty
+            else "wait \($id): Ready \($r.status // "-") \($r.reason // "-"): \($r.message // "" | gsub("\n"; " "))" end
+        end' <<<"$list") || fail "read the ExternalSecrets of the cluster"
+    [ -n "$left" ] || return 0
+    if grep -q '^stop ' <<<"$left"; then
+      printf '%s\n' "$left" | sed -n 's/^stop /      /p' >&2
+      fail "an ExternalSecret changed while it was being synced again (above): Argo CD applied a new revision? Run this again"
+    fi
+    if ((SECONDS >= deadline)); then
+      printf '%s\n' "$left" | sed 's/^wait /      /' >&2
+      fail "ExternalSecrets built again from their store within 120s (those above are not)"
+    fi
+    sleep 2
   done
 }
 

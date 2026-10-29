@@ -4,8 +4,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -338,6 +340,11 @@ func TestIsMediaKey(t *testing.T) {
 		{prefix + "720p/index.m3u8", true},
 		{prefix + "720p/seg_007.ts", true},
 		{prefix + "...", true},
+		// The versioned layout: master under the version, the rest under the try's directory.
+		{prefix + "0190a6e4-7b2c-7d3e-9f40-0000000000a1/master.m3u8", true},
+		{prefix + "0190a6e4-7b2c-7d3e-9f40-0000000000a1/0190a6e4-7b2c-7d3e-9f40-0000000000b2/thumbnail.jpg", true},
+		{prefix + "0190a6e4-7b2c-7d3e-9f40-0000000000a1/0190a6e4-7b2c-7d3e-9f40-0000000000b2/720p/seg_007.ts", true},
+		{prefix + "0190a6e4-7b2c-7d3e-9f40-0000000000a1/../master.m3u8", false},
 		{prefix, false},
 		{"media/" + id, false},
 		{"media/0190a6e4-7b2c-7d3e-9f40-123456789abd/master.m3u8", false},
@@ -366,5 +373,102 @@ func TestIsMediaKey(t *testing.T) {
 		if got := IsMediaKey(tt.key, id); got != tt.want {
 			t.Errorf("IsMediaKey(%q, %q) = %v, want %v", tt.key, id, got, tt.want)
 		}
+	}
+}
+
+// Upload sends Cache-Control only when it is given; Create adds If-None-Match: * and turns the
+// 412 of a key that is taken into ErrExists, which is neither ErrAccessDenied nor ErrNotFound.
+func TestPutHeaders(t *testing.T) {
+	type sent struct{ method, path, contentType, cacheControl, ifNoneMatch string }
+	var got []sent
+	taken := "/media/media/v1/master.m3u8"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, sent{r.Method, r.URL.Path, r.Header.Get("Content-Type"), r.Header.Get("Cache-Control"),
+			r.Header.Get("If-None-Match")})
+		if r.URL.Path == taken && r.Header.Get("If-None-Match") == "*" {
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusPreconditionFailed)
+			_, _ = w.Write([]byte(`<Error><Code>PreconditionFailed</Code></Error>`))
+		}
+	}))
+	defer srv.Close()
+	s := newTestStore(t, testConfig(srv.URL))
+	f := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(f, []byte("#EXTM3U\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const immutable = "max-age=31536000, immutable"
+
+	if err := s.Upload(t.Context(), "media/v1/a/360p/seg_000.ts", f, "video/mp2t", immutable); err != nil {
+		t.Fatalf("Upload() error = %v", err)
+	}
+	if err := s.Upload(t.Context(), "uploads/v1", f, "video/mp4", ""); err != nil {
+		t.Fatalf("Upload() without cache control: %v", err)
+	}
+	if err := s.Create(t.Context(), "media/v2/master.m3u8", f, "application/vnd.apple.mpegurl", immutable); err != nil {
+		t.Fatalf("Create() of a free key: %v", err)
+	}
+	err := s.Create(t.Context(), "media/v1/master.m3u8", f, "application/vnd.apple.mpegurl", immutable)
+	if !errors.Is(err, ErrExists) || errors.Is(err, ErrAccessDenied) || errors.Is(err, ErrNotFound) {
+		t.Errorf("Create() of a taken key: error = %v, want only ErrExists", err)
+	}
+
+	want := []sent{
+		{http.MethodPut, "/media/media/v1/a/360p/seg_000.ts", "video/mp2t", immutable, ""},
+		{http.MethodPut, "/uploads/uploads/v1", "video/mp4", "", ""},
+		{http.MethodPut, "/media/media/v2/master.m3u8", "application/vnd.apple.mpegurl", immutable, "*"},
+		{http.MethodPut, taken, "application/vnd.apple.mpegurl", immutable, "*"},
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("requests:\n%v\nwant\n%v", got, want)
+	}
+}
+
+// Exists lists with the key as prefix and one key at most: an empty list or another key is
+// "no", and a refused list is an error, never "no".
+func TestExists(t *testing.T) {
+	const key = "media/v1/e1/master.m3u8"
+	tests := []struct {
+		name    string
+		status  int
+		listed  string
+		want    bool
+		wantErr error
+	}{
+		{"listed", http.StatusOK, key, true, nil},
+		{"empty list", http.StatusOK, "", false, nil},
+		{"only a longer key", http.StatusOK, key + ".tmp", false, nil},
+		{"denied", http.StatusForbidden, "", false, ErrAccessDenied},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var query url.Values
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/media" && r.URL.Path != "/media/" {
+					t.Errorf("path %s, want the media bucket", r.URL.Path)
+				}
+				query = r.URL.Query()
+				w.Header().Set("Content-Type", "application/xml")
+				w.WriteHeader(tt.status)
+				if tt.status != http.StatusOK {
+					_, _ = w.Write([]byte(`<Error><Code>AccessDenied</Code></Error>`))
+					return
+				}
+				body := `<ListBucketResult><Name>media</Name><KeyCount>0</KeyCount><MaxKeys>1</MaxKeys><IsTruncated>false</IsTruncated>`
+				if tt.listed != "" {
+					body = `<ListBucketResult><Name>media</Name><KeyCount>1</KeyCount><MaxKeys>1</MaxKeys><IsTruncated>false</IsTruncated>` +
+						`<Contents><Key>` + tt.listed + `</Key><Size>7</Size></Contents>`
+				}
+				_, _ = w.Write([]byte(body + `</ListBucketResult>`))
+			}))
+			defer srv.Close()
+			got, err := newTestStore(t, testConfig(srv.URL)).Exists(t.Context(), key)
+			if got != tt.want || !errors.Is(err, tt.wantErr) || (tt.wantErr == nil) != (err == nil) {
+				t.Errorf("Exists() = %v, %v; want %v, %v", got, err, tt.want, tt.wantErr)
+			}
+			if query.Get("list-type") != "2" || query.Get("prefix") != key || query.Get("max-keys") != "1" {
+				t.Errorf("query = %v, want list-type=2, prefix=%s, max-keys=1", query, key)
+			}
+		})
 	}
 }

@@ -261,7 +261,17 @@ check-go: fmt-check vet lint actionlint buf-lint vulncheck test ## Run the Go, w
 # no upstream chart is fetched): exactly one plugin, the asset built for that architecture, both of the same plugin
 # and release, as deploy/k8s/install.sh checks on the dev path.
 ZERO_DIGEST := sha256:0000000000000000000000000000000000000000000000000000000000000000
-helm-check: ## helm lint and helm template every chart of the repository with the values of the GitOps path, alone and with the overlays of each environment of deploy/k8s/envs (prd without svp.localhost), the app-of-apps chart for each environment on amd64 and arm64 nodes, each with the plugin of Argo Rollouts built for it
+# The Secrets of the GitOps path (chart svp-cluster, externalSecrets): the base render, the dev path's, has no
+# ExternalSecret or SecretStore; each environment's has one ExternalSecret per entry of
+# deploy/helm/svp-cluster/files/external-secrets.yaml and one SecretStore per namespace that holds them (stg: provider
+# kubernetes; prd: provider aws and no namespace svp-secrets). External Secrets Operator runs without its admission
+# webhook, so the API server checks these against the CRDs' schemas only: kubeconform -strict (KUBECONFORM_IMAGE, no
+# network) checks them against schemas made from the CRDs of the chart version components.json pins, the other kinds
+# of that template (ServiceAccount, Role, RoleBinding, the admission policy) left to helm lint and the API server.
+# Provider crd of SecretStore is taken out of its schema: one of its fields is named additionalProperties, which
+# openapi2jsonschema turns into a boolean, and kubeconform, which compiles schemas as draft 4, then finds no schema at
+# all for SecretStore. No store here uses that provider, so -strict refuses it instead.
+helm-check: ## helm lint and helm template every chart of the repository with the values of the GitOps path, alone and with the overlays of each environment of deploy/k8s/envs (prd without svp.localhost), the app-of-apps chart for each environment on amd64 and arm64 nodes, each with the plugin of Argo Rollouts built for it; the ExternalSecrets and SecretStores of each environment against the CRD schemas of the pinned External Secrets chart (kubeconform)
 	@tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
 	export HELM_CACHE_HOME="$$tmp/cache" HELM_CONFIG_HOME="$$tmp/config" HELM_DATA_HOME="$$tmp/data"; \
 	envs=; for d in deploy/k8s/envs/*/; do [ -d "$$d" ] && envs="$$envs $$(basename "$$d")"; done; \
@@ -321,7 +331,55 @@ helm-check: ## helm lint and helm template every chart of the repository with th
 	      exit 1; fi; \
 	    echo "  prd: no svp.localhost in the render of any chart of the repository"; \
 	  fi; \
-	done
+	done; \
+	if grep -Eq '^kind: (ExternalSecret|SecretStore)$$' "$$tmp/base-svp-cluster.yaml"; then \
+	  echo "helm-check: the base render of svp-cluster (the dev path's) has an ExternalSecret or a SecretStore" >&2; exit 1; fi; \
+	want_es=$$(grep -c '^- namespace: ' deploy/helm/svp-cluster/files/external-secrets.yaml); \
+	want_ss=$$(sed -n 's/^- namespace: //p' deploy/helm/svp-cluster/files/external-secrets.yaml | sort -u | grep -c .); \
+	eso=$$(jq -r '.components[] | select(.name == "external-secrets") | "\(.repo) \(.chart) \(.version) \(.values)"' \
+		deploy/argocd/apps/components.json) && [ -n "$$eso" ] || \
+		{ echo "helm-check: no component external-secrets in deploy/argocd/apps/components.json" >&2; exit 1; }; \
+	set -- $$eso; mkdir -p "$$tmp/eso/crds" "$$tmp/eso/schemas" "$$tmp/eso/manifests" || exit 1; \
+	helm template external-secrets "$$2" --repo "$$1" --version "$$3" --namespace external-secrets -f "$$4" \
+		--show-only templates/crds/externalsecret.yaml --show-only templates/crds/secretstore.yaml \
+		> "$$tmp/eso/crds/crds.yaml" || exit 1; \
+	env -u DOCKER_DEFAULT_PLATFORM docker run --rm --user "$$(id -u):$$(id -g)" --network none \
+		-v "$$tmp/eso/crds:/crds:ro" -v "$$tmp/eso/schemas:/schemas" --workdir /schemas \
+		-e 'FILENAME_FORMAT={kind}-{fullgroup}-{version}' -e DENY_ROOT_ADDITIONAL_PROPERTIES=1 \
+		--entrypoint /openapi2jsonschema $(KUBECONFORM_IMAGE) /crds/crds.yaml > "$$tmp/eso/o2j.log" 2>&1 || \
+		{ cat "$$tmp/eso/o2j.log" >&2; echo "helm-check: schemas from the CRDs of external-secrets $$3" >&2; exit 1; }; \
+	ss_schema="$$tmp/eso/schemas/secretstore-external-secrets.io-v1.json"; \
+	jq -e '.properties.spec.properties.provider.properties.crd' "$$ss_schema" > /dev/null || \
+		{ echo "helm-check: no provider crd in $${ss_schema##*/}: drop the line that removes it" >&2; exit 1; }; \
+	jq 'del(.properties.spec.properties.provider.properties.crd)' "$$ss_schema" > "$$tmp/eso/ss.json" && \
+		mv "$$tmp/eso/ss.json" "$$ss_schema" || exit 1; \
+	for env in $$envs; do \
+	  f="$$tmp/$$env-svp-cluster.yaml"; \
+	  es=$$(grep -c '^kind: ExternalSecret$$' "$$f"); ss=$$(grep -c '^kind: SecretStore$$' "$$f"); \
+	  [ "$$es" = "$$want_es" ] && [ "$$ss" = "$$want_ss" ] || \
+		{ echo "helm-check: svp-cluster in $$env renders $$es ExternalSecrets and $$ss SecretStores, want $$want_es and $$want_ss" >&2; exit 1; }; \
+	  provider=$$(awk '/^kind: SecretStore$$/ { s = 1 } s && /^    [a-z]+:$$/ { sub(/:$$/, ""); print $$1; s = 0 }' "$$f" | sort -u | paste -sd ' ' -); \
+	  if [ "$$env" = prd ]; then \
+	    [ "$$provider" = aws ] || { echo "helm-check: the SecretStores of prd use provider '$$provider', want aws" >&2; exit 1; }; \
+	    if grep -n 'svp-secrets' "$$f" >&2; then \
+	      echo "helm-check: the prd render of svp-cluster above still names svp-secrets, the lab's source namespace" >&2; exit 1; fi; \
+	  else \
+	    [ "$$provider" = kubernetes ] || { echo "helm-check: the SecretStores of $$env use provider '$$provider', want kubernetes" >&2; exit 1; }; \
+	  fi; \
+	  helm template svp-cluster deploy/helm/svp-cluster --namespace cert-manager -f deploy/k8s/envs/$$env/svp-cluster.yaml \
+		--show-only templates/external-secrets.yaml > "$$tmp/eso/manifests/$$env.yaml" || exit 1; \
+	  env -u DOCKER_DEFAULT_PLATFORM docker run --rm --user "$$(id -u):$$(id -g)" --network none \
+		-v "$$tmp/eso/manifests:/manifests:ro" -v "$$tmp/eso/schemas:/schemas:ro" $(KUBECONFORM_IMAGE) \
+		-strict -summary -skip ServiceAccount,Role,RoleBinding,ValidatingAdmissionPolicy,ValidatingAdmissionPolicyBinding \
+		-schema-location '/schemas/{{.ResourceKind}}-{{.Group}}-{{.ResourceAPIVersion}}.json' \
+		"/manifests/$$env.yaml" > "$$tmp/eso/kubeconform.log" 2>&1 || \
+		{ cat "$$tmp/eso/kubeconform.log" >&2; echo "helm-check: kubeconform on the ExternalSecrets and SecretStores of $$env" >&2; exit 1; }; \
+	  grep -q "Valid: $$((es + ss)), Invalid: 0, Errors: 0" "$$tmp/eso/kubeconform.log" || \
+		{ cat "$$tmp/eso/kubeconform.log" >&2; echo "helm-check: kubeconform did not find $$((es + ss)) valid ExternalSecrets and SecretStores in $$env" >&2; exit 1; }; \
+	  echo "  svp-cluster in $$env: $$es ExternalSecrets, $$ss SecretStores (provider $$provider), valid against the CRDs of external-secrets $$3 (kubeconform -strict)"; \
+	  [ "$$env" != prd ] || echo "  prd: no svp-secrets in the render of svp-cluster"; \
+	done; \
+	echo "  base: no ExternalSecret or SecretStore in the render of svp-cluster (the dev path's)"
 
 # Misconfiguration scan of the Dockerfiles, charts and manifests with the pinned trivy. It only
 # reports: exit 0 whatever it finds. The findings that are deliberate choices are left out by

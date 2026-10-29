@@ -11,6 +11,10 @@
 #                                bootstrap.py predates it), so the DSN still reaches the services
 # All are GlitchTip's own values, made by its init Job (bootstrap.py): they never go to .env, a file or the terminal.
 # They are read inside the running GlitchTip pod through its ORM and come back on stdout into a shell variable only.
+# On the GitOps path's staging (a cluster with namespace svp-secrets) those three Secrets are ExternalSecrets of chart
+# svp-cluster: the values go into their source instead, Secret svp-secrets/glitchtip-runtime (SENTRY_DSN,
+# SENTRY_AUTH_TOKEN, SENTRY_SOURCEMAPS_TOKEN, empty while GlitchTip has no such token), and the three ExternalSecrets
+# are built again from it (es_force_sync of deploy/k8s/lib.sh) before the restarts below.
 #
 # Then each service that reads Secret sentry restarts when its pods started before the Secret's current version, so
 # it reports errors from then on (restart_on_secret_change of deploy/k8s/lib.sh, annotation
@@ -76,13 +80,22 @@ creds=
 service_dsn=${dsn/@127.0.0.1:8000\//@glitchtip.svp-obs:8000/}
 [ "$service_dsn" != "$dsn" ] || fail "the DSN does not name 127.0.0.1:8000; check GLITCHTIP_DOMAIN in deploy/helm/svp-observability/values.yaml"
 
-{
-  secret svp sentry Opaque SENTRY_DSN="$service_dsn"
-  secret svp-obs glitchtip-api Opaque SENTRY_AUTH_TOKEN="$token"
-  [ -z "$sourcemaps_token" ] ||
-    secret svp-obs glitchtip-sourcemaps Opaque SENTRY_SOURCEMAPS_TOKEN="$sourcemaps_token"
-} | kc apply --server-side --field-manager=svp-secrets --force-conflicts -f - >/dev/null ||
-  fail "apply the Secrets of GlitchTip's DSN and API tokens"
+if kc get namespace svp-secrets >/dev/null 2>&1; then
+  secret svp-secrets glitchtip-runtime Opaque SENTRY_DSN="$service_dsn" SENTRY_AUTH_TOKEN="$token" \
+    SENTRY_SOURCEMAPS_TOKEN="$sourcemaps_token" |
+    kc apply --server-side --field-manager=svp-secrets --force-conflicts -f - >/dev/null ||
+    fail "apply source Secret svp-secrets/glitchtip-runtime"
+  es_force_sync svp/sentry svp-obs/glitchtip-api svp-obs/glitchtip-sourcemaps
+  ok "GlitchTip's DSN and API tokens in source Secret svp-secrets/glitchtip-runtime, ExternalSecrets svp/sentry, svp-obs/glitchtip-api and svp-obs/glitchtip-sourcemaps built again from it"
+else
+  {
+    secret svp sentry Opaque SENTRY_DSN="$service_dsn"
+    secret svp-obs glitchtip-api Opaque SENTRY_AUTH_TOKEN="$token"
+    [ -z "$sourcemaps_token" ] ||
+      secret svp-obs glitchtip-sourcemaps Opaque SENTRY_SOURCEMAPS_TOKEN="$sourcemaps_token"
+  } | kc apply --server-side --field-manager=svp-secrets --force-conflicts -f - >/dev/null ||
+    fail "apply the Secrets of GlitchTip's DSN and API tokens"
+fi
 ok "GlitchTip's DSN in Secret svp/sentry, its read-only API token in Secret svp-obs/glitchtip-api"
 if [ -n "$sourcemaps_token" ]; then
   ok "GlitchTip's source map upload token in Secret svp-obs/glitchtip-sourcemaps"
