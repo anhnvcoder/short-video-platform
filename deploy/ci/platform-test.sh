@@ -13,8 +13,8 @@
 #   - the records of an environment (deployments of svp-gitops): a record is a deployment with auto_merge false and
 #     required_contexts [], then a status success that leaves earlier records active, its id printed; a dry run and a
 #     machine print both requests and write nothing; a record of a short ref, an environment that is not a plain name
-#     or a payload that is not JSON is refused before gh; the list gives each record its latest state; a run URL is a
-#     run of the code repository;
+#     or a payload that is not JSON is refused before gh; the list gives each record its latest state and every
+#     status the host returns, newest first; a run URL is a run of the code repository;
 #   - the scripts give what they gave when they read GitHub's variables themselves: plan.sh, vuln-predicate.sh,
 #     provenance-predicate.sh (the workflow, ref and commit of the run, and the services input of a dispatch),
 #     scan-gate.sh and values-check.sh (the signing identity is read from the policy's values; promote.sh has a test
@@ -709,6 +709,10 @@ same "github: ci_deployment_list: each record with its latest state, newest firs
   '12 svp-gitops-promoter[bot] success stg|11 someone  text' \
   "$(fn github 'ci_deployment_list anhnvcoder/svp-gitops stg' | jq -r 'map("\(.id) \(.creator) \(.state) \(.payload.environment? // .payload)") | join("|")')"
 check "github: ci_deployment_list asks for the environment" grep -qF -- "$(gh_line api -X GET repos/anhnvcoder/svp-gitops/deployments -f environment=stg -f per_page=100)" "$work/gh.log"
+same "github: ci_deployment_list: every status of each record, newest first" '12 success,in_progress|11 ' \
+  "$(fn github 'ci_deployment_list anhnvcoder/svp-gitops stg' | jq -r 'map("\(.id) \(.states | join(","))") | join("|")')"
+check "github: ci_deployment_list reads every status of a record" grep -qF -- \
+  "$(gh_line api -X GET repos/anhnvcoder/svp-gitops/deployments/12/statuses -f per_page=100)" "$work/gh.log"
 if on github env FAKE_GH_FAIL=1 "$BASH" -c '. "$0"; ci_deployment_list anhnvcoder/svp-gitops stg' "$here/platform.sh" \
   >/dev/null 2>&1; then
   fail "github: ci_deployment_list fails when the host does"

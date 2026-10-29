@@ -28,7 +28,27 @@ lặp lại hay phát hiện nhanh hơn. Mục đích là học từ sự cố, 
 
 Chép khối dưới đây vào file mới; mục nào chưa có dữ liệu thì ghi "chưa có" và vì sao, không bỏ mục.
 
+Front matter YAML ở đầu file là dữ liệu máy đọc cho DORA metrics ([ADR-0028](../adr/0028-dora-metrics.md) §5, §7):
+`deploy/ci/dora.sh` đọc nó, không đọc phần còn lại của postmortem.
+
+- `env`: `stg`, `prd`, `compose` hay `k3d`, môi trường xảy ra sự cố.
+- `deployment`: revision (40 hex) của `svp-gitops` của deployment gây ra sự cố, hay `none` khi sự cố không do triển khai nào
+  (game day, sự cố tiêm có chủ ý, lỗi hạ tầng). Postmortem `env: stg` có `deployment` là 40 hex đánh dấu deployment đầu tiên
+  của revision đó là thất bại (change fail rate); postmortem khác chỉ được liệt kê dưới "sự cố không do triển khai".
+- `started_at`, `restored_at`: T0 và mốc hồi phục, RFC 3339 UTC (`2026-10-24T07:24:49Z`), lấy đúng từ dòng thời gian có nguồn
+  bên dưới; là mốc của failed deployment recovery time. Chưa hồi phục thì để trống `restored_at:`.
+- `fix_commits`: danh sách `<owner/repo>@<40 hex>` các commit đã sửa, của repo nào cũng được (`[]` khi không có). Deployment
+  đầu tiên chứa một commit trong đó được tính là rework.
+- Sai dạng (thiếu front matter, giá trị lạ) thì `dora.sh` bỏ postmortem đó và in cảnh báo, không đoán.
+
 ```markdown
+---
+env: stg                    # stg | prd | compose | k3d
+deployment: <40 hex>        # revision of svp-gitops of the deployment that caused it, or none
+started_at: <RFC 3339 UTC>  # T0, same source as the timeline
+restored_at: <RFC 3339 UTC> # recovery, same source as the timeline
+fix_commits: []             # <repository>@<40 hex> of the commits that fixed it, either repository
+---
 # <Tên sự cố>
 
 - Ngày: <yyyy-mm-dd> (UTC)

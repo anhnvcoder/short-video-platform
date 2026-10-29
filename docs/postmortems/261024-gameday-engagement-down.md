@@ -1,3 +1,10 @@
+---
+env: compose
+deployment: none
+started_at: 2026-10-24T07:24:49Z
+restored_at: 2026-10-24T07:27:53Z
+fix_commits: []
+---
 # Game day: engagement-service dừng dưới tải, like và lượt xem trả 503
 
 - Ngày: 2026-10-24 (UTC)

@@ -748,10 +748,11 @@ ci_deployment_record() {
 }
 
 # ci_deployment_list REPO ENVIRONMENT: prints, as one JSON array, the newest 100 records of environment ENVIRONMENT in
-# REPO (owner/name), newest first, each {id, sha, ref, created_at, creator, payload, state}: creator the login that
-# made it (an app's bot is <app>[bot]), payload as recorded, state the latest status (success, failure, inactive, ...;
-# "" without one). An older record is out of reach: a set that old goes through the environment again. A read, so a
-# machine asks GitHub too.
+# REPO (owner/name), newest first, each {id, sha, ref, created_at, creator, payload, state, states}: creator the login
+# that made it (an app's bot is <app>[bot]), payload as recorded, state the latest status (success, failure, inactive,
+# ...; "" without one), states every status the host still returns, newest first (it drops all but the latest after 90
+# days): a record marked inactive by a later one shows there whether it was success before. An older record is out of
+# reach: a set that old goes through the environment again. A read, so a machine asks GitHub too.
 ci_deployment_list() {
   local platform list id state states=
   platform=$(ci_platform) || return 1
@@ -770,11 +771,12 @@ ci_deployment_list() {
         return 1
       }
       # The statuses come newest first: the first is the record's state.
-      state=$(gh api -X GET "repos/$1/deployments/$id/statuses" -f per_page=1 --jq '.[0].state // ""') || return 1
+      state=$(gh api -X GET "repos/$1/deployments/$id/statuses" -f per_page=100 --jq '[.[].state] | join(" ")') || return 1
       states+="$id $state"$'\n'
     done
     jq -c --arg states "$states" '($states | split("\n") | map(select(length > 0) | split(" ")
-      | {key: .[0], value: (.[1] // "")}) | from_entries) as $s | map(. + {state: ($s[.id | tostring] // "")})' <<<"$list"
+      | {key: .[0], value: (.[1:] | map(select(. != "")))}) | from_entries) as $s
+      | map(($s[.id | tostring] // []) as $all | . + {state: ($all[0] // ""), states: $all})' <<<"$list"
     ;;
   esac
 }
