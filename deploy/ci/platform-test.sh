@@ -679,7 +679,7 @@ rm "$tree/deploy/ci/new-step.sh" "$tree/deploy/ci/linked-dir" "$tree/deploy/ci/v
 g checkout -q -- deploy/ci/rescan.sh
 
 # --- changed-services.sh: platform.sh is part of the image pipeline (common.sh sources it), so a change of it builds
-# all seven; this test, platform-guard.sh, the scenario files of the verification runs, the policy's values and docs/
+# all seven; this test, platform-guard.sh, the scripts of the verification runs, the policy's values and docs/
 # are read by no image job.
 changed_by() {
   echo "# changed" >>"$tree/$1"
@@ -691,6 +691,11 @@ same "changed-services: a change of platform.sh builds all seven" "$all" "$(chan
 same "changed-services: a change of platform-test.sh builds nothing" "" "$(changed_by deploy/ci/platform-test.sh)"
 same "changed-services: a change of platform-guard.sh builds nothing" "" "$(changed_by deploy/ci/platform-guard.sh)"
 same "changed-services: a change under deploy/ci/verify/ builds nothing" "" "$(changed_by deploy/ci/verify/gitops.sh)"
+same "changed-services: a change of verify-tempo.sh builds nothing" "" "$(changed_by deploy/ci/verify-tempo.sh)"
+same "changed-services: a change of gitops-sourcemaps.sh builds nothing" "" "$(changed_by deploy/ci/gitops-sourcemaps.sh)"
+same "changed-services: a change of gitops-sourcemaps-test.sh builds nothing" "" \
+  "$(changed_by deploy/ci/gitops-sourcemaps-test.sh)"
+same "changed-services: a change of common.sh builds all seven" "$all" "$(changed_by deploy/ci/common.sh)"
 same "changed-services: a change of the policy's values builds nothing" "" \
   "$(changed_by deploy/helm/svp-policy/values.yaml)"
 same "changed-services: a change under docs/ builds nothing" "" "$(changed_by docs/decision.md)"

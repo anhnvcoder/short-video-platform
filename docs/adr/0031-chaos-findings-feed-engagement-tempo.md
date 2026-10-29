@@ -1,6 +1,7 @@
 # 0031. Sửa ba phát hiện của Chaos Mesh và k6 trên runner: feed-service luôn hai replica, engagement-service lỗi nhanh có kiểm soát khi Postgres chậm hay mất, Tempo tự giới hạn bộ nhớ, không sampling
 
-- Trạng thái: Chấp nhận (người học duyệt 2026-10-29); chưa hiện thực, kiểm trên runner sau push (mục Kết quả)
+- Trạng thái: Chấp nhận (người học duyệt 2026-10-29); đã hiện thực, đã kiểm trên runner ngày 2026-10-29 (mục Kết quả): ba quyết định
+  đạt; còn mở: tải lệch giữa hai pod feed-service và biên bộ nhớ của Tempo ở mức 4 pod (mục Kết quả)
 - Ngày: 2026-10-29
 
 ## Bối cảnh
@@ -307,7 +308,73 @@ Chọn **B**.
 
 ## Kết quả
 
-Chưa có lượt runner nào trên cấu hình này.
+Lượt runner ngày 2026-10-29 trên nhánh `feat/stage6b-chaos-fixes`, commit `98715d9` (ba quyết định); lượt hai của `k6-cloud-mini` ở
+`c7ca403` (thêm sửa Job k6 `backoffLimitPerIndex: 0`, không đổi gì của ADR này). Số đọc từ artifact `verify-<kịch bản>` của từng lượt.
+
+| Kịch bản | Lượt | Kết quả lượt |
+| --- | --- | --- |
+| `chaos` | [40810755085](https://github.com/anhnvcoder/short-video-platform/actions/runs/40810755085) | 11/11 bước `ok` (bản thử, (a), (b), (c), ba `tempo-ingest-chaos-*`, gỡ); runner đủ mọi tiêu chí: `no_oom=true`, không container `OOMKilled`, 0 dòng OOM của kernel, `MemAvailable` thấp nhất 8 209 MiB |
+| `dev-k3d` | [40810781486](https://github.com/anhnvcoder/short-video-platform/actions/runs/40810781486) | 14/14 bước `ok` (gồm `drill-k8s-pdb` mở rộng cho feed-service, `drill-k8s-web-obs`, RAM nghỉ đầu và cuối) |
+| `k6-cloud-mini` | [40810768238](https://github.com/anhnvcoder/short-video-platform/actions/runs/40810768238) (`98715d9`), [40820505634](https://github.com/anhnvcoder/short-video-platform/actions/runs/40820505634) (`c7ca403`) | Mức 1, 2 đạt ở cả hai lượt; mức 4 trượt (lượt 1 chỉ 2/4 pod có summary vì Job xoá pod khi một pod trượt; lượt 2 đủ 4/4); `tempo-ingest-1`, `-2`, `-4` đạt ở cả hai lượt |
+
+**§1 feed-service hai replica: đạt.**
+
+- Giả thuyết: mất một pod feed-service còn một pod phục vụ; feed 5xx < 0,1 % trong 10 phút quanh lần kill (như gateway).
+- (a) `chaos` [40810755085](https://github.com/anhnvcoder/short-video-platform/actions/runs/40810755085) (`k8s-drills/chaos-*.json`, `.a.feed_service`): 2 replica Ready lúc kill (04:00:04Z), pod
+  thay Ready sau 3 s, feed 5xx **0** trong 10 phút (lượt trước 0,28 % với 1 replica), p99 feed 13,3 ms 5 phút trước, 13,1 ms sau 30 s
+  đầu, 5xx của Envoy 0 trong 5 phút sau, không cảnh báo page. Cùng lượt (a) gateway: 2 replica, pod thay Ready sau 2 s, feed 5xx 0.
+  Node của hai pod feed lúc kill: **chưa đo** (kết quả của (a) không ghi node).
+- `drill-k8s-pdb` `dev-k3d` [40810781486](https://github.com/anhnvcoder/short-video-platform/actions/runs/40810781486) (`logs/05-drill-k8s-pdb.log`): trước diễn tập hai pod feed ở hai node
+  (`k3d-svp-server-0`, `k3d-svp-agent-0`); PDB `minAvailable 1`, `disruptionsAllowed 1`; pod đầu evict **201**; `disruptionsAllowed 0`
+  khi pod thay còn Pending trên node đã cordon; pod thứ hai evict **429** (vi phạm disruption budget); sau uncordon deployment về 2 pod
+  Ready, pod thứ hai chưa bao giờ bị evict, hai pod lại ở hai node. Gateway cùng lượt: 201, 429, về 2 pod ở hai node.
+- Tải giữa hai pod (rủi ro đã ghi ở Quyết định): CPU từng pod feed theo `kubectl top` (`samples/pods.tsv` của
+  [40820505634](https://github.com/anhnvcoder/short-video-platform/actions/runs/40820505634), trung bình trong cửa sổ giữ) 44m / 28m ở mức 1, 88m / 37m ở mức 2, 150m / 72m ở mức 4: một pod nhận
+  khoảng gấp đôi pod kia, đúng kiểu ghim kết nối qua ClusterIP. Số request theo pod **chưa đo**. Chưa thành lỗi ở các mức đã chạy
+  (mức 4 trượt vì CPU của runner, dưới đây), nhưng là phát hiện cho Hệ quả "Xem lại khi".
+- RAM: working set mỗi pod feed 11–13 MiB lúc nghỉ, tối đa 28 MiB trong `chaos`, 31 MiB ở mức 4 pod (dưới limit 256 Mi). RAM nghỉ của
+  cluster dev ở điểm 60 s ([40810781486](https://github.com/anhnvcoder/short-video-platform/actions/runs/40810781486), `ram-rest-start.json`): MEM USAGE trừ `active_file` 5 066 MiB, tổng pod
+  2 812 MiB (`svp` 266, `svp-obs` 1 280, `svp-data` 611), (b) của ADR-0014 §2 đạt; cuối kịch bản 5 488 / 3 264 MiB. Hai lượt `dev-k3d`
+  trước đổi (ADR-0021, Kết quả lượt 4, 5): 6 084 và 5 972 MiB, pod 3 163 và 3 024 MiB: pod feed thêm không làm RAM nghỉ vượt ngân sách
+  (chênh giữa các lượt lớn hơn 12 MiB của pod thêm, nên không tách được phần của nó).
+
+**§2 engagement-service lỗi nhanh: đạt.**
+
+- Giả thuyết (ADR-0020 §7 (b)): engagement-service trễ 200 ± 20 ms trong 5 phút, feed vẫn 200 (bỏ `stats`), 5xx < 0,1 %, p99 ≤ 150 ms;
+  like, view không 5xx; breaker không mở.
+- (b) `chaos` [40810755085](https://github.com/anhnvcoder/short-video-platform/actions/runs/40810755085) (`.b`): like + view 5xx **0** trên khoảng 2 255 request trong 5 phút trễ (lượt trước
+  556 / 2 149); breaker tối đa 0, `CircuitBreakerOpen` không cháy; feed 5xx 0, p99 149,2 ms (vẫn sát 150 ms như lượt trước), explore 200
+  với 20 mục, 0 mục có `stats`, `stats` trở lại 1 s sau khi gỡ. k6 của cả lượt (gồm thí nghiệm, `k6/cloud-20261029T043719Z`): like
+  3 074 request, lỗi 0,033 % (1 request), p99 618 ms (lượt trước 18,5 % lỗi, p99 3 004 ms bằng hạn 3 s của gateway); view 6 147, 0 lỗi,
+  p99 458 ms. Threshold `dropped_iterations` của lượt k6 trượt (4): dữ liệu của tải, không phải kết quả thí nghiệm.
+- Không có lượt nào Postgres mất hẳn hay trễ quá 1 s trên runner: nhánh 503 `DEPENDENCY_UNAVAILABLE` chỉ kiểm bằng test Go (Postgres chậm
+  giả, cắt kết nối, cổng đóng) và test gateway. Thời gian chờ kết nối của hai pool (`pgxpool.*`): **chưa đo** (artifact không có metric
+  đó); phần suy luận 1–3 s của Bối cảnh vẫn chưa đo, nhưng không còn cần để giải thích kết quả.
+
+**§3 Tempo tự giới hạn bộ nhớ: đạt; biên bộ nhớ ở mức 4 pod mỏng.**
+
+- Giả thuyết: OOM do phần giữ trong bộ nhớ tăng theo thời gian không có trần (source Tempo v3.1.0: buffer row group 100 MB của
+  compaction và completion, không `GOMEMLIMIT`; comment của `deploy/k8s/values/tempo.yaml`). Theo số: với các trần mới **không OOM**:
+  container `tempo` cùng một lần khởi động (03:21:45Z, `restartCount` 0) suốt `chaos` (bốn lượt k6 1 pod, cộng lại khoảng 1 giờ 40 phút, trong khi lượt
+  trước OOM ngay trong lượt k6 của (a)), và `restartCount` 0 ở cả ba mức của hai lượt `k6-cloud-mini` (lượt trước chết trong 1–2 phút
+  đầu mức 4). Lượt này không chạy lại cấu hình cũ có chuỗi RAM, nên phần đóng góp của từng tham số không tách được: giả thuyết về
+  nguyên nhân khớp với kết quả, chưa được chứng minh riêng.
+- Working set đỉnh của container `tempo` (`samples/pods.tsv`, mẫu 30 s) so với limit 1 Gi (`GOMEMLIMIT` 800 MiB): `chaos` bản thử
+  467 MiB, (a) 648, (b) 644, (c) 754 MiB; `k6-cloud-mini` [40820505634](https://github.com/anhnvcoder/short-video-platform/actions/runs/40820505634) mức 1 687, mức 2 560, mức 4 **784 MiB**
+  (lượt 1: tối đa 703 MiB cả lượt). Chuỗi lên xuống răng cưa (đầu mỗi cửa sổ 166–223 MiB). Lúc nghỉ ở `dev-k3d` 75 MiB (điểm 60 s), 105 MiB
+  cuối kịch bản, tối đa 389 MiB trong kịch bản.
+- Tốc độ span (exporter `otlp_grpc/tempo` của Collector, `k8s-drills/tempo-ingest-*.json`): k6 1 pod 726, 2 pod 1 444, 4 pod 3 036
+  span/s ([40820505634](https://github.com/anhnvcoder/short-video-platform/actions/runs/40820505634); lượt 1: 725, 1 444, 2 882); `chaos` (k6 1 pod) 695–723 span/s. Gấp khoảng 2 lần ước lượng
+  của Bối cảnh (250–350 ở 1 pod, 1 000–1 400 ở 4 pod). Byte/s vào Tempo **chưa đo**; Tempo không bỏ span nào nên tốc độ ở mức 4 vẫn dưới
+  trần ingest.
+- Mất dữ liệu, mọi cửa sổ ((a), (b), (c), mức 1, 2, 4 của hai lượt): receiver của Collector từ chối 0, lỗi 0; exporter gửi lỗi 0, không
+  vào được hàng đợi 0; Tempo bỏ 0 (`tempo_discarded_spans_total` không có series nào). Đọc lại: mỗi cửa sổ tìm thấy 20 trace của
+  gateway, lấy được theo id một trace có 2–5 service; cạnh gateway → feed-service của service graph tăng (78 726 ở (a), 124 065 ở mức 4).
+  `drill-k8s-web-obs` của `dev-k3d` tìm thấy trace web + gateway qua Tempo cấu hình mới (PASS).
+- Biên: 784 MiB ở mức 4 còn 240 MiB tới limit và sát `GOMEMLIMIT` 800 MiB (từ đó GC chạy dày hơn, tốn CPU thay vì OOM); tốc độ span
+  cao hơn ước lượng mà các trần dựa vào. Chưa có số ở tải cao hơn mức 4.
+- Mức 8 pod không chạy (dừng ở mức 4 trượt). Mức 4 trượt vì hệ thống không giữ được tải trên runner (CPU máy trung bình 89 %, ADR-0021
+  dòng D11), không vì Tempo.
 
 ## Hệ quả
 

@@ -14,7 +14,8 @@
   với `mc`), §7 (symlink), §8 (Secret `minio-root`, `minio-users`) và §9 (đích của HTTPRoute `s3`) bị thay một phần bởi
   [0022](0022-local-object-store-minio-replacement.md) (RustFS, StatefulSet, Service và Job `s3`, `s3-init`, Secret `s3-root`, `s3-users`, CORS theo bucket; giới
   hạn 512 MiB, uid 10001); §10 (feed-service HPA 1–2 không PDB thành luôn 2 replica, PDB `minAvailable: 1`, ưu tiên trải hai
-  node) bị thay một phần bởi [0031](0031-chaos-findings-feed-engagement-tempo.md)
+  node) và giới hạn RAM của Tempo trong bảng ngân sách (768 MiB thành 1 GiB) bị thay một phần bởi
+  [0031](0031-chaos-findings-feed-engagement-tempo.md)
 - Ngày: 2026-10-18
 
 ## Bối cảnh
@@ -220,7 +221,7 @@ cuối. Cột "Giới hạn" là `limits.memory` đặt trong values (mục 10).
 | Service | 6 service lúc nghỉ, gateway 2 replica (`svp`) | 300 MiB | bảng mục 10 |
 | Observability | Prometheus + config-reloader (`svp-obs`) | 620 MiB | 1 GiB |
 | Observability | Loki | 300 MiB | 512 MiB |
-| Observability | Tempo (có metrics-generator) | 400 MiB | 768 MiB |
+| Observability | Tempo (có metrics-generator) | 400 MiB | 1 GiB (request 128 MiB; trước 768 MiB, ADR-0031) |
 | Observability | Pyroscope | 250 MiB | 512 MiB |
 | Observability | Grafana + 2 sidecar | 250 MiB | 448 MiB + 2 × 128 MiB |
 | Observability | Alertmanager + config-reloader, Prometheus operator, kube-state-metrics | 140 MiB | 64 / 128 / 128 MiB |

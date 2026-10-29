@@ -9,7 +9,7 @@
 # trivy-config-ignore.yaml (read only by make trivy-config, so renewing one of its entries, due every 90 days at most,
 # releases nothing), the scripts of the verification runs of .github/workflows/verify.yml (verify-host.sh,
 # verify-run.sh and the scenario files under deploy/ci/verify/ it sources, verify-sample.sh, verify-mask.sh,
-# verify-collect.sh and its test; verify-release.sh is not one of them: values-check.sh runs it), platform-test.sh, the test of platform.sh, and platform-guard.sh, the check that no other
+# verify-collect.sh and its test, verify-tempo.sh, gitops-sourcemaps.sh and its test; verify-release.sh is not one of them: values-check.sh runs it), platform-test.sh, the test of platform.sh, and platform-guard.sh, the check that no other
 # script reads the CI platform itself (both run by job config of ci.yml and on a machine; platform.sh itself counts:
 # common.sh sources it), the helpers deploy/ci/ sources from deploy/k8s/lib.sh (docker_, values_field,
 # values_set_image, ghcr_prefix), and the lines of the Makefile pinning the images the gate runs (TRIVY_IMAGE,
@@ -68,7 +68,8 @@ while IFS= read -r path; do
   case $path in
   deploy/ci/trivy-config-ignore.yaml | deploy/ci/verify-host.sh | deploy/ci/verify-run.sh | \
     deploy/ci/verify-sample.sh | deploy/ci/verify-mask.sh | deploy/ci/verify-collect.sh | \
-    deploy/ci/verify-collect-test.sh | deploy/ci/verify/* | deploy/ci/platform-test.sh | deploy/ci/platform-guard.sh)
+    deploy/ci/verify-collect-test.sh | deploy/ci/verify-tempo.sh | deploy/ci/gitops-sourcemaps.sh | \
+    deploy/ci/gitops-sourcemaps-test.sh | deploy/ci/verify/* | deploy/ci/platform-test.sh | deploy/ci/platform-guard.sh)
     continue
     ;;
   esac

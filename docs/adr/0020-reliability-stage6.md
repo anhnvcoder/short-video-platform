@@ -12,7 +12,9 @@
   của runner, mỗi thí nghiệm một lượt k6) chỉnh bởi 0021; quyết định giữ `Suspense` của
   feed (Kết quả "LCP") đảo theo D17 của 0021 (đòn bẩy (a) đã làm, LCP `/` vẫn chưa đạt). Đích MinIO của backup (§5, Tên chốt:
   user, policy, `endpointURL`) và việc tồn "Thay MinIO" (§16) bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md) (RustFS, `s3.svp-data:9000`;
-  bucket, user `svp-pg-backup`, policy giữ nguyên; backup hai chế độ kiểm lại trên RustFS ngày 2026-10-25)
+  bucket, user `svp-pg-backup`, policy giữ nguyên; backup hai chế độ kiểm lại trên RustFS ngày 2026-10-25). Ghi chú 2026-10-29: hai
+  phát hiện của Chaos Mesh và Tempo OOM sửa ở [0031](0031-chaos-findings-feed-engagement-tempo.md); chạy lại `chaos` trên runner:
+  (a) feed-service và (b) đạt (Kết quả "Chaos Mesh trên runner")
 - Ngày: 2026-10-24
 
 ## Bối cảnh
@@ -564,14 +566,18 @@ cluster), nên với mặc định `*` controller 2.8.5 khởi động lại li�
   - **(a) Kill pod** (`PodChaos`, `pod-kill`, `mode: one`, `gracePeriod: 0`), một lần cho gateway (Rollout 2 replica) rồi một lần
     cho feed-service. Giả thuyết: feed giữ SLO trong cửa sổ 10 phút quanh lần kill (5xx < 0,1%, p99 ≤ 150 ms ngoài 30 s đầu), pod
     thay Ready dưới 60 s. PDB không can thiệp (`pod-kill` xoá thẳng, không đi qua eviction): thứ giữ là ≥ 2 replica Ready lúc kill
-    và `mode: one`. feed-service hôm nay `minReplicas: 1`: lúc kill chỉ có một replica thì lượt đó đo thời gian mất feed tới khi
-    pod thay Ready, ghi là phát hiện về số replica tối thiểu, không tính là giả thuyết sai.
+    và `mode: one`. feed-service lúc viết mục này `minReplicas: 1`: lúc kill chỉ có một replica thì lượt đó đo thời gian mất feed tới
+    khi pod thay Ready, ghi là phát hiện về số replica tối thiểu, không tính là giả thuyết sai (lượt runner 2026-10-28 đúng như vậy);
+    từ [ADR-0031](0031-chaos-findings-feed-engagement-tempo.md) §1 feed-service hai replica kèm PDB như gateway.
   - **(b) Chậm mạng** (`NetworkChaos`, `delay` 200 ms, jitter 20 ms, `mode: all`, `direction: to`, không `target`, `duration:
     5m`) trên pod engagement-service: mọi gói đi ra của engagement-service chậm, nên lời gọi từ gateway chậm theo. Không dùng
     `target` vì nó cần iptables/ipset (chaos-daemon ép iptables-legacy, AL2023 dùng iptables-nft); `tc netem` không cần. Giả thuyết
     theo ADR-0010 §4: feed vẫn 200 (`stats` vắng khi quá hạn 100 ms), feed 5xx < 0,1% và p99 ≤ 150 ms; like, lượt xem không 5xx (200
     ms dưới hạn 3 s); `CircuitBreakerOpen` không cháy (chậm không phải chết). p99 feed vượt 150 ms là phát hiện về ngân sách độ trễ
-    của ADR-0010, ghi lại, không phải lỗi thí nghiệm.
+    của ADR-0010, ghi lại, không phải lỗi thí nghiệm. Lý do "200 ms dưới hạn 3 s" tính một lần trễ cho cả call, sai với Like: không
+    `target` thì mọi round trip tới Postgres cũng trễ (lượt runner 2026-10-28: like hết hạn 3 s). Giả thuyết like, view không 5xx
+    giữ; từ [ADR-0031](0031-chaos-findings-feed-engagement-tempo.md) §2 Like/Unlike là một câu SQL với hạn ghi 1 s phía server, lỗi
+    Postgres trả 503 `DEPENDENCY_UNAVAILABLE` không thử lại, `GetStats` có pool riêng.
   - **(c) Tắt Redpanda** (`PodChaos`, `pod-failure`, `mode: all`, `duration: 5m`) ở `svp-data`: Kyverno ở `svp` từ chối UPDATE đổi
     image của `pod-failure`, nên thí nghiệm này chỉ dùng được ngoài `svp`. Trong lúc tắt, 3 upload tới `READY` qua API (cùng luồng
     upload của `deploy/compose/smoke.sh`). Giả thuyết: `POST /videos` và `complete` vẫn nhận (outbox giữ event), feed giữ SLO; lượt
@@ -1084,6 +1090,14 @@ trình): phát hiện cho giai đoạn 7 (chính sách sampling của lượt t�
 `canaryLimits.p99Ms` của web 500 → 250 ms, không thêm HPA (CPU web 8,2 % limit, p99 không tăng gấp đôi), `resources` giữ. Mỗi
 pod k6 một khoá rate limit đăng ký ở mọi mức (1, 2, 4).
 
+Chạy lại 2026-10-29 sau [ADR-0031](0031-chaos-findings-feed-engagement-tempo.md) ([40810768238](https://github.com/anhnvcoder/short-video-platform/actions/runs/40810768238),
+[40820505634](https://github.com/anhnvcoder/short-video-platform/actions/runs/40820505634)): mức cao nhất đạt vẫn **2 pod** (lượt hai: 110,4 req/s, mọi threshold, drop 0, 429 0; k6 p99 explore 25,2,
+following 17,0, web `/` 104,3 ms). Mức 4 (220 req/s, 4/4 pod có summary từ khi Job dùng `backoffLimitPerIndex: 0`) trượt: 125
+`dropped_iterations`, k6 p99 explore 698 ms (gateway 674), following 444 ms, `p99_E` của web 1 851 ms, web lỗi trên 0,1 %; CPU của
+runner trung bình 89 %, cao nhất 100 % trong cửa sổ giữ (mức 1: 33 %, mức 2: 51 %): trần CPU của một VM 4 vCPU chạy cả cluster,
+observability và 4 pod k6, không phải số của hệ thống. Tempo không còn OOM ở mức 4 (0 span bị từ chối hay bỏ, working set đỉnh
+784 MiB dưới limit 1 Gi). Năng lực thật đo ở giai đoạn 7.
+
 ### Velero trên runner (giai đoạn 6b)
 
 Kịch bản `velero` của ADR-0021 (2026-10-28, [40620319661](https://github.com/anhnvcoder/short-video-platform/actions/runs/40620319661), [40626700272](https://github.com/anhnvcoder/short-video-platform/actions/runs/40626700272)): backup `svp-data` theo nhãn của Redpanda và fixture, có
@@ -1110,7 +1124,22 @@ lượt k6 1 pod; bảng đủ ở ADR-0021 mục "Thí nghiệm `chaos`"):
 - **Gỡ sạch**, không thêm quyền RBAC nào ngoài của chart. Runner `no_oom=false` ở cả hai lượt chỉ vì Tempo OOMKilled ở limit 768 Mi
   (cùng phát hiện với k6 thu nhỏ); `MemAvailable` thấp nhất 6,4 GiB.
 - Việc trước buổi chaos của giai đoạn 7 (ADR-0021 Hệ quả "Xem lại khi"): feed-service tối thiểu 2 replica kèm PDB; engagement chịu
-  trễ database (pool, timeout, breaker), đo `pgxpool.*` trước; cỡ Tempo.
+  trễ database (pool, timeout, breaker), đo `pgxpool.*` trước; cỡ Tempo. Đã làm ở [ADR-0031](0031-chaos-findings-feed-engagement-tempo.md)
+  (`pgxpool.*` vẫn chưa đo).
+
+Chạy lại 2026-10-29 trên cấu hình của ADR-0031 ([40810755085](https://github.com/anhnvcoder/short-video-platform/actions/runs/40810755085), 11/11 bước, mỗi thí nghiệm một lượt k6 1 pod):
+
+- **(a) gateway: đạt.** 2 replica Ready lúc kill, pod thay Ready sau 2 s, feed 5xx 0, không page.
+- **(a) feed-service: đạt.** 2 replica Ready lúc kill, pod thay Ready sau 3 s, feed 5xx 0 trong 10 phút, p99 13,3 → 13,1 ms, 5xx của
+  Envoy 0, không page. `drill-k8s-pdb` ([40810781486](https://github.com/anhnvcoder/short-video-platform/actions/runs/40810781486)): hai pod ở hai node, evict 201 rồi 429, về 2 pod Ready.
+- **(b): đạt.** like + view 5xx 0 trên khoảng 2 255 request trong 5 phút trễ; feed 5xx 0, p99 149,2 ms, explore 200 không `stats`,
+  `stats` về sau 1 s; breaker không mở. k6 cả lượt: like lỗi 0,033 % (1 / 3 074), p99 618 ms (trước 3 004 ms).
+- **(c): đạt.** Upload init 5xx 0, feed 5xx 0, p99 10,8 ms, view lỗi khoảng 1 120 (đếm riêng); broker về sau 9 s, 3 video `READY` ngay,
+  mỗi video đúng một lần, lag về mức ổn định sau 0–40 s, DLQ không đổi.
+- **Gỡ sạch** (`uninstall.left` rỗng); controller giữ cùng pod, 0 restart, 0 dòng `is forbidden`. Runner đủ mọi tiêu chí, `no_oom=true`:
+  Tempo không OOM, `restartCount` 0 suốt kịch bản, 0 span bị từ chối hay bỏ ở ba thí nghiệm (step `tempo-ingest-chaos-*`).
+- Threshold k6 trượt ở lượt của (b) (`dropped_iterations` 4) và (c) (`dropped_iterations` 353, view lỗi khi Redpanda tắt như thiết
+  kế): dữ liệu của tải trong thí nghiệm, không phải kết quả thí nghiệm.
 
 ### Game day
 
@@ -1224,7 +1253,8 @@ trước mục tiêu) ([40145677985](https://github.com/anhnvcoder/short-video-p
   - 20 lượt `stack` liên tiếp xanh: đưa vào `ci-ok`.
   - Giai đoạn 7 giữ Redpanda trong cluster: độ bền event bằng replication hay Kafka managed, không bằng Velero.
   - Trước buổi chaos của giai đoạn 7: sửa hai phát hiện của Chaos Mesh trên runner (feed-service một replica; like của
-    engagement-service hết hạn khi trễ mạng, Kết quả "Chaos Mesh trên runner") rồi chạy lại kịch bản `chaos` của ADR-0021.
+    engagement-service hết hạn khi trễ mạng, Kết quả "Chaos Mesh trên runner") rồi chạy lại kịch bản `chaos` của ADR-0021. Đã làm
+    2026-10-29 ([ADR-0031](0031-chaos-findings-feed-engagement-tempo.md)), chạy lại đạt.
 
 ## Hiện thực ở
 

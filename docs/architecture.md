@@ -556,11 +556,12 @@ giai đoạn 6b (runner CI 16 GB hay VM thuê theo giờ, không dịch vụ AWS
   trượt, Tempo OOM), ngưỡng p99 canary của web 250 ms, Velero đích RustFS (RTO 58 s, offset giữ), Chaos Mesh: tắt Redpanda 5 phút và
   kill pod gateway giữ SLO, hai phát hiện (feed-service một replica: feed 5xx 0,28 % khi mất pod; engagement-service chậm 200 ms:
   18,5 % like hết hạn 3 s vì mỗi round trip Postgres của transaction cũng chậm), cùng Tempo OOM ở limit 768 Mi; cách sửa ở
-  [ADR-0031](adr/0031-chaos-findings-feed-engagement-tempo.md), kiểm lại trên runner trước buổi chaos của giai đoạn 7; LCP sát ngưỡng, chưa ổn định,
-  chuẩn là RUM p75.
-- **Dời:** phần còn lại của giai đoạn 6b:
-  source map của image CI và đo phát hành service có Postgres (`measure-gitops`) ở lượt `gitops` trên `main` sau merge; phần 4
-  (repo GitOps riêng). Giai đoạn 7: k6 1 000 req/s, Chaos Mesh trên EKS (sau khi sửa hai phát hiện),
+  [ADR-0031](adr/0031-chaos-findings-feed-engagement-tempo.md), kiểm lại trên runner 2026-10-29: (a) feed-service và (b) đạt (feed
+  5xx 0, like + view 5xx 0), Tempo không OOM và không bỏ span tới mức 4 pod; k6 thu nhỏ vẫn đạt tới 2 pod, mức 4 chạm trần CPU của
+  runner. Source map của image CI và đo phát hành service có Postgres (`measure-gitops`, 139 s từ merge tới pod Ready) đạt trên
+  `main` 2026-10-29. LCP sát ngưỡng, chưa ổn định, chuẩn là RUM p75.
+- **Dời:** phần còn lại của giai đoạn 6b: phần 4
+  (repo GitOps riêng). Giai đoạn 7: k6 1 000 req/s, Chaos Mesh trên EKS,
   diễn tập phục hồi RDS, Velero với S3 và snapshot EBS, hạn 50 ms của Redis trên ElastiCache. Manifest của phần đo thật kiểm schema
   bằng `make cloud-check`; LCP mobile mô phỏng sát ngưỡng 2,5 s trên runner mà chưa ổn định, Lighthouse là tín hiệu hồi quy,
   chuẩn là RUM p75 (ADR-0020, Kết quả "LCP").
