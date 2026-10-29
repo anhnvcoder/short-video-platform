@@ -5,8 +5,8 @@ image:
   # writes the three lines below; the GitOps cluster pulls the digest, the tag names the commit for people. Empty:
   # no release yet. The dev path (make k8s-up) ignores them and passes its own registry, tag and an empty digest.
   repository: ghcr.io/anhnvcoder/short-video-platform/web
-  tag: "e4830e99fe9b"
-  digest: "sha256:c92a759c0a3eeec689df59fac00e0c1451a68dfe7fc2a6b97c24e715a0f6551a"
+  tag: "e824425ddce3"
+  digest: "sha256:12b9cfac6821f646ec6fb63fb295d6743bbdaf1ca21cff032296b6efa12c8eeb"
 protocol: http
 # The image's port (PORT of deploy/docker/web.Dockerfile), as in compose.
 port: 3001

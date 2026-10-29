@@ -15,7 +15,7 @@
 # same commit builds from the same base on the machine and in CI, and Renovate proposes each new digest as a reviewed
 # change. The Node major (26, also in the runtime image's
 # name below) moves with web/.nvmrc and engines of web/package.json in one Renovate pull request.
-FROM node:26-trixie@sha256:31ea2a1880e8393df2445e7654ec74992d7fa450fd659ba5b66b0bec909a55b1 AS build
+FROM node:26-trixie@sha256:6d2c7d5d074bf72f81ddc252b4fbb5d625bc028eeda49cb4b8c2ff8eda1ee617 AS build
 WORKDIR /src
 ENV NEXT_TELEMETRY_DISABLED=1
 
@@ -73,7 +73,7 @@ COPY --from=build /sourcemaps/ /
 # so the compose healthcheck runs node itself. The nonroot tag follows each distroless rebuild; the digest fixes the
 # content. The Node major is part of the image name, which Renovate never changes: moving to Node 27 means editing this
 # name by hand to nodejs27-debian13 in the same pull request.
-FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:b093852cde840e6f7ab2c2081adfbdb81810a340e06a2869fdc4ed31354c9d9e
+FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:a51c5d631b90e1b298e17a88a307b77f0b959b47de942d033acce0c96be3fb83
 WORKDIR /app
 # The build's id again, for the server: the release of its GlitchTip events and service.version of its telemetry; empty
 # means none.
