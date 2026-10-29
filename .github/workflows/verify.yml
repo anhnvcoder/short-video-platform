@@ -12,9 +12,12 @@
 #
 # The repository is public, so the log and the artifact of every run are too, red or not:
 # - only workflow_dispatch (write access to the repository needed) and schedule (the code of main, no input), never
-#   pull_request_target or workflow_run; no secret, no environment; every job has contents: read, and job gitops also
-#   actions: read (the source map artifact of the images run that built the web image it runs), with the job's token
-#   given to its two steps that read the platform's API only, never to the scenario's step;
+#   pull_request_target or workflow_run; every job has contents: read, and job gitops also actions: read (the source
+#   map artifact of the images run that built the web image it runs), with the job's token given to its two steps that
+#   read the platform's API only, never to the scenario's step. No job that builds or checks anything holds a secret
+#   or an environment: only job record-stg, which runs no scenario and checks out nothing it executes but
+#   deploy/ci/record-stg.sh of main, has environment promote (deployment branch main only) for a token of the app on
+#   svp-gitops with deployments write alone;
 # - every action is GitHub's own and pinned to a full commit SHA; checkout never leaves the token in .git/config;
 # - the inputs reach the scripts only through env (SCENARIO, SVP_VERIFY_TARGETS) and deploy/ci/verify-run.sh checks
 #   them again with a case; if: compares the scenario as an expression, never in a shell. A scheduled run has no
@@ -285,7 +288,8 @@ jobs:
   # maps of the web image CI built, the web's e2e tests with GlitchTip and its observability drill, KEDA twice with the
   # RAM peak of each, RAM at rest again; after the scenario, on a run of main, the wait for a release merged while the
   # cluster runs and make measure-gitops on it (deploy/ci/verify/gitops.sh). Only dispatched: a scheduled run has no
-  # inputs, so this job is skipped then.
+  # inputs, so this job is skipped then. The set of releases stg ran from before smoke to after the last check goes
+  # into the artifact as release-set.json, which job record-stg records.
   gitops:
     if: github.event_name == 'workflow_dispatch' && inputs.scenario == 'gitops'
     runs-on: ubuntu-24.04
@@ -394,3 +398,39 @@ jobs:
       - name: make k8s-down
         if: always() && steps.ref.outcome == 'success'
         run: make k8s-down
+
+  # The record of stg: once job gitops is green on main, the set of releases stg ran through every check of that run
+  # (release-set.json of its artifact, written only when nothing moved between the snapshots before smoke and after the
+  # last check) becomes a deployment record of environment stg in svp-gitops (deploy/ci/record-stg.sh), which a pull
+  # request to envs/prd/ there must match whole and which promote prd of images.yml copies. Skipped on a branch (the
+  # environment takes main only) and when job gitops was not green. The token is the app's, for svp-gitops alone and
+  # deployments write alone; the job's own token only reads this repository.
+  record-stg:
+    needs: gitops
+    if: ${{ needs.gitops.result == 'success' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: promote
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: verify-gitops
+          path: ${{ runner.temp }}/verify-gitops
+      - id: app
+        # Revoked when the job ends; narrower than the app's own permissions.
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.SVP_GITOPS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SVP_GITOPS_APP_PRIVATE_KEY }}
+          owner: anhnvcoder
+          repositories: svp-gitops
+          permission-deployments: write
+      - name: Record the set stg ran in svp-gitops
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: deploy/ci/record-stg.sh "$RUNNER_TEMP/verify-gitops/release-set.json"

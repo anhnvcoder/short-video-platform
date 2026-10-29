@@ -15,7 +15,9 @@
 #                                 output holds what their probes got back, only the verdict lines, ok, PASS, FAIL,
 #                                 SKIP, WARN, with the item headings, the closing table and the last line around
 #                                 them), ram-*.json, ram-*.txt, rate-limit-load.json, lcp.json, k8s-status.txt,
-#                                 events.txt, compose-ps.txt
+#                                 events.txt, compose-ps.txt, release-set.json (the set of releases stg ran, which job
+#                                 record-stg of verify.yml records: repositories, tags, digests, commits, times; the
+#                                 snapshots under release-set/ it was read from stay out)
 # A target's output may quote a container's log, and no service log may reach the artifact. make k8s-up prints the log
 # of a failed migrate Job and, after a release that did not get ready, the last lines of each unready container's log
 # (unready_report of deploy/k8s/lib.sh), each line as "    [NAMESPACE] LINE"; drill-alert-to-sentry prints the gateway's
@@ -205,7 +207,8 @@ if [ -d "$out" ]; then
         [ "$removed" = 0 ] || note="$removed service log line(s) left out"
         consider "$work/output" "$src" "$sub" stack "$note" ;;
       */*) drop "$src" not-allowed ;;
-      ram-*.json | ram-*.txt | rate-limit-load.json | lcp.json | k8s-status.txt | events.txt | compose-ps.txt)
+      ram-*.json | ram-*.txt | rate-limit-load.json | lcp.json | k8s-status.txt | events.txt | compose-ps.txt | \
+        release-set.json)
         consider "$file" "$src" "$sub" stack ;;
       *) drop "$src" not-allowed ;;
     esac

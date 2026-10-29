@@ -10,7 +10,11 @@
 #   - an image newer than the charts: revision set to the parent of an image's commit (derived values from that
 #     parent), so the image's tag is no ancestor of it;
 #   - a wrong collectorConfigSha256;
-#   - a short targetRevision (main, not refs/heads/main) for the sources of svp-gitops in argocd/apps/values.yaml.
+#   - a short targetRevision (main, not refs/heads/main) for the sources of svp-gitops in argocd/apps/values.yaml;
+#   - envs/prd/ against the records of stg (gitops-check.sh --records, a fake gh listing the records): exactly the set
+#     of one record passes; a set mixed from two records, the seven releases of a record with other charts, and a set
+#     merged into envs/stg/images/ of main that no record holds each fail with their own message; a record whose
+#     commit is not on main of svp-gitops is left out; the whole check stops at that step for a mixed set.
 # First, gitops_dir of deploy/k8s/lib.sh, which every script asks for the clone of svp-gitops, in a draft workspace laid
 # out as the lab's (<workspace>/backend, a git repository holding a copy of lib.sh; a worktree of it in
 # <workspace>/.worktrees/; <workspace>/gitops): from the main checkout, from a folder inside it and from the worktree it
@@ -184,6 +188,120 @@ t=$(copy)
 sed -i.bak 's|^targetRevision: .*|targetRevision: main|' "$t/argocd/apps/values.yaml" && rm "$t/argocd/apps/values.yaml.bak"
 check "a short targetRevision" "$t" \
   "every source of https://github.com/anhnvcoder/svp-gitops.git must name a full ref (refs/heads/<branch>) or a commit as targetRevision, not main"
+
+# --- envs/prd/ against the records of stg (step 1b), with a fake gh first on PATH that lists the records and their
+# states as the host would, each run a run of verify.yml on main. The copy becomes a git repository whose first commit is the base and origin/main; each
+# case commits a change of envs/prd/ on top of it.
+mkdir -p "$work/bin" "$work/gh"
+cat >"$work/bin/gh" <<'FAKE'
+#!/usr/bin/env bash
+case "$1 $2" in
+"api -X")
+  path=$4
+  while [ $# -gt 0 ] && [ "$1" != --jq ]; do shift; done
+  case $path in
+  */deployments/*/statuses) echo '[{"state": "success"}]' | jq -r "$2" ;;
+  */deployments) jq -r "$2" "$FAKE_GH_DIR/deployments.json" ;;
+  */actions/runs/*) echo '{"path": ".github/workflows/verify.yml", "head_branch": "main"}' | jq -r "$2" ;;
+  *) exit 1 ;;
+  esac
+  ;;
+*) exit 1 ;;
+esac
+FAKE
+chmod 755 "$work/bin/gh"
+services=(gateway user-service video-service engagement-service feed-service media-worker web)
+rt=$(copy)
+rg() { git -C "$rt" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false "$@"; }
+rg init -q && rg add -A && rg commit -q -m base
+b0=$(rg rev-parse HEAD)
+rg update-ref refs/remotes/origin/main "$b0"
+rg checkout -q -b side && rg commit -q --allow-empty -m side && side=$(rg rev-parse HEAD) && rg checkout -q -
+# The releases of envs/stg/images/ of the copy as a payload's images; set X: those and the charts of
+# envs/stg/charts.yaml; set Y: X with other releases of the gateway and of web.
+stg_images=$(for svc in "${services[@]}"; do
+  f=$rt/envs/stg/images/$svc.yaml
+  jq -c -n --arg s "$svc" --arg r "$(sed -n 's/^  repository: *//p' "$f")" \
+    --arg t "$(sed -n 's/^  tag: *"\{0,1\}\([0-9a-f]*\)"\{0,1\}$/\1/p' "$f")" \
+    --arg d "$(sed -n 's/^  digest: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$f")" '{($s): {repository: $r, tag: $t, digest: $d}}'
+done | jq -s -c 'add')
+charts_x=$(jq -c -n --arg r "$(sed -n 's/^revision: *//p' "$rt/envs/stg/charts.yaml")" \
+  --arg p "$(sed -n 's/^podSecurityVersion: *//p' "$rt/envs/stg/charts.yaml")" \
+  --arg s "$(sed -n 's/^collectorConfigSha256: *//p' "$rt/envs/stg/charts.yaml")" \
+  '{revision: $r, podSecurityVersion: $p, collectorConfigSha256: $s}')
+other_digest() { echo "sha256:$(printf '%s' "$1" | shasum -a 256 | cut -c1-64)"; }
+set_x=$(jq -c -n --argjson i "$stg_images" --argjson c "$charts_x" '{images: $i, charts: $c}')
+set_y=$(jq -c --arg g "$(other_digest y-gateway)" --arg w "$(other_digest y-web)" \
+  '.images.gateway.digest = $g | .images.web.digest = $w' <<<"$set_x")
+# record ID REF SET: a record as the host lists it, made by the app.
+record() {
+  jq -c -n --argjson id "$1" --arg ref "$2" --argjson set "$3" '{id: $id, sha: $ref, ref: $ref,
+    created_at: "2026-10-30T00:00:00Z", creator: {login: "svp-gitops-promoter[bot]"},
+    payload: ($set + {environment: "stg", ref: $ref, deployed_at: "2026-10-30T00:00:00Z",
+      run_url: "https://github.com/anhnvcoder/short-video-platform/actions/runs/\($id)", steps: []})}'
+}
+{ record 23 "$side" "$set_y"; record 22 "$b0" "$set_y"; record 21 "$b0" "$set_x"; } | jq -s . >"$work/gh/deployments.json"
+# prd_case SET: envs/prd/ of the repository at origin/main, then SET written there, committed.
+prd_case() {
+  local svc
+  rg checkout -q -f "$(rg rev-parse refs/remotes/origin/main)"
+  for svc in "${services[@]}"; do
+    jq -r --arg s "$svc" '.images[$s] | "# The release image of \($s) in prd.\nimage:\n  repository: \(.repository)\n  tag: \"\(.tag)\"\n  digest: \"\(.digest)\""' \
+      <<<"$1" >"$rt/envs/prd/images/$svc.yaml"
+  done
+  jq -r '.charts | "# The charts prd runs.\nrevision: \(.revision)\npodSecurityVersion: \(.podSecurityVersion)\ncollectorConfigSha256: \(.collectorConfigSha256)"' \
+    <<<"$1" >"$rt/envs/prd/charts.yaml"
+  rg commit -q -am prd --allow-empty
+}
+# records NAME WANT_EXIT MESSAGE [BASE]: gitops-check.sh --records on the repository against BASE (the first commit);
+# MESSAGE on its output.
+records() {
+  local out rc=0
+  out=$(PATH="$work/bin:$PATH" FAKE_GH_DIR="$work/gh" "$here/gitops-check.sh" --records "$rt" "${4:-$b0}" 2>&1) || rc=$?
+  if [ "$2" = 0 ] && [ "$rc" != 0 ]; then
+    fail "$1: gitops-check.sh --records failed:"$'\n'"$(sed 's/^/      /' <<<"$out")"
+  elif [ "$2" != 0 ] && [ "$rc" = 0 ]; then
+    fail "$1: gitops-check.sh --records passed"
+  elif [[ $out == *"$3"* ]]; then
+    ok "$1"
+  else
+    fail "$1: no '$3' in:"$'\n'"$(sed 's/^/      /' <<<"$out")"
+  fi
+}
+mixed=$(jq -c --arg w "$(jq -r .images.web.digest <<<"$set_x")" '.images.web.digest = $w' <<<"$set_y")
+prd_case "$set_y"
+records "prd: exactly the set of one record" 0 "ok    envs/prd/ runs exactly the set of record #22 of stg (svp-gitops ${b0:0:12}"
+records "prd: a record whose commit is not on main is left out" 0 \
+  "skip  record #23: its commit ${side:0:12} is not on main of svp-gitops"
+prd_case "$mixed"
+records "prd: a set mixed from two records" 1 \
+  "envs/prd/images/ mixes releases of several records of stg (gateway as in #22; user-service as in #22 #21;"
+records "prd: a set mixed from two records names web's" 1 "web as in #21)"
+prd_case "$(jq -c '.charts.podSecurityVersion = "v1.99"' <<<"$set_y")"
+records "prd: the seven releases of a record with other charts" 1 \
+  "envs/prd/images/ holds the seven releases of record #22 of stg, but envs/prd/charts.yaml is not its charts"
+# A set merged into envs/stg/images/ of main with no record: release Z of the gateway.
+set_z=$(jq -c --arg g "$(other_digest z-gateway)" '.images.gateway.digest = $g' <<<"$set_x")
+rg checkout -q -f "$b0"
+sed -i.bak "s|^  digest: .*|  digest: \"$(jq -r .images.gateway.digest <<<"$set_z")\"|" "$rt/envs/stg/images/gateway.yaml" &&
+  rm "$rt/envs/stg/images/gateway.yaml.bak"
+rg commit -q -am "stg: gateway z"
+b1=$(rg rev-parse HEAD)
+rg update-ref refs/remotes/origin/main "$b1"
+prd_case "$set_z"
+records "prd: a set only in the history of envs/stg/" 1 \
+  "envs/prd/images/ is the set of envs/stg/images/ at ${b1:0:12} of svp-gitops, but no record of stg holds it" "$b1"
+rg update-ref refs/remotes/origin/main "$b0"
+# The same step in the whole check, before anything reaches the network.
+prd_case "$mixed"
+rc=0
+out=$(PATH="$work/bin:$PATH" FAKE_GH_DIR="$work/gh" "$here/gitops-check.sh" "$rt" "$b0" 2>&1) || rc=$?
+if [ "$rc" != 0 ] && [[ $out == *"mixes releases of several records of stg"* ]] &&
+  [[ $out == *"FAIL  envs/prd/ against the records of stg: the problems above"* ]]; then
+  ok "prd: the whole check stops at the records"
+else
+  fail "prd: the whole check stops at the records (exit $rc):"$'\n'"$(sed 's/^/      /' <<<"$out")"
+fi
 
 if [ "$failures" -gt 0 ]; then
   echo "FAIL  $failures check(s) failed" >&2

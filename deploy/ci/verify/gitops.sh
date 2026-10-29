@@ -4,10 +4,11 @@
 # of this repository at the commit its envs/stg/charts.yaml pins, running the signed release images of GHCR by digest
 # (job gitops of .github/workflows/verify.yml). The scripts of this run's checkout drive it (the bootstrap, the drills).
 # make k8s-gitops-up following main of svp-gitops (the cluster runs as staging), the staging overlay seen applied,
-# make k8s-smoke, RAM at rest, the supply chain drill (Kyverno
+# the set of releases stg runs read, make k8s-smoke, RAM at rest, the supply chain drill (Kyverno
 # enforcing), the threat model drill, the source maps of the image CI built, the web's e2e tests with GlitchTip, its
-# observability drill, KEDA with two workers transcoding twice (each with the RAM peak of it), RAM at rest again.
-# ram-rest-<label> and ram-peak-<n> are described in verify-run.sh.
+# observability drill, KEDA with two workers transcoding twice (each with the RAM peak of it), RAM at rest again, and
+# the set of releases stg ran through all of it, which job record-stg of verify.yml records in svp-gitops once this job
+# is green on main. ram-rest-<label> and ram-peak-<n> are described in verify-run.sh.
 #
 # Two parts of the job run in steps of their own around this scenario, since they need the job's token (it reads the
 # repository's runs, artifacts and events; nothing is written) and the scenario's step must not hold it:
@@ -32,6 +33,18 @@
 #                          the type and exactly the keys
 #                          its ExternalSecret names (those of its template, or of its data without one): one line per
 #                          Secret. Only the names of the keys leave kubectl's pipe, never a value
+#   release-set-before     deploy/ci/release-set.sh snapshot: what stg runs right before k8s-smoke (the revision of
+#                          svp-gitops and of the charts every Application synced, its last history entry, the image of
+#                          every pod of each service) into $SVP_VERIFY_OUT/release-set/before.json; fails when that could
+#                          not be recorded now (a sync running, a rollout not over, two digests for a service)
+#   release-set            after the last check (ram-rest-end), before the wait for a release:
+#                          deploy/ci/release-set.sh snapshot again, then verify, which writes
+#                          $SVP_VERIFY_OUT/release-set.json (into the artifact) only when nothing of the first snapshot
+#                          moved and the set is exactly envs/stg/images/ and envs/stg/charts.yaml of svp-gitops at the
+#                          revision stg synced, k8s-smoke passed in between; the steps of the window go into it. Skipped,
+#                          with the reason (which fails the run), when k8s-smoke or release-set-before did not pass or
+#                          was not chosen. The release the wait after the scenario may roll out is never recorded here:
+#                          the record is of the set the checks passed on, and a later run records that release
 #   drill-k8s-supplychain  make drill-k8s-supplychain with the images it needs, read from GHCR without credentials
 #                          (deploy/ci/gitops-sourcemaps.sh): the linux/amd64 manifest of the web release the cluster runs
 #                          as the unsigned image (no signature or attestation names it, they name its index), the newest
@@ -255,7 +268,7 @@ export -f gitops_up gitops_charts_rev gitops_env gitops_external_secrets gitops_
   gitops_sourcemaps
 
 scenario_targets() {
-  local round maps maps_status maps_reason no_maps
+  local round maps maps_status maps_reason no_maps before_status smoke_status
   # Where deploy/ci/gitops-sourcemaps.sh fetch left its result.
   maps=$(ci_temp_dir)/gitops-sourcemaps || maps=
   maps_status=$(cat "$maps/status" 2>/dev/null) || maps_status=
@@ -263,7 +276,10 @@ scenario_targets() {
   step k8s-gitops-up 60 bash -c gitops_up
   step gitops-env 2 bash -c gitops_env
   step gitops-external-secrets 2 bash -c gitops_external_secrets
+  step release-set-before 2 "$here/release-set.sh" snapshot "$SVP_VERIFY_OUT/release-set/before.json"
+  before_status=$last_status
   step k8s-smoke 15 make k8s-smoke
+  smoke_status=$last_status
   step ram-rest-start 15 bash -c 'ram_rest start'
   step drill-k8s-supplychain 40 bash -c gitops_supplychain
   step drill-k8s-threats 30 make drill-k8s-threats
@@ -290,6 +306,17 @@ scenario_targets() {
     fi
   done
   step ram-rest-end 15 bash -c 'ram_rest end'
+  # Whatever ran since release-set-before is in the window; listing (no step has run) keeps the name in the list.
+  if [ -z "${listing:-}" ] && [ "$smoke_status" != ok ]; then
+    skip release-set "k8s-smoke did not pass or was not chosen: the set of releases stg ran was not checked"
+  elif [ -z "${listing:-}" ] && [ "$before_status" != ok ]; then
+    skip release-set "release-set-before did not pass or was not chosen: there is nothing to compare the set with"
+  else
+    # verify says why after a snapshot that could not be recorded too, with what moved since the first.
+    step release-set 3 bash -c '"$1" snapshot "$2/release-set/after.json"
+      "$1" verify "$2/release-set/before.json" "$2/release-set/after.json" "$2/release-set.json" "$2/results.tsv"' \
+      _ "$here/release-set.sh" "$SVP_VERIFY_OUT"
+  fi
   # The two targets of the job's step after this one (release_wait), named only while verify-run.sh lists the names it
   # checks the dispatch's targets against: run here, they would hold the job's token in this step.
   if [ -n "${listing:-}" ]; then

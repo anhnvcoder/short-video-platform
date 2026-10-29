@@ -1,20 +1,23 @@
 # Images of the seven services: build only what changed,
 # on native amd64 and arm64 runners; scan the local image with trivy, and its SBOM with grype, and block secrets and
 # CRITICAL vulnerabilities BEFORE anything is pushed; push exactly what was scanned; join a multi-arch index; sign it keyless with cosign and
-# attest the SBOM (syft), the scan result and the build provenance; promote the signed digests through a pull request; rescan released
-# digests daily. The logic lives in deploy/ci/*.sh, which also run on a machine; this file wires jobs, permissions and
+# attest the SBOM (syft), the scan result and the build provenance; promote the signed digests to stg through a pull request in the
+# deployment repository svp-gitops; rescan released digests daily. The logic lives in deploy/ci/*.sh, which also run on a machine; this file wires jobs, permissions and
 # artifacts.
 #
 # Security rules of this file:
 #   - permissions: {} here, and each job declares only what it needs. Every job that runs on a pull request has only
 #     contents: read: a pull request runs its own scripts before anyone has read them. Jobs that can write (packages,
-#     id-token, security-events, contents and pull-requests for promote) or read the Actions API run only on main,
-#     outside pull_request.
+#     id-token, security-events) or read the Actions API run only on main, outside pull_request.
+#   - Only jobs promote and promote-prd write to another repository: environment promote (deployment branch main only)
+#     holds the key of the GitHub App installed on svp-gitops alone, and each job turns it into a token of one hour for
+#     svp-gitops with contents and pull-requests write only (promote-prd also reads its deployment records). No job of a
+#     pull request names that environment.
 #   - Every action is pinned to a full commit SHA (the tag in the comment is for people and Renovate); only GitHub's
 #     own actions and sigstore/cosign-installer.
 #   - Untrusted values (inputs, branch names, matrix values from plan) reach scripts through env:, never ${{ }} inside
 #     run:.
-#   - actions/checkout never keeps the token in .git/config, except in promote, which pushes branch bot/promote.
+#   - actions/checkout never keeps the token in .git/config: no job pushes to this repository.
 name: images
 
 on:
@@ -36,13 +39,21 @@ on:
         type: boolean
         default: false
       values_ref:
-        description: "With rescan: also the digests in the values files at this branch, SHA or refs/pull/<n>/head"
+        description: "With rescan: also the digests svp-gitops names at this branch, SHA or refs/pull/<n>/head (or a commit of this repository before svp-gitops)"
         type: string
         default: ""
       drill:
         description: "Build the two admission drill images drill-vulnerable and drill-unsigned (never run)"
         type: boolean
         default: false
+      promote_prd:
+        description: "Open the pull request that promotes to prd the whole set of a record of stg in svp-gitops (no build)"
+        type: boolean
+        default: false
+      record:
+        description: "With promote_prd: the id of the record of stg (a deployment of svp-gitops); empty is the newest, an older one a rollback"
+        type: string
+        default: ""
 
 permissions: {}
 
@@ -53,7 +64,7 @@ permissions: {}
 concurrency:
   group: >-
     images-${{ github.ref }}-${{ (github.event_name == 'schedule' || inputs.rescan) && 'rescan'
-    || (inputs.drill && 'drill' || 'build') }}
+    || (inputs.drill && 'drill' || (inputs.promote_prd && 'promote-prd' || 'build')) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -87,9 +98,10 @@ jobs:
     # What this run does: mode (build, rescan, drill), base, images, matrix of legs (deploy/ci/plan.sh).
     # Every job after it starts its if: with a status function (!cancelled() && needs.plan.result == 'success'): an if:
     # without one gets an implicit success(), which is false when any job up the needs chain was skipped, and
-    # last-success is skipped on every event but push.
+    # last-success is skipped on every event but push. Skipped in a dispatch with promote_prd, and with it every job
+    # that needs it: that run only promotes to prd (job promote-prd).
     needs: last-success
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && !inputs.promote_prd }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -100,7 +112,7 @@ jobs:
       legs: ${{ steps.plan.outputs.legs }}
       has_images: ${{ steps.plan.outputs.has_images }}
       base: ${{ steps.plan.outputs.base }}
-      values_changed: ${{ steps.plan.outputs.values_changed }}
+      promote_charts: ${{ steps.plan.outputs.promote_charts }}
       values_ref: ${{ steps.plan.outputs.values_ref }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -169,34 +181,6 @@ jobs:
           SVP_TRIVY_CACHE: ${{ runner.temp }}/trivy-cache
           SVP_GRYPE_CACHE: ${{ runner.temp }}/grype-cache
         run: deploy/ci/build-image.sh "$IMAGE" "$ARCH" "$RUNNER_TEMP/leg"
-
-  values-check:
-    # A pull request that changes deploy/k8s/values/services/ may only point at releases signed by this workflow on
-    # main whose vuln attestation is clean and at most 48 hours old (deploy/ci/values-check.sh). Anonymous
-    # reads only, no token. One that changes the values of chart svp-policy (its values.yaml or an overlay
-    # deploy/k8s/envs/<env>/svp-policy.yaml) checks all seven releases against what the policy asks now, a build
-    # provenance included when it turns that on in any environment.
-    needs: plan
-    if: >-
-      ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.values_changed == 'true'
-      && (github.event_name == 'pull_request' || github.ref != 'refs/heads/main') }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - &cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-        with:
-          cosign-release: v3.1.3
-      - env:
-          BASE: ${{ needs.plan.outputs.base }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: deploy/ci/values-check.sh "$BASE"
 
   build:
     # main: the same steps 1-3, then push exactly the scanned image (step 4: by config digest) and hand the leg to the
@@ -326,7 +310,7 @@ jobs:
     # Keyless signature on the index digest, SBOM attestation on each manifest, vuln attestation (both scans) and build
     # provenance (SLSA v1: workflow, ref, commit and attempt of this run, read from the run's own context) on the
     # index. The only build-path job with id-token: write; it uses no cache. Its artifact release-<image>
-    # (repository, tag, digest of the signed index) is what promotion to deploy/k8s/values/services/ reads.
+    # (repository, tag, digest of the signed index) is what promotion to envs/stg/images/ of svp-gitops reads.
     needs: [plan, merge]
     if: >-
       ${{ !cancelled() && needs.plan.outputs.mode == 'build' && needs.plan.outputs.has_images == 'true'
@@ -348,7 +332,10 @@ jobs:
         with:
           name: index-${{ matrix.image }}
           path: ${{ runner.temp }}/index
-      - *cosign
+      - &cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
       - name: Sign and attest
         env:
           IMAGE: ${{ matrix.image }}
@@ -371,44 +358,103 @@ jobs:
           retention-days: 7
 
   promote:
-    # The release pull request (deploy/ci/promote.sh): rebuilds branch bot/promote from main with the newest
-    # signed release of every service main does not run yet, never an older one, and opens or updates its pull request;
-    # the owner approves its workflow runs and merges it. Runs when signing an image failed too: every image signed in
-    # this run is promoted, the failed one is red in sign. The only job that writes to the repository: it pushes
-    # bot/promote, never main, with the token actions/checkout keeps in .git/config here, and calls gh for the pull
-    # request. No id-token, no packages, no actions: write: a pull request opened with GITHUB_TOKEN gets its checks once
-    # the owner approves its runs, and checks of a dispatched run would not satisfy the required checks.
+    # Promotes to stg in svp-gitops (deploy/ci/promote.sh): rebuilds its branch bot/promote-stg from main there with the
+    # newest signed release of every service stg does not run yet, never an older one, and the charts of this commit
+    # (envs/stg/charts.yaml), opens or updates its pull request and turns on auto-merge; svp-gitops merges it once its
+    # check gitops-ok is green, with no review (no code owner owns envs/stg/). Runs when signing an image failed too:
+    # every image signed in this run is promoted, the failed one is red in sign. Runs with no image too when the charts
+    # changed (plan's promote_charts): only envs/stg/charts.yaml moves. The token is the app's, for svp-gitops alone;
+    # GITHUB_TOKEN only reads this repository. No id-token, no packages.
     needs: [plan, sign]
     if: >-
-      ${{ !cancelled() && needs.plan.outputs.mode == 'build' && needs.plan.outputs.has_images == 'true'
+      ${{ !cancelled() && needs.plan.outputs.mode == 'build'
+      && (needs.plan.outputs.has_images == 'true' || needs.plan.outputs.promote_charts == 'true')
       && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    environment: promote
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The whole history: a release's commit is compared by ancestry with main's.
+          # The whole history: a release's commit and the charts' revision are compared by ancestry with main's.
           fetch-depth: 0
-          # The one exception to persist-credentials: false, since this job pushes bot/promote.
-          persist-credentials: true
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-*
           path: ${{ runner.temp }}/releases
-      - name: Rebuild bot/promote, open or update its pull request
+      - id: app
+        # Revoked when the job ends. The permissions here narrow the token below the app's own (which also holds
+        # deployments: write for the record of stg).
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.SVP_GITOPS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SVP_GITOPS_APP_PRIVATE_KEY }}
+          owner: anhnvcoder
+          repositories: svp-gitops
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Rebuild bot/promote-stg in svp-gitops, open or update its pull request, turn on auto-merge
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: deploy/ci/promote.sh "$RUNNER_TEMP/releases"
 
+  promote-prd:
+    # Promotes to prd in svp-gitops (deploy/ci/promote-prd.sh): the whole set of a record of stg (the input record, the
+    # newest when empty), the seven releases and the charts that ran together through the checks of a run of scenario
+    # gitops, onto branch bot/promote-prd there, and opens or updates its pull request. No auto-merge: a code owner
+    # approves it, and the check of svp-gitops compares the set with the records again. A rollback is the same with an
+    # older record. Runs alone: plan skips every other job of a dispatch with promote_prd, and this job refuses one
+    # that also asks to build, rescan or drill, so one run does one thing.
+    # The token is the app's, for svp-gitops alone; GITHUB_TOKEN only reads this repository. No id-token, no packages.
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' && inputs.promote_prd && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: promote
+    permissions:
+      contents: read
+    steps:
+      - name: A run of its own
+        env:
+          INPUT_SERVICES: ${{ inputs.services }}
+          INPUT_RESCAN: ${{ inputs.rescan }}
+          INPUT_DRILL: ${{ inputs.drill }}
+          INPUT_VALUES_REF: ${{ inputs.values_ref }}
+        run: |
+          if [ -n "$INPUT_SERVICES$INPUT_VALUES_REF" ] || [ "$INPUT_RESCAN" = true ] || [ "$INPUT_DRILL" = true ]; then
+            echo "::error::promote_prd is a run of its own: dispatch it without services, rescan, values_ref or drill"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: app
+        # Revoked when the job ends; narrower than the app's own permissions.
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.SVP_GITOPS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SVP_GITOPS_APP_PRIVATE_KEY }}
+          owner: anhnvcoder
+          repositories: svp-gitops
+          permission-contents: write
+          permission-pull-requests: write
+          permission-deployments: read
+      - name: Rebuild bot/promote-prd in svp-gitops from a record of stg, open or update its pull request
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RECORD: ${{ inputs.record }}
+        run: deploy/ci/promote-prd.sh "$RECORD"
+
   rescan:
-    # Daily (and on dispatch rescan=true): every released digest in the values of main, of the open promote pull
-    # request (bot/promote) and of the dispatch input values_ref is scanned again, manifest by manifest, and its vuln
-    # attestation replaced with the real result; a CRITICAL is recorded first, then fails the job, which mails the
-    # owner; a secret fails the job before anything is attested (deploy/ci/rescan.sh). Values of other refs are fetched
-    # and read as data, never run. No cache: the job holds id-token.
+    # Daily (and on dispatch rescan=true): every released digest svp-gitops names (envs/*/images/ at its main, at the
+    # open promote pull request bot/promote-stg, and at the dispatch input values_ref) is scanned again, manifest by
+    # manifest, and its vuln attestation replaced with the real result; a CRITICAL is recorded first, then fails the
+    # job, which mails the owner; a secret fails the job before anything is attested (deploy/ci/rescan.sh). svp-gitops
+    # is cloned anonymously and its files read as data, never run; GITHUB_TOKEN only asks whether its promote pull
+    # request is open (a read of a public repository). No cache: the job holds id-token.
     needs: plan
     if: >-
       ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.mode == 'rescan'
@@ -417,12 +463,14 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
-      pull-requests: read
       packages: write
       id-token: write
+    env:
+      SVP_GITOPS_DIR: ${{ github.workspace }}/.gitops/svp-gitops
     steps:
       - *checkout
       - *cosign
+      - run: make gitops-clone
       - name: Rescan and attest
         env:
           GH_TOKEN: ${{ github.token }}
@@ -430,22 +478,8 @@ jobs:
           VALUES_REF: ${{ needs.plan.outputs.values_ref }}
           SVP_TRIVY_CACHE: ${{ runner.temp }}/trivy-cache
         run: |
-          refs=(HEAD)
-          # Only the bot's own pull request counts, never a fork's from a branch of the same name (platform.sh).
-          . deploy/ci/common.sh
-          prs=$(ci_change_request_list bot/promote main)
-          open=$(ci_change_request_pick <<<"$prs")
-          if [ -n "$open" ]; then
-            git fetch --no-tags --depth 1 origin "+refs/heads/bot/promote:refs/svp/promote"
-            refs+=(refs/svp/promote)
-          fi
-          if [ -n "$VALUES_REF" ]; then
-            # actions/checkout fetches no refs/pull/*, so fetch the ref itself (plan checked its form).
-            git fetch --no-tags --depth 1 origin "+$VALUES_REF:refs/svp/values-ref"
-            refs+=(refs/svp/values-ref)
-          fi
           printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          deploy/ci/rescan.sh run "$RUNNER_TEMP/rescan" "${refs[@]}"
+          deploy/ci/rescan.sh run "$RUNNER_TEMP/rescan" "$SVP_GITOPS_DIR" "$VALUES_REF"
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -583,11 +617,11 @@ jobs:
       - last-success
       - plan
       - build-nopush
-      - values-check
       - build
       - merge
       - sign
       - promote
+      - promote-prd
       - rescan
       - drill-build
       - drill-merge
@@ -603,7 +637,8 @@ jobs:
           REF: ${{ github.ref }}
           MODE: ${{ needs.plan.outputs.mode }}
           HAS_IMAGES: ${{ needs.plan.outputs.has_images }}
-          VALUES_CHANGED: ${{ needs.plan.outputs.values_changed }}
+          PROMOTE_CHARTS: ${{ needs.plan.outputs.promote_charts }}
+          PROMOTE_PRD: ${{ inputs.promote_prd }}
         run: |
           main=false
           [ "$REF" = refs/heads/main ] && [ "$EVENT" != pull_request ] && main=true
@@ -611,9 +646,13 @@ jobs:
           skip_ok() {
             case $1 in
             last-success) [ "$EVENT" != push ] ;;
+            plan) [ "$EVENT" = workflow_dispatch ] && [ "$PROMOTE_PRD" = true ] ;;
             build-nopush) [ "$main" = true ] || [ "$MODE" != build ] || [ "$HAS_IMAGES" != true ] ;;
-            values-check) [ "$main" = true ] || [ "$VALUES_CHANGED" != true ] ;;
-            build | merge | sign | promote) [ "$main" != true ] || [ "$MODE" != build ] || [ "$HAS_IMAGES" != true ] ;;
+            build | merge | sign) [ "$main" != true ] || [ "$MODE" != build ] || [ "$HAS_IMAGES" != true ] ;;
+            promote)
+              [ "$main" != true ] || [ "$MODE" != build ] || { [ "$HAS_IMAGES" != true ] && [ "$PROMOTE_CHARTS" != true ]; }
+              ;;
+            promote-prd) [ "$main" != true ] || [ "$EVENT" != workflow_dispatch ] || [ "$PROMOTE_PRD" != true ] ;;
             rescan) [ "$MODE" != rescan ] ;;
             drill-build | drill-merge | drill-sign) [ "$MODE" != drill ] ;;
             *) false ;;

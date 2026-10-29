@@ -290,6 +290,16 @@ jobs:
       # need only bash, git and jq: no network, no token.
       - run: deploy/ci/platform-guard.sh
       - run: deploy/ci/platform-test.sh
+      # The promote to stg of svp-gitops, which otherwise runs only on main with the app's token: two throwaway
+      # repositories on disk stand for this repository and svp-gitops, a fake gh records the pull request and its
+      # auto-merge; and the list of releases the daily rescan reads there. bash, git and jq: no network, no token.
+      - run: deploy/ci/promote-test.sh
+      # The promote to prd of a whole set of a record of stg, on the same kind of throwaway repository with a fake gh
+      # listing the records; and the set of releases stg ran during the checks of scenario gitops (snapshots of a
+      # made-up cluster through a fake kubectl, its clone of svp-gitops on disk) and the record job's refusals. bash, git
+      # and jq: no network, no token, no cluster.
+      - run: deploy/ci/promote-prd-test.sh
+      - run: deploy/ci/release-set-test.sh
       # The build provenance predicate of a release and the step of sign-image.sh that attests it, which otherwise run
       # only in the sign job on main: a made-up run, fake docker and cosign, a throwaway repository; bash, git and jq.
       - run: deploy/ci/provenance-predicate-test.sh
@@ -323,9 +333,9 @@ jobs:
       # image pinned by digest among them; needs network: chart repositories.
       - run: make helm-check
       # The check that svp-gitops runs from a pinned commit of this repository, on the clone above: each negative case
-      # (a missing image file, an image newer than the charts, ...) must fail with its own message, and gitops_dir of
-      # deploy/k8s/lib.sh finds the clone of a draft workspace. Every case stops before the network; helm from the
-      # PATH set above.
+      # (a missing image file, an image newer than the charts, a set of prd that matches no record of stg, ...) must
+      # fail with its own message, and gitops_dir of deploy/k8s/lib.sh finds the clone of a draft workspace. Every case
+      # stops before the network (a fake gh lists the records); helm from the PATH set above.
       - run: deploy/ci/gitops-check-test.sh "$SVP_GITOPS_DIR"
       # k6 inspect of every profile in the pinned k6 image, with no network: a script that no longer loads or a profile
       # whose scenarios are malformed is caught here, without the compose stack the load runs need.

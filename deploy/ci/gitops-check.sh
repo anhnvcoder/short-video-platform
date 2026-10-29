@@ -16,6 +16,13 @@
 #      image block alone (repository of that service on GHCR, tag, digest), and the commit each tag names is revision
 #      or one of its ancestors: an image never runs with charts older than its code (a new environment variable the
 #      chart does not set yet).
+#   1b. With BASE, when envs/prd/images/ or envs/prd/charts.yaml changed from BASE to HEAD: the seven releases
+#      (repository, tag, digest) and the charts (revision, podSecurityVersion, collectorConfigSha256) of envs/prd/
+#      together are exactly the payload of one record of stg that counts (deploy/ci/release-set.sh records: state
+#      success, made by the app, its run one of verify.yml on main of the code repository, read through
+#      ci_deployment_list and ci_run_workflow of platform.sh) whose commit is on origin/main of GITOPS_DIR. A set whose pieces each come from some record, a set that was only merged into envs/stg/images/, and
+#      the releases of a record with other charts all fail, each saying so. Skipped without BASE.
+#      gitops-check.sh --records GITOPS_DIR BASE runs this step alone (its test).
 #   2. The root chart argocd/apps for each environment on amd64 and arm64 nodes (helm lint and template): it fails when
 #      an overlay or an image file breaks its rules. Every source it reads from svp-gitops names a full ref
 #      (refs/heads/<branch>) or a commit as targetRevision, never a short name, which Argo CD may resolve to a tag of
@@ -40,6 +47,9 @@
 #      of that render, the seven service images included, must be exactly those of the base render.
 #   5. deploy/ci/values-check.sh --gitops on the image files changed from commit BASE to HEAD of GITOPS_DIR (every one
 #      without BASE): signed release, vuln attestation, and the build provenance the environment's policy asks for.
+#      For a release whose provenance was checked, image.tag must be the 12 hex of the commit the provenance names.
+#      When it fails on a set that matched a record of stg (step 1b, a rollback), prints the rescan of that record's
+#      commit.
 #
 # GITOPS_DIR is read, never written: everything else happens in a temporary directory. Needs bash, git, jq, helm,
 # docker and network access (chart repositories, GHCR), and, without --worktree, the history of this repository up to
@@ -50,16 +60,23 @@ set -euo pipefail
 # shellcheck source=deploy/ci/common.sh
 . "$(dirname "$0")/common.sh"
 
-worktree=
+worktree= records_only=
 if [ "${1:-}" = --worktree ]; then
   worktree=1
   shift
   [ $# -eq 1 ] || fail "usage: gitops-check.sh --worktree GITOPS_DIR"
+elif [ "${1:-}" = --records ]; then
+  records_only=1
+  shift
+  [ $# -eq 2 ] || fail "usage: gitops-check.sh --records GITOPS_DIR BASE"
 fi
-[ $# -ge 1 ] && [ $# -le 2 ] || fail "usage: gitops-check.sh GITOPS_DIR [BASE] | gitops-check.sh --worktree GITOPS_DIR"
+[ $# -ge 1 ] && [ $# -le 2 ] ||
+  fail "usage: gitops-check.sh GITOPS_DIR [BASE] | gitops-check.sh --worktree GITOPS_DIR | gitops-check.sh --records GITOPS_DIR BASE"
 tree=$(cd "$1" 2>/dev/null && pwd -P) || fail "$1 is not a directory"
 base=${2:-}
-for tool in git jq helm docker; do
+tools="git jq helm docker"
+[ -z "$records_only" ] || tools="git jq"
+for tool in $tools; do
   command -v "$tool" >/dev/null || fail "$tool is not installed"
 done
 main=origin/main
@@ -82,6 +99,126 @@ problem() {
 step() {
   [ "$failed" -eq 0 ] || fail "$1: the problems above"
 }
+
+# prd_set: prints, as JSON, the set envs/prd/ of GITOPS_DIR runs: images (service → repository, tag, digest of
+# envs/prd/images/<service>.yaml) and charts (revision, podSecurityVersion, collectorConfigSha256 of
+# envs/prd/charts.yaml), the form of the payload of a record of stg. Status 1 when a file cannot be read.
+prd_set() {
+  local images='{}' svc f r t d charts
+  for svc in "${svp_services[@]}"; do
+    f=$tree/envs/prd/images/$svc.yaml
+    r=$(values_field repository <"$f") && t=$(values_field tag <"$f") && d=$(values_field digest <"$f") || return 1
+    images=$(jq -c --arg s "$svc" --arg r "$r" --arg t "$t" --arg d "$d" '. + {($s): {repository: $r, tag: $t, digest: $d}}' \
+      <<<"$images")
+  done
+  charts=$tree/envs/prd/charts.yaml
+  [ -f "$charts" ] || return 1
+  jq -c -n --argjson images "$images" --arg r "$(sed -n 's/^revision: *//p' "$charts")" \
+    --arg p "$(sed -n 's/^podSecurityVersion: *//p' "$charts")" --arg s "$(sed -n 's/^collectorConfigSha256: *//p' "$charts")" \
+    '{images: $images, charts: {revision: $r, podSecurityVersion: $p, collectorConfigSha256: $s}}'
+}
+
+# stg_set_at COMMIT: prints, as JSON, the releases of envs/stg/images/ at COMMIT of GITOPS_DIR (service → repository,
+# tag, digest); status 1 when one cannot be read.
+stg_set_at() {
+  local images='{}' svc c r t d
+  for svc in "${svp_services[@]}"; do
+    c=$(git -C "$tree" show "$1:envs/stg/images/$svc.yaml" 2>/dev/null) && r=$(values_field repository <<<"$c" 2>/dev/null) &&
+      t=$(values_field tag <<<"$c" 2>/dev/null) && d=$(values_field digest <<<"$c" 2>/dev/null) || return 1
+    images=$(jq -c --arg s "$svc" --arg r "$r" --arg t "$t" --arg d "$d" '. + {($s): {repository: $r, tag: $t, digest: $d}}' \
+      <<<"$images")
+  done
+  echo "$images"
+}
+
+# prd_records: step 1b (see the header). Sets record_ref to the commit of svp-gitops of the record matched.
+record_ref=
+prd_records() {
+  local changed main_ref set records rec ref id kept=() off_main=0 svc ids where c line
+  if [ -z "$base" ]; then
+    echo "skip  envs/prd/ against the records of stg: no base, so no change of a pull request or push to compare"
+    return 0
+  fi
+  [ "$(git -C "$tree" rev-parse --show-toplevel 2>/dev/null)" = "$tree" ] || {
+    problem "$tree is not the top of a git repository, so nothing changed since $base can be listed"
+    return 0
+  }
+  changed=$(git -C "$tree" diff --name-only --no-renames "$base" HEAD -- envs/prd/images envs/prd/charts.yaml) || {
+    problem "list the files of envs/prd/ changed since $base"
+    return 0
+  }
+  if [ -z "$changed" ]; then
+    echo "ok    envs/prd/images/ and envs/prd/charts.yaml unchanged since ${base:0:12}: no record of stg to match"
+    return 0
+  fi
+  main_ref=$(git -C "$tree" rev-parse --verify --quiet "refs/remotes/origin/main^{commit}") || {
+    problem "origin/main is not in $tree: a record counts only when its commit is on main of svp-gitops (fetch it)"
+    return 0
+  }
+  set=$(prd_set) || {
+    problem "envs/prd/images/ and envs/prd/charts.yaml cannot be read as a set (above)"
+    return 0
+  }
+  records=$("$ci_dir/release-set.sh" records) || {
+    problem "the records of stg in $gitops_repo cannot be read (above)"
+    return 0
+  }
+  while IFS= read -r rec; do
+    [ -n "$rec" ] || continue
+    ref=$(jq -r .ref <<<"$rec")
+    if git -C "$tree" cat-file -e "$ref^{commit}" 2>/dev/null && git -C "$tree" merge-base --is-ancestor "$ref" "$main_ref"; then
+      kept+=("$rec")
+    else
+      off_main=$((off_main + 1))
+      echo "skip  record #$(jq -r .id <<<"$rec"): its commit ${ref:0:12} is not on main of svp-gitops"
+    fi
+  done < <(jq -c '.[]' <<<"$records")
+  for rec in ${kept[@]+"${kept[@]}"}; do
+    if jq -e --argjson s "$set" '.payload.images == $s.images and .payload.charts == $s.charts' <<<"$rec" >/dev/null; then
+      id=$(jq -r .id <<<"$rec")
+      record_ref=$(jq -r .ref <<<"$rec")
+      echo "ok    envs/prd/ runs exactly the set of record #$id of stg (svp-gitops ${record_ref:0:12}, checked by $(jq -r .payload.run_url <<<"$rec"))"
+      return 0
+    fi
+  done
+  # Why not, as precisely as the records tell.
+  for rec in ${kept[@]+"${kept[@]}"}; do
+    if jq -e --argjson s "$set" '.payload.images == $s.images' <<<"$rec" >/dev/null; then
+      problem "envs/prd/images/ holds the seven releases of record #$(jq -r .id <<<"$rec") of stg, but envs/prd/charts.yaml is not its charts (revision $(jq -r '.charts.revision' <<<"$set") here, $(jq -r '.payload.charts.revision' <<<"$rec") there, or a derived value): a set goes to prd with the charts it ran with"
+      return 0
+    fi
+  done
+  where=
+  for svc in "${svp_services[@]}"; do
+    ids=$(for rec in ${kept[@]+"${kept[@]}"}; do
+      jq -r --arg s "$svc" --argjson set "$set" 'select(.payload.images[$s] == $set.images[$s]) | "#\(.id)"' <<<"$rec"
+    done | paste -sd ' ' -)
+    if [ -z "$ids" ]; then
+      where=
+      break
+    fi
+    where+="${where:+; }$svc as in $ids"
+  done
+  if [ -n "$where" ]; then
+    problem "envs/prd/images/ mixes releases of several records of stg ($where): no record holds the whole set, so it never ran together in stg"
+    return 0
+  fi
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    line=$(stg_set_at "$c") || continue
+    if jq -e --argjson s "$set" --argjson at "$line" '$s.images == $at' <<<'{}' >/dev/null; then
+      problem "envs/prd/images/ is the set of envs/stg/images/ at ${c:0:12} of svp-gitops, but no record of stg holds it: it was merged for stg, not checked there by a run of scenario gitops"
+      return 0
+    fi
+  done < <(git -C "$tree" log --format=%H -n 200 "$main_ref" -- envs/stg/images)
+  problem "envs/prd/ matches no record of stg (${#kept[@]} on main of svp-gitops, $off_main not): prd takes only a whole set stg ran through its checks; promote one with $(ci_dispatch_hint images.yml main promote_prd=true)"
+}
+
+if [ -n "$records_only" ]; then
+  prd_records
+  [ "$failed" -eq 0 ] || fail "envs/prd/ against the records of stg (above)"
+  exit 0
+fi
 
 # --- 1. the tree
 components=$tree/argocd/apps/components.json
@@ -193,6 +330,12 @@ for env in $envs; do
   fi
 done
 step "the tree $tree"
+
+# --- 1b. envs/prd/ against the records of stg
+if [ -z "$worktree" ]; then
+  prd_records
+  step "envs/prd/ against the records of stg"
+fi
 
 # The charts of this repository at each environment's revision, unpacked with git archive: neither the working tree
 # nor the index of this clone is read. All of deploy/, since files of the charts are symlinks to files beside them
@@ -541,6 +684,29 @@ echo "ok    every third-party image is pinned by digest; every overlay runs the 
 if [ -n "$worktree" ]; then
   echo "skip  the release images: svp-gitops's own check"
 else
-  "$ci_dir/values-check.sh" --gitops "$tree" "$base" || fail "the release images (above)"
+  rc=0
+  "$ci_dir/values-check.sh" --gitops "$tree" "$base" | tee "$tmp/values-check.out" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # A rollback to an older record: the rescan that refreshes its set reads svp-gitops at the record's commit.
+    [ -z "$record_ref" ] || echo "The set of envs/prd/ is that of a record of stg at ${record_ref:0:12}: refresh its vuln attestations with $(ci_dispatch_hint images.yml main rescan=true "values_ref=$record_ref")" >&2
+    fail "the release images (above)"
+  fi
+  # The provenance names the commit a release was built from, and image.tag is what the rule "no image newer than its
+  # charts" (step 1) reads: they must agree, or a tag edited by hand would pass that rule for a newer build.
+  mismatch=$(awk -v tree="$tree" '
+    /^check / { file = $2; next }
+    /^ok / && file != "" && match($0, /provenance of [0-9a-f]+ by /) {
+      commit = substr($0, RSTART + 14, RLENGTH - 18)
+      tag = ""
+      while ((getline l < (tree "/" file)) > 0) if (l ~ /^  tag:/) { tag = l; gsub(/^  tag: *"?|"?$/, "", tag) }
+      close(tree "/" file)
+      if (tag != commit) print file ": image.tag is " tag ", but its provenance says it was built from " commit
+      file = ""
+    }' "$tmp/values-check.out")
+  if [ -n "$mismatch" ]; then
+    printf 'FAIL  %s\n' "$mismatch" >&2
+    fail "the release images: image.tag must be the commit the release's provenance names"
+  fi
+  echo "ok    every release with provenance checked has the image.tag of the commit its provenance names"
 fi
 echo "ok    $tree passes every check"

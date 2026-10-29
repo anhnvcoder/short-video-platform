@@ -317,6 +317,11 @@ printf 'RAM at rest (start): MEM USAGE median 5800 MiB\nfree -m of the runner at
   "Mem:  15995  9000  1200  50  5795  6700" >"$out/ram-rest-start.txt"
 echo '{}' >"$out/.hidden.json"
 echo 230 >"$out/run-end"
+# The set of releases stg ran (deploy/ci/release-set.sh): the record's payload is kept, the snapshots it was read from
+# are not.
+echo '{"environment":"stg","ref":"0123456789abcdef0123456789abcdef01234567","images":{}}' >"$out/release-set.json"
+mkdir -p "$out/release-set"
+echo '{"applications":[]}' >"$out/release-set/before.json"
 
 # --- The fake checkout's results.
 d=$repo/.k8s/drills
@@ -470,7 +475,7 @@ collect k3d "$work/secrets-k3d"
 for src in '$SVP_VERIFY_OUT/results.tsv' '$SVP_VERIFY_OUT/scenario' '$SVP_VERIFY_OUT/samples/host.tsv' \
   '$SVP_VERIFY_OUT/logs/01-k8s-up.log' '$SVP_VERIFY_OUT/logs/03-drill-k8s-keda.log' \
   '$SVP_VERIFY_OUT/logs/04-drill-k8s-threats.log (verdict lines)' '$SVP_VERIFY_OUT/ram-rest-start.json' \
-  '$SVP_VERIFY_OUT/ram-rest-start.txt' \
+  '$SVP_VERIFY_OUT/ram-rest-start.txt' '$SVP_VERIFY_OUT/release-set.json' \
   '$SVP_VERIFY_OUT/logs/06-drill-obs-threats.log (verdict lines)' \
   '$SVP_VERIFY_OUT/logs/05-drill-alert-to-sentry.log' .k8s/drills/canary-drill-1.json .k8s/drills/names-1.json \
   .k8s/drills/identifiers-1.json .k8s/drills/traffic-1.log .k6/local-1/summary.json \
@@ -483,6 +488,9 @@ expect k3d .k8s/drills/binary-piece-1.json secret-value
 expect k3d '$SVP_VERIFY_OUT/logs/02-k8s-smoke.log' secret-value
 expect k3d '$SVP_VERIFY_OUT/sampler.pid' not-allowed
 expect k3d '$SVP_VERIFY_OUT/run-end' not-allowed
+expect k3d '$SVP_VERIFY_OUT/release-set/before.json' not-allowed
+[ -f "$work/art-k3d/release-set.json" ] && ok "k3d: release-set.json lands at the top of the artifact" ||
+  fail "k3d: release-set.json lands at the top of the artifact"
 lacks k3d "verify-run.sh's end mark is dropped without a warning" 'run-end'
 expect k3d '$SVP_VERIFY_OUT/.hidden.json' hidden
 expect k3d .k8s/drills/backup-1.json secret-value

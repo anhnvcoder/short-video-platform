@@ -38,15 +38,27 @@
 #   ci_dispatch_input     no variable holds a pipeline's inputs (they are written into the configuration as
 #                         $[[ inputs.NAME ]]), so the pipeline hands each one to the job in a variable of its own
 #   ci_bot_name/_email   the bot user of the project access token the promote job pushes with
+#   ci_git_auth           a credential helper that answers with that token (username any non-empty name, password the
+#                         token) for HTTPS pushes to the configuration project
 #   ci_change_request_*   merge requests (glab mr list, glab mr create, glab mr update), with that token: the job's own
-#                         CI_JOB_TOKEN may read merge requests but not open one
-#   ci_dispatch_hint      glab ci run with --input (pipeline variables are turned off for new projects on gitlab.com)
+#                         CI_JOB_TOKEN may read merge requests but not open one; auto-merge is "merge when pipeline
+#                         succeeds" (glab mr merge --auto-merge)
+#   ci_dispatch_hint      glab ci run with --input (pipeline variables are turned off for new projects on gitlab.com),
+#                         with --repo naming the code project
 #   ci_push_time          the project's push events, from GitLab's events API
 #   ci_hosted_runner      no variable says a runner is GitLab's own: gitlab.com's hosted runners carry tags
 #                         (saas-linux-*) that a project's own runner may carry too, so false until a job can prove it
 #   ci_artifact_runs      the pipelines API (sha=, status, source push or web), then each pipeline's jobs: an artifact
 #                         belongs to a job there (artifacts:name), and expires at the job's artifacts expire_at
 #   ci_artifact_fetch     the job artifacts API with the job's id (glab job artifact), with the job's CI_JOB_TOKEN
+#   ci_is_run_url         CI_SERVER_URL/<code project>/-/pipelines/<id>
+#   ci_run_workflow       the pipelines API (GET .../pipelines/<id>): its ref; a project has one configuration file, so
+#                         the pipeline's source (schedule, web) and the jobs it ran tell the scenario run apart
+#   ci_deployment_record  the deployments API of the configuration project (POST .../deployments with status success,
+#                         ref the commit, an environment of that name), with the project access token; a deployment
+#                         there holds no payload, so the record's JSON goes into a file of a release or a commit
+#                         note the check reads back
+#   ci_deployment_list    the deployments API of the configuration project, environment=<name>, newest first
 # CI_SERVER_URL is the instance's own URL, so on a self-managed instance every URL above starts with the company's
 # domain, not gitlab.com.
 
@@ -179,14 +191,17 @@ ci_temp_dir() {
   esac
 }
 
-# ci_repo: owner/name of the repository on its host. On a machine, this repository's: change it here when the
-# repository moves.
+# The code repository (owner/name on its host): the one that holds deploy/ci/ and the workflows that build, sign and
+# promote releases. Change it here when the repository moves.
+_ci_code_repo=anhnvcoder/short-video-platform
+
+# ci_repo: owner/name of the repository on its host. On a machine, the code repository's.
 ci_repo() {
   local platform
   platform=$(ci_platform) || return 1
   case $platform in
   github) _ci_need GITHUB_REPOSITORY ;;
-  local) echo anhnvcoder/short-video-platform ;;
+  local) echo "$_ci_code_repo" ;;
   esac
 }
 
@@ -343,30 +358,69 @@ ci_dispatch_input() {
   esac
 }
 
-# ci_bot_name, ci_bot_email: the author of the commits CI makes (the promote branch): the platform's own bot, as the
-# host shows it. A machine commits the same way, so a dry run makes the very commit CI would.
+# ci_bot_name [APP], ci_bot_email [APP]: the author of the commits CI makes (the promote branch), as the host shows
+# it: the platform's own bot, or the bot user of app APP (a GitHub App, whose token the commits are pushed with). The
+# bot's address holds the id of its user, read from the host (a read, so a machine asks GitHub too). A machine commits
+# the same way, so a dry run makes the very commit CI would.
 ci_bot_name() {
   local platform
   platform=$(ci_platform) || return 1
-  case $platform in github | local) echo 'github-actions[bot]' ;; esac
+  case $platform in github | local) echo "${1:-github-actions}[bot]" ;; esac
 }
 ci_bot_email() {
-  local platform
+  local platform id
   platform=$(ci_platform) || return 1
-  case $platform in github | local) echo '41898282+github-actions[bot]@users.noreply.github.com' ;; esac
+  case $platform in
+  github | local)
+    if [ -z "${1:-}" ]; then
+      echo '41898282+github-actions[bot]@users.noreply.github.com'
+      return 0
+    fi
+    _ci_name app "$1" || return 1
+    id=$(gh api -X GET "users/$1%5Bbot%5D" --jq .id) || return 1
+    [[ $id =~ ^[0-9]+$ ]] || {
+      _ci_fail "the host names no bot user of app $1 (got id '$id')"
+      return 1
+    }
+    echo "$id+$1[bot]@users.noreply.github.com"
+    ;;
+  esac
 }
 
-# ci_change_request_list BRANCH BASE: prints, in the host's own form (read only by ci_change_request_pick), the open
-# change requests (pull requests) from a branch named BRANCH into BASE. GitHub's --head matches the bare branch name,
-# so a fork's pull request from a branch of that name is listed too. gh lists 30 by default, newest first: 30 fork
-# pull requests from such a branch opened after the bot's would hide it. So the list goes up to 500 (gh pages
-# through), and a list that comes back full fails rather than guess. A read, so a machine asks GitHub too.
+# ci_git_auth: prints, one per line, the git options (each for git -c) that let git push over HTTPS to the repository
+# host with the token the job writes pull requests with (GH_TOKEN on GitHub, the token of an app when the job made
+# one). A credential helper hands git the token when git asks for it, from the environment of that moment: it is never
+# written to a file, a remote URL or a command line. Nothing on a machine, which pushes only to a repository on its own
+# disk.
+ci_git_auth() {
+  local platform
+  platform=$(ci_platform) || return 1
+  case $platform in
+  github)
+    [ -n "${GH_TOKEN:-}" ] || {
+      _ci_fail "GH_TOKEN is empty: the job hands git the token it pushes with there"
+      return 1
+    }
+    echo 'credential.helper='
+    # shellcheck disable=SC2016 # expanded by the helper's shell when git asks, not here
+    echo 'credential.helper=!f() { test "$1" = get && echo username=x-access-token && echo "password=$GH_TOKEN"; }; f'
+    ;;
+  local) ;;
+  esac
+}
+
+# ci_change_request_list BRANCH BASE [REPO]: prints, in the host's own form (read only by ci_change_request_pick), the
+# open change requests (pull requests) from a branch named BRANCH into BASE of REPO (owner/name; ci_repo when empty).
+# GitHub's --head matches the bare branch name, so a fork's pull request from a branch of that name is listed too. gh
+# lists 30 by default, newest first: 30 fork pull requests from such a branch opened after the bot's would hide it. So
+# the list goes up to 500 (gh pages through), and a list that comes back full fails rather than guess. A read, so a
+# machine asks GitHub too.
 ci_change_request_list() {
   local platform repo list
   platform=$(ci_platform) || return 1
   case $platform in
   github | local)
-    repo=$(ci_repo) || return 1
+    repo=${3:-$(ci_repo)} || return 1
     list=$(gh pr list --repo "$repo" --head "$1" --base "$2" --state open --limit 500 \
       --json number,isCrossRepository,author) || return 1
     [ "$(jq length <<<"$list")" -lt 500 ] || {
@@ -378,22 +432,38 @@ ci_change_request_list() {
   esac
 }
 
-# ci_change_request_pick: reads a list of ci_change_request_list on stdin and prints the number of the one CI itself
-# opened from this repository, or nothing. A fork's, or one a person opened from a branch of the same name, is not
-# CI's: counting it would bring stale values of the branch back, and put CI's title on someone else's diff.
+# ci_change_request_pick [APP]: reads a list of ci_change_request_list on stdin and prints the number of the one CI
+# itself opened from the listed repository (by the platform's own bot, or by app APP when given), or nothing. A
+# fork's, or one a person opened from a branch of the same name, is not CI's: counting it would bring stale values of
+# the branch back, and put CI's title on someone else's diff.
 ci_change_request_pick() {
   local platform
   platform=$(ci_platform) || return 1
+  [ -z "${1:-}" ] || _ci_name app "$1" || return 1
   case $platform in
   github | local)
-    jq -r '[.[] | select(.isCrossRepository == false and .author.login == "app/github-actions")][0].number // empty'
+    jq -r --arg author "app/${1:-github-actions}" \
+      '[.[] | select(.isCrossRepository == false and .author.login == $author)][0].number // empty'
     ;;
   esac
 }
 
-# ci_change_request_write [--dry-run] NUMBER BRANCH BASE TITLE BODY_FILE: updates the title and body of change request
-# NUMBER, or, when NUMBER is empty, opens one from BRANCH into BASE. With --dry-run, and always on a machine, prints
-# the command it would run instead ("dry run: gh ...").
+# _ci_print_or_run DRY COMMAND...: with DRY set prints the command ("dry run: gh ..."), otherwise runs it.
+_ci_print_or_run() {
+  local dry=$1
+  shift
+  if [ -n "$dry" ]; then
+    printf 'dry run:'
+    printf ' %q' "$@"
+    echo
+  else
+    "$@"
+  fi
+}
+
+# ci_change_request_write [--dry-run] NUMBER BRANCH BASE TITLE BODY_FILE [REPO]: updates the title and body of change
+# request NUMBER of REPO (owner/name; ci_repo when empty), or, when NUMBER is empty, opens one from BRANCH into BASE.
+# With --dry-run, and always on a machine, prints the command it would run instead ("dry run: gh ...").
 ci_change_request_write() {
   local platform dry= repo
   platform=$(ci_platform) || return 1
@@ -401,35 +471,51 @@ ci_change_request_write() {
     dry=1
     shift
   fi
-  [ $# -eq 5 ] || {
-    _ci_fail "usage: ci_change_request_write [--dry-run] NUMBER BRANCH BASE TITLE BODY_FILE"
+  [ $# -eq 5 ] || [ $# -eq 6 ] || {
+    _ci_fail "usage: ci_change_request_write [--dry-run] NUMBER BRANCH BASE TITLE BODY_FILE [REPO]"
     return 1
   }
   [ "$platform" != local ] || dry=1
-  repo=$(ci_repo) || return 1
+  repo=${6:-$(ci_repo)} || return 1
   local args
   if [ -n "$1" ]; then
     args=(pr edit "$1" --repo "$repo" --title "$4" --body-file "$5")
   else
     args=(pr create --repo "$repo" --base "$3" --head "$2" --title "$4" --body-file "$5")
   fi
-  if [ -n "$dry" ]; then
-    printf 'dry run: gh'
-    printf ' %q' "${args[@]}"
-    echo
-  else
-    gh "${args[@]}"
-  fi
+  _ci_print_or_run "$dry" gh "${args[@]}"
 }
 
-# ci_dispatch_hint WORKFLOW REF [NAME=VALUE...]: prints the command a person runs to start WORKFLOW on REF with those
-# inputs, for a message that asks for such a run; runs nothing.
+# ci_change_request_auto_merge [--dry-run] SELECTOR HEAD REPO: turns on auto-merge for the change request SELECTOR (its
+# number, or its branch) of REPO: the host merges it, squashed, once the checks and reviews REPO's rules require are
+# there, and only while its head is still commit HEAD (a push since then needs this asked again). With --dry-run, and
+# always on a machine, prints the command it would run instead.
+ci_change_request_auto_merge() {
+  local platform dry=
+  platform=$(ci_platform) || return 1
+  if [ "${1:-}" = --dry-run ]; then
+    dry=1
+    shift
+  fi
+  [ $# -eq 3 ] && [ -n "$1" ] && [[ $2 =~ ^[0-9a-f]{40}$ ]] && [ -n "$3" ] || {
+    _ci_fail "usage: ci_change_request_auto_merge [--dry-run] SELECTOR HEAD REPO (HEAD a full commit SHA)"
+    return 1
+  }
+  [ "$platform" != local ] || dry=1
+  case $platform in
+  github | local) _ci_print_or_run "$dry" gh pr merge "$1" --repo "$3" --auto --squash --match-head-commit "$2" ;;
+  esac
+}
+
+# ci_dispatch_hint WORKFLOW REF [NAME=VALUE...]: prints the command a person runs to start WORKFLOW of the code
+# repository on REF with those inputs, for a message that asks for such a run; runs nothing. The command names the
+# repository, so it starts the right workflow from any directory, a clone of svp-gitops included.
 ci_dispatch_hint() {
   local platform hint kv
   platform=$(ci_platform) || return 1
   case $platform in
   github | local)
-    hint="gh workflow run $1 --ref $2"
+    hint="gh workflow run $1 --repo $_ci_code_repo --ref $2"
     shift 2
     for kv in "$@"; do hint="$hint -f $kv"; done
     echo "$hint"
@@ -437,13 +523,13 @@ ci_dispatch_hint() {
   esac
 }
 
-# ci_push_time SHA: prints when the push whose new head is commit SHA reached the repository host, as one line
-# "TIMESTAMP SOURCE": TIMESTAMP is RFC 3339, UTC, and SOURCE says where it was read. The time a pull request that
-# produced SHA as its merge commit was merged comes first: it is exact and is there as soon as the merge is, while the
-# host's events list is delayed on purpose and has no promise of when a push shows in it. Else the newest 100 events of
-# the repository are searched for the push. Prints nothing when neither knows SHA. Fails, with the host's error on
-# stderr, when either cannot be read (a failed first read is not answered from the second). A read, so a machine asks
-# GitHub too.
+# ci_push_time SHA [REPO]: prints when the push whose new head is commit SHA reached repository REPO (owner/name;
+# ci_repo when empty) on its host, as one line "TIMESTAMP SOURCE": TIMESTAMP is RFC 3339, UTC, and SOURCE says where it
+# was read. The time a pull request that produced SHA as its merge commit was merged comes first: it is exact and is
+# there as soon as the merge is, while the host's events list is delayed on purpose and has no promise of when a push
+# shows in it. Else the newest 100 events of the repository are searched for the push. Prints nothing when neither
+# knows SHA. Fails, with the host's error on stderr, when either cannot be read (a failed first read is not answered
+# from the second). A read, so a machine asks GitHub too.
 ci_push_time() {
   local platform repo found
   platform=$(ci_platform) || return 1
@@ -451,9 +537,13 @@ ci_push_time() {
     _ci_fail "ci_push_time takes a full commit SHA, not '$1'"
     return 1
   }
+  [ -z "${2:-}" ] || [[ $2 =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
+    _ci_fail "ci_push_time takes a repository as owner/name, not '$2'"
+    return 1
+  }
   case $platform in
   github | local)
-    repo=$(ci_repo) || return 1
+    repo=${2:-$(ci_repo)} || return 1
     found=$(gh api -X GET "repos/$repo/commits/$1/pulls" -f per_page=100 \
       --jq "[.[] | select(.merge_commit_sha == \"$1\" and .merged_at != null)] | first // empty
         | \"\(.merged_at) merged_at of PR #\(.number)\"") || return 1
@@ -566,6 +656,125 @@ ci_artifact_fetch() {
     out=$(env -u GH_DEBUG -u DEBUG gh run download "$1" --repo "$repo" --name "$2" --dir "$3" 2>&1) || rc=$?
     [ -z "$out" ] || sed -E 's|([A-Za-z][A-Za-z0-9+.-]*://[A-Za-z0-9.-]*)[^[:space:]"]*|\1/<hidden>|g' <<<"$out" >&2
     return $rc
+    ;;
+  esac
+}
+
+# ci_is_run_url URL: true when URL is the page of a run of a workflow of the code repository on its host
+# (https://github.com/<code repository>/actions/runs/<id>), the form ci_run_url gives on GitHub. Prints nothing.
+ci_is_run_url() {
+  local platform
+  platform=$(ci_platform) || return 1
+  case $platform in
+  github | local) [[ ${1:-} =~ ^https://github\.com/$_ci_code_repo/actions/runs/[0-9]+$ ]] ;;
+  esac
+}
+
+# ci_run_workflow URL: prints "<workflow file> <branch>" of the run at URL, a run of the code repository (the form
+# ci_is_run_url takes), as the host knows it: e.g. ".github/workflows/verify.yml main". Exit 1 when URL has another
+# form or the host does not answer (no such run, a network error; its message on stderr). A read, so a machine asks
+# GitHub too.
+ci_run_workflow() {
+  local platform
+  platform=$(ci_platform) || return 1
+  ci_is_run_url "${1:-}" || {
+    _ci_fail "ci_run_workflow takes the URL of a run of $_ci_code_repo, not '${1:-}'"
+    return 1
+  }
+  case $platform in
+  github | local)
+    gh api -X GET "repos/$_ci_code_repo/actions/runs/${1##*/}" --jq '"\(.path // "") \(.head_branch // "")"'
+    ;;
+  esac
+}
+
+# ci_deployment_record [--dry-run] REPO ENVIRONMENT REF PAYLOAD_FILE DESCRIPTION LOG_URL: records in REPO (owner/name)
+# that environment ENVIRONMENT runs commit REF (a full SHA) of REPO, with the JSON object of PAYLOAD_FILE as its
+# payload and state success, its log at LOG_URL; prints the id of the record. On GitHub a deployment, then a deployment
+# status:
+#   - auto_merge false: the default would merge the default branch into REF first, and a record of a commit that ran
+#     must never become a record of another;
+#   - required_contexts []: the default asks every commit status of REF to be success, which a record made from
+#     outside does not depend on;
+#   - auto_inactive false on the status: the default marks every earlier success of ENVIRONMENT inactive, and an older
+#     record is what a rollback promotes.
+# A deployment whose status could not be written is not success, so it counts as no record (the error says so). With
+# --dry-run, and always on a machine, prints the two requests and their bodies instead ("dry run: ...") and no id.
+ci_deployment_record() {
+  local platform dry= body status id
+  platform=$(ci_platform) || return 1
+  if [ "${1:-}" = --dry-run ]; then
+    dry=1
+    shift
+  fi
+  [ $# -eq 6 ] && [[ $1 =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] && [[ $3 =~ ^[0-9a-f]{40}$ ]] && [ -n "$6" ] &&
+    [[ $5$6 != *$'\n'* ]] || {
+    _ci_fail "usage: ci_deployment_record [--dry-run] REPO ENVIRONMENT REF PAYLOAD_FILE DESCRIPTION LOG_URL" \
+      "(REPO owner/name, REF a full commit SHA, DESCRIPTION and LOG_URL one line each)"
+    return 1
+  }
+  _ci_name environment "$2" || return 1
+  jq -e 'type == "object"' "$4" >/dev/null 2>&1 || {
+    _ci_fail "the payload $4 is not one JSON object"
+    return 1
+  }
+  [ "$platform" != local ] || dry=1
+  body=$(jq -c -n --arg ref "$3" --arg env "$2" --arg d "$5" --slurpfile p "$4" '{ref: $ref, environment: $env,
+    description: $d, payload: $p[0], auto_merge: false, required_contexts: [], transient_environment: false,
+    production_environment: false}') &&
+    status=$(jq -c -n --arg url "$6" --arg d "$5" '{state: "success", log_url: $url, description: $d,
+      auto_inactive: false}') || return 1
+  case $platform in
+  github | local)
+    if [ -n "$dry" ]; then
+      echo "dry run: gh api -X POST repos/$1/deployments --input -"
+      echo "dry run: body | $body"
+      echo "dry run: gh api -X POST repos/$1/deployments/<id>/statuses --input -"
+      echo "dry run: body | $status"
+      return 0
+    fi
+    id=$(gh api -X POST "repos/$1/deployments" --input - --jq .id <<<"$body") || return 1
+    [[ $id =~ ^[0-9]+$ ]] || {
+      _ci_fail "the host made no deployment of $3 in $1 (got id '$id')"
+      return 1
+    }
+    gh api -X POST "repos/$1/deployments/$id/statuses" --input - --jq .state <<<"$status" >/dev/null || {
+      _ci_fail "deployment $id of $1 was made, but not its status success: it counts as no record"
+      return 1
+    }
+    echo "$id"
+    ;;
+  esac
+}
+
+# ci_deployment_list REPO ENVIRONMENT: prints, as one JSON array, the newest 100 records of environment ENVIRONMENT in
+# REPO (owner/name), newest first, each {id, sha, ref, created_at, creator, payload, state}: creator the login that
+# made it (an app's bot is <app>[bot]), payload as recorded, state the latest status (success, failure, inactive, ...;
+# "" without one). An older record is out of reach: a set that old goes through the environment again. A read, so a
+# machine asks GitHub too.
+ci_deployment_list() {
+  local platform list id state states=
+  platform=$(ci_platform) || return 1
+  [ $# -eq 2 ] && [[ $1 =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
+    _ci_fail "usage: ci_deployment_list REPO ENVIRONMENT (REPO owner/name)"
+    return 1
+  }
+  _ci_name environment "$2" || return 1
+  case $platform in
+  github | local)
+    list=$(gh api -X GET "repos/$1/deployments" -f environment="$2" -f per_page=100 \
+      --jq '[.[] | {id, sha, ref, created_at, creator: (.creator.login // ""), payload}]') || return 1
+    for id in $(jq -r '.[].id' <<<"$list"); do
+      [[ $id =~ ^[0-9]+$ ]] || {
+        _ci_fail "the host lists a deployment of $1 with id '$id'"
+        return 1
+      }
+      # The statuses come newest first: the first is the record's state.
+      state=$(gh api -X GET "repos/$1/deployments/$id/statuses" -f per_page=1 --jq '.[0].state // ""') || return 1
+      states+="$id $state"$'\n'
+    done
+    jq -c --arg states "$states" '($states | split("\n") | map(select(length > 0) | split(" ")
+      | {key: .[0], value: (.[1] // "")}) | from_entries) as $s | map(. + {state: ($s[.id | tostring] // "")})' <<<"$list"
     ;;
   esac
 }
