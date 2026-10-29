@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net"
@@ -52,6 +53,13 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	flag.Parse()
+	if fuzzing() {
+		// go test -fuzz runs TestMain again in the coordinator and in every worker process. Each
+		// would drop and create the same database under the others, and no fuzz target needs it.
+		skipReason = "fuzzing: no database"
+		os.Exit(m.Run())
+	}
 	pool, cleanup, err := pgtest.Create(context.Background(), "svp_user_server_test", migrations.FS)
 	switch {
 	case errors.Is(err, pgtest.ErrNoURL):
@@ -70,6 +78,16 @@ func TestMain(m *testing.M) {
 		}
 	}
 	os.Exit(code)
+}
+
+// fuzzing reports whether go test runs with -fuzz, as the coordinator (test.fuzz set) or as one
+// of its workers (test.fuzzworker). It reads the flags after flag.Parse.
+func fuzzing() bool {
+	if f := flag.Lookup("test.fuzz"); f != nil && f.Value.String() != "" {
+		return true
+	}
+	f := flag.Lookup("test.fuzzworker")
+	return f != nil && f.Value.String() == "true"
 }
 
 // lockedBuffer collects log output written from server goroutines.

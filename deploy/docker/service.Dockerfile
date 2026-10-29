@@ -4,11 +4,11 @@
 # No `# syntax=` line: BuildKit's built-in frontend already runs RUN --mount, and a syntax image would be pulled
 # from Docker Hub by a tag that can be pushed again, the one unpinned image of the build.
 
-# Build stage: Go toolchain pinned to the version the repo is developed with. Every base image is pinned by the digest
-# of its multi-arch index (linux/amd64 and linux/arm64): a tag can be pushed again with other content, a digest cannot,
-# so the same commit builds from the same base on the machine and in CI, and Renovate proposes each new digest as a
-# reviewed change.
-FROM golang:1.27.2-trixie@sha256:47667934874913a449b96faa7ef4777fa285d9ec29126ee80ed61c45b7cccf0e AS build
+# Build stage: the Go release named by the go directive of go.mod (make vulncheck fails when they differ). Every base
+# image is pinned by the digest of its multi-arch index (linux/amd64 and linux/arm64): a tag can be pushed again with
+# other content, a digest cannot, so the same commit builds from the same base on the machine and in CI, and Renovate
+# proposes each new digest as a reviewed change.
+FROM golang:1.27.3-trixie@sha256:7b072c590a326b9d2a43b165ae247f6e8eafff32e1ad154ab97139e89f053be9 AS build
 ARG SERVICE
 WORKDIR /src
 

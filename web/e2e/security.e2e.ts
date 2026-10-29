@@ -140,7 +140,7 @@ function cspOf(response: APIResponse): { csp: string; nonce: string } {
 
 // Read on the raw HTML: browsers hide the nonce attribute from the DOM.
 async function expectScriptsCarryNonce(response: APIResponse, nonce: string): Promise<void> {
-  const scripts = (await response.text()).match(/<script\b[^>]*>/g) ?? [];
+  const scripts = (await response.text()).match(/<script\b[^>]*>/gi) ?? [];
   expect(scripts.length).toBeGreaterThan(0);
   for (const tag of scripts) {
     expect(tag).toContain(`nonce="${nonce}"`);

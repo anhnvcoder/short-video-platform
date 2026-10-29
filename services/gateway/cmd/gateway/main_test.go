@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -199,6 +200,43 @@ func TestServiceConfig(t *testing.T) {
 	); err == nil {
 		t.Error("grpc.NewClient accepted an invalid service config")
 	}
+}
+
+// TestServiceConfigStructure pins the whole service config of a small backend against the JSON
+// written by hand, so a changed number, code or key shows up here and not as a silent retry change.
+func TestServiceConfigStructure(t *testing.T) {
+	b := backend{retry: []string{"/svp.a.v1.AService/One", "/svp.a.v1.AService/Two"}}
+	const want = `{
+	  "methodConfig": [{
+	    "name": [
+	      {"service": "svp.a.v1.AService", "method": "One"},
+	      {"service": "svp.a.v1.AService", "method": "Two"}
+	    ],
+	    "retryPolicy": {
+	      "maxAttempts": 3,
+	      "initialBackoff": "0.05s",
+	      "maxBackoff": "0.2s",
+	      "backoffMultiplier": 2,
+	      "retryableStatusCodes": ["UNAVAILABLE"]
+	    }
+	  }],
+	  "retryThrottling": {"maxTokens": 10, "tokenRatio": 0.1}
+	}`
+	var gotCfg, wantCfg any
+	if err := json.Unmarshal([]byte(b.serviceConfig()), &gotCfg); err != nil {
+		t.Fatalf("service config is not JSON: %v\n%s", err, b.serviceConfig())
+	}
+	if err := json.Unmarshal([]byte(want), &wantCfg); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotCfg, wantCfg) {
+		t.Errorf("service config = %s\nwant %s", b.serviceConfig(), want)
+	}
+	conn, err := grpc.NewClient("passthrough:///unused", b.dialOptions()...)
+	if err != nil {
+		t.Fatalf("grpc.NewClient refused the service config: %v", err)
+	}
+	_ = conn.Close()
 }
 
 func TestRetry(t *testing.T) {

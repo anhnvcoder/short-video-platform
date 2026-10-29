@@ -32,7 +32,7 @@ code của service gọi nó qua `internal/objstore`.
 Muốn xem thêm telemetry (Grafana, Alertmanager, GlitchTip) thì `make up OBS=lgtm`. Không dùng `OBS` thì chỉ chạy các service.
 Chỉ chạy một bộ observability một lúc vì máy 16 GB RAM không đủ cho hai bộ.
 
-Sổ lệnh đầy đủ (kiểm tra, diễn tập, k3d, cloud, CI) nằm ở [`CLAUDE.md`](CLAUDE.md), mục "Kiểm tra" và "Quy ước". Đừng chạy
+Sổ lệnh đầy đủ (kiểm tra gồm `make vulncheck`, `make fuzz`, `make dast`, `make grype`; diễn tập, k3d, cloud, CI) nằm ở [`CLAUDE.md`](CLAUDE.md), mục "Kiểm tra" và "Quy ước". Đừng chạy
 `make up` và `make k8s-up` cùng lúc: mỗi bên từ chối khi bên kia đang chạy.
 
 ## Bản đồ thư mục
@@ -49,7 +49,7 @@ Sổ lệnh đầy đủ (kiểm tra, diễn tập, k3d, cloud, CI) nằm ở [`
 | `internal/` | Thư viện dùng chung của các service: kết nối Postgres và retry, Kafka, outbox, Redis, telemetry, gRPC, env. Mở khi một service cần một phần chung. |
 | `proto/` | Contract `.proto` của gRPC và event, quản lý bằng buf. Sửa ở đây rồi chạy `make generate`. |
 | `gen/` | Code Go sinh từ `proto/` (`gen/go`); commit cùng thay đổi, không sửa tay. Code sinh từ SQL (sqlc) nằm ở `services/*/internal/store`. |
-| `tools/` | Công cụ nhỏ: `fakefollows` (tạo follow giả cho diễn tập), `jwtkey` (sinh khoá JWT). |
+| `tools/` | Công cụ nhỏ: `fakefollows` (tạo follow giả cho diễn tập), `jwtkey` (sinh khoá JWT), `vulngate` (gate của govulncheck trong `make vulncheck`). |
 | `web/` | Web client Next.js và BFF (giai đoạn 5b): `app/` route, `server/` phía server, `features/`, `components/`, `e2e/` Playwright. |
 | `deploy/compose/` | Stack compose `make up`, script smoke và diễn tập. |
 | `deploy/docker/` | Dockerfile của service Go, media-worker và web. |
@@ -59,6 +59,7 @@ Sổ lệnh đầy đủ (kiểm tra, diễn tập, k3d, cloud, CI) nằm ở [`
 | `deploy/helm/` | Chart Helm: `svp-service` (chung cho mọi service), `svp-cluster`, `svp-data`, `svp-observability`, `svp-policy` (Kyverno). |
 | `deploy/argocd/` | Application và AppProject của Argo CD cho đường GitOps. |
 | `deploy/k6/` | Kịch bản tải k6 theo SLO, chạy bằng image ghim. |
+| `deploy/dast/` | DAST của gateway theo `openapi.yaml` bằng Schemathesis (`make dast`, image ghim), chạy trên stack `make up` và ở job `stack` của CI. |
 | `deploy/ci/` | Script của pipeline: build, quét, ký, attest, promote image; `verify/` là trình tự từng kịch bản của `verify.yml`. Phần lớn logic CI nằm ở đây, không nằm trong YAML. |
 | `.githooks/` | Git hook `pre-commit` (gofmt, golangci-lint, buf lint, gitleaks); bật một lần bằng `make hooks`. |
 | `.github/rulesets/` | Ruleset của nhánh `main` (check bắt buộc `ci-ok`, `images-ok`). |
@@ -96,4 +97,4 @@ Bảng service: database và Redis db của từng service nằm ở `CLAUDE.md`
 | 6 | Độ tin cậy: k6 theo SLO, SLO web, backup và phục hồi Postgres, runbook, game day | [0020](docs/adr/0020-reliability-stage6.md) |
 
 Các ADR sau giai đoạn 6 (kiểm chứng dồn trên runner, object store của đường local, CI trung lập nền tảng, nhiều môi trường
-dev, stg, prd) có trong [`docs/adr/`](docs/adr/).
+dev, stg, prd, DevSecOps bổ sung: govulncheck, fuzz, DAST, CodeQL, grype) có trong [`docs/adr/`](docs/adr/).
