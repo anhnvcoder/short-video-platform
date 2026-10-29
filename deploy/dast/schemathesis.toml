@@ -1,0 +1,22 @@
+# Schemathesis configuration of `make dast` (deploy/dast/run.sh); the checks, phases, budget and reports are flags of
+# run.sh, so the whole run reads in one place. Only what has no flag lives here.
+
+# The access token of the test user run.sh registers. The key must match the security scheme of
+# services/gateway/openapi.yaml: Schemathesis then knows which operations need the token, and ignored_auth sends those
+# operations a request without it and one with a wrong one, expecting 401 or 403. ${VAR} is the only substitution, and
+# an unset variable stops the run instead of sending an empty token.
+[auth.openapi.bearerAuth]
+bearer = "${SVP_DAST_TOKEN}"
+
+# Invalid input must stop at a 4xx. Beyond the default (400, 401, 403, 422): the gateway answers one 404 for every
+# malformed id on its public route, so that nothing tells a missing video from an invalid id; 405 for a method the
+# route lacks; 409 for a taken email or handle the generator hits again; 413 for a body over 64 KiB; 415, the standard
+# refusal of a media type, should a route start checking it; 429 when the rate limit stops the request before its input
+# is read.
+[checks.negative_data_rejection]
+expected-statuses = [400, 401, 403, 404, 405, 409, 413, 415, 422, 429]
+
+# The cache keeps request data between runs under .schemathesis/ in the working directory: nothing to reuse here, and
+# what it keeps would be one more file holding response data.
+[cache]
+enabled = false

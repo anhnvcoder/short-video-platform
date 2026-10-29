@@ -708,11 +708,12 @@ func (s *server) exploreFeed(w http.ResponseWriter, r *http.Request) {
 
 // pageQuery reads the paging query of a feed or a video list: the cursor goes on unread as
 // page_token (architecture §8.3) and page_size must be an integer; their values are the
-// service's to check. On a page_size that is not an integer it writes the 400 and returns false.
+// service's to check. On a page_size that is not an integer, an empty one included (only an
+// absent page_size means the default), it writes the 400 and returns false.
 func pageQuery(w http.ResponseWriter, r *http.Request) (size int32, token string, ok bool) {
 	q := r.URL.Query()
-	if v := q.Get("page_size"); v != "" {
-		n, err := strconv.ParseInt(v, 10, 32)
+	if q.Has("page_size") {
+		n, err := strconv.ParseInt(q.Get("page_size"), 10, 32)
 		if err != nil {
 			httpx.WriteProblem(w, r, http.StatusBadRequest, "INVALID_PAGE_SIZE", "page_size must be an integer")
 			return 0, "", false

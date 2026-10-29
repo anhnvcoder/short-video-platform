@@ -1,6 +1,7 @@
 # 0007. Một Go module cho cả monorepo, công cụ ghim ở Makefile, cấu hình bằng biến môi trường, phạm vi giai đoạn 1 thu về luồng đồng bộ
 
-- Trạng thái: Chấp nhận
+- Trạng thái: Chấp nhận; phần module (directive `go 1.27` thành bản có số patch `go 1.27.3`, là bản Go mà govulncheck quét và
+  mọi image Go build) chỉnh bởi [0030](0030-devsecops-supplement.md)
 - Ngày: 2026-10-11
 
 ## Bối cảnh

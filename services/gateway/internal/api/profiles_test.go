@@ -328,6 +328,17 @@ func TestAuthorVideosErrors(t *testing.T) {
 			t.Errorf("services got %d calls, want 0", n)
 		}
 	})
+	t.Run("empty page_size is not an integer", func(t *testing.T) {
+		e := newEnv(t)
+		rec := e.do(t, http.MethodGet, "/me/videos?page_size=", "", e.token(t, userA))
+		wantStatus(t, rec, http.StatusBadRequest)
+		if p := decodeProblem(t, rec); p.Code != "INVALID_PAGE_SIZE" {
+			t.Errorf("code = %q, want INVALID_PAGE_SIZE", p.Code)
+		}
+		if n := e.callCount(); n != 0 {
+			t.Errorf("services got %d calls, want 0", n)
+		}
+	})
 	t.Run("negative page_size goes to video-service", func(t *testing.T) {
 		e := newEnv(t)
 		rec := e.do(t, http.MethodGet, "/me/videos?page_size=-1", "", e.token(t, userA))

@@ -13,7 +13,9 @@
   phát hành xuất artifact `web-sourcemaps-<arch>` cùng build cache sau bước push, kèm `image-digest`; mọi chân `web`, cả ở PR, kiểm
   debug ID của chunk image có trong bộ map) và §9 (cluster GitOps đọc repo qua HTTPS ẩn danh, `make k8s-gitops-up` không còn deploy
   key) chỉnh bởi 0021 ngày 2026-10-28; §8, §9 (cluster GitOps đóng vai stg với overlay `deploy/k8s/envs/stg/`; Enforce trên stg và
-  prd, Audit trên dev) chỉnh bởi [0024](0024-multi-environment.md)
+  prd, Audit trên dev) chỉnh bởi [0024](0024-multi-environment.md); §3 (dòng `GRYPE_IMAGE` của `Makefile` cũng build lại cả bảy
+  image), §6 (grype quét SBOM syft của mỗi chân trước push cạnh trivy, cùng cổng CRITICAL và `.trivyignore.yaml`) và §12
+  (govulncheck, DAST thôi là việc để sau) chỉnh bởi [0030](0030-devsecops-supplement.md)
 - Ngày: 2026-10-20
 
 ## Bối cảnh

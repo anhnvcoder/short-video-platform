@@ -751,6 +751,7 @@ func TestRefreshAndLogoutBodies(t *testing.T) {
 			{"not JSON", "refresh_token=" + fakeRefreshToken, http.StatusBadRequest, "INVALID_JSON"},
 			{"unknown field", `{"refresh_token":"x","user_id":"` + userA + `"}`, http.StatusBadRequest, "INVALID_JSON"},
 			{"not a string", `{"refresh_token":42}`, http.StatusBadRequest, "INVALID_JSON"},
+			{"null", `{"refresh_token":null}`, http.StatusBadRequest, "INVALID_JSON"},
 			{"too large", `{"refresh_token":"` + strings.Repeat("a", 64<<10) + `"}`, http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE"},
 		} {
 			t.Run(path+" "+tc.name, func(t *testing.T) {

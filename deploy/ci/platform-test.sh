@@ -11,11 +11,15 @@
 #     scan-gate.sh, values-check.sh (the signing identity is read from the policy's values) and promote.sh (a dry run
 #     and a local run in a throwaway git repository with a throwaway origin; on a machine, an origin with any push URL
 #     off its disk is refused, or with PROMOTE_DRY_RUN=1 the push is printed, and the branch never moves);
+#   - scan-gate.sh --grype on grype reports written by hand: a Critical match blocks and is named, --allow-critical lets
+#     it through, High and below are only counted; an entry of .trivyignore.yaml covers a match by its id or a related
+#     id with the same purl (qualifiers and escapes aside), never another version; an expired entry fails the gate;
+#     a report that is not grype's exits 2;
 #   - platform-guard.sh passes the throwaway checkout and fails, naming file:line, a script that reads GITHUB_OUTPUT or
 #     calls gh itself;
 #   - changed-services.sh builds all seven images for a change of platform.sh, as for common.sh, and none for a change
 #     of this test, of platform-guard.sh, of a scenario file under deploy/ci/verify/, of the policy's values or of
-#     docs/;
+#     docs/; all seven for a change of the GRYPE_IMAGE line of the Makefile, none for another line of it;
 #   - platform-guard.sh reads the scenario files under deploy/ci/verify/ too.
 # Runs on macOS and Linux: no network, no Docker, no cluster.
 #
@@ -546,6 +550,99 @@ same "scan-gate.sh on a machine: the table in the log, no counts line" '| Image 
 | gw linux/amd64 | 0 | 1 | 0 | 0 | 0 | 1 |' "$(cat "$work/gate.out")"
 check "scan-gate.sh on a machine: the secret in the log" has "$work/gate.err" "secret  aws-key (CRITICAL) in app line 3"
 
+# scan-gate.sh --grype: reports of grype written by hand. match ID SEVERITY PURL [RELATED_ID]: one match of a report.
+match() {
+  jq -n --arg id "$1" --arg sev "$2" --arg purl "$3" --arg rel "${4:-}" '{
+    vulnerability: {id: $id, severity: $sev, fix: {versions: ["9.9.9"], state: "fixed"}},
+    relatedVulnerabilities: (if $rel == "" then [] else [{id: $rel}] end),
+    artifact: {name: ($purl | sub("^pkg:[^/]+/(.*/)?"; "") | sub("@.*$"; "")),
+      version: ($purl | sub("^[^@]*@"; "") | sub("[?#].*$"; "")), purl: $purl}}'
+}
+# grype_report FILE MATCH...: a grype JSON report holding the matches.
+grype_report() {
+  local file=$1
+  shift
+  jq -s '{descriptor: {name: "grype", version: "0.121.0"}, matches: .}' <<<"$*" >"$file"
+}
+# ignore_entry ID EXPIRED_AT PURL: one entry of .trivyignore.yaml.
+ignore_entry() {
+  printf '  - id: %s\n    statement: Accepted for the test.\n    expired_at: %s\n    purls:\n      - %s\n' "$1" "$2" "$3"
+}
+# gate_grype NAME WANT_EXIT REPORT [FLAG]: runs the grype gate on a machine; ok when it exits WANT_EXIT.
+gate_grype() {
+  local name=$1 want=$2 report=$3 rc=0
+  shift 3
+  on local "$tree/deploy/ci/scan-gate.sh" "$@" --grype "web linux/arm64" "$report" >"$work/gate.out" \
+    2>"$work/gate.err" || rc=$?
+  same "$name (exit code)" "$want" "$rc"
+}
+soon=$(date -u -d '+10 days' +%F 2>/dev/null || date -u -v+10d +%F)
+today=$(date -u +%F)
+critical_npm=$(match CVE-2026-1111 Critical pkg:npm/left-pad@1.0.0)
+high_npm=$(match CVE-2026-2222 High pkg:npm/zod@3.25.76)
+
+rm -f "$tree/.trivyignore.yaml"
+grype_report "$work/grype.json" "$critical_npm" "$high_npm"
+gate_grype "scan-gate.sh --grype: a Critical match blocks" 1 "$work/grype.json"
+check "scan-gate.sh --grype: id, package@version, purl and fix of the Critical match" has "$work/gate.err" \
+  "critical  CVE-2026-1111 left-pad@1.0.0 pkg:npm/left-pad@1.0.0 (fixed: 9.9.9)"
+check "scan-gate.sh --grype: the report itself is not printed" lacks "$work/gate.out" '"matches"'
+gate_grype "scan-gate.sh --grype: --allow-critical lets a Critical match through" 0 "$work/grype.json" \
+  --allow-critical
+check "scan-gate.sh --grype: --allow-critical says so" has "$work/gate.err" \
+  "note  web linux/arm64 (grype): 1 Critical vulnerabilities let through (--allow-critical)"
+
+grype_report "$work/grype.json" "$high_npm" "$(match CVE-2026-3333 Negligible pkg:deb/debian/libc6@2.41-12)"
+fresh
+rc=0
+on github "$tree/deploy/ci/scan-gate.sh" --grype "web linux/arm64" "$work/grype.json" >"$work/gate.out" 2>&1 || rc=$?
+same "scan-gate.sh --grype: High and below only counted" 0 "$rc"
+same "scan-gate.sh --grype on github: one grype row in the summary" '| Image | CRITICAL | HIGH | MEDIUM | LOW | NEGLIGIBLE | UNKNOWN | Excepted |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| web linux/arm64 (grype) | 0 | 1 | 0 | 0 | 1 | 0 | 0 |' "$(cat "$work/summary")"
+grype_report "$work/grype.json"
+gate_grype "scan-gate.sh --grype: no match passes" 0 "$work/grype.json"
+check "scan-gate.sh --grype: no match still has its row" has "$work/gate.out" \
+  "| web linux/arm64 (grype) | 0 | 0 | 0 | 0 | 0 | 0 | 0 |"
+
+# Exceptions from .trivyignore.yaml: by the match's id, by a related id, by a purl that has qualifiers on grype's side
+# and an escape (+ as %2B), never by another version.
+{
+  echo "vulnerabilities:"
+  ignore_entry CVE-2026-1111 "$soon" pkg:npm/left-pad@1.0.0
+  ignore_entry CVE-2021-44228 "$soon" pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+  ignore_entry CVE-2026-4444 "$soon" pkg:deb/debian/libc6@2.41-12+deb13u4
+  ignore_entry CVE-2023-54404 "$soon" pkg:npm/zod@3.25.75
+} >"$tree/.trivyignore.yaml"
+grype_report "$work/grype.json" "$critical_npm" \
+  "$(match GHSA-jfh8-c2jp-5v3q Critical pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1 CVE-2021-44228)" \
+  "$(match CVE-2026-4444 Critical 'pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=arm64&distro=debian-13.7')"
+gate_grype "scan-gate.sh --grype: entries cover by id, by related id, by purl with qualifiers" 0 "$work/grype.json"
+check "scan-gate.sh --grype: the three excepted are counted" has "$work/gate.out" \
+  "| web linux/arm64 (grype) | 0 | 0 | 0 | 0 | 0 | 0 | 3 |"
+grype_report "$work/grype.json" "$(match CVE-2023-54404 Critical pkg:npm/zod@3.25.76)"
+gate_grype "scan-gate.sh --grype: an entry of another version does not cover" 1 "$work/grype.json"
+check "scan-gate.sh --grype: the uncovered match is named" has "$work/gate.err" \
+  "critical  CVE-2023-54404 zod@3.25.76 pkg:npm/zod@3.25.76"
+
+# An expired entry fails the gate on the file: on a clean report, and on a report whose Critical it no longer covers.
+{
+  echo "vulnerabilities:"
+  ignore_entry CVE-2026-1111 "$today" pkg:npm/left-pad@1.0.0
+} >"$tree/.trivyignore.yaml"
+grype_report "$work/grype.json" "$high_npm"
+gate_grype "scan-gate.sh --grype: an expired entry fails a clean report" 1 "$work/grype.json"
+check "scan-gate.sh --grype: the expired entry is named" has "$work/gate.out" \
+  ".trivyignore.yaml:2: entry CVE-2026-1111 expired on $today"
+check "scan-gate.sh --grype: the clean report blocks on the file alone" lacks "$work/gate.err" "critical  "
+grype_report "$work/grype.json" "$critical_npm"
+gate_grype "scan-gate.sh --grype: an expired entry no longer covers its match" 1 "$work/grype.json"
+check "scan-gate.sh --grype: the match it covered is named again" has "$work/gate.err" "critical  CVE-2026-1111 "
+rm -f "$tree/.trivyignore.yaml"
+
+gate_grype "scan-gate.sh --grype: a trivy report is refused" 2 "$work/report.json"
+check "scan-gate.sh --grype: says it is not a grype report" has "$work/gate.err" "is not a grype JSON report"
+
 # values-check.sh: the identity cosign is asked for is the policy's (the values Kyverno checks), and a failed check
 # prints and summarizes the dispatch that refreshes the attestations.
 fresh
@@ -699,6 +796,14 @@ same "changed-services: a change of common.sh builds all seven" "$all" "$(change
 same "changed-services: a change of the policy's values builds nothing" "" \
   "$(changed_by deploy/helm/svp-policy/values.yaml)"
 same "changed-services: a change under docs/ builds nothing" "" "$(changed_by docs/decision.md)"
+# The Makefile counts only for the lines pinning the tools of the gate.
+printf 'TRIVY_IMAGE := trivy@sha256:1\nGRYPE_IMAGE := grype@sha256:1\nK6_IMAGE := k6@sha256:1\n' >"$tree/Makefile"
+g add Makefile && g commit -qm "add the Makefile"
+sed 's/^GRYPE_IMAGE := grype@sha256:1$/GRYPE_IMAGE := grype@sha256:2/' "$tree/Makefile" >"$work/Makefile" &&
+  cp "$work/Makefile" "$tree/Makefile" && g commit -qam "bump grype"
+same "changed-services: a change of the GRYPE_IMAGE line builds all seven" "$all" \
+  "$(on local "$tree/deploy/ci/changed-services.sh" HEAD~1 HEAD 2>/dev/null)"
+same "changed-services: a change of another line of the Makefile builds nothing" "" "$(changed_by Makefile)"
 
 if ((failures)); then
   echo "$failures check(s) failed" >&2

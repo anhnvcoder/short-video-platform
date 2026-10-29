@@ -13,9 +13,9 @@
 # script reads the CI platform itself (both run by job config of ci.yml and on a machine; platform.sh itself counts:
 # common.sh sources it), the helpers deploy/ci/ sources from deploy/k8s/lib.sh (docker_, values_field,
 # values_set_image, ghcr_prefix), and the lines of the Makefile pinning the images the gate runs (TRIVY_IMAGE,
-# SYFT_IMAGE, COSIGN_IMAGE); other Makefile changes do not count. So the weekly Renovate pull request that bumps those
-# tools builds and scans every image with the new trivy before it merges, instead of the next daily rescan on main
-# meeting it first. The cost is on main too: such a change releases all seven images again (and opens their promote
+# SYFT_IMAGE, GRYPE_IMAGE, COSIGN_IMAGE); other Makefile changes do not count. So the weekly Renovate pull request that
+# bumps those tools builds and scans every image with the new trivy or grype before it merges, instead of the next
+# daily rescan on main meeting it first. The cost is on main too: such a change releases all seven images again (and opens their promote
 # pull request) although no service code changed. Comparing is only done when BASE is HEAD or an ancestor of it:
 #   - BASE empty, all zeros, unknown to this clone, or not comparable with HEAD (force push, rewritten history): all
 #     seven. Building too much costs runner minutes; missing a change would ship an image without it.
@@ -77,8 +77,8 @@ while IFS= read -r path; do
     all "the image pipeline changed ($path)"
   fi
 done <<<"$changed"
-# -G keeps the Makefile only when an added or removed line of its diff is one of the three pins.
-tools=$(git -C "$repo_root" diff --name-only --no-renames -G '^(TRIVY|SYFT|COSIGN)_IMAGE[[:space:]]*:=' \
+# -G keeps the Makefile only when an added or removed line of its diff is one of the four pins.
+tools=$(git -C "$repo_root" diff --name-only --no-renames -G '^(TRIVY|SYFT|GRYPE|COSIGN)_IMAGE[[:space:]]*:=' \
   "$base" "$head" -- Makefile) || fail "compare the tool images of the Makefile since $base"
 [ -z "$tools" ] || all "the image pipeline changed (a tool image pinned in the Makefile)"
 for svc in "${svp_services[@]}"; do

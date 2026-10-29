@@ -130,6 +130,13 @@
       "groupName": "go toolchain and base images"
     },
     {
+      "description": "The go directive of go.mod is the released Go that govulncheck scans and that every golang builder image must match, so Renovate has to propose raising it (it does not by default); it falls into the same group as the golang image and the go-version of actions/setup-go, so one pull request moves all three.",
+      "matchManagers": ["gomod"],
+      "matchDepNames": ["go"],
+      "matchDepTypes": ["golang"],
+      "rangeStrategy": "bump"
+    },
+    {
       "matchManagers": ["dockerfile"],
       "groupName": "go toolchain and base images"
     },

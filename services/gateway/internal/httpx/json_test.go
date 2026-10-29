@@ -49,6 +49,12 @@ func TestDecodeJSONRejects(t *testing.T) {
 		{"malformed", `{"name":`, 400, "INVALID_JSON"},
 		{"wrong type", `{"name":1}`, 400, "INVALID_JSON"},
 		{"empty", ``, 400, "INVALID_JSON"},
+		// encoding/json leaves a field as it was on null, and decodes a null body into nothing:
+		// both would reach the handler as an absent field or an empty object.
+		{"null field", `{"name":null}`, 400, "INVALID_JSON"},
+		{"null field with white space", "{\"name\" :\n null }", 400, "INVALID_JSON"},
+		{"null body", `null`, 400, "INVALID_JSON"},
+		{"array body", `[]`, 400, "INVALID_JSON"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

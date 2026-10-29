@@ -79,7 +79,7 @@ func claims(sub string) jwt.MapClaims {
 	}
 }
 
-func sign(t *testing.T, method jwt.SigningMethod, key any, kid string, c jwt.MapClaims) string {
+func sign(t testing.TB, method jwt.SigningMethod, key any, kid string, c jwt.MapClaims) string {
 	t.Helper()
 	tok := jwt.NewWithClaims(method, c)
 	tok.Header["kid"] = kid

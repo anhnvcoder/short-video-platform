@@ -33,6 +33,9 @@ K3D_LDFLAGS                := -X github.com/k3d-io/k3d/v5/version.Version=$(K3D_
 # `run:` script when shellcheck is on PATH: the CI runner has it, a dev machine need not.
 # renovate: datasource=go depName=github.com/rhysd/actionlint
 ACTIONLINT_VERSION         := v1.7.12
+# Go vulnerability scanner of `make vulncheck`: reports only what the code can reach through its call graph.
+# renovate: datasource=go depName=golang.org/x/vuln
+GOVULNCHECK_VERSION        := v1.9.0
 
 # CI only (`make ci-tools`, Linux amd64 runner): a dev machine installs buf and Helm with Homebrew at these versions.
 # Helm's archive is checked against the sha256 published with the release (helm-<version>-linux-amd64.tar.gz.sha256sum),
@@ -49,6 +52,9 @@ HELM_LINUX_AMD64_SHA256    := 0403a88ae20913d11b10a2467b50087721fea7581736da6b9d
 TRIVY_IMAGE := ghcr.io/aquasecurity/trivy:0.76.0@sha256:2416d1f74045b57274df1a340eee6b510cacd73c66a6ccb8da092b117eb7d222
 # renovate: datasource=docker depName=ghcr.io/anchore/syft
 SYFT_IMAGE  := ghcr.io/anchore/syft:v1.54.1@sha256:3eb5379ba7b409c3f4069b686110527af0c47df993fa5c10d13e7cf34f49b1aa
+# Second vulnerability gate of every image, on the SBOM syft writes (deploy/ci/build-image.sh, make grype).
+# renovate: datasource=docker depName=ghcr.io/anchore/grype
+GRYPE_IMAGE := ghcr.io/anchore/grype:v0.121.0@sha256:621d56d1d68106b787022c81546f7e0a36202a25d1239f0c20195fab8c16f7ea
 # cosign on a dev machine, to verify releases only (deploy/ci/verify-release.sh, and `make k8s-gitops-up` before it
 # creates anything): signing happens in CI alone, with the cosign that sigstore/cosign-installer installs there.
 # renovate: datasource=docker depName=ghcr.io/sigstore/cosign/cosign
@@ -59,6 +65,10 @@ COSIGN_IMAGE := ghcr.io/sigstore/cosign/cosign:v3.1.3@sha256:9e5c2f2edc343511604
 # line only gets security fixes.
 # renovate: datasource=docker depName=grafana/k6
 K6_IMAGE := grafana/k6:2.3.0@sha256:9c2dee7f8ed74d317e4027c06a10f169b625638189de8d4555d0b3486a5aeb34
+# DAST of the gateway against its OpenAPI contract (make dast), from the official image pinned by digest, the same on a
+# dev machine and in the CI job stack.
+# renovate: datasource=docker depName=schemathesis/schemathesis
+SCHEMATHESIS_IMAGE := schemathesis/schemathesis:4.32.4@sha256:b501f25d00fa6e2b393ddd1b525a11bb560d593fd06268491595c2e439090bf0
 # Schema check of the manifests written for the cloud cluster (make cloud-check), with nothing
 # installed: the image is FROM scratch with kubeconform and openapi2jsonschema, which turns the CRDs of the pinned charts
 # into schemas, so no Python is needed. It runs as root unless docker run gets --user.
@@ -84,19 +94,20 @@ SVP_TEST_REDIS_URL ?= redis://127.0.0.1:6379/15
 
 .DEFAULT_GOAL := help
 
-.PHONY: help tools ci-tools generate generate-go generate-check slo otelcol-validate fmt-check vet lint actionlint buf-lint test \
-	cover check check-go helm-check trivy-config web-lockfile-scan renovate-check hooks web-install web-dev web-generate web-generate-check \
+.PHONY: help tools ci-tools generate generate-go generate-check slo otelcol-validate fmt-check vet lint actionlint buf-lint vulncheck test fuzz \
+	cover check check-go helm-check trivy-config web-lockfile-scan grype renovate-check hooks web-install web-dev web-generate web-generate-check \
 	web-check web-e2e measure-web measure-upload web-lighthouse web-sourcemaps
 
 help: ## List the targets
 	@grep -hE '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
 
-tools: ## Install the pinned code generators, linters, secret scanner, SLO generator and k3d into GOBIN
+tools: ## Install the pinned code generators, linters, vulnerability and secret scanners, SLO generator and k3d into GOBIN
 	GOBIN=$(GOBIN) go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
 	GOBIN=$(GOBIN) go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
 	GOBIN=$(GOBIN) go install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
 	GOBIN=$(GOBIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	GOBIN=$(GOBIN) go install github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
+	GOBIN=$(GOBIN) go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 	GOBIN=$(GOBIN) go install github.com/zricethezav/gitleaks/v8@$(GITLEAKS_VERSION)
 	GOBIN=$(GOBIN) go install -ldflags='-X github.com/slok/sloth/internal/info.Version=$(SLOTH_VERSION)' \
 		github.com/slok/sloth/cmd/sloth@$(SLOTH_VERSION)
@@ -182,6 +193,21 @@ buf-lint: ## buf lint and buf build
 	buf lint
 	buf build -o /dev/null
 
+# The go directive of go.mod is the Go release of the images: govulncheck scans the standard library of exactly that
+# release (GOTOOLCHAIN downloads it when the installed Go differs), and tools/vulngate fails when a golang build stage
+# of deploy/docker/ uses another one, so the result holds for the released binaries. govulncheck exits 0 in JSON mode
+# whatever it finds: the gate decides. The output goes to a file, not a pipe, so a failure of govulncheck itself
+# (no network to vuln.go.dev, a build error) fails the target too.
+vulncheck: ## govulncheck ./... with the Go of the go directive; called vulnerabilities fail unless excepted in .govulncheck-ignore.json
+	@command -v govulncheck >/dev/null 2>&1 || { echo "govulncheck not found: run make tools" >&2; exit 1; }
+	@gover=$$(go list -m -f '{{.GoVersion}}') || exit 1; \
+	case "$$gover" in [0-9]*.[0-9]*.[0-9]*) ;; *) echo "the go directive of go.mod must name a patch release \
+	(go 1.27.3), not go $$gover" >&2; exit 1;; esac; \
+	tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
+	GOTOOLCHAIN=go$$gover govulncheck -format json ./... > "$$tmp/vuln.json" \
+		|| { echo "govulncheck failed (exit $$?): see the error above" >&2; exit 1; }; \
+	go run ./tools/vulngate $(wildcard deploy/docker/*.Dockerfile) < "$$tmp/vuln.json"
+
 test: ## go test -race (SVP_TEST_POSTGRES_URL and SVP_TEST_REDIS_URL default to the local Postgres and Redis db 15; TESTFLAGS adds flags, e.g. TESTFLAGS=-count=1)
 	SVP_TEST_POSTGRES_URL='$(SVP_TEST_POSTGRES_URL)' SVP_TEST_REDIS_URL='$(SVP_TEST_REDIS_URL)' go test -race $(TESTFLAGS) $(PKGS)
 
@@ -190,9 +216,34 @@ cover: ## go test -race with coverage into cover.out (same test variables and TE
 	@go tool cover -func=cover.out | tail -1
 	@echo "per line in a browser: go tool cover -html=cover.out"
 
+# How long `make fuzz` fuzzes each target.
+FUZZTIME ?= 30s
+
+# go test -fuzz takes one target of one package per run, so the targets run one after another and the first failure
+# stops the rest. They are found by reading the *_test.go files, not with go test -list: listing runs TestMain, and a
+# TestMain may build a database. No -race: it slows fuzzing down several times, and make test already runs every seed
+# with -race. The generated corpus stays in GOCACHE; a failing input goes to testdata/fuzz/<target>/ of its package,
+# to be fixed and committed so the seeds keep it.
+fuzz: ## Fuzz each Fuzz target of PKGS for FUZZTIME (default 30s), one at a time; stop at the first failure and print its input
+	@list=$$(go list -f '{{.ImportPath}} {{.Dir}}' $(PKGS)) || exit 1; \
+	targets=$$(printf '%s\n' "$$list" | while read -r pkg dir; do \
+		for file in "$$dir"/*_test.go; do [ -f "$$file" ] && sed -nE 's/^func (Fuzz[A-Za-z0-9_]*)\(.*/\1/p' "$$file"; done \
+			| sort -u | sed "s|^|$$pkg $$dir |"; \
+	done); \
+	[ -n "$$targets" ] || { echo "no Fuzz targets in $(PKGS)" >&2; exit 1; }; \
+	tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
+	printf '%s\n' "$$targets" | while read -r pkg dir target; do \
+		echo "== $$target ($$pkg) for $(FUZZTIME)"; touch "$$tmp/start"; \
+		SVP_TEST_POSTGRES_URL='$(SVP_TEST_POSTGRES_URL)' SVP_TEST_REDIS_URL='$(SVP_TEST_REDIS_URL)' \
+			go test -run '^$$' -fuzz "^$$target\$$" -fuzztime $(FUZZTIME) "$$pkg" < /dev/null && continue; \
+		echo "fuzz failed: $$target in $$pkg" >&2; \
+		find "$$dir/testdata/fuzz/$$target" -type f -newer "$$tmp/start" 2>/dev/null | sed 's|^|failing input: |' >&2; \
+		exit 1; \
+	done
+
 check: check-go web-check ## Run every check: Go (check-go) and the web client (web-check)
 
-check-go: fmt-check vet lint actionlint buf-lint test ## Run the Go, workflow and proto checks
+check-go: fmt-check vet lint actionlint buf-lint vulncheck test ## Run the Go, workflow and proto checks
 
 # Every chart of the repository, as the GitOps path renders it: each component of components.json
 # with a `path`, under its release name and namespace, with its values file, and the app-of-apps chart itself. A release
@@ -323,6 +374,17 @@ web-lockfile-scan: ## trivy fs on web/pnpm-lock.yaml, dev dependencies included;
 	  trivy "$$@" -v "$$(dirname "$(WEB_LOCKFILE_SARIF)"):/sarif" $(TRIVY_IMAGE) convert --format sarif \
 		--severity HIGH,CRITICAL --output "/sarif/$$(basename "$(WEB_LOCKFILE_SARIF)")" /out/trivy.json || exit 1; fi; \
 	deploy/ci/scan-gate.sh --fs "$$label" "$$tmp/trivy.json"
+
+# The grype gate of the image pipeline, from a machine: grype on an SPDX SBOM, then deploy/ci/scan-gate.sh --grype (any
+# Critical left after .trivyignore.yaml fails; an expired entry there fails too). SBOM=<absolute path> scans that
+# document; IMAGE=<ref>@sha256:<digest> [ARCH=amd64|arm64] first has the pinned syft read the image of that platform
+# from its registry, anonymously. grype needs the network for its DB, and a DB it cannot fetch fails the target.
+# SVP_GRYPE_CACHE, when set, keeps the DB in that directory (it is about 3 GB unpacked); unset, in $TMPDIR.
+SBOM ?=
+IMAGE ?=
+ARCH ?= amd64
+grype: ## grype + gate on an SBOM (SBOM=<absolute path of SPDX JSON>) or an image (IMAGE=<ref@sha256:...> [ARCH=amd64|arm64])
+	@bash -c '. deploy/ci/common.sh && grype_check "$$1" "$$2" "$$3"' grype '$(SBOM)' '$(IMAGE)' '$(ARCH)'
 
 # Checks renovate.json as the GitHub App reads it, a repository config (--no-global), and fails on any error or on an
 # option that needs migrating (--strict): with the pinned Renovate image, no network, the repository mounted read-only
@@ -512,3 +574,5 @@ web-sourcemaps: ## Upload the source maps of the web client's browser bundle, fr
 -include deploy/k8s/k8s.mk
 # Load test targets (k6, stage 6).
 -include deploy/k6/k6.mk
+# DAST target (Schemathesis, stage 6b).
+-include deploy/dast/dast.mk

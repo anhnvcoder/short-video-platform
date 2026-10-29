@@ -387,12 +387,12 @@ jobs:
           if-no-files-found: ignore
 
   # The whole compose stack of make up on the runner, driven as on a dev machine: make smoke, the web client's
-  # end-to-end tests, the k6 profile ci (error thresholds only: a shared runner says nothing about latency) and
-  # Lighthouse. A report, not a check: ci-ok does not need it, so a red
+  # end-to-end tests, the k6 profile ci (error thresholds only: a shared runner says nothing about latency),
+  # Lighthouse and Schemathesis against the gateway's OpenAPI contract. A report, not a check: ci-ok does not need it, so a red
   # stack (a flaky end-to-end test on a shared runner) never blocks a merge; whoever reads the pull request sees its
   # result under this name. It builds and runs the pull request's code like the other jobs, with contents: read and no
   # secret: make env writes a .env of fresh random secrets that lives on this runner until the job ends, never printed
-  # or uploaded. The LOCAL LAB ONLY resets of smoke, e2e, k6 and Lighthouse (they delete the gateway's register rate
+  # or uploaded. The LOCAL LAB ONLY resets of smoke, e2e, k6, Lighthouse and DAST (they delete the gateway's register rate
   # limit keys in Redis db 10) touch only the Redis service container below, which belongs to this run.
   stack:
     name: stack (end-to-end, report only)
@@ -489,6 +489,13 @@ jobs:
       - id: lighthouse
         run: make web-lighthouse
         continue-on-error: true
+      # DAST of the gateway against its OpenAPI contract (deploy/dast/run.sh). Report only, like Lighthouse. Last of the
+      # checks: it uses up the gateway's per-IP and per-user rate limits. Its output stays in .dast/ on the runner;
+      # the log shows only the summary it prints from the files it found clean.
+      - id: dast
+        run: make dast
+        continue-on-error: true
+        timeout-minutes: 15
       - name: Container state
         if: failure()
         run: make ps
@@ -526,6 +533,30 @@ jobs:
           path: |
             web/test-results/lighthouse/*.html
             web/test-results/lighthouse/*.json
+          if-no-files-found: ignore
+      # Only report.json (counts, failure titles, seed) and summary.json (requests by status and operation) may leave
+      # the runner; schemathesis.log, junit.xml and requests.har hold response bodies with tokens and presigned forms.
+      # deploy/dast/run.sh fails the run when either of the two holds a secret but leaves them in place: the same check
+      # again here, so they reach the public artifact only when clean. Skipped when the step was cancelled or never ran.
+      - name: Pick the DAST reports
+        if: always() && (steps.dast.outcome == 'success' || steps.dast.outcome == 'failure')
+        run: |
+          mkdir -p "$RUNNER_TEMP/dast"
+          for report in .dast/*/report.json .dast/*/summary.json; do
+            [ -f "$report" ] || continue
+            if grep -qE 'eyJ[A-Za-z0-9_-]{8,}|"access_token"|"refresh_token"|svp_sid|Bearer [A-Za-z0-9]' "$report" ||
+              grep -qiE 'X-Amz-Signature|X-Amz-Credential' "$report"; then
+              echo "::warning::$report looks like it holds a secret: not uploaded"
+              continue
+            fi
+            cp "$report" "$RUNNER_TEMP/dast/"
+          done
+      - name: Keep the DAST reports
+        if: always() && (steps.dast.outcome == 'success' || steps.dast.outcome == 'failure')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dast
+          path: ${{ runner.temp }}/dast/
           if-no-files-found: ignore
       - name: make down
         if: always()

@@ -44,7 +44,7 @@ func validClaims(sub string) jwt.MapClaims {
 }
 
 // sign builds a token with method, claims and extra header fields, signed with key.
-func sign(t *testing.T, method jwt.SigningMethod, key any, kid string, claims jwt.MapClaims, header map[string]any) string {
+func sign(t testing.TB, method jwt.SigningMethod, key any, kid string, claims jwt.MapClaims, header map[string]any) string {
 	t.Helper()
 	tok := jwt.NewWithClaims(method, claims)
 	if kid != "" {
