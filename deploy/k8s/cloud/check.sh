@@ -20,7 +20,7 @@
 #   4. What a schema cannot say: every Chaos Mesh experiment has a duration of at most 30 minutes and a selector bound
 #      to the one namespace it lives in (svp or svp-data, never kube-system or any other) with a label, expression or
 #      pod selector; Chaos Mesh's controller, in its cloud render and its runner render, is namespaced with svp as its
-#      one target and comes with no dashboard or DNS server; in the runner render its ENABLED_CONTROLLERS has no
+#      one target and comes with no dashboard or DNS server; in both renders its ENABLED_CONTROLLERS has no
 #      multi-cluster controller (remotecluster, <kind>-remote-apply) and no "*", and has the five controllers of each
 #      chaos kind of the pinned chart's CRDs (<kind>-records, -initFinalizers, -desiredphase, -condition,
 #      -cleanFinalizers) and the one of each child kind (podhttpchaos, podiochaos, podnetworkchaos); every image in the
@@ -216,7 +216,7 @@ fi
 
 # Chaos Mesh's controller in each render of its chart (cloud values, and the runner's overlay after them): namespaced
 # (CLUSTER_SCOPED false) with svp as its one target, as experiments (a) and (b) need, and no dashboard or DNS server, so
-# that an overlay cannot widen what the controller reaches or open a UI. In the runner render, its controllers
+# that an overlay cannot widen what the controller reaches or open a UI. In both renders, its controllers
 # (ENABLED_CONTROLLERS) are listed one by one without the multi-cluster ones: remotecluster lists a cluster-scoped kind
 # a namespaced controller may not, and its cache never syncing makes the manager exit. The controller stops setting up
 # pipelines at the first chaos kind it does not find in the list, so every chaos kind of the chart's CRDs has its five.
@@ -237,25 +237,24 @@ scope=$(jq -rs --argjson kinds "$chaos_kinds" '
       (if $env.TARGET_NAMESPACE != "svp" then "TARGET_NAMESPACE is \($env.TARGET_NAMESPACE | tojson), not \"svp\"" else empty end),
       (map(.doc | select(.kind == "Deployment" and (.metadata.name | test("dashboard|dns"))) | .metadata.name)[]
         | "Deployment \(.) rendered"),
-      (if $f != "rendered__chaos-mesh-runner.yaml" then empty
-       else
-         ($on | map(select(. == "*" or . == "remotecluster" or endswith("-remote-apply")))
-           | if length > 0 then "ENABLED_CONTROLLERS turns on \(join(", ")): a multi-cluster controller, or all of them"
-             else empty end),
-         ($want - $on | if length > 0 then "ENABLED_CONTROLLERS lacks \(join(", "))" else empty end)
-       end)
+      ($on | map(select(. == "*" or . == "remotecluster" or endswith("-remote-apply")))
+        | if length > 0 then "ENABLED_CONTROLLERS turns on \(join(", ")): a multi-cluster controller, or all of them"
+          else empty end),
+      ($want - $on | if length > 0 then "ENABLED_CONTROLLERS lacks \(join(", "))" else empty end)
     ][] | "  \($f | gsub("__"; "/")): \(.)"
 ' "$tmp/docs.jsonl") || fail "read the Chaos Mesh renders as JSON"
-renders=$(jq -r 'select(.file | test("^rendered__chaos-mesh(-runner)?\\.yaml$")) | .file' "$tmp/docs.jsonl" | sort -u | wc -l | tr -d ' ')
+renders=$(jq -r 'select(.file | test("^rendered__chaos-mesh(-runner)?\\.yaml$")) | .file' "$tmp/docs.jsonl" | sort -u)
 if [ -n "$scope" ]; then
   printf 'FAIL  Chaos Mesh controller not namespaced on svp alone, a UI rendered, or its controllers wrong:\n%s\n' "$scope" >&2
   failed=1
-elif [ "$renders" -ne 2 ]; then
-  echo "FAIL  Chaos Mesh: $renders render(s) found, expected the cloud one and the runner's" >&2
+elif [ "$(wc -l <<<"$renders" | tr -d ' ')" -ne 2 ]; then
+  echo "FAIL  Chaos Mesh: renders found [${renders//$'\n'/ }], expected the cloud one and the runner's" >&2
   failed=1
 else
-  echo "ok    Chaos Mesh controller namespaced on svp, no dashboard or DNS server (cloud and runner renders);" \
-    "runner: $(jq length <<<"$chaos_kinds") chaos kinds' controllers listed, no multi-cluster one"
+  for f in $renders; do
+    echo "ok    Chaos Mesh ${f//__//}: controller namespaced on svp, no dashboard or DNS server," \
+      "$(jq length <<<"$chaos_kinds") chaos kinds' controllers listed, no \"*\" or multi-cluster one"
+  done
 fi
 
 # Images: every string field named image, and every env value whose name has the word IMAGE (the pause image of

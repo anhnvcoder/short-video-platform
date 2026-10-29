@@ -36,5 +36,8 @@ spec:
   selector:
     namespaces:
       - svp
+    # component server: the service's own pods; its migration Job's pods share the name label and, once Completed, are
+    # "not running", which a kill passes over and a network fault cannot be injected into.
     labelSelectors:
       app.kubernetes.io/name: gateway
+      app.kubernetes.io/component: server

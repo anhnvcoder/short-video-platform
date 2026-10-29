@@ -5,7 +5,8 @@ hpa: a HorizontalPodAutoscaler on CPU, read from the metrics-server k3s ships. U
 container's CPU request, which every release sets, so a gateway asking 100m scales out once its pods average 70m.
 
 pdb: a PodDisruptionBudget, only where at least two replicas always run: an HPA whose minimum is two or more, or a
-fixed replica count of two or more without any autoscaler (the web client). A voluntary disruption (a node drain, an
+fixed replica count of two or more without any autoscaler (the web client; in the prd overlay also user-, video- and
+engagement-service). A voluntary disruption (a node drain, an
 eviction) may then take one pod at a time, never the last one serving. It selects pods by label, so for a Rollout it
 counts the stable and the canary pods alike; Argo Rollouts' own restart (spec.restartAt) evicts through it too.
 

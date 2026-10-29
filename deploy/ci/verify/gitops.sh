@@ -190,9 +190,14 @@ scenario_targets() {
 # refused a name not in the scenario's list: neither name chosen, it skips (exit 0) without traffic or wait;
 # wait-release alone waits and names the release; measure-gitops without wait-release fails at once, as it measures
 # the release that wait finds.
+# Deadline, the one of verify-run.sh: nothing here starts, and nothing runs, past the job's start
+# ($SVP_VERIFY_OUT/job-start) + SVP_VERIFY_JOB_MINUTES - 25 min, the time the collect, upload and k8s-down steps keep
+# (without the file, as on a VM, counted from now). The 90 and 20 min of the two waits end there when it comes first,
+# and each make measure-gitops is stopped there. Less than a minute left before the wait (or the measure) starts: it
+# is skipped with that reason, and the step fails, as a target verify-run.sh skips for its deadline fails the run.
 release_wait() {
   local token=${GH_TOKEN:-} targets=${SVP_VERIFY_TARGETS:-} wait=1 measure=1 out base head rel= changed deadline rc svc \
-    new old json no_push
+    new old json no_push job_start job_minutes cutoff left start_measure
   unset GH_TOKEN
   case $targets in
   *[!a-z0-9\ -]*)
@@ -217,8 +222,19 @@ release_wait() {
     echo "skipped: this run follows $gitops_rev, where no release is merged for it; a release is waited for and measured on a run of main"
     return 0
   fi
-  out=${SVP_VERIFY_OUT:-$(ci_temp_dir)/verify}/logs
+  out=${SVP_VERIFY_OUT:-$(ci_temp_dir)/verify}
+  job_start=$(cat "$out/job-start" 2>/dev/null) || job_start=
+  case $job_start in '' | *[!0-9]*) job_start=$(date +%s) ;; esac
+  job_minutes=${SVP_VERIFY_JOB_MINUTES:-$job_minutes_default}
+  case $job_minutes in '' | *[!0-9]*) job_minutes=$job_minutes_default ;; esac
+  cutoff=$((job_start + job_minutes * 60 - 25 * 60))
+  out=$out/logs
   mkdir -p "$out" || return 1
+  if [ $((cutoff - $(date +%s))) -lt 60 ]; then
+    echo "skipped: deadline: less than a minute left before $(date -u -d "@$cutoff" +%H:%M:%SZ 2>/dev/null || echo "$cutoff")" \
+      "(job start + $job_minutes min - 25 min), so no release is waited for or measured"
+    return 1
+  fi
   if ! kubectl --context k3d-svp --request-timeout=10s get --raw /readyz >/dev/null 2>&1; then
     echo "FAIL  cluster svp does not answer (did k8s-gitops-up pass?): there is no cluster to roll a release out on"
     return 1
@@ -227,20 +243,30 @@ release_wait() {
     echo "FAIL  origin/main is not in this clone"
     return 1
   }
-  make -C "$gitops_repo" k8s-traffic-start >>"$out/release-wait.log" 2>&1 || {
+  # traffic.sh start returns within seconds; the bound only keeps a stuck start from passing the deadline.
+  timeout -k 10 $(((cutoff - $(date +%s)) < 120 ? cutoff - $(date +%s) : 120)) \
+    make -C "$gitops_repo" k8s-traffic-start >>"$out/release-wait.log" 2>&1 || {
     echo "FAIL  make k8s-traffic-start (release-wait.log)"
     return 1
   }
   # shellcheck disable=SC2064 # the folder is fixed now
   trap "make -C '$gitops_repo' k8s-traffic-stop >>'$out/release-wait.log' 2>&1" EXIT
-  echo "waiting up to 90 min for main to move from ${base:0:12} to a release; drill traffic runs meanwhile"
-  deadline=$((SECONDS + 90 * 60))
+  deadline=$(($(date +%s) + 90 * 60))
+  [ "$cutoff" -lt "$deadline" ] && deadline=$cutoff
+  echo "waiting up to $(((deadline - $(date +%s)) / 60)) min for main to move from ${base:0:12} to a release; drill traffic runs meanwhile"
   while [ -z "$rel" ]; do
-    head=$(GIT_TERMINAL_PROMPT=0 git -C "$gitops_repo" ls-remote origin refs/heads/main 2>>"$out/release-wait.log" |
-      cut -f1) || head=
-    if [[ $head =~ ^[0-9a-f]{40}$ ]] && [ "$head" != "$base" ]; then
-      GIT_TERMINAL_PROMPT=0 git -C "$gitops_repo" fetch -q origin "+refs/heads/main:refs/remotes/origin/main" \
-        >>"$out/release-wait.log" 2>&1 || {
+    # Each call to GitHub within 60 s and before the deadline (GNU timeout reads 0 as no limit: none starts then).
+    left=$((deadline - $(date +%s)))
+    left=$((left < 60 ? left : 60))
+    head=
+    if [ "$left" -gt 0 ]; then
+      head=$(GIT_TERMINAL_PROMPT=0 timeout -k 5 "$left" git -C "$gitops_repo" ls-remote origin refs/heads/main \
+        2>>"$out/release-wait.log" | cut -f1) || head=
+    fi
+    left=$((deadline - $(date +%s)))
+    if [[ $head =~ ^[0-9a-f]{40}$ ]] && [ "$head" != "$base" ] && [ "$left" -gt 0 ]; then
+      GIT_TERMINAL_PROMPT=0 timeout -k 5 $((left < 60 ? left : 60)) git -C "$gitops_repo" fetch -q origin \
+        "+refs/heads/main:refs/remotes/origin/main" >>"$out/release-wait.log" 2>&1 || {
         echo "FAIL  git fetch of main at ${head:0:12}"
         return 1
       }
@@ -260,31 +286,49 @@ release_wait() {
       echo "main moved to ${head:0:12}, which changes no image.digest of deploy/k8s/values/services/; waiting on"
       base=$head
     fi
-    if [ "$SECONDS" -ge "$deadline" ]; then
-      echo "FAIL  no release: main did not move to a commit that changes an image.digest within 90 min"
+    left=$((deadline - $(date +%s)))
+    if [ "$left" -le 0 ]; then
+      if [ "$deadline" = "$cutoff" ]; then
+        echo "FAIL  no release: main did not move to a commit that changes an image.digest before the job's deadline (job start + $job_minutes min - 25 min)"
+      else
+        echo "FAIL  no release: main did not move to a commit that changes an image.digest within 90 min"
+      fi
       return 1
     fi
-    sleep 30
+    sleep $((left < 30 ? left : 30))
   done
   if [ -z "$measure" ]; then
     echo "measure-gitops: skipped, not in targets"
     return 0
   fi
-  deadline=$((SECONDS + 20 * 60))
+  if [ $((cutoff - $(date +%s))) -lt 60 ]; then
+    echo "FAIL  measure-gitops: skipped: deadline: less than a minute left of the job (job start + $job_minutes min - 25 min) after the release ${rel:0:12} was found"
+    return 1
+  fi
+  start_measure=$(date +%s)
+  deadline=$((start_measure + 20 * 60))
+  [ "$cutoff" -lt "$deadline" ] && deadline=$cutoff
   json=$gitops_repo/.k8s/drills/gitops-${rel:0:12}.json
+  rc=2
   while :; do
+    # GNU timeout: exit 124 once the deadline stops it, 137 when it had to kill it; 0 would be no limit, so none
+    # starts then (rc and no_push keep the last try's).
+    left=$((deadline - $(date +%s)))
+    [ "$left" -gt 0 ] || break
     rc=0 no_push=
     if [ -n "$token" ]; then
-      GH_TOKEN=$token make -C "$gitops_repo" measure-gitops REV="$rel" >>"$out/measure-gitops.log" 2>&1 || rc=$?
+      GH_TOKEN=$token timeout -k 30 "$left" make -C "$gitops_repo" measure-gitops REV="$rel" \
+        >>"$out/measure-gitops.log" 2>&1 || rc=$?
     else
-      make -C "$gitops_repo" measure-gitops REV="$rel" >>"$out/measure-gitops.log" 2>&1 || rc=$?
+      timeout -k 30 "$left" make -C "$gitops_repo" measure-gitops REV="$rel" >>"$out/measure-gitops.log" 2>&1 || rc=$?
     fi
     # Measured, but without the push: GitHub's events list a push seconds to minutes after it, and the time from the
     # push is the number this step is for. The sync and the pods are read after the fact, so measuring again later
     # gives the same times, with the push once the events list it.
     if [ "$rc" = 0 ] && [ "$(jq -r '.push // empty' "$json" 2>/dev/null)" = "" ]; then rc=2 no_push=1; fi
-    [ "$rc" = 2 ] && [ "$SECONDS" -lt "$deadline" ] || break
-    sleep 30
+    left=$((deadline - $(date +%s)))
+    [ "$rc" = 2 ] && [ "$left" -gt 0 ] || break
+    sleep $((left < 30 ? left : 30))
   done
   case $rc in
   0)
@@ -293,10 +337,14 @@ release_wait() {
     ;;
   2)
     if [ -n "$no_push" ]; then
-      echo "FAIL  make measure-gitops REV=${rel:0:12}: synced and Ready, but GitHub's events did not list its push within 20 min, so there is no time from the push (measure-gitops.log, .k8s/drills/gitops-${rel:0:12}.json)"
+      echo "FAIL  make measure-gitops REV=${rel:0:12}: synced and Ready, but GitHub's events did not list its push within $(((deadline - start_measure + 59) / 60)) min, so there is no time from the push (measure-gitops.log, .k8s/drills/gitops-${rel:0:12}.json)"
     else
-      echo "FAIL  make measure-gitops REV=${rel:0:12}: still not pushed, synced or Ready after 20 min (measure-gitops.log)"
+      echo "FAIL  make measure-gitops REV=${rel:0:12}: still not pushed, synced or Ready after $(((deadline - start_measure + 59) / 60)) min (measure-gitops.log)"
     fi
+    rc=1
+    ;;
+  124 | 137)
+    echo "FAIL  make measure-gitops REV=${rel:0:12}: stopped when its $(((deadline - start_measure + 59) / 60)) min ran out (20 min, or less to end by the job's deadline) (measure-gitops.log)"
     rc=1
     ;;
   *) echo "FAIL  make measure-gitops REV=${rel:0:12}: exit $rc (measure-gitops.log)" ;;

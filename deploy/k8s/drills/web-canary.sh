@@ -524,6 +524,8 @@ fi
 traffic_pid=${running%% *}
 : >"$work/pod-samples"
 sample_pods
+# The pods that exist before the drill and their restart counts: a pod created later counts its restarts from 0.
+cp "$work/pod-samples" "$work/pod-baseline"
 
 # 1. Good revision: build B.
 echo "1. good revision: image $tag_b_candidate (build B) over stable build A"
@@ -638,13 +640,16 @@ echo "4. build A back: image $tag_a over stable build B"
 good_canary original "$tag_a" "$build_b"
 tag_b=
 
-# Restarts of web pods while the canaries ran (probes included): the restart count of each pod over its first sample.
+# Restarts of web pods while the canaries ran (probes included): the restart count of each pod over its count before
+# the drill, or over 0 for a pod the drill created (its first sample may come after a restart).
 sample_pods
-restarted=$(awk 'NF >= 3 {
-    if (!($1 in first)) { first[$1] = $3 + 0; max[$1] = $3 + 0 }
+restarted=$(awk 'FILENAME == ARGV[1] { if (NF >= 3) base[$1] = $3 + 0; next }
+  NF >= 3 {
+    if (!($1 in max)) { first[$1] = ($1 in base) ? base[$1] : 0; max[$1] = $3 + 0; name[$1] = $2; why[$1] = $4 }
     if ($3 + 0 >= max[$1]) { max[$1] = $3 + 0; name[$1] = $2; why[$1] = $4 }
   }
-  END { for (u in max) if (max[u] > first[u]) printf "%s %d %s\n", name[u], max[u] - first[u], why[u] }' "$work/pod-samples")
+  END { for (u in max) if (max[u] > first[u]) printf "%s %d %s\n", name[u], max[u] - first[u], why[u] }' \
+  "$work/pod-baseline" "$work/pod-samples")
 pods_seen=$(awk 'NF >= 3 { print $1 }' "$work/pod-samples" | sort -u | wc -l | tr -d ' ')
 
 # The skew control (the good canaries: the bad one runs the build of its stable revision) and the reload limit (every

@@ -1,6 +1,8 @@
 # 0024. Nhiều môi trường dev, stg, prd: build một lần, mọi env chạy cùng digest đã ký, khác biệt chỉ ở overlay values `deploy/k8s/envs/<env>/` mà Argo CD chọn theo giá trị `env` của root Application; ở giai đoạn 6b cluster GitOps trên k3d đóng vai stg, prd chỉ render và kiểm tĩnh
 
-- Trạng thái: Chấp nhận (người học duyệt 2026-10-26, chọn (a) ở cả bảy dòng "Cần người học chọn")
+- Trạng thái: Chấp nhận (người học duyệt 2026-10-26, chọn (a) ở cả bảy dòng "Cần người học chọn"). Phần 3 của giai đoạn 6b
+  hiện thực 2026-10-26; "k3d đóng vai stg" chạy trên runner 2026-10-28 (kịch bản `gitops`, mục Kiểm chứng sau); phần 4 và giai
+  đoạn 7 chưa hiện thực
 - Ngày: 2026-10-26
 
 ## Bối cảnh
@@ -367,11 +369,11 @@ Giả định chưa kiểm được lúc viết; mỗi dòng nêu phép kiểm c
 
 | Giả định | Phép kiểm | Kết quả |
 | --- | --- | --- |
-| Helm trong Argo CD v3.5.5 đọc `.Files.Glob` qua symlink thư mục `files/envs` của chart `apps` như `helm` trên máy | Phần 3: `make helm-check` trên máy; kịch bản `gitops` trên runner: root `Synced`, Application `gateway` có `deploy/k8s/envs/stg/gateway.yaml` trong `valueFiles` | Chưa kiểm |
-| Overlay stg áp thật lên pod | Kịch bản `gitops`: pod gateway có `SENTRY_ENVIRONMENT=stg`; event GlitchTip của lượt e2e mang environment `stg` | Chưa kiểm |
-| Render các component của stg chỉ khác render GitOps trước overlay ở sáu biến `SENTRY_ENVIRONMENT` | Phần 3: `helm template` trước và sau, `diff` | Chưa kiểm |
-| Render prd không còn `svp.localhost`, image của mọi env bằng gốc | Phần 3: `make helm-check`, `deploy/k8s/check-image-digests.sh` | Chưa kiểm |
-| Chart `apps` từ chối env lạ, file overlay không có component, overlay có `image` | Phần 3: ba ca âm trên bản sao tạm | Chưa kiểm |
+| Helm trong Argo CD v3.5.5 đọc `.Files.Glob` qua symlink thư mục `files/envs` của chart `apps` như `helm` trên máy | Phần 3: `make helm-check` trên máy; kịch bản `gitops` trên runner: root `Synced`, Application `gateway` có `deploy/k8s/envs/stg/gateway.yaml` trong `valueFiles` | Đạt: `make helm-check` trên máy (2026-10-26); runner (2026-10-28, [40620627534](https://github.com/anhnvcoder/short-video-platform/actions/runs/40620627534), bước `gitops-env`): root và 25/25 Application Synced/Healthy, Application `gateway` có `$values/deploy/k8s/envs/stg/gateway.yaml` trong `valueFiles` |
+| Overlay stg áp thật lên pod | Kịch bản `gitops`: pod gateway có `SENTRY_ENVIRONMENT=stg`; event GlitchTip của lượt e2e mang environment `stg` | Pod: đạt (2026-10-28, [40620627534](https://github.com/anhnvcoder/short-video-platform/actions/runs/40620627534)): hai pod gateway Running có `SENTRY_ENVIRONMENT=stg`. Event GlitchTip: chưa kiểm, lượt trên nhánh chạy e2e không `SVP_E2E_GLITCHTIP=1` (không có source map của image CI); kiểm ở lượt `gitops` trên `main` sau merge |
+| Render các component của stg chỉ khác render GitOps trước overlay ở sáu biến `SENTRY_ENVIRONMENT` | Phần 3: `helm template` trước và sau, `diff` | Đạt (2026-10-26): mỗi service đúng một dòng `SENTRY_ENVIRONMENT` `k3d` → `stg`; root với `env=stg` chỉ thêm một dòng `valueFiles` cho sáu Application, không thêm nguồn; chart khác không đổi |
+| Render prd không còn `svp.localhost`, image của mọi env bằng gốc | Phần 3: `make helm-check`, `deploy/k8s/check-image-digests.sh` | Đạt (2026-10-26): `make helm-check` exit 0 (bỏ `apexHost` của prd trên bản sao thì FAIL đúng hai dòng); `check-image-digests.sh` exit 0 với 14 render overlay, ca âm (`postgres.image` ở prd, `image.tag` ở stg) FAIL nêu đúng hai overlay |
+| Chart `apps` từ chối env lạ, file overlay không có component, overlay có `image` | Phần 3: ba ca âm trên bản sao tạm | Đạt (2026-10-26): env `dev`, `../stg`, `stg/x`, rỗng; file `nosuch.yaml`, `gateway.yml`; overlay có `image`, `canary`, `httpRoute.name`; file là list, YAML hỏng: đều fail đúng message; file ẩn bị bỏ qua |
 | user-service, video-service, engagement-service đúng khi chạy 2 replica (relay outbox một khoá advisory, consumer group, job dọn upload một khoá) | Giai đoạn 7: stg EKS với sàn replica của prd, `make k8s-smoke` và diễn tập trùng event | Chưa kiểm |
 | PR của bot chỉ đổi `envs/stg/images/` tự merge sau check; PR đổi `envs/prd/` hay file chung không merge được khi chưa có duyệt của người học | Phần 4, **kiểm sau push**: một bản phát hành và một lần promote prd thật | Chưa kiểm |
 | Check của PR prd nhận bộ digest bằng đúng payload của một bản ghi triển khai stg `success`, từ chối bộ ghép từ hai bản ghi và bộ chỉ có trong lịch sử `envs/stg/` | Phần 4, **kiểm sau push**: một lượt `gitops` xanh ghi bản ghi rồi promote prd (check xanh); một PR thử sửa tay một file của `envs/prd/images/` sang digest của bản ghi khác (check đỏ); một PR thử với bộ đã merge vào `envs/stg/images/` mà không có lượt `gitops` nào (check đỏ) | Chưa kiểm |
@@ -398,8 +400,7 @@ Giả định chưa kiểm được lúc viết; mỗi dòng nêu phép kiểm c
   - Source Hydrator lên GA trong bản Argo CD ghim, hay GitOps Promoter tới 1.0: xét thay PR promote tự viết (lựa chọn 1E).
   - Overlay của một env dài gần bằng gốc: xét lại cái gì thuộc gốc.
   - Một Grafana xem nhiều env (giai đoạn 7): thêm `deployment.environment.name` vào resource của telemetry.
-- **ADR cũ được chỉnh** (ghi "chỉnh bởi 0024" ở trạng thái của chúng và ở `docs/adr/README.md` là việc cập nhật tài liệu sau khi ADR
-  này được chấp nhận và hiện thực):
+- **ADR cũ được chỉnh** (đã ghi "chỉnh bởi 0024" ở trạng thái của chúng và ở `docs/adr/README.md` ngày 2026-10-28):
   - [ADR-0014](0014-kubernetes-local-stage4.md) §12: hai đường cài thành env dev và stg; root `svp-root` thêm giá trị `env`; Application
     con thêm overlay của env; `make k8s-gitops-up` dựng cluster đóng vai stg (phần 3). ApplicationSet, bị loại ở §12, được xét lại ở
     phần 4 (dòng 5).
@@ -416,14 +417,12 @@ Giả định chưa kiểm được lúc viết; mỗi dòng nêu phép kiểm c
 
 ## Hiện thực ở
 
-Chưa hiện thực. Khi hiện thực:
-
-- Phần 3: `deploy/k8s/envs/stg/`, `deploy/k8s/envs/prd/` (overlay); `deploy/argocd/apps/` (`files/envs`, giá trị `env`, overlay
+- Phần 3 (hiện thực 2026-10-26): `deploy/k8s/envs/stg/`, `deploy/k8s/envs/prd/` (overlay); `deploy/argocd/apps/` (`files/envs`, giá trị `env`, overlay
   trong template); `argocd_root_app` của `deploy/k8s/lib.sh` và `deploy/k8s/gitops.sh` (env của root); target `helm-check` của
   `Makefile` và `deploy/k8s/check-image-digests.sh` (phép kiểm tĩnh); `deploy/ci/verify/gitops.sh` (kiểm overlay trên cluster).
-- Phần 4: repo `svp-gitops` (`base/`, `envs/`, CODEOWNERS, ruleset), job promote của `.github/workflows/images.yml`, job ghi bản ghi
+- Phần 4 (chưa hiện thực): repo `svp-gitops` (`base/`, `envs/`, CODEOWNERS, ruleset), job promote của `.github/workflows/images.yml`, job ghi bản ghi
   triển khai stg của `.github/workflows/verify.yml` và các script của mục 8.
-- Giai đoạn 7: `deploy/terraform/` theo mục 9.
+- Giai đoạn 7 (chưa hiện thực): `deploy/terraform/` theo mục 9.
 
 ## Nguồn
 

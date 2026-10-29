@@ -8,7 +8,12 @@
   `make web-lockfile-scan`) và §6 (tệp bỏ qua thứ hai chỉ `misconfigurations`, mỗi mục có `paths`, hạn tối đa 90 ngày,
   `scan-gate.sh --check-ignorefile` kiểm cả hai tệp) chỉnh bởi [0021](0021-deferred-verification-stage6b.md); §3 (đổi các file
   của `deploy/ci/` mà không job image nào đọc: tệp bỏ qua misconfig, script và test của `verify.yml`, `platform-test.sh`,
-  `platform-guard.sh`, không build lại image) chỉnh bởi 0021 và [0023](0023-ci-platform-neutral.md)
+  `platform-guard.sh`, không build lại image) chỉnh bởi 0021 và [0023](0023-ci-platform-neutral.md); §1 (job `gitops` của
+  `verify.yml` thêm `actions: read`, `GH_TOKEN` chỉ ở bước tìm source map và bước chờ phát hành), §4 (chân build `web` của lượt
+  phát hành xuất artifact `web-sourcemaps-<arch>` cùng build cache sau bước push, kèm `image-digest`; mọi chân `web`, cả ở PR, kiểm
+  debug ID của chunk image có trong bộ map) và §9 (cluster GitOps đọc repo qua HTTPS ẩn danh, `make k8s-gitops-up` không còn deploy
+  key) chỉnh bởi 0021 ngày 2026-10-28; §8, §9 (cluster GitOps đóng vai stg với overlay `deploy/k8s/envs/stg/`; Enforce trên stg và
+  prd, Audit trên dev) chỉnh bởi [0024](0024-multi-environment.md)
 - Ngày: 2026-10-20
 
 ## Bối cảnh
@@ -344,6 +349,11 @@ workflow quyết. Các job:
      Docker 28 (image store cổ điển) nén lại layer khi push và manifest digest khác bản cục bộ.
   5. Ghi artifact của chân (`actions/upload-artifact`): digest manifest con, báo cáo JSON trivy, SBOM, giờ bắt đầu và kết
      thúc quét. Artifact là đầu vào duy nhất của `merge` và `sign`.
+  6. Chỉ image `web` (thêm 2026-10-28, [ADR-0021](0021-deferred-verification-stage6b.md) §6): ngay sau `buildx build --load`,
+     `deploy/ci/build-image.sh` xuất stage `sourcemaps` của `deploy/docker/web.Dockerfile` cùng build cache, cùng `SVP_BUILD_ID`,
+     kiểm bộ file (chỉ `_next/static/**/*.{js,map}`, mọi `.js` còn `sourceMappingURL`) và kiểm mọi debug ID của chunk trong image
+     vừa build có trong bộ map (cả ở lượt PR); ở lượt phát hành, sau bước push, upload artifact `web-sourcemaps-<arch>` mang thêm
+     file `image-digest` (digest manifest con đã push của chính chân đó). Lượt PR không upload: không có digest để khớp.
 - **Job `merge`** (mỗi service, khi cả hai chân đạt; `packages: write`): `docker buildx imagetools create --tag
   <repo>:<12 hex>` từ đúng hai `<repo>@<digest con>` trong artifact, kèm annotation index của mục 5 (`--annotation
   "index:<khoá>=<giá trị>"`, `docs/reference/buildx_imagetools_create.md` của buildx); đọc lại index và kiểm nó có đúng hai
@@ -916,6 +926,9 @@ workflow quyết. Các job:
   tag và digest).
 - **Đường dev giữ registry k3d:** `install.sh` truyền `--set image.repository=k3d-svp-registry:5111/svp/<svc>`,
   `--set image.tag=dev-<12 hex image ID>`, `--set image.digest=` cho mỗi release `svp-service` (không ghi file).
+- **Repo của Argo CD** (sửa 2026-10-28, ADR-0021 §6): cluster GitOps đọc repo qua HTTPS ẩn danh, không deploy key, không Secret
+  repo; `make k8s-gitops-up` chỉ còn `GITOPS_REV`, và cluster đó đóng vai stg với overlay `deploy/k8s/envs/stg/`
+  ([ADR-0024](0024-multi-environment.md)).
 - **Bỏ** `make k8s-release`, `deploy/k8s/release.sh` và bước dựng lại image phát hành trong `gitops.sh`. `gitops.sh` đọc
   `repository`, `tag`, `digest` của 6 file ở đúng revision (không working tree) và từ chối **trước khi tạo cluster** khi
   digest rỗng (merge PR promote trước), repository khác `ghcr.io/anhnvcoder/short-video-platform/<svc>`, hay manifest theo
