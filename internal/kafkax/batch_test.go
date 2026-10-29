@@ -94,9 +94,12 @@ func positions(b *Batch) []string {
 	return out
 }
 
-// firstPolled closes ch when the consumer first hands a record out of its buffer.
+// firstPolled records when the consumer first hands a record out of its buffer, then closes ch.
+// franz-go runs this hook on the polling goroutine before PollRecords returns, so at is no later
+// than the moment the consumer starts the MaxBatchWait timer for that record.
 type firstPolled struct {
 	once sync.Once
+	at   time.Time
 	ch   chan struct{}
 }
 
@@ -104,7 +107,10 @@ func newFirstPolled() *firstPolled { return &firstPolled{ch: make(chan struct{})
 
 func (h *firstPolled) OnFetchRecordUnbuffered(_ *kgo.Record, polled bool) {
 	if polled {
-		h.once.Do(func() { close(h.ch) })
+		h.once.Do(func() {
+			h.at = time.Now()
+			close(h.ch)
+		})
 	}
 }
 
@@ -267,10 +273,12 @@ func TestBatchClosesAfterMaxBatchWait(t *testing.T) {
 		}})
 	produce(t, producer(t, brokers), &kgo.Record{Topic: "in", Value: []byte("only")})
 	waitFor(t, polled.ch, "the first poll")
-	polledAt := time.Now()
 	waitFor(t, done, "the batch")
 
-	if d := handledAt.Sub(polledAt); d < wait-50*time.Millisecond || d > 5*time.Second {
+	// Measure from the hook, not from when this goroutine wakes up: under load the wake-up comes
+	// after the consumer has already started the MaxBatchWait timer, which shortened the measured
+	// wait below the lower bound.
+	if d := handledAt.Sub(polled.at); d < wait-50*time.Millisecond || d > 5*time.Second {
 		t.Errorf("handler ran %v after the first record was polled, want about %v", d, wait)
 	}
 }
