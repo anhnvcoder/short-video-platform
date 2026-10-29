@@ -10,7 +10,8 @@
 # name of its first target, which builds what the others use), job_minutes_default (the job's limit when
 # SVP_VERIFY_JOB_MINUTES is not set) and k3d (1 when its targets run on cluster k3d-svp, 0 otherwise), may define
 # helpers of its own (exported when a step runs them through bash -c), and defines scenario_targets, its targets in
-# order through step and skip below. It sets no other variable of this script, and its own are local to its functions
+# order through step and skip below. It may read names (every target of its list, once listed) and call chosen (below)
+# while its targets run. It sets no other variable of this script, and its own are local to its functions
 # with names apart from this script's: step and skip see a caller's locals (bash scopes dynamically), so a local n in
 # scenario_targets would take the place of the target count. A name not in the list of this script, a missing file, a
 # file that does not declare those, or one whose first target is not its build target stops the script before

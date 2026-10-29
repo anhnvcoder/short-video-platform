@@ -3,7 +3,8 @@
 - Trạng thái: Chấp nhận (người học duyệt 2026-10-28, chọn (a) ở cả bốn dòng "Cần người học chọn", gồm kịch bản `gitops` vào
   lịch tuần của `verify.yml`); hiện thực 2026-10-29 (phần 4 của giai đoạn 6b, PR-B, nhánh `feat/stage6b-gitops-split`, PR #39; mục
   Hiện thực ở): `dora-test.sh` xanh ở job `config`; lượt `dora.yml` đầu và số trên bản ghi stg thật kiểm sau merge PR-B; dòng 4 (kịch
-  bản `gitops` vào lịch tuần) chưa làm: job `gitops` của `verify.yml` vẫn chỉ chạy khi dispatch
+  bản `gitops` vào lịch tuần) hiện thực 2026-10-30 ([ADR-0021](0021-deferred-verification-stage6b.md) mục 3): lịch tuần của
+  `verify.yml` chạy job `gitops` không chờ phát hành, bản ghi stg ghi khi bước kịch bản xanh; lượt lịch đầu kiểm sau merge
 - Ngày: 2026-10-28
 
 ## Bối cảnh
@@ -61,7 +62,8 @@
     ([ADR-0021](0021-deferred-verification-stage6b.md)), nằm trong artifact `verify-gitops` giữ 30 ngày. Chưa có lượt nào đo được (các
     lượt `gitops` 2026-10-26 tới 2026-10-28 chạy trên nhánh, bước đó `skipped`).
   - **stg chỉ sống trong một lượt runner:** mỗi lượt `gitops` dựng cluster mới từ đầu, đồng bộ revision hiện tại của `main`, kiểm, rồi
-    xoá. Kịch bản `gitops` chỉ chạy khi được dispatch, không nằm trong lịch tuần của `verify.yml` (ADR-0021).
+    xoá. Lúc viết, kịch bản `gitops` chỉ chạy khi được dispatch, không nằm trong lịch tuần của `verify.yml` (ADR-0021); dòng 4 của
+    "Cần người học chọn" đổi điều đó.
   - **prd** chỉ render và kiểm tĩnh tới giai đoạn 7 (ADR-0024 §5, §9).
   - **Postmortem:** một bản, `docs/postmortems/261024-gameday-engagement-down.md`: game day trên compose, sự cố tiêm có chủ ý, không
     do triển khai nào. Mẫu postmortem chưa có trường máy đọc được.
@@ -295,6 +297,7 @@ Mỗi dòng đề xuất đứng trước. Người học duyệt ngày 2026-10-
 | Footer `Refs:` của PR revert còn trong commit squash của `svp-gitops` với hai cài đặt squash | Một PR revert thử trên `svp-gitops` sau khi tách, đọc `git log` | Chưa kiểm (kiểm sau merge PR-B) |
 | Lượt `dora.yml` đầu sau một lượt `gitops` xanh trên `main` ra một deployment stg, lead time có số, các chỉ số tỷ lệ "chưa đủ dữ liệu" | Phần 4, **kiểm sau push** | Chưa kiểm (kiểm sau merge PR-B) |
 | Sau lượt `gitops` xanh thứ hai trên `main`, bản ghi stg của lượt đầu vẫn có trạng thái hiện tại `success` (`auto_inactive: false`) | `GET .../deployments/{id}/statuses` của bản ghi đầu, phần 4, **kiểm sau push** | Chưa kiểm (kiểm sau merge PR-B) |
+| Dòng 4: lượt lịch tuần của `verify.yml` chạy job `gitops` không chờ phát hành và ghi một bản ghi stg mỗi tuần, nên `dora.yml` (09:17 UTC) thấy deployment của tuần đó | Lượt lịch đầu sau merge (**kiểm sau merge**): job `gitops` có bước kịch bản xanh, `record-stg` ghi bản ghi `success`; lượt `dora.yml` cùng ngày đếm nó. Ca (c), (l) của `drill-k8s-supplychain` quá hạn thì SKIP ở lượt lịch, chỉ được chứng minh ở lượt dispatch chạy sau lượt dựng lại image diễn tập hay rescan (ADR-0021 mục 3) | Chưa kiểm. Nếu sai: tuần không có bản ghi khi `release-set` đỏ vì `main` của `svp-gitops` đổi giữa lượt (một PR promote stg của bot merge đúng lúc đó), hay khi artifact `web-sourcemaps-amd64` của bản web đang chạy đã hết hạn giữ của `images.yml` (bước `gitops-sourcemaps` đỏ trên `main`); tuần đó không có deployment, trần một deployment mỗi tuần thành ít hơn |
 
 ## Hệ quả
 
@@ -342,8 +345,10 @@ Hiện thực 2026-10-29 (PR-B, nhánh `feat/stage6b-gitops-split`):
   `ci_deployment_record` ghi `success` với `auto_inactive: false` (dùng bởi `deploy/ci/record-stg.sh`); test ở
   `deploy/ci/platform-test.sh` (mục 9).
 - `docs/postmortems/README.md` và `docs/postmortems/261024-gameday-engagement-down.md`: front matter của mục 7.
-- Chưa làm: dòng 4 của "Cần người học chọn" (kịch bản `gitops` vào lịch tuần của `verify.yml`; job `gitops` vẫn chỉ chạy khi
-  dispatch); cài đặt squash của `svp-gitops` (mục 5) chưa kiểm.
+- Dòng 4 của "Cần người học chọn" (hiện thực 2026-10-30): job `gitops` của `.github/workflows/verify.yml` chạy cả ở lượt lịch tuần,
+  `SVP_VERIFY_SCHEDULED` bỏ bước chờ phát hành và ca (c), (l) quá hạn của `drill-k8s-supplychain` (`deploy/ci/verify/gitops.sh`);
+  `record-stg` ghi khi bước kịch bản xanh và `release-set.json` có trong artifact (ADR-0021 mục 3).
+- Chưa kiểm: cài đặt squash của `svp-gitops` (mục 5).
 
 ## Nguồn
 

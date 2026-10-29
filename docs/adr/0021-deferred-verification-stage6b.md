@@ -28,6 +28,11 @@
   thêm bước `release-set-before` (trước `k8s-smoke`) và `release-set` (sau `ram-rest-end`), `release-set.json` vào artifact; job mới
   `record-stg` sau `gitops` (chỉ `main`) ghi bản ghi stg với environment `promote`, nên câu "không secret, không environment" của mục 3
   chỉ còn đúng cho các job dựng và kiểm
+- Chỉnh 2026-10-30 (phần 4, sau final review): lịch tuần chạy thêm job `gitops` (người học chọn (a) ở dòng 4 "Cần người học chọn"
+  của [0028](0028-dora-metrics.md) ngày 2026-10-28), lượt lịch không chờ phát hành (`wait-release`, `measure-gitops` `skipped` kèm lý
+  do) và trong `drill-k8s-supplychain` bỏ ca (c), (l) khi image của ca đó quá tuổi tối đa của policy (SKIP kèm dòng `NOTE`); job
+  `record-stg` ghi khi bước kịch bản của `gitops` xanh và `release-set.json` có trong artifact, không còn phụ thuộc bước chờ phát
+  hành; `targets` bỏ một bước kiểm nào (trừ `wait-release`, `measure-gitops`) thì `release-set` `skipped`, không ghi (mục 3)
 - Ngày: 2026-10-24
 
 ## Bối cảnh
@@ -103,7 +108,7 @@ Code, cấu hình và tài liệu dùng đúng các tên này; đổi tên nào 
 | Workflow | `.github/workflows/verify.yml`, `name: verify` | `workflow_dispatch` và `schedule` hằng tuần trên `main` (mục 3, lịch thêm 2026-10-25) |
 | Workflow | Input `scenario` (`type: choice`) | Phần 1: `compose-obs`, `dev-k3d`. Phần 3 thêm: `gitops`, `web-canary`, `k6-cloud-mini`, `chaos`, `velero`. Ngoài nó chỉ có `targets` |
 | Workflow | Input `targets` (`type: string`, mặc định rỗng) | Tên bước của kịch bản cách bằng khoảng trắng, rỗng là mọi bước; vào `verify-run.sh` qua `SVP_VERIFY_TARGETS` (mục 3, sửa 2026-10-25) |
-| Workflow | Job | `compose` (kịch bản `compose-obs`), `k3d` (mọi kịch bản k3d trừ `gitops`), `gitops` (phần 3); mỗi lượt dispatch chạy đúng một job, hai job kia `skipped`; lượt `schedule` chạy `compose` (`compose-obs`) và `k3d` (`dev-k3d`) song song |
+| Workflow | Job | `compose` (kịch bản `compose-obs`), `k3d` (mọi kịch bản k3d trừ `gitops`), `gitops` (phần 3); mỗi lượt dispatch chạy đúng một job, hai job kia `skipped`; lượt `schedule` chạy `compose` (`compose-obs`), `k3d` (`dev-k3d`) và, từ 2026-10-30, `gitops` (`gitops`) song song |
 | Workflow | Runner | `ubuntu-24.04` (amd64) cho cả ba job |
 | Workflow | `concurrency` | group `verify-<kịch bản>` (lượt `schedule`: `verify-schedule`), `cancel-in-progress: false` (mục 3, sửa 2026-10-25) |
 | Script | `deploy/ci/verify-host.sh` | Kiểm và chuẩn bị máy: cổng đĩa, `/etc/hosts`, độ lệch version kubectl, `sch_netem`, hạn chế AppArmor của user namespace cho sandbox của Chrome ở `compose-obs` (mục 2, 3) |
@@ -274,6 +279,30 @@ Code, cấu hình và tài liệu dùng đúng các tên này; đổi tên nào 
   "run on the latest commit on the default branch", `GITHUB_REF` là nhánh mặc định; "In a public repository, scheduled workflows
   are automatically disabled when no repository activity has occurred in 60 days" (bật lại ở tab Actions). Lượt lịch chỉ kiểm được
   sau khi `verify.yml` có lịch đã merge vào `main` (**kiểm sau push**).
+  - **Từ 2026-10-30 lượt lịch chạy thêm job `gitops`** (dòng 4 của "Cần người học chọn" ở [0028](0028-dora-metrics.md): không có
+    nó, deployment frequency của stg lab chỉ đo nhịp người học dispatch). `if:` của job đúng khi `github.event_name == 'schedule'`
+    hay `inputs.scenario == 'gitops'`, bước kiểm ref nhận `schedule:refs/heads/main` như hai job kia, `SCENARIO` vẫn là `gitops`,
+    `targets` rỗng, quyền giữ nguyên. YAML báo cho script biết lượt là lịch qua `SVP_VERIFY_SCHEDULED` (`true` ở lượt lịch, rỗng ở
+    lượt dispatch; script chỉ coi đúng `true` là lịch) ở bước kịch bản và bước chờ. Lượt lịch **không chờ phát hành**: không ai merge
+    bản phát hành cho nó, nên bước chờ chỉ có thể đỏ; `wait-release`, `measure-gitops` in lý do rồi qua. Ca (c) của
+    `drill-k8s-supplychain` (image diễn tập `drill-vulnerable`) và ca (l) (bản web trước provenance) chỉ đạt trong 72 giờ sau lượt
+    `images.yml` dựng lại image diễn tập hay rescan bản đó; rescan hằng ngày không quét hai image này, và không ai dispatch trước
+    lượt lịch. Chỉ ở lượt lịch, `gitops_stale` của `deploy/ci/verify/gitops.sh` đọc `scanFinishedOn` của hai image (cosign ẩn danh,
+    như drill đọc) và khi quá tuổi tối đa của policy thì không đưa image đó cho drill (ca đó SKIP, không làm gì đỏ), in một dòng
+    `NOTE` nêu ca, tuổi và lệnh dispatch; mọi ca khác vẫn phải PASS. Lượt dispatch giữ nguyên: ca quá hạn là đỏ. Vì vậy (c), (l)
+    chỉ được chứng minh ở lượt dispatch chạy sau lượt dựng lại hay rescan đó. Job dài nhất của lượt lịch (330 phút) xong trước
+    06:17 UTC, trước `dora.yml` (09:17 UTC, [0028](0028-dora-metrics.md) §8).
+  - **Bản ghi stg** (job `record-stg`, [0025](0025-gitops-config-repo.md) §6, [0024](0024-multi-environment.md) §8) ghi theo một quy
+    tắc, cho lượt dispatch lẫn lượt lịch: **bước kịch bản của job `gitops` xanh và `release-set.json` có trong artifact**. Bước kịch
+    bản có `id: scenario`; sau bước gom và lọc, một bước `if: !cancelled() && steps.ref.outcome == 'success' &&
+    steps.scenario.outcome == 'success'` (không có hàm trạng thái thì GitHub ngầm thêm `success()`, bước chờ đỏ sẽ làm bước này bị
+    bỏ) đặt output `recorded=true` khi file có; job `gitops` xuất output đó (chỉ cờ, không giá trị nào của artifact); `record-stg`
+    có `if: !cancelled() && needs.gitops.outputs.recorded == 'true' && github.ref == 'refs/heads/main'`. Bước chờ phát hành đỏ vẫn
+    làm job `gitops` đỏ (số đo `measure-gitops` là của nó) nhưng không chặn bản ghi; một bước kiểm nào của kịch bản đỏ thì bước
+    kịch bản đỏ, không ghi. `targets` của dispatch bỏ một bước của kịch bản (trừ `wait-release`, `measure-gitops`, chạy sau lần chụp
+    cuối) thì `release-set` `skipped` kèm lý do (bộ chưa được mọi bước kiểm): không ghi. Lượt trên nhánh `feat/stage6b-*` không bao
+    giờ ghi (environment `promote` chỉ nhận `main`), lượt bị huỷ cũng không. Trước 2026-10-30 `record-stg` đòi cả job `gitops` xanh,
+    gồm bước chờ trên `main`: dispatch không kèm phát hành không có bản ghi, promote prd báo "no record of stg counts yet".
 - **Ref:** bước đầu của mỗi job dừng (exit 1, nêu lý do) khi `GITHUB_REF` không phải `refs/heads/main` hay `refs/heads/feat/stage6b-*`
   (lượt `schedule`: chỉ `refs/heads/main`).
   Đây là chặn tai nạn (dispatch nhầm nhánh cũ), không phải ranh giới bảo mật: ai có quyền ghi đẩy được nhánh có `verify.yml` của
@@ -753,6 +782,7 @@ Giả định chưa kiểm được lúc viết; mỗi dòng nêu kịch bản h
 | trivy nhận `misconfigurations` với `paths`, `expired_at` trong tệp bỏ qua của `trivy config` | `make trivy-config` trước và sau khi thêm một mục: số kết quả giảm đúng mục đó | Đạt (2026-10-24): `make trivy-config` 18 → 0 kết quả trên 31 target (4 sửa, 14 vào `deploy/ci/trivy-config-ignore.yaml`, hạn 2027-01-22); tệp tạm có KSV-0125 chỉ cho file của Valkey thì cảnh báo của MinIO vẫn hiện (`paths` đúng phạm vi); `expired_at` là hôm nay thì DS-0026 hiện lại, là ngày mai thì bị bỏ |
 | Rule mới của `RateLimitFallbackActive` đúng tám ca (a)–(h) của mục 11 và giữ RL-2 | `make slo-check` (test promtool); `compose-obs` (`drill-obs-threats` RL-2: page trong 240 s) | Test promtool: `make slo-check` xanh trong job `config` của lượt CI [40129094568](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129094568) (`main` `a9b035a`). RL-2 trên runner ([40129183687](https://github.com/anhnvcoder/short-video-platform/actions/runs/40129183687)): page `startsAt` 76 s, thấy trong Alertmanager 81 s sau login đầu (hạn 240 s): đạt; lượt 2 ([40132157276](https://github.com/anhnvcoder/short-video-platform/actions/runs/40132157276)): 88 s, 91 s |
 | Sampler đếm đúng worker đang transcode trên runner: cgroup của tiến trình `ffmpeg` có UID của pod media-worker (mục 2, sửa 2026-10-25) | `dev-k3d` với `targets='drill-k8s-keda ram-peak'` (hay lượt đủ kịch bản): cột worker transcode của `samples/docker.tsv` lên 2 đúng khoảng CPU của hai pod media-worker cùng cao (`samples/pods.tsv`), `ram-peak.json` có cửa sổ 6 mẫu và MEM USAGE trừ `active_file` | Đếm đúng (2026-10-25, [40160414327](https://github.com/anhnvcoder/short-video-platform/actions/runs/40160414327), `targets='drill-k8s-keda ram-peak'`): trong diễn tập 64 trên 69 mẫu có hai pod `Running`, nhưng cột worker transcode là 1 ở 36 mẫu, 2 ở một mẫu (04:22:41Z, giữa lúc pod thứ hai nhận partition và lúc ghim, đúng mốc 86,2 s và 89,5 s của diễn tập), 0 sau `READY` cuối. Mỗi mẫu có node trên 150 % CPU đều đếm ít nhất 1, mẫu đếm 0 trong diễn tập không node nào trên 150 %; ba pod lần lượt transcode trên cả hai node đều được đếm; `kubectl top` cho cùng hình (một pod 1 873–2 000m, pod kia 1m, trừ mẫu chuyển giữa hai pod lúc 04:23:52Z và mẫu trễ sau `READY` cuối lúc 04:27:56Z). Cửa sổ 6 mẫu và MEM USAGE trừ `active_file` của `ram-peak.json` chưa có số: lượt này thật sự chỉ một worker transcode mỗi lúc (mục Kết quả, lượt 7); kiểm ở lượt đầu có khoảng hai worker cùng transcode. Test của `verify-collect-test.sh` (mẫu giả của `/proc`, `docker`, `kubectl`, `pgrep`; cả đường cgroupfs lẫn systemd, `ffmpeg` ngoài pod, pod không phải media-worker) xanh ngày 2026-10-25 |
+| Lượt `schedule` chạy job `gitops` (từ 2026-10-30) cạnh `compose`, `k3d`: `wait-release`, `measure-gitops` in lý do lượt lịch, ca (c), (l) quá hạn SKIP kèm `NOTE`, mọi bước khác đạt, `record-stg` ghi bản ghi stg `success` | Lượt lịch đầu sau khi merge (**kiểm sau merge**): `gh run view <id>`, `results.tsv` và log `drill-k8s-supplychain` của artifact `verify-gitops`, bản ghi stg mới trên `svp-gitops` | Chưa kiểm. Ca (c), (l) chỉ được chứng minh ở lượt dispatch chạy trong 72 giờ sau lượt `images.yml -f drill=true` hay rescan bản đó |
 | Lượt `schedule` chạy `compose` và `k3d` song song trên `main`, mỗi job đúng kịch bản của nó, mọi bước, hai artifact | Lượt lịch đầu sau khi merge vào `main` (**kiểm sau push**): `gh run list --workflow verify.yml --event schedule`, hai job, `results.tsv` không bước nào `not in targets` | Bước kiểm ref theo `$GITHUB_EVENT_NAME:$GITHUB_REF` qua với `workflow_dispatch` trên nhánh ([40160414327](https://github.com/anhnvcoder/short-video-platform/actions/runs/40160414327)). Lượt lịch: chưa kiểm |
 
 ## Kết quả
@@ -1220,7 +1250,8 @@ RAM của đường GitOps (D1, D2; cách đo và ngưỡng của mục 2: (b) 6
   60 s, 9 863 MiB cuối.
 
 Còn mở, kiểm sau merge PR-B: lượt `gitops` trên `main` với job `record-stg` (bản ghi stg `success`, payload bằng digest trên pod), bước
-chờ phát hành trên `main` của `svp-gitops` và `measure-gitops` đo commit của repo đó, event GlitchTip mang environment `stg`.
+chờ phát hành trên `main` của `svp-gitops` và `measure-gitops` đo commit của repo đó, event GlitchTip mang environment `stg`; lượt lịch
+tuần đầu có job `gitops` (bản ghi stg không cần bước chờ, mục 3).
 
 ## Hệ quả
 
@@ -1244,8 +1275,11 @@ chờ phát hành trên `main` của `svp-gitops` và `measure-gitops` đo commi
   - Đường GitOps phụ thuộc repo còn public và GitHub không chặn git ẩn danh; bản phát hành trong lúc đo cần một người merge đúng lúc.
   - Một lượt mỗi kịch bản mỗi lúc (từ 2026-10-25; trước đó một lượt cho cả workflow): lỗi chung của hai kịch bản có thể đỏ ở cả
     hai lượt chạy song song.
-  - Lượt lịch hằng tuần (từ 2026-10-25) chạy hai kịch bản trên `main` dù không ai đọc: log và artifact công khai thêm mỗi tuần, qua
-    cùng bộ lọc.
+  - Lượt lịch hằng tuần (từ 2026-10-25; từ 2026-10-30 ba kịch bản, thêm `gitops`) chạy trên `main` dù không ai đọc: log và artifact
+    công khai thêm mỗi tuần, qua cùng bộ lọc.
+  - Tuần không có bản ghi stg khi `release-set` đỏ vì `main` của `svp-gitops` đổi giữa lượt (một PR promote stg của bot merge đúng lúc
+    đó), hay khi artifact `web-sourcemaps-amd64` của bản web đang chạy đã hết hạn giữ của `images.yml` (bước `gitops-sourcemaps` đỏ
+    trên `main`): đúng thiết kế, tuần đó DORA không có deployment.
 - **Xem lại khi:**
   - Một dòng trượt tiêu chí runner hai lượt liền: chạy dòng đó trên B, ghi chi phí.
   - Repo thành private, hay GitHub giới hạn git ẩn danh: Argo CD quay lại deploy key (secret của environment được bảo vệ).
@@ -1346,5 +1380,7 @@ Phần 4 (tách `svp-gitops`; danh sách đầy đủ ở mục Hiện thực �
   `release-set-before`, `release-set`), `deploy/ci/verify-run.sh` (`make gitops-clone` trước kịch bản k3d), `release-set.json` ở
   `deploy/ci/verify-collect.sh` (test ở `deploy/ci/verify-collect-test.sh`); `deploy/ci/release-set.sh` (`snapshot --settle`); chẩn đoán
   khi dựng quá hạn: `gitops_timeout_report` của `deploy/k8s/lib.sh`, gọi từ `deploy/k8s/gitops.sh`.
-- Job `record-stg` của `.github/workflows/verify.yml`, `deploy/ci/record-stg.sh`.
+- Job `record-stg` của `.github/workflows/verify.yml`, `deploy/ci/record-stg.sh`; điều kiện ghi (output `recorded` của job `gitops`),
+  job `gitops` trong lịch tuần và `SVP_VERIFY_SCHEDULED` (`release_wait`, `gitops_stale`, phép kiểm `targets` trước `release-set` của
+  `deploy/ci/verify/gitops.sh`; test ở `deploy/ci/verify-collect-test.sh`) từ 2026-10-30.
 - Sync wave của `kube-prometheus-stack`: `base/kube-prometheus-stack.yaml` của repo `svp-gitops`.

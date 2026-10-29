@@ -7,8 +7,12 @@
 # the set of releases stg runs read, make k8s-smoke, RAM at rest, the supply chain drill (Kyverno
 # enforcing), the threat model drill, the source maps of the image CI built, the web's e2e tests with GlitchTip, its
 # observability drill, KEDA with two workers transcoding twice (each with the RAM peak of it), RAM at rest again, and
-# the set of releases stg ran through all of it, which job record-stg of verify.yml records in svp-gitops once this job
-# is green on main. ram-rest-<label> and ram-peak-<n> are described in verify-run.sh.
+# the set of releases stg ran through all of it, which job record-stg of verify.yml records in svp-gitops on a run of
+# main whose scenario step passed with release-set.json in the artifact, whatever the wait for a release after it
+# gives. Dispatched, or weekly on main with the other scenarios (SVP_VERIFY_SCHEDULED=true, set by the job on a
+# scheduled run only; any other value is a dispatch): on a scheduled run there is no wait for a release (both its
+# targets are skipped, with the reason), and drill-k8s-supplychain leaves out cases c and l when their image is too old
+# (below). ram-rest-<label> and ram-peak-<n> are described in verify-run.sh.
 #
 # Two parts of the job run in steps of their own around this scenario, since they need the job's token (it reads the
 # repository's runs, artifacts and events; nothing is written) and the scenario's step must not hold it:
@@ -19,9 +23,10 @@
 #   after it    "Waiting for a release on main": this file run as a script, `bash deploy/ci/verify/gitops.sh release`
 #               (release_wait below), the targets wait-release and measure-gitops. On a run of main it waits for a
 #               release reaching main of svp-gitops while the cluster runs and measures it with make measure-gitops; on
-#               a run of another branch of this repository it only says why it waits for nothing. Both names are in the
-#               scenario's list, so the dispatch's targets can name them (or leave them out) as any other; they get no
-#               line in results.tsv, the step's result is theirs.
+#               a run of another branch of this repository, or on a scheduled run, it only says why it waits for
+#               nothing. Both names are in the scenario's list, so the dispatch's targets can name them (or leave them
+#               out) as any other; they get no line in results.tsv, the step's result is theirs, and it never decides
+#               whether the set is recorded.
 #
 # Steps that are not a make target of their own:
 #   gitops-env             the overlays of envs/stg of svp-gitops reached the cluster: Application gateway reads
@@ -44,7 +49,9 @@
 #                          $SVP_VERIFY_OUT/release-set.json (into the artifact) only when nothing of the first snapshot
 #                          moved and the set is exactly envs/stg/images/ and envs/stg/charts.yaml of svp-gitops at the
 #                          revision stg synced, k8s-smoke passed in between; the steps of the window go into it. Skipped,
-#                          with the reason (which fails the run), when k8s-smoke or release-set-before did not pass or
+#                          with the reason (which fails the run), when the dispatch's targets leave out any target of
+#                          the scenario but wait-release and measure-gitops (the set was not checked by every step), or
+#                          when k8s-smoke or release-set-before did not pass or
 #                          was not chosen. The release the wait after the scenario may roll out is never recorded here:
 #                          the record is of the set the checks passed on, and a later run records that release
 #   drill-k8s-supplychain  make drill-k8s-supplychain with the images it needs, read from GHCR without credentials
@@ -59,7 +66,11 @@
 #                          cosign cannot answer for is left out like the images above. Case l passes only when that
 #                          release's vuln attestation is within 72 hours: dispatch the rescan the drill names
 #                          (images.yml -f rescan=true -f values_ref=<a commit whose values name it>) less than 72 hours
-#                          before this run
+#                          before this run. Case c likewise needs drill-vulnerable built within 72 hours
+#                          (images.yml -f drill=true). Nobody dispatches either before a scheduled run, so there
+#                          gitops_stale leaves out the image of c or l whose vuln attestation is past the policy's
+#                          maximum age (its case SKIPs, failing nothing), with a NOTE line naming the case, its age and
+#                          that dispatch; every other case must pass as on a dispatch, which keeps both and fails them
 #   gitops-sourcemaps      make k8s-web-sourcemaps SOURCEMAPS_DIR=<maps/ the step before found>, which checks them
 #                          against the chunks the web serves before the upload; fails with the reason when that step
 #                          failed or left nothing. When it found none on a branch other than main (status skipped: the
@@ -224,9 +235,46 @@ gitops_no_provenance() (
   exit 1
 )
 
+# gitops_stale CASE IMAGE [VALUES_COMMIT]: status 0, after printing a NOTE line that names the case, the age and the
+# dispatch that makes it pass again, when the vuln attestation of IMAGE (REPOSITORY@DIGEST) was scanned longer ago than
+# the policy's maximum age (imageVerification.maxAttestationAge of chart svp-policy) less an hour, read as
+# drill-k8s-supplychain reads it: the oldest scanFinishedOn of the attestations cosign verifies, anonymously. CASE c is
+# drill-vulnerable, which only a new build of the drill images scans again; CASE l is the release without provenance,
+# rescanned with VALUES_COMMIT as values_ref. Status 1 otherwise, also when cosign or the time cannot be read: the drill then reads it
+# again and fails the case with what it got.
+gitops_stale() (
+  # shellcheck source=deploy/ci/common.sh
+  . "$here/common.sh" || exit 1
+  sign_identity
+  max_age=$(sed -n 's/^  maxAttestationAge: *//p' "$repo_root/deploy/helm/svp-policy/values.yaml")
+  [[ $max_age =~ ^[0-9]+[hms]$ ]] || exit 1
+  case $max_age in
+  *h) max_s=$((${max_age%h} * 3600)) ;;
+  *m) max_s=$((${max_age%m} * 60)) ;;
+  *s) max_s=${max_age%s} ;;
+  esac
+  envelopes=$(cosign_ verify-attestation --type vuln --certificate-oidc-issuer "$sign_issuer" \
+    --certificate-identity "$sign_subject" "$2" 2>/dev/null) || exit 1
+  scanned=$(jq -rs '[.[].payload | @base64d | fromjson | .predicate.metadata.scanFinishedOn] | min // empty' \
+    <<<"$envelopes" 2>/dev/null) || exit 1
+  [[ $scanned =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || exit 1
+  age=$(jq -nr --arg t "$scanned" 'now - ($t | fromdateiso8601) | floor') && [[ $age =~ ^[0-9]+$ ]] || exit 1
+  # An hour short of the maximum: the drill and Kyverno read the age again minutes later, after the cases before c.
+  [ "$age" -gt "$((max_s - 3600))" ] || exit 1
+  if [ "$1" = c ]; then
+    hint=$(ci_dispatch_hint images.yml main drill=true) || exit 1
+  else
+    hint=$(ci_dispatch_hint images.yml main rescan=true \
+      "values_ref=${3:-<a full commit of this repository whose deploy/k8s/values/services/ names it>}") || exit 1
+  fi
+  echo "NOTE  case $1 left out on this scheduled run (it SKIPs): $2 was scanned at $scanned, $((age / 3600)) h ago," \
+    "within an hour of $max_age or more; nobody rescans it before a scheduled run, so it is checked on a dispatch run within $max_age" \
+    "of: $hint"
+)
+
 # gitops_supplychain: see drill-k8s-supplychain in the header.
 gitops_supplychain() {
-  local unsigned vulnerable fallback no_provenance missing= rc=0
+  local unsigned vulnerable fallback no_provenance missing= rc=0 values_short values_full
   unsigned=$("$here/gitops-sourcemaps.sh" web-amd64) || missing="$missing the web release's linux/amd64 manifest;"
   vulnerable=$("$here/gitops-sourcemaps.sh" newest drill-vulnerable) || missing="$missing drill-vulnerable;"
   fallback=$("$here/gitops-sourcemaps.sh" newest drill-unsigned) || missing="$missing drill-unsigned;"
@@ -235,6 +283,15 @@ gitops_supplychain() {
     [ $? -eq 1 ] || missing="$missing a web release without provenance;"
     no_provenance=
   }
+  # A scheduled run: see SVP_VERIFY_SCHEDULED in the header.
+  if [ "${SVP_VERIFY_SCHEDULED:-}" = true ]; then
+    if [ -n "$vulnerable" ] && gitops_stale c "$vulnerable"; then vulnerable=; fi
+    if [ -n "$no_provenance" ]; then
+      values_short=$(sed -n 's/.*(values of \([0-9a-f]*\))$/\1/p' <<<"$no_provenance")
+      values_full=$(git -C "$repo" rev-parse --verify -q "${values_short:-none}^{commit}") || values_full=
+      if gitops_stale l "${no_provenance%% *}" "$values_full"; then no_provenance=; fi
+    fi
+  fi
   echo "unsigned: ${unsigned:-none}; vulnerable: ${vulnerable:-none}; unsigned if Kyverno admits that: ${fallback:-none}"
   echo "without provenance: ${no_provenance:-none, case l SKIPs}"
   make drill-k8s-supplychain SUPPLYCHAIN_UNSIGNED="$unsigned" SUPPLYCHAIN_VULNERABLE="$vulnerable" \
@@ -266,11 +323,11 @@ gitops_sourcemaps() {
     ;;
   esac
 }
-export -f gitops_up gitops_charts_rev gitops_env gitops_external_secrets gitops_no_provenance gitops_supplychain \
-  gitops_sourcemaps
+export -f gitops_up gitops_charts_rev gitops_env gitops_external_secrets gitops_no_provenance gitops_stale \
+  gitops_supplychain gitops_sourcemaps
 
 scenario_targets() {
-  local round maps maps_status maps_reason no_maps before_status smoke_status
+  local round maps maps_status maps_reason no_maps before_status smoke_status listed unchecked=
   # Where deploy/ci/gitops-sourcemaps.sh fetch left its result.
   maps=$(ci_temp_dir)/gitops-sourcemaps || maps=
   maps_status=$(cat "$maps/status" 2>/dev/null) || maps_status=
@@ -310,8 +367,22 @@ scenario_targets() {
     fi
   done
   step ram-rest-end 15 bash -c 'ram_rest end'
+  # A set is recorded only once every check of the scenario ran on it: the dispatch's targets leaving one out (the two
+  # of the job's step after this one aside, which run after the last snapshot) checked part of it. names is the list
+  # verify-run.sh made of this function's targets, chosen its choice of them.
+  if [ -z "${listing:-}" ] && [ -n "${targets:-}" ]; then
+    # shellcheck disable=SC2086,SC2154 # names: target names split on spaces, set by verify-run.sh
+    for listed in $names; do
+      case $listed in
+      release-set | wait-release | measure-gitops) ;;
+      *) chosen "$listed" || unchecked="$unchecked $listed" ;;
+      esac
+    done
+  fi
   # Whatever ran since release-set-before is in the window; listing (no step has run) keeps the name in the list.
-  if [ -z "${listing:-}" ] && [ "$smoke_status" != ok ]; then
+  if [ -n "$unchecked" ]; then
+    skip release-set "targets leave out$unchecked: the set of releases stg ran was not checked by every step"
+  elif [ -z "${listing:-}" ] && [ "$smoke_status" != ok ]; then
     skip release-set "k8s-smoke did not pass or was not chosen: the set of releases stg ran was not checked"
   elif [ -z "${listing:-}" ] && [ "$before_status" != ok ]; then
     skip release-set "release-set-before did not pass or was not chosen: there is nothing to compare the set with"
@@ -347,7 +418,7 @@ scenario_targets() {
 # Only the lines below reach the job's log; the targets' output goes to $SVP_VERIFY_OUT/logs/release-wait.log and
 # measure-gitops.log, which deploy/ci/verify-collect.sh copies into the artifact once they pass its scan. On a run of a
 # branch of this repository other than main, it prints why it waits for nothing and exits 0: no change of that branch
-# is released.
+# is released. On a scheduled run (SVP_VERIFY_SCHEDULED=true) too: nobody merges a release for it.
 # The dispatch's targets (SVP_VERIFY_TARGETS, empty: every target) choose as in verify-run.sh, which has already
 # refused a name not in the scenario's list: neither name chosen, it skips (exit 0) without traffic or wait;
 # wait-release alone waits and names the release; measure-gitops without wait-release fails at once, as it measures
@@ -379,6 +450,10 @@ release_wait() {
   if [ -z "$wait" ]; then
     echo "FAIL  measure-gitops measures the release wait-release finds: name wait-release in targets with it"
     return 1
+  fi
+  if [ "${SVP_VERIFY_SCHEDULED:-}" = true ]; then
+    echo "skipped: wait-release and measure-gitops: a scheduled run waits for no release (nobody merges one for it, so the wait could only fail); a dispatch on main waits and measures"
+    return 0
   fi
   if [ "$gitops_branch" != main ]; then
     echo "skipped: this run is of branch ${gitops_branch:-none} of this repository, whose changes are not released; a release is waited for and measured on a run of main"

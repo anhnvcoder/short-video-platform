@@ -13,8 +13,10 @@
 # also with its last sample written late by a fake sampler; its k6.tsv over fixtures of /proc and of the cgroup tree;
 # the criteria of the k3d scenarios of part 3 (two KEDA drills of gitops, the k6 pods' CPU throttling).
 # Then deploy/ci/verify-run.sh with a fake make (and a fake psql and docker for the copy back to MinIO): the scenarios
-# of compose-obs and dev-k3d, each scenario of part 3 by its name, and made-up scenario files for what a scenario file
-# can get wrong and for a drill run twice. Then the self-test of deploy/ci/verify-tempo.sh.
+# of compose-obs and dev-k3d, each scenario of part 3 by its name, gitops with part of its checks in targets (no set
+# recorded), its release wait on a scheduled run, and made-up scenario files for what a scenario file can get wrong and
+# for a drill run twice. Then gitops_stale of deploy/ci/verify/gitops.sh with a fake cosign, and the self-test of
+# deploy/ci/verify-tempo.sh.
 # Last, that deploy/ci/changed-services.sh builds no image for a change of these scripts, in a throwaway git repository
 # holding a copy of it. Runs on macOS and Linux, no network, no Docker, no cluster.
 #
@@ -1542,6 +1544,30 @@ if timeout --version 2>/dev/null | grep -q GNU; then
     "$(printf -- '-s gitops-clone\nk8s-gitops-up GITOPS_REV=main')" "$(cat "$work/run-infra-gitops.make")"
   same "verify-run: a k3d scenario of the dev path runs only the clone and make k8s-up when it fails" \
     "$(printf -- '-s gitops-clone\nk8s-up')" "$(cat "$work/run-infra-velero.make")"
+  # gitops with targets that leave out some of its checks: release-set, though chosen, is skipped with the reason and
+  # fails the run, so no release-set.json is written for job record-stg to record.
+  rc=$(run_verify part-gitops gitops 'SVP_VERIFY_TARGETS=k8s-smoke release-set-before release-set')
+  same "verify-run: gitops with part of its checks in targets fails" 1 "$rc"
+  same "verify-run: gitops skips release-set when the targets leave out a check of the set" \
+    "release-set skipped targets leave out gitops-env gitops-external-secrets ram-rest-start drill-k8s-supplychain drill-k8s-threats gitops-sourcemaps k8s-web-e2e drill-k8s-web-obs drill-k8s-keda-1 ram-peak-1 drill-k8s-keda-2 ram-peak-2 ram-rest-end: the set of releases stg ran was not checked by every step" \
+    "$(results part-gitops | awk '$2 == "release-set" { $1 = ""; print substr($0, 2) }')"
+  [ ! -e "$work/run-part-gitops.out/release-set.json" ] && ok "verify-run: gitops with part of its checks writes no release-set.json" ||
+    fail "verify-run: gitops with part of its checks writes no release-set.json"
+  # The step after the scenario (release_wait): a scheduled run waits for no release; only true marks one, so any
+  # other value is a dispatch, here of a branch, which waits for nothing either but says so for its own reason.
+  wait_step() {
+    env -u GITHUB_ACTIONS -u CI -u GITLAB_CI -u JENKINS_URL -u TF_BUILD PATH="$vb:$work/bin:$PATH" GH_TOKEN= \
+      SVP_VERIFY_TARGETS= SVP_VERIFY_OUT="$work/wait-$1.out" "${@:2}" bash "$vr/deploy/ci/verify/gitops.sh" release \
+      >"$work/wait-$1.log" 2>&1 </dev/null
+  }
+  rc=0 && wait_step scheduled SVP_VERIFY_SCHEDULED=true || rc=$?
+  same "release wait: a scheduled run passes without waiting" 0 "$rc"
+  has wait-scheduled "a scheduled run says why it waits for nothing" \
+    "skipped: wait-release and measure-gitops: a scheduled run waits for no release"
+  rc=0 && wait_step not-scheduled SVP_VERIFY_SCHEDULED=1 || rc=$?
+  same "release wait: SVP_VERIFY_SCHEDULED other than true is a dispatch (of a branch here)" 0 "$rc"
+  has wait-not-scheduled "a dispatch of a branch says it is one" "skipped: this run is of branch feat/stage6b-verify"
+  lacks wait-not-scheduled "a dispatch is not taken for a scheduled run" "a scheduled run"
   rc=$(run_verify no-scenario nope)
   same "verify-run: a name that is no scenario stops it" 2 "$rc"
   [ ! -s "$work/run-no-scenario.make" ] && [ ! -e "$work/run-no-scenario.out/results.tsv" ] &&
@@ -1626,6 +1652,41 @@ EOF2
 else
   echo "skip  verify-run: no GNU timeout on PATH (Linux, or coreutils on macOS)"
 fi
+
+# --- gitops_stale of deploy/ci/verify/gitops.sh: on a scheduled run, the drill image of case c or l is left out only
+# when the oldest vuln attestation cosign verifies is past the policy's maximum age (72h). A fake cosign first on PATH
+# answers verify-attestation with one envelope scanned FAKE_SCAN_HOURS ago, or fails with FAKE_COSIGN_FAIL=1.
+mkdir -p "$work/cosign-bin"
+cat >"$work/cosign-bin/cosign" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = verify-attestation ] && [ "${FAKE_COSIGN_FAIL:-}" != 1 ] || exit 1
+jq -nc --argjson h "$FAKE_SCAN_HOURS" \
+  '{payload: ({predicate: {metadata: {scanFinishedOn: (now - $h * 3600 | floor | todate)}}} | tojson | @base64)}'
+EOF
+chmod 755 "$work/cosign-bin/cosign"
+stale_image=ghcr.io/anhnvcoder/short-video-platform/drill-vulnerable@sha256:$(printf '%064d' 0)
+# stale NAME CASE [VAR=VALUE...]: gitops_stale CASE on stale_image; its output in $work/stale-NAME.log, prints its status.
+stale() {
+  local name=$1 case=$2 rc=0
+  shift 2
+  env -u GITHUB_ACTIONS -u CI -u GITLAB_CI -u JENKINS_URL -u TF_BUILD PATH="$work/cosign-bin:$PATH" here="$here" \
+    "$@" bash -c '. "$1/verify/gitops.sh" && gitops_stale "$2" "$3" "$4"' _ "$here" "$case" "$stale_image" \
+    "$(printf '%040d' 1)" >"$work/stale-$name.log" 2>&1 </dev/null || rc=$?
+  echo "$rc"
+}
+same "gitops_stale: an attestation older than 72h leaves case c out" 0 "$(stale old c FAKE_SCAN_HOURS=100)"
+has stale-old "the NOTE names the case, the age and the build of the drill images" \
+  "NOTE  case c left out on this scheduled run (it SKIPs): $stale_image was scanned at"
+has stale-old "the age is in hours" ", 100 h ago, within an hour of 72h or more;"
+same "gitops_stale: an attestation within the last hour before 72h leaves the case out too" 0 \
+  "$(stale near c FAKE_SCAN_HOURS=71.5)"
+has stale-old "case c names the build of the drill images" "-f drill=true"
+same "gitops_stale: case l too" 0 "$(stale old-l l FAKE_SCAN_HOURS=80)"
+has stale-old-l "case l names the rescan with the values commit" "-f rescan=true -f values_ref=$(printf '%040d' 1)"
+same "gitops_stale: an attestation within 72h keeps the case" 1 "$(stale fresh c FAKE_SCAN_HOURS=10)"
+lacks stale-fresh "nothing is noted for a case kept" NOTE
+same "gitops_stale: cosign without an answer keeps the case (the drill fails it)" 1 \
+  "$(stale no-cosign c FAKE_COSIGN_FAIL=1 FAKE_SCAN_HOURS=100)"
 
 # --- verify-tempo.sh: its own self-test (fake kubectl, curl and nc; no cluster, no network), so that job config of CI
 # runs it with the rest of the verification scripts' tests.

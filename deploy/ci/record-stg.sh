@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# record-stg.sh RELEASE_SET: job record-stg of verify.yml, after job gitops passed on main. Records in svp-gitops that
+# record-stg.sh RELEASE_SET: job record-stg of verify.yml, on main once the scenario step of job gitops passed and wrote
+# RELEASE_SET (output recorded of that job; the wait for a release after it does not count). Records in svp-gitops that
 # stg ran the set of releases of RELEASE_SET (release-set.json of that job's artifact, written by
 # deploy/ci/release-set.sh verify) through every check of the run: a deployment record of environment stg whose ref is
 # the commit of svp-gitops stg synced and whose payload is the file as it is, state success (ci_deployment_record of

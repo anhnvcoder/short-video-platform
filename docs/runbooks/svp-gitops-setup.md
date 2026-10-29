@@ -489,7 +489,8 @@ promote lại.
 
 #### C2. Bản ghi triển khai stg
 
-**Làm gì:** không làm gì. Sau mỗi lượt kịch bản `gitops` của `verify.yml` xanh trên `main` (lịch hằng tuần hay dispatch), job
+**Làm gì:** không làm gì. Sau mỗi lượt kịch bản `gitops` của `verify.yml` trên `main` (lịch hằng tuần hay dispatch) có bước
+"Scenario" xanh và `release-set.json` trong artifact (bước chờ phát hành sau đó đỏ cũng vậy; lượt lịch không chờ phát hành), job
 `record-stg` (environment `promote`, token App chỉ `deployments: write`) ghi một Deployment `stg` trên `svp-gitops`: `ref` là commit
 `svp-gitops` stg đã chạy, payload là bộ bảy bản phát hành (repository, tag, digest), `charts` (ba khoá của `charts.yaml`), `deployed_at`,
 URL lượt chạy. Bộ chỉ được ghi khi không gì đổi giữa ảnh chụp trước smoke và ảnh chụp sau phép kiểm cuối.
@@ -507,9 +508,11 @@ gh api 'repos/anhnvcoder/svp-gitops/deployments?environment=stg&per_page=10' \
 deploy/ci/release-set.sh records | jq '.[] | {id, ref, created_at, run: .payload.run_url}'
 ```
 
-**Nếu sai:** không có bản ghi sau lượt `gitops` xanh trên `main` → đọc job `record-stg` của lượt đó (403 là App thiếu Deployments, A2).
-Lượt `gitops` xanh nhưng job `gitops` không có `release-set.json` → bước `release-set` đỏ hay SKIP (đọc lý do trong `results.tsv` của
-artifact `verify-gitops`): stg đã đổi giữa hai ảnh chụp, chạy lại kịch bản.
+**Nếu sai:** bước "Scenario" xanh trên `main` mà không có bản ghi → đọc job `record-stg` của lượt đó (403 là App thiếu Deployments,
+A2; job `record-stg` skip thì bước "Note whether the set of releases can be recorded" của job `gitops` in vì sao). Bước "Scenario" đỏ
+hay không có `release-set.json` → bước `release-set` đỏ hay SKIP (đọc lý do trong `results.tsv` của artifact `verify-gitops`): stg đã
+đổi giữa hai ảnh chụp (một PR promote stg merge giữa lượt), `targets` của dispatch bỏ một bước kiểm, hay một bước kiểm đỏ; chạy lại
+kịch bản với mọi bước.
 
 #### C3. Promote prd (người học dispatch, Code Owner duyệt)
 
@@ -544,7 +547,7 @@ gh pr view <số PR> --repo anhnvcoder/svp-gitops --json files -q '.files[].path
 
 - `mixes releases of several records of stg` → có người sửa tay một file `envs/prd/images/`: đóng PR, dispatch lại.
 - `is the set of envs/stg/images/ at … but no record of stg holds it` → bộ đó chỉ mới merge vào stg, chưa qua lượt `gitops` nào: chờ
-  lượt `gitops` xanh trên `main` (C2) rồi promote bản ghi đó.
+  lượt `gitops` trên `main` ghi bản ghi (C2: lượt lịch tuần, hay dispatch) rồi promote bản ghi đó.
 - `matches no record of stg` → bản ghi không được tính (C2, lệnh thứ hai in lý do), `charts.yaml` khác `charts` của bản ghi, hay `ref`
   không còn trên `main` của `svp-gitops`. Job `promote-prd` cũng từ chối bản ghi có commit không trên `main`.
 - `the records of stg in … cannot be read` → `check.yml` của `svp-gitops` thiếu `GH_TOKEN: ${{ github.token }}` ở bước

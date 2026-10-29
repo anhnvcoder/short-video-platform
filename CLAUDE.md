@@ -688,8 +688,8 @@ liệt kê target):
   - `.github/workflows/verify.yml` (giai đoạn 6b, [ADR-0021](docs/adr/0021-deferred-verification-stage6b.md); không check
     bắt buộc nào, không chạy ở PR): kiểm chứng trên runner `ubuntu-24.04` những gì máy 16 GB không chạy nổi, bằng đúng
     target `make` như trên máy. Trigger: `workflow_dispatch` (chỉ người có quyền ghi; ref `main` hay `feat/stage6b-*`, ref
-    khác dừng ở bước đầu) và lịch hằng tuần trên `main` (00:37 UTC thứ Bảy, 07:37 giờ Việt Nam; cả hai kịch bản song song,
-    mọi bước; **kiểm sau push**). Kịch bản: `compose-obs` (job `compose`, hạn 120 phút: `make up OBS=lgtm`, `make smoke`,
+    khác dừng ở bước đầu) và lịch hằng tuần trên `main` (00:37 UTC thứ Bảy, 07:37 giờ Việt Nam; `compose-obs`, `dev-k3d` và
+    `gitops` song song, mọi bước, xong trước `dora.yml`; **kiểm sau push**). Kịch bản: `compose-obs` (job `compose`, hạn 120 phút: `make up OBS=lgtm`, `make smoke`,
     `make drill-duplicates`, `make drill-kill-worker`, `make drill-obs-threats`, `make load-local` dưới quan sát Alertmanager (`RateLimitFallbackActive` không được cháy),
     `make web-lighthouse` ×3 và median LCP, `make test-stack PKGS=./internal/objstore/...` (một ca SKIP là đỏ; gồm ba test của output bất biến),
     `make drill-upload-cleanup`, `make measure-upload` và RAM đỉnh của `s3` trong lúc đó (dưới 512 MiB), `make
@@ -698,8 +698,8 @@ liệt kê target):
     smoke` trên RustFS) và `dev-k3d` (job `k3d`, hạn 330
     phút: `make k8s-up`, `make k8s-smoke`, RAM nghỉ, `make drill-k8s-threats`, `make drill-k8s-pdb`, `make drill-k8s-canary`,
     `make k8s-web-sourcemaps`, `SVP_E2E_GLITCHTIP=1 make k8s-web-e2e`, `make drill-k8s-web-obs`, `make drill-k8s-keda N=9` và
-    RAM đỉnh, `make drill-k8s-backup` rồi `MODE=pitr`, RAM nghỉ cuối). Phần 3 (chỉ dispatch, không vào lịch): `gitops` (job
-    `gitops`, hạn 330 phút: bước `Find the source maps of the web image`, rồi bước kịch bản 175 phút: `make k8s-gitops-up`
+    RAM đỉnh, `make drill-k8s-backup` rồi `MODE=pitr`, RAM nghỉ cuối). Phần 3 (chỉ dispatch, không vào lịch, trừ `gitops` vào lịch từ
+    2026-10-30): `gitops` (job `gitops`, hạn 330 phút: bước `Find the source maps of the web image`, rồi bước kịch bản 175 phút: `make k8s-gitops-up`
     (vai stg; `make gitops-clone` trước, Argo CD theo `refs/heads/main` của `svp-gitops`), `gitops-env` (overlay stg có trên pod
     gateway), `gitops-external-secrets` (ExternalSecret của cluster đúng bằng danh sách của chart, mỗi cái `Ready`, Secret đích đúng
     type và đúng tên key, không đọc giá trị), `release-set-before` (`deploy/ci/release-set.sh snapshot --settle`: chờ tới ~300 s mọi
@@ -707,17 +707,22 @@ liệt kê target):
     lượt 40944295274 đỏ vì HPA Degraded thoáng qua trước khi có bước chờ), `make k8s-smoke` (chặt, không biến chuyển tiếp), RAM nghỉ,
     `make drill-k8s-supplychain` (ca
     chưa ký là manifest con `linux/amd64` của digest web đang chạy; ca (l) là bản web mới nhất có chữ ký mà không provenance,
-    tìm bằng cosign ẩn danh, bỏ qua bản build từ commit đã có `provenance-predicate.sh`), `make drill-k8s-threats`, source map của image CI
+    tìm bằng cosign ẩn danh, bỏ qua bản build từ commit đã có `provenance-predicate.sh`; chỉ ở lượt lịch, `SVP_VERIFY_SCHEDULED=true`,
+    image của ca (c) hay (l) có attestation `vuln` quá 72 giờ thì không đưa cho drill: ca đó SKIP kèm dòng `NOTE` nêu tuổi và lệnh
+    dispatch dựng lại image diễn tập hay rescan, mọi ca khác vẫn phải PASS; lượt dispatch quá hạn là đỏ, nên (c), (l) chỉ được chứng
+    minh ở lượt dispatch sau lượt đó), `make drill-k8s-threats`, source map của image CI
     (`deploy/ci/gitops-sourcemaps.sh` chọn lượt `images.yml` có `image-digest` bằng manifest con đó; trên nhánh `feat/stage6b-*`
     không có thì `skipped`, e2e không GlitchTip, `drill-k8s-web-obs` bỏ riêng `errors`; trên `main` thì FAIL), `make
     k8s-web-e2e`, `make drill-k8s-web-obs`, `make drill-k8s-keda N=9` hai lần mỗi lần kèm RAM đỉnh, RAM nghỉ cuối, `release-set`
     (chụp lại sau bước kiểm cuối; `verify` chỉ ghi `release-set.json` khi revision `svp-gitops` R như nhau ở hai lần chụp và ở mọi
     Application, history không thêm mục, mọi pod của mỗi service một digest và bộ bảy digest bằng `envs/stg/images/` ở R, chart của
-    mọi Application một commit bằng `envs/stg/charts.yaml` ở R; `k8s-smoke` không chạy hay đỏ thì SKIP); rồi bước
+    mọi Application một commit bằng `envs/stg/charts.yaml` ở R; `k8s-smoke` không chạy hay đỏ, hay `targets` bỏ một bước nào của kịch
+    bản ngoài `wait-release`, `measure-gitops`, thì SKIP); rồi bước
     `Waiting for a release on main` 115 phút: trên `main` bật traffic diễn tập, chờ tối đa 90 phút một commit của `main` `svp-gitops`
     đổi đúng một digest ở `envs/stg/images/` (bản phát hành tới bằng auto-merge của PR bot, không cần merge tay), `make
-    measure-gitops`; trên nhánh thì `skipped`; bước này không chụp lại, không ghi đè `release-set.json`). Job `record-stg` (`needs:
-    gitops`, chỉ khi job đó xanh và ref `main`, environment `promote`, token App chỉ `deployments` write trên `svp-gitops`; không
+    measure-gitops`; trên nhánh hay ở lượt lịch thì `skipped`; bước này không chụp lại, không ghi đè `release-set.json`). Job
+    `record-stg` (`needs: gitops`, chỉ khi output `recorded` của job đó là `true`, tức bước kịch bản xanh và `release-set.json` có
+    trong artifact, bước chờ phát hành đỏ không chặn; lượt không bị huỷ, ref `main`; environment `promote`, token App chỉ `deployments` write trên `svp-gitops`; không
     chạy kịch bản nào): `deploy/ci/record-stg.sh` tạo Deployment GitHub environment `stg` trên `svp-gitops` (`ref` = R, payload
     = `release-set.json`: bảy `repository@digest`, `charts`, R, `deployed_at`, URL lượt; `auto_merge: false`, `required_contexts: []`;
     trạng thái `success`): đó là **bản ghi stg** mà promote prd chép và check prd so. Lượt `gitops` 40954609229 (nhánh PR-B, mọi
