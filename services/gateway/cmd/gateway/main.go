@@ -106,39 +106,56 @@ var (
 	}
 )
 
-// retryConfig is the service config of every connection, with %s the methods it retries. Every
-// attempt runs within the call's one deadline. The retry throttling makes retries stop after a
-// few failed calls to a service that is down, instead of tripling the load on it.
-const retryConfig = `{
-  "methodConfig": [{
-    "name": %s,
-    "retryPolicy": {
-      "maxAttempts": 3,
-      "initialBackoff": "0.05s",
-      "maxBackoff": "0.2s",
-      "backoffMultiplier": 2,
-      "retryableStatusCodes": ["UNAVAILABLE"]
-    }
-  }],
-  "retryThrottling": {"maxTokens": 10, "tokenRatio": 0.1}
-}`
-
-// serviceConfig returns b's service config: retryConfig naming the methods in b.retry.
+// serviceConfig returns b's service config, as JSON: a retry policy for the methods in b.retry.
+// Every attempt runs within the call's one deadline. The retry throttling makes retries stop after
+// a few failed calls to a service that is down, instead of tripling the load on it.
 func (b backend) serviceConfig() string {
 	type name struct {
 		Service string `json:"service"`
 		Method  string `json:"method"`
 	}
+	type retryPolicy struct {
+		MaxAttempts          int      `json:"maxAttempts"`
+		InitialBackoff       string   `json:"initialBackoff"`
+		MaxBackoff           string   `json:"maxBackoff"`
+		BackoffMultiplier    float64  `json:"backoffMultiplier"`
+		RetryableStatusCodes []string `json:"retryableStatusCodes"`
+	}
+	type methodConfig struct {
+		Name        []name      `json:"name"`
+		RetryPolicy retryPolicy `json:"retryPolicy"`
+	}
+	type retryThrottling struct {
+		MaxTokens  int     `json:"maxTokens"`
+		TokenRatio float64 `json:"tokenRatio"`
+	}
+	type config struct {
+		MethodConfig    []methodConfig  `json:"methodConfig"`
+		RetryThrottling retryThrottling `json:"retryThrottling"`
+	}
+
 	names := make([]name, len(b.retry))
 	for i, m := range b.retry {
 		names[i].Service, names[i].Method, _ = strings.Cut(strings.TrimPrefix(m, "/"), "/")
 	}
-	list, err := json.Marshal(names)
+	cfg, err := json.Marshal(config{
+		MethodConfig: []methodConfig{{
+			Name: names,
+			RetryPolicy: retryPolicy{
+				MaxAttempts:          3,
+				InitialBackoff:       "0.05s",
+				MaxBackoff:           "0.2s",
+				BackoffMultiplier:    2,
+				RetryableStatusCodes: []string{"UNAVAILABLE"},
+			},
+		}},
+		RetryThrottling: retryThrottling{MaxTokens: 10, TokenRatio: 0.1},
+	})
 	if err != nil {
-		// A slice of string pairs always marshals.
+		// A struct of strings and numbers always marshals.
 		panic(err)
 	}
-	return fmt.Sprintf(retryConfig, list)
+	return string(cfg)
 }
 
 // dialOptions are the options of every connection to b: plain text until mTLS arrives in stage
