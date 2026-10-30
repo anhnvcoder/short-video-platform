@@ -34,7 +34,7 @@ postgres:
     targetTime: ""
 
 valkey:
-  image: docker.io/valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+  image: docker.io/valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
   # CPU limit one core, not 200m: the CFS quota is enforced per 100 ms period, and at 200m Valkey was throttled 4-14
   # periods a minute while idle. A throttled period stalls it for longer than the gateway's 50 ms rate-limit store
   # timeout, so a login burst left the shared bucket for each pod's fallback counter. Valkey runs commands on one
