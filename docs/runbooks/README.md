@@ -111,11 +111,13 @@ Cảnh báo `severity=page` (rule viết tay ở `svp-alerts.yaml`, SLO ở `svp
 | `VideoReadyLatencyBudgetBurn` | [video-ready-latency-budget-burn.md](video-ready-latency-budget-burn.md) | SLO `video-ready-latency` |
 | `WebAvailabilityBudgetBurn` | [web-availability-budget-burn.md](web-availability-budget-burn.md) | SLO `web-availability` |
 | `PostgresWALArchivingFailing` | [postgres-wal-archiving-failing.md](postgres-wal-archiving-failing.md) | `svp-alerts.yaml`, nhóm `postgres-backup` (chỉ k3d) |
+| `ArgoCDApplicationDegraded` | [argocd-application-degraded.md](argocd-application-degraded.md) | `svp-alerts.yaml`, nhóm `argocd` (chỉ cluster GitOps) |
 
 Cảnh báo `ticket` (cùng tên với page của SLO, cửa sổ 1 d/2 h và 3 d/6 h, chỉ hiện ở Alertmanager) dùng chung runbook của
 SLO đó; `WebINPBudgetBurn` chỉ có ticket và không có runbook riêng (dashboard `svp-web`, [ADR-0020](../adr/0020-reliability-stage6.md) §3).
 Cảnh báo ticket viết tay `PostgresBackupTooOld` (nhóm `postgres-backup`, chỉ k3d, 2 biến thể) có runbook
-[postgres-backup-too-old.md](postgres-backup-too-old.md).
+[postgres-backup-too-old.md](postgres-backup-too-old.md); `ArgoCDApplicationNotConverged` (nhóm `argocd`, chỉ cluster GitOps) dùng chung
+[argocd-application-degraded.md](argocd-application-degraded.md).
 
 Sự cố đã gặp và quy trình:
 

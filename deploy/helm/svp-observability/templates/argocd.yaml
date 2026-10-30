@@ -1,0 +1,27 @@
+{{- /*
+Argo CD's view of every Application, for the alerts on a deploy that did not land (ArgoCDApplicationDegraded,
+ArgoCDApplicationNotConverged): Prometheus scrapes the application controller on its metrics port and keeps
+argocd_app_info only, one series per Application with its sync and health status as labels. The controller exposes
+many more families (reconcile and sync histograms, Kubernetes client calls); nothing reads them yet.
+
+Only the GitOps path runs Argo CD (namespace argocd, made by deploy/k8s/gitops.sh). On the dev path and in compose the
+PodMonitor finds no pod, the series never exists and neither alert can fire. Like PodMonitor envoy-svp, it lives in
+svp-obs, the one namespace the Prometheus operator watches; policy prometheus opens the port.
+*/}}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: argocd-application-controller
+  namespace: {{ .Release.Namespace }}
+spec:
+  namespaceSelector:
+    matchNames: [{{ .Values.argocd.namespace }}]
+  selector:
+    matchLabels:
+      {{- toYaml .Values.argocd.labels | nindent 6 }}
+  podMetricsEndpoints:
+    - port: metrics
+      metricRelabelings:
+        - sourceLabels: [__name__]
+          regex: argocd_app_info
+          action: keep

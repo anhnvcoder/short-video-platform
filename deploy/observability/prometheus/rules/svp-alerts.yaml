@@ -1,6 +1,7 @@
 # Hand-written alerts; the SLO burn-rate alerts
 # are in slo-generated.yaml. Evaluated every 15 s. Tested by svp-alerts.test.yaml
-# (`make slo-check`). Every alert pages but PostgresBackupTooOld and RateLimitFallbackElevated (ticket); annotations name the
+# (`make slo-check`). Every alert pages but PostgresBackupTooOld, RateLimitFallbackElevated and ArgoCDApplicationNotConverged
+# (ticket); annotations name the
 # service, target or pod, never a user value, and runbook_url points to the runbook of the alert
 # name in docs/runbooks/ on main.
 #
@@ -249,3 +250,39 @@ groups:
         annotations:
           summary: "Postgres {{ $labels.pod }}: no base backup for an hour"
           runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/postgres-backup-too-old.md"
+
+  # Argo CD's view of each Application on the GitOps path: argocd_app_info, one series per Application whose labels
+  # carry its sync and health status, scraped from the application controller (PodMonitor
+  # argocd-application-controller of chart svp-observability). Scraped, not pushed over OTLP, so a series that goes
+  # away gets a staleness marker and `for` is safe here, unlike the gauges above. `max by (name, dest_namespace)`
+  # keeps one series per Application across a change of status label (Degraded to Missing), so `for` keeps counting.
+  # No Argo CD (compose, the dev path): no series, neither alert fires.
+  - name: argocd
+    rules:
+      # A deploy that did not land, for 10 minutes: a Deployment or Rollout whose pods crash or are refused (Kyverno),
+      # a canary aborted by its analysis, a resource the sync could not create (Missing) or one Argo CD cannot assess
+      # (Unknown). The stable version may still serve: the page is about the release, the SLO alerts about users.
+      - alert: ArgoCDApplicationDegraded
+        expr: >-
+          max by (name, dest_namespace) (argocd_app_info{health_status=~"Degraded|Missing|Unknown"}) == 1
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "Argo CD Application {{ $labels.name }} ({{ $labels.dest_namespace }}): Degraded, Missing or Unknown for 10 minutes"
+          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/argocd-application-degraded.md"
+
+      # A deploy that never finishes, for 30 minutes: still OutOfSync (the automated sync keeps failing, or waits on a
+      # hook that never ends), or still Progressing or Suspended (a rollout that does not complete, a canary paused on
+      # an Inconclusive analysis). A ticket: the cluster keeps running the last version that converged.
+      - alert: ArgoCDApplicationNotConverged
+        expr: >-
+          max by (name, dest_namespace) (
+            argocd_app_info{sync_status!="Synced"} or argocd_app_info{health_status=~"Progressing|Suspended"}
+          ) == 1
+        for: 30m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Argo CD Application {{ $labels.name }} ({{ $labels.dest_namespace }}): not Synced and Healthy for 30 minutes"
+          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/argocd-application-degraded.md"

@@ -81,6 +81,12 @@ envoy:
 rolloutsController:
   namespace: argo-rollouts
   labels: {app.kubernetes.io/name: argo-rollouts, app.kubernetes.io/component: rollouts-controller}
+# Argo CD's application controller on the GitOps path (PodMonitor argocd-application-controller): labels and metrics
+# port of the pod chart argo-cd makes (checked with helm template of the version argocd/bootstrap.json of svp-gitops pins).
+argocd:
+  namespace: argocd
+  labels: {app.kubernetes.io/name: argocd-application-controller}
+  metricsPort: 8082
 
 # Postgres svp-pg in svp-data, the only peer outside svp-obs that GlitchTip and its init Job call; Prometheus scrapes its
 # instance's exporter on metricsPort (PodMonitor svp-pg), the port CloudNativePG names metrics.

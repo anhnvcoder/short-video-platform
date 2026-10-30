@@ -704,7 +704,9 @@ liệt kê target):
     gateway), `gitops-external-secrets` (ExternalSecret của cluster đúng bằng danh sách của chart, mỗi cái `Ready`, Secret đích đúng
     type và đúng tên key, không đọc giá trị), `release-set-before` (`deploy/ci/release-set.sh snapshot --settle`: chờ tới ~300 s mọi
     Application Synced, Healthy, không sync đang chạy qua hai lần đọc liền rồi mới chụp; hết hạn vẫn ghi bản chụp nhưng bước đỏ;
-    lượt 40944295274 đỏ vì HPA Degraded thoáng qua trước khi có bước chờ), `make k8s-smoke` (chặt, không biến chuyển tiếp), RAM nghỉ,
+    lượt 40944295274 đỏ vì HPA Degraded thoáng qua trước khi có bước chờ), `gitops-argocd-metrics` (trong 180 s Prometheus thấy
+    `argocd_app_info` của mọi Application, đều Synced và Healthy, không cảnh báo `ArgoCDApplication*` nào cháy; chart stg đang chạy
+    chưa có PodMonitor của Argo CD thì nói vậy và qua), `make k8s-smoke` (chặt, không biến chuyển tiếp), RAM nghỉ,
     `make drill-k8s-supplychain` (ca
     chưa ký là manifest con `linux/amd64` của digest web đang chạy; ca (l) là bản web mới nhất có chữ ký mà không provenance,
     tìm bằng cosign ẩn danh, bỏ qua bản build từ commit đã có `provenance-predicate.sh`; chỉ ở lượt lịch, `SVP_VERIFY_SCHEDULED=true`,

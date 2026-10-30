@@ -76,10 +76,11 @@ spec:
 # Prometheus: OTLP from the Collector, remote write from Tempo's metrics-generator, queries from Grafana and from the
 # Argo Rollouts controller (the AnalysisRuns of the gateway's canary). Out: alerts to Alertmanager, the scrapes of the
 # stack's ServiceMonitors (Grafana, kube-state-metrics, Alertmanager and its config reloader, the operator), of each
-# node's kubelet (cAdvisor and probe metrics), of the Envoy proxy (PodMonitor envoy-svp) and of Postgres svp-pg's
-# exporter (PodMonitor svp-pg). Prometheus scraping its own pod stays inside the pod. Neither argo-rollouts nor
-# envoy-gateway-system denies traffic by default, so the policy here is the only one either flow needs; svp-data does,
-# and its chart opens 9187 of the Postgres pods to Prometheus.
+# node's kubelet (cAdvisor and probe metrics), of the Envoy proxy (PodMonitor envoy-svp), of Postgres svp-pg's
+# exporter (PodMonitor svp-pg) and of Argo CD's application controller on the GitOps path (PodMonitor
+# argocd-application-controller). Prometheus scraping its own pod stays inside the pod. Neither argo-rollouts,
+# envoy-gateway-system nor argocd denies traffic by default, so the policy here is the only one those flows need;
+# svp-data does, and its chart opens 9187 of the Postgres pods to Prometheus.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -139,6 +140,15 @@ spec:
               {{- toYaml .Values.postgres.labels | nindent 14 }}
       ports:
         - {protocol: TCP, port: {{ .Values.postgres.metricsPort }}}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.argocd.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.argocd.labels | nindent 14 }}
+      ports:
+        - {protocol: TCP, port: {{ .Values.argocd.metricsPort }}}
 ---
 # Alertmanager: alerts from Prometheus, which also scrapes it and its config reloader (8080); Grafana's datasource.
 # Its one call out, to Telegram, is policy allow-alertmanager-telegram below.
