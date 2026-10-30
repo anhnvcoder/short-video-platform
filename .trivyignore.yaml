@@ -5,10 +5,13 @@
 # day of an entry's expired_at it fails every image leg, even with nothing left to cover, so renew or remove the entry
 # before that day.
 #
-# All of these come only through @lhci/cli 0.15.1, the dev dependency of make web-lighthouse; none reaches the web
+# The npm entries come only through @lhci/cli 0.15.1, the dev dependency of make web-lighthouse; none reaches the web
 # image. @lhci/cli 0.15.1 is its latest release and pins lighthouse 12.6.1 (puppeteer-core 24.43.1, which pins
 # chromium-bidi 14.0.0 and @puppeteer/browsers 2.13.2). A run of lhci collect, upload and assert loads none of these
 # packages.
+#
+# The glib entry is for the media-worker image: ffmpeg links libavfilter (the worker's scale and split filters), which
+# links harfbuzz, which links libglib-2.0, so apk cannot install ffmpeg without glib.
 vulnerabilities:
   - id: CVE-2026-19693
     statement: No fixed release of extract-zip exists. Only @puppeteer/browsers install() calls it, to unpack a browser it downloads, and make web-lighthouse never downloads one (it runs the Chromium of Playwright).
@@ -30,3 +33,8 @@ vulnerabilities:
     expired_at: 2026-11-24
     purls:
       - pkg:npm/zod@3.25.76
+  - id: CVE-2026-58016
+    statement: No fixed glib exists in Alpine 3.24 or edge (the upstream fix is in 2.89.0). The flaw is in g_dbus_node_info_new_for_xml() of libgio, the parser of D-Bus introspection XML. The media-worker image carries glib only because harfbuzz links libglib-2.0, and nothing ffmpeg or ffprobe loads links libgio; the worker runs only those two, and its container has no D-Bus.
+    expired_at: 2026-11-29
+    purls:
+      - pkg:apk/alpine/glib@2.88.1-r1

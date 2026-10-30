@@ -980,7 +980,8 @@ liệt kê target):
     govulncheck là công cụ Go ghim `GOVULNCHECK_VERSION`, cài bằng `make tools`. Riêng cosign, script (`cosign_` của `deploy/ci/common.sh`) dùng `cosign`
     trên PATH trước nếu có (CI cài bằng `sigstore/cosign-installer`), không có thì `COSIGN_IMAGE`.
   - `.trivyignore.yaml` ở gốc repo (cổng trivy và cổng grype của image, `make grype`, `make web-lockfile-scan` đọc; hiện có các mục của cây dev `@lhci/cli`,
-    [ADR-0016](docs/adr/0016-web-client.md) §10): chỉ phần `vulnerabilities`, mỗi mục có `id`, `statement` (lý do),
+    [ADR-0016](docs/adr/0016-web-client.md) §10, và mục `CVE-2026-58016` của `glib` trong image `media-worker`: chưa có bản vá, ffmpeg không
+    nạp `libgio` nơi có lỗi, [ADR-0030](docs/adr/0030-devsecops-supplement.md) §6): chỉ phần `vulnerabilities`, mỗi mục có `id`, `statement` (lý do),
     `expired_at` không quá 30 ngày sau ngày chạy và `purls` đúng gói@version (cùng CVE ở gói hay version khác vẫn báo);
     thêm qua PR; bí mật không bỏ qua được. Cổng grype dùng cùng tệp: một mục che một match khi `id` bằng id của match hay một
     id liên quan (grype hay báo GHSA, CVE nằm ở liên quan) và một `purls` bằng purl của match sau khi bỏ qualifier, subpath và
