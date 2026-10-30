@@ -516,6 +516,15 @@ một nguồn.
 | Lần tải DB đầu (cache trống) | 2 phút 13 s; archive 196 MB, 3,1 GB trên đĩa |
 | Cùng chân web arm64, trivy và grype | trivy: High 0, Medium 25, Low 8; grype: High 13 (gói Debian gcc, glibc, zlib) — hai nguồn xếp mức khác nhau |
 
+Sự kiện 2026-10-30 (lượt `images.yml` 41068691476): grype chặn cả hai chân `media-worker` vì CVE-2026-58016 (glib 2.88.1-r1, Critical,
+chưa có bản vá ở Alpine 3.24 lẫn edge; trivy không xếp Critical). glib không gỡ được: ffmpeg cần libavfilter (filter `scale`, `split`
+của worker), libavfilter link harfbuzz, harfbuzz link `libglib-2.0`. Lỗi nằm ở `g_dbus_node_info_new_for_xml()` của `libgio` (parser
+XML introspection D-Bus), thư viện mà ffmpeg, ffprobe không nạp, trong container không có D-Bus: thêm mục vào `.trivyignore.yaml`
+(hạn 2026-11-29). Bản phát hành `media-worker` đang chạy ở stg và prd (`sha256:1d2adefe…`, tag `ec12f1141e57`) cũng mang glib 2.88.1-r1
+(`make grype IMAGE=…@sha256:1d2adefe… ARCH=arm64`: Critical 0, Excepted 1, ngày 2026-10-30), nên điều kiện "Xem lại khi" về grype ở mục
+Hệ quả đã tới: rescan và attestation `vuln` (Kyverno đọc) chỉ có kết quả trivy, không thấy CVE này. Có đưa grype vào rescan hay không là
+quyết định riêng, chưa làm.
+
 ### Ánh xạ vào threat model
 
 | Công cụ | Dòng có sẵn | Thêm gì |
