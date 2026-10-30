@@ -298,7 +298,10 @@ nguồn phát hành có prefix, identity, credential riêng nhưng được khai
     `requireProvenance`.
   - Template từ chối: tên nguồn trùng; prefix không kết thúc `/` hay là tiền tố của prefix khác; giá trị có nháy, `\`, xuống dòng (vào CEL);
     một service có ở hơn hai nguồn; `promoter` trùng; `ref` không bắt đầu `refs/`.
-- **Policy `svp-images`** (giữ tên): `matchImageReferences` một glob mỗi prefix; `attestors` một mục mỗi nguồn; phép 1: mỗi image của pod
+- **Policy `svp-images`** (giữ tên): `matchImageReferences` một glob mỗi tên được phát hành (`<prefix><tên>@*`, `<prefix><tên>:*`):
+  Kyverno kéo từ registry mọi image khớp glob trước khi chạy phép nào, nên với một glob mỗi prefix, image dưới prefix mang tên nguồn đó
+  không phát hành bị từ chối bằng lỗi registry (GHCR `DENIED` cho repository không có) thay vì message phép 1 (lượt `verify.yml`
+  [41081463084](https://github.com/anhnvcoder/short-video-platform/actions/runs/41081463084), ca (m)); `attestors` một mục mỗi nguồn; phép 1: mỗi image của pod
   là `<prefix><tên>@sha256:<64 hex>` với `<tên>` thuộc `services` hay `drillImages` của nguồn có prefix đó (hiện nay: mọi tên dưới
   prefix); phép 2–10: image xác minh với attestor của nguồn có prefix của nó (CEL chọn theo `startsWith` của prefix), provenance so
   `subject`, `repository`, `provenanceRef` của nguồn đó; message nêu tên nguồn. Hệ quả cần có: identity `svp-web` không ký được image dưới
@@ -614,7 +617,7 @@ PR-1 của mục 9 (phần chuẩn bị ở repo này) hiện thực 2026-10-30,
   job `api-contract` của `.github/workflows/ci.yml` (`ci-ok` đủ tám job), job `contract` của `.github/workflows/images.yml` (trong
   `images-ok`); `deploy/ci/changed-services.sh` (hai script hợp đồng không làm build lại image).
 - Nguồn phát hành (mục 2): `deploy/helm/svp-policy/files/sources.json`, `deploy/helm/svp-policy/values.yaml` (năm dòng identity rời
-  đi), `deploy/helm/svp-policy/templates/imagevalidatingpolicy.yaml` (một glob, một attestor mỗi nguồn, kiểm bảng lúc render),
+  đi), `deploy/helm/svp-policy/templates/imagevalidatingpolicy.yaml` (một glob mỗi tên được phát hành, một attestor mỗi nguồn, kiểm bảng lúc render),
   `deploy/helm/svp-policy/Chart.yaml`; `deploy/k8s/lib.sh` (`release_sources` với đường lùi theo revision, `release_source`,
   `source_of_repository`, `release_source_of`, `release_repositories`, `release_image` theo nguồn); `deploy/ci/common.sh`
   (`use_release_source`, `sign_identity` và `provenance_source` nhận tên nguồn, `release_source_in`, `verify_signature` theo prefix,

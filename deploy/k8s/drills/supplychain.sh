@@ -57,14 +57,17 @@
 #      before the Enforce cases), since Enforce refuses that image by its prefix;
 #   m  the release sources apart, for every ordered pair of sources A and B of the table:
 #      - names: an image under A's prefix whose name only B publishes (a service or drill image of B, not of A), by a
-#        digest: refused by the prefix rule (the first check), whatever the digest; SKIP when every name of B is also
-#        A's (web, while backend is still a source of it);
-#      - identities: a release of A (one a pod of svp runs, or SUPPLYCHAIN_NO_PROVENANCE, which case l shows signed),
-#        its digest under B's prefix, for a name B publishes too: refused by the signature rule naming source B, since
-#        Kyverno verifies an image with the attestor of the source whose prefix it is under, never with the one that
-#        signed it (the signature of A lives under A's prefix); SKIP while no release of B runs in svp (B's repository
-#        on GHCR may not exist yet, and a registry error is not the rule's answer), or when no release of A at hand
-#        has a name B publishes;
+#        digest: refused by the prefix rule (the first check), whatever the digest, without any registry asked (no
+#        glob of the policy matches it); SKIP when every name of B is also A's (web, while backend is still a source
+#        of it);
+#      - identities, A→B: a release of B that a pod of svp runs, under a temporary copy of the policy (same chart, its
+#        table with the issuer and subject of A and B swapped, only pods of svp labelled svp-drill=supplychain-swap):
+#        refused by the signature rule naming source B, since Kyverno verifies an image with the attestor of the
+#        source whose prefix it is under, which in the copy has A's identity; had it picked A's attestor, which has
+#        B's identity there, the pod would pass. One copy per pair of sources serves both directions and is deleted
+#        after them. Not A's release with its digest under B's prefix: GHCR has no manifest of another repository's
+#        digest, and Kyverno fetches a matched image before any check, so that answer is a registry error. SKIP while
+#        no release of B runs in svp (before that source's first release reaches the cluster);
 #      - a release of each source other than backend that a pod of svp runs: admitted (case a is backend's); SKIP
 #        while none runs (before that source's first release reaches the cluster).
 # The policy admits the images of every release source of its chart (files/sources.json), each under its own prefix
@@ -789,9 +792,11 @@ refused i "$bad_rule" "pod svp/$target with container $target_container set to $
 
 # --- m: the release sources apart (the header says what each part shows).
 pods_json=$(kc -n svp get pods -o json) || fail "read the pods of svp"
-# The releases at hand, by digest: those the pods of svp run, and the one of case l.
-releases=$(jq -c --arg l "$no_provenance" '[.items[].spec.containers[].image | select(test("@sha256:[0-9a-f]{64}$"))]
-  + (if $l == "" then [] else [$l] end) | unique' <<<"$pods_json")
+# running_release PREFIX: the first image by digest under PREFIX that a pod of svp runs, empty without one.
+running_release() {
+  jq -r --arg p "$1" '[.items[].spec.containers[].image | select(startswith($p) and test("@sha256:[0-9a-f]{64}$"))]
+    | first // empty' <<<"$pods_json"
+}
 # A digest the names part sends: the prefix rule refuses by the name alone, before any registry is asked.
 name_digest=sha256:$(printf '0%.0s' $(seq 64))
 for a in $(jq -r '.sources[].name' <<<"$sources"); do
@@ -801,33 +806,65 @@ for a in $(jq -r '.sources[].name' <<<"$sources"); do
       <<<"$sources")
     only_b=$(jq -r '(.b.services + .b.drillImages) - (.a.services + .a.drillImages) | first // empty' <<<"$pair")
     pa=$(jq -r .a.imagePrefix <<<"$pair")
-    pb=$(jq -r .b.imagePrefix <<<"$pair")
     if [[ -n $only_b ]]; then
       dry_run drill-supplychain-m svp "$pa$only_b@$name_digest"
       refused m "image not allowed in namespace svp" "$pa$only_b@… under source $a's prefix, a name only source $b publishes"
     else
       result m SKIP "names, $a's prefix: source $b publishes no name that $a does not"
     fi
-    # The first release at hand under A's prefix whose name B publishes, moved under B's prefix.
-    cross=$(jq -r --argjson p "$pair" '[.[] | select(startswith($p.a.imagePrefix))
-      | (ltrimstr($p.a.imagePrefix) | split("@")[0] | split(":")[0]) as $n
-      | select(($p.b.services + $p.b.drillImages) | index($n))
-      | $p.b.imagePrefix + $n + "@" + (split("@")[1])] | first // empty' <<<"$releases")
-    if ! jq -e --arg p "$pb" 'any(.[]; startswith($p))' <<<"$releases" >/dev/null; then
-      result m SKIP "identities, under $b's prefix: no release of source $b runs in svp (its first release has not reached this cluster)"
-    elif [[ -n $cross ]]; then
-      dry_run drill-supplychain-m svp "$cross"
-      refused m "image without a keyless signature by the workflow of its source: $cross (source $b," \
-        "$cross: a release of source $a, signed by $a's workflow, under source $b's prefix"
-    else
-      result m SKIP "identities, $a's release under $b's prefix: no release of source $a at hand has a name source $b publishes"
+  done
+done
+# Identities. Not a release of A with its digest moved under B's prefix: that image matches a glob, so Kyverno fetches
+# it from B's repository before any check, and GHCR has no manifest of another repository's digest there; the answer
+# would be a registry error, never the signature rule. To have one there, one would push to B's repository, with B's
+# rights, and B's attestor would still want B's identity: what this part shows. For each pair of sources, one
+# temporary copy of the policy (chart svp-policy rendered from a copy whose files/sources.json swaps the issuer and
+# subject of the two, mode Enforce, only pods of svp labelled svp-drill=supplychain-swap) serves both directions: a
+# running release of B sent under it meets B's attestor, now with A's identity, and is refused by the signature rule
+# naming source B. Had the policy picked A's attestor for it, that one now has B's identity and the pod would pass,
+# so the case would fail; the admitted lines below show the real policy admits the same image.
+n_sources=$(jq '.sources | length' <<<"$sources")
+for ((i = 0; i < n_sources; i++)); do
+  for ((j = i + 1; j < n_sources; j++)); do
+    sa=$(jq -r ".sources[$i].name" <<<"$sources")
+    sb=$(jq -r ".sources[$j].name" <<<"$sources")
+    ra=$(running_release "$(jq -r ".sources[$i].imagePrefix" <<<"$sources")")
+    rb=$(running_release "$(jq -r ".sources[$j].imagePrefix" <<<"$sources")")
+    swap=svp-drill-swap-$sa-$sb
+    if [[ -n $ra || -n $rb ]]; then
+      rm -rf "$work/swap-chart"
+      cp -R "$repo_root/deploy/helm/svp-policy" "$work/swap-chart"
+      jq --argjson i "$i" --argjson j "$j" '.sources[$i] as $x | .sources[$j] as $y
+        | .sources[$i].issuer = $y.issuer | .sources[$i].subject = $y.subject
+        | .sources[$j].issuer = $x.issuer | .sources[$j].subject = $x.subject' \
+        "$repo_root/deploy/helm/svp-policy/files/sources.json" >"$work/swap-chart/files/sources.json" ||
+        fail "swap the identities of sources $sa and $sb"
+      hc template "$swap" "$work/swap-chart" --set imageVerification.mode=Enforce --set "name=$swap" \
+        --set-json 'objectSelector={"matchLabels":{"svp-drill":"supplychain-swap"}}' >"$work/policy.yaml" ||
+        fail "render chart svp-policy as $swap"
+      apply_policy "$swap" "$work/policy.yaml"
+    fi
+    # Each direction: the release of the second source of the line, under the copy where its attestor has the identity
+    # of the first.
+    for dir in "$sa $sb $rb" "$sb $sa $ra"; do
+      read -r x y ry <<<"$dir"
+      if [[ -n $ry ]]; then
+        dry_run drill-supplychain-m svp "$ry" supplychain-swap
+        refused m "image without a keyless signature by the workflow of its source: $ry (source $y," \
+          "identities, $x→$y: $ry, a release of source $y, under a copy of the policy whose attestor $y has $x's identity"
+      else
+        result m SKIP "identities, $x→$y: no release of source $y runs in svp (its first release has not reached this cluster)"
+      fi
+    done
+    if [[ -n $ra || -n $rb ]]; then
+      kc delete imagevalidatingpolicies.policies.kyverno.io "$swap" --wait=true >/dev/null || fail "delete policy $swap"
+      wait_until 120 "Kyverno removed the webhook of the temporary policy $swap" drill_webhooks_gone
+      temp_policies=
     fi
   done
 done
 for s in $(jq -r '.sources[] | select(.name != "backend") | .name' <<<"$sources"); do
-  ps=$(jq -r --arg s "$s" '.sources[] | select(.name == $s) | .imagePrefix' <<<"$sources")
-  own=$(jq -r --arg p "$ps" '[.items[].spec.containers[].image | select(startswith($p) and test("@sha256:[0-9a-f]{64}$"))]
-    | first // empty' <<<"$pods_json")
+  own=$(running_release "$(jq -r --arg s "$s" '.sources[] | select(.name == $s) | .imagePrefix' <<<"$sources")")
   if [[ -n $own ]]; then
     dry_run drill-supplychain-m svp "$own"
     admitted m "$own, a release of source $s, verified with $s's identity"

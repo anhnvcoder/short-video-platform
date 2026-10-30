@@ -403,7 +403,9 @@ liệt kê target):
   chart): mỗi nguồn `name`, `repository`, `imagePrefix` (kết thúc `/`), `services`, `drillImages`, `issuer`, `subject`,
   `provenanceRef`, `promoter`. Hiện hai nguồn: `backend` (repo này, prefix `ghcr.io/anhnvcoder/short-video-platform/`, bảy service
   gồm `web` cũ, hai image diễn tập) và `web` (`ghcr.io/anhnvcoder/svp-web/`, chỉ `web`, identity `svp-web/.github/workflows/images.yml@refs/heads/main`,
-  App `svp-web-promoter`): web được nhận từ cả hai tới khi gỡ nguồn cũ. Policy: một glob mỗi prefix, một attestor mỗi nguồn; phép 1
+  App `svp-web-promoter`): web được nhận từ cả hai tới khi gỡ nguồn cũ. Policy: một glob mỗi tên được phát hành
+  (`<imagePrefix><tên>@*`, `<imagePrefix><tên>:*`; không glob cả prefix: Kyverno kéo từ registry mọi image khớp glob trước mọi phép,
+  nên tên lạ dưới một prefix bị từ chối bằng lỗi registry thay vì phép 1, lượt `verify.yml` 41081463084), một attestor mỗi nguồn; phép 1
   nhận `<imagePrefix><tên>@sha256:<64 hex>` với `<tên>` thuộc `services` hay `drillImages` của nguồn có prefix đó (đường
   `api/gateway`, `web-sourcemaps` không pod nào chạy được); các phép chữ ký, `vuln`, provenance chọn attestor của nguồn theo prefix
   của image, message nêu tên nguồn. Template từ chối lúc render bảng sai (prefix lồng nhau hay thiếu `/`, tên hay `promoter` trùng,
@@ -610,10 +612,12 @@ liệt kê target):
   lịch sử `deploy/k8s/values/services/` của repo này, nơi digest phát hành nằm trước khi tách `svp-gitops`) trong 72 giờ trước lượt
   diễn tập; kịch bản `gitops` tự tìm bản web mới nhất trong lịch sử đó có chữ ký mà không provenance, không có thì (l) SKIP; (m)
   nguồn phát hành tách nhau, mỗi cặp nguồn A, B của bảng: image dưới prefix của A mang tên chỉ B phát hành bị từ chối đúng message của
-  phép 1 (không có tên như vậy thì SKIP, như `web` lúc `backend` còn là nguồn của nó); bản phát hành của A (pod `svp` đang chạy, hay
-  image của (l)) đặt digest dưới prefix của B, với tên B cũng phát hành, bị từ chối đúng message phép chữ ký nêu nguồn B (SKIP khi chưa
-  bản nào của B chạy trong `svp`: repository của B trên GHCR có thể chưa có); bản của mỗi nguồn khác `backend` mà pod `svp` chạy được
-  nhận (chưa có thì SKIP). Đường dev là Audit nên script từ chối chạy trừ
+  phép 1, không hỏi registry (không khớp glob nào; không có tên như vậy thì SKIP, như `web` lúc `backend` còn là nguồn của nó); bản
+  phát hành của B mà pod `svp` chạy, gửi dưới bản sao tạm của policy đổi chéo issuer, subject của A và B (chỉ pod nhãn
+  `svp-drill=supplychain-swap`, một bản sao mỗi cặp cho cả hai chiều, xoá ngay sau), bị từ chối đúng message phép chữ ký nêu nguồn B
+  (chọn nhầm attestor của A thì gặp identity của B và lọt qua; không đặt digest của A dưới prefix của B: GHCR không có manifest đó,
+  Kyverno kéo image khớp glob trước mọi phép nên chỉ nhận lỗi registry; chưa bản nào của B chạy trong `svp` thì SKIP); bản của mỗi
+  nguồn khác `backend` mà pod `svp` chạy được nhận (chưa có thì SKIP). Đường dev là Audit nên script từ chối chạy trừ
   khi `SUPPLYCHAIN_ENFORCE_TMP=1`: chạy (k), nâng tạm `svp-policy` lên Enforce cho các ca còn lại rồi trả Audit; trên
   đường dev chưa có image ký nên (a), (b), (c), (f) và nửa nhận của (h) SKIP. Trên cluster GitOps (lượt 40954609229, nhánh PR-B):
   a–i và (l) PASS, (l) đúng message của phép provenance, (k) SKIP như thiết kế. Khi kết thúc script trả Kyverno, Argo CD sync, Audit về như cũ, xoá policy tạm, `svp-probe`, và so

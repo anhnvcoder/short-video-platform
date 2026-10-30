@@ -6,11 +6,17 @@ another's: an identity of one source cannot sign an image under another's prefix
 the first that fails, each with its own message naming the images it refused and, from check 2 on, the source each
 belongs to:
   1. every image of the pod is <imagePrefix><name>@sha256:<64 hex>, <name> one of the services or drill images of the
-     source with that prefix. Kyverno verifies only the images that matchImageReferences selects (one glob per
-     prefix) and lets every other one through, so this check alone refuses an image of the local registry or of Docker
-     Hub; it reads the pod only, so such a pod is refused without any registry being asked. An image under a prefix
-     without a digest is refused earlier still, by verifyDigest ("does not have a digest"), before Kyverno would look
-     its tag up;
+     source with that prefix. Kyverno verifies only the images that matchImageReferences selects and lets every other
+     one through, so this check alone refuses an image of the local registry, of Docker Hub, or under a prefix with a
+     name its source does not publish; it reads the pod only, so such a pod is refused without any registry being
+     asked. That holds only for an image no glob matches: Kyverno fetches every matched image from its registry before
+     any check runs, and a registry that refuses (a repository that does not exist answers DENIED on GHCR) fails the
+     evaluation instead of this check's message. So matchImageReferences has two globs per published name,
+     <imagePrefix><name>@* and <imagePrefix><name>:*, never one per prefix (<imagePrefix>* let a pod with an unknown
+     name under a prefix reach GHCR first: verify.yml run 41081463084). The globs are gobwas/glob without separators,
+     where * matches any characters, / : and @ included. An image of a published name without a digest matches the
+     :* glob and is refused earlier still, by verifyDigest ("does not have a digest"), before Kyverno would look its
+     tag up;
   2. a keyless cosign signature by the workflow identity (issuer + subject) of its source;
   3. a vuln attestation (https://cosign.sigstore.dev/attestation/vuln/v1) signed by the same identity;
   4. its predicate covers exactly linux/amd64 and linux/arm64 (scanner.result.platforms, the contract of
@@ -185,9 +191,14 @@ spec:
         apiVersions: [v1]
         operations: [CREATE, UPDATE]
         resources: [pods, pods/ephemeralcontainers]
+  # Two globs per name a source publishes (check 1 above says why not one per prefix): by digest, and by tag, which
+  # verifyDigest then refuses.
   matchImageReferences:
-    {{- range $sources }}
-    - glob: {{ printf "%s*" .imagePrefix | quote }}
+    {{- range $s := $sources }}
+    {{- range $img := concat $s.services $s.drillImages }}
+    - glob: {{ printf "%s%s@*" $s.imagePrefix $img | quote }}
+    - glob: {{ printf "%s%s:*" $s.imagePrefix $img | quote }}
+    {{- end }}
     {{- end }}
   validationConfigurations:
     # Images are never rewritten (the default would pin a tag to its digest through a mutating webhook): the digest is
@@ -224,7 +235,7 @@ spec:
     - name: foreign
       expression: >-
         variables.podImages.filter(i, !i.matches({{ printf "r'^(%s)(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$'" (join "|" $allowed) }}))
-    # The images under a prefix (matchImageReferences), the ones Kyverno verifies.
+    # The images matchImageReferences selects (a published name under its source's prefix), the ones Kyverno verifies.
     - name: matched
       expression: images.containers + images.initContainers + images.ephemeralContainers
     - name: unsigned
