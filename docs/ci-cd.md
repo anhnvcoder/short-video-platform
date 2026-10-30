@@ -86,7 +86,7 @@ flowchart LR
   `envs/stg/charts.yaml`.
 - Rollback stg là PR revert trong `svp-gitops`; promote sau đó không ghi lùi lại bản đã revert (luật "không bao giờ lùi" của
   `promote.sh` đọc `main` của `svp-gitops`). Quy trình ở [`runbooks/svp-gitops-setup.md`](runbooks/svp-gitops-setup.md).
-- Lần promote đầu sau khi tách repo, auto-merge của PR bot: **kiểm sau push**.
+- Lần promote đầu sau khi tách repo, auto-merge của PR bot: đã kiểm ngày 2026-10-30 (lượt [40984668411](https://github.com/anhnvcoder/short-video-platform/actions/runs/40984668411) trên `2d9dab0`; PR #4, #5, #6 của `svp-gitops`, 0 review, bot tự merge sau `gitops-ok`).
 - CodeQL default setup cũng quét mỗi push `main`; cảnh báo mở và đóng trên `refs/heads/main` ở tab Security.
 
 ### 1.3 Theo lịch
@@ -156,7 +156,9 @@ flowchart LR
   chính nó (đặc tính của `pull_request`), nên `.github/` có Code Owner.
 - Ruleset `owners` đòi duyệt của Code Owner cho mọi file trừ `envs/stg/`; ruleset `tags` cấm tạo tag (Argo CD có thể phân giải tên
   ngắn sang tag cùng tên). Lượt `check` đầu trên `main`: [40902199532](https://github.com/anhnvcoder/svp-gitops/actions/runs/40902199532)
-  (2026-10-29), token chỉ `Contents: read`.
+  (2026-10-29), token chỉ `Contents: read`. Kiểm ngày 2026-10-30: người học là Code Owner duy nhất kiêm tác giả PR nên GitHub coi
+  `owners` đã thoả, PR của họ đổi file chung merge được không cần duyệt và không có bản ghi bypass (đường "bypass ruleset owners" của
+  sơ đồ trên chưa xảy ra); `gitops-ok` vẫn là lớp chặn. Luật vẫn áp lên PR của người khác; ca âm cho PR của bot chưa có (phần 4b).
 - Bản ghi stg: job `record-stg` của `verify.yml` ([bảng `verify.yml`](#verifyyml)).
 
 ## 2. Job theo từng workflow

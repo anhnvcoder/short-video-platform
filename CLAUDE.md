@@ -485,8 +485,8 @@ liệt kê target):
   đó, rồi PushEvent, cả hai qua `gh api` vào repo `svp-gitops` (`ci_push_time SHA REPO`), chỉ đọc, ghi nguồn) qua sync của Argo CD tới pod đầu
   và cuối Ready với digest mới; service có `migrate: true` ở revision đó thì Job migrate phải tạo trong cửa sổ của đúng sync
   đã đo và `restartCount` 0 (thiếu Job là FAIL, sync đang chạy là exit 2: đo lại); chỉ đọc, JSON ở `.k8s/drills/`. `k8s-gitops-up` đọc
-  `svp-gitops` đã kiểm trên nhánh PR-B (lượt 40954609229, dựng 610 s); `measure-gitops` đo commit của `svp-gitops` **kiểm sau push**
-  (bước chờ phát hành chỉ chạy trên `main`).
+  `svp-gitops` đã kiểm trên nhánh PR-B (lượt 40954609229, dựng 610 s); `measure-gitops` đo commit của `svp-gitops`: chưa chạy,
+  **kiểm sau push** (bước chờ phát hành chỉ chạy trên `main`; lượt `gitops` 41015270736 trên `main` bỏ `wait-release`, `measure-gitops` khỏi `targets`).
 - `make k8s-traffic-start` / `make k8s-traffic-stop`: traffic diễn tập chạy nền, 4 user, ~10 request/s vào
   `GET /feed/explore`, `/feed/following` qua `https://api.svp.localhost:8443` và ~4 request/s vào web
   `https://svp.localhost:8443` (`GET /login`, một asset `/_next/static/...`; dòng log `web-login`, `web-asset`), mỗi
@@ -576,7 +576,8 @@ liệt kê target):
   `Secure`), `SVP_E2E_GLITCHTIP=1` đọc token chỉ đọc của Secret `svp-obs/glitchtip-api` vào môi trường của lượt chạy và tự mở
   forward `127.0.0.1:8000`, `SVP_E2E_EVIDENCE` như `web-e2e`; `drill-k8s-web-obs` (chỉ đọc, sau `k8s-web-e2e`) kiểm Tempo có
   trace với span của `web` và gateway, Prometheus có histogram RUM LCP, CLS (INP khi có tương tác) với nhãn route đóng và
-  in p75, event GlitchTip của lượt `SVP_E2E_GLITCHTIP=1` có frame đã map (`SVP_WEB_OBS_SKIP_ERRORS=<lý do>` bỏ riêng phép kiểm
+  in p75, event GlitchTip của lượt `SVP_E2E_GLITCHTIP=1` có frame đã map và environment bằng `SENTRY_ENVIRONMENT` của pod `web` đang chạy
+  (`k3d` ở cluster dev, `stg` ở cluster GitOps; file e2e không có environment hay lệch là FAIL) (`SVP_WEB_OBS_SKIP_ERRORS=<lý do>` bỏ riêng phép kiểm
   này, in `SKIP  errors (<lý do>)`; rỗng hay chỉ khoảng trắng bị từ chối; chỉ kịch bản `gitops` trên nhánh đặt); forward riêng `127.0.0.1:13200` (Tempo), `19090`
   (Prometheus), `8000` (GlitchTip), cổng bị chiếm thì dừng. **LOCAL LAB ONLY:** `k8s-web-e2e` xoá khoá
   `svp:gw:rl:register:*` ở Valkey db 10 của cluster.
@@ -691,8 +692,9 @@ liệt kê target):
     bản ghi stg (mặc định mới nhất; bản cũ hơn là rollback) vào `envs/prd/images/`, `envs/prd/charts.yaml` trên nhánh `bot/promote-prd`,
     mở PR không auto-merge (Code Owner duyệt), mô tả ghi id bản ghi, commit stg, lượt kiểm; bản ghi có `ref` không còn trên `main`
     của `svp-gitops` bị từ chối. Check tổng `images-ok` (dispatch promote prd: `plan` skipped vẫn xanh). Provenance trên bản phát hành
-    thật đã kiểm (bảy bản của `6ca2d8a`, `cosign verify-attestation --type slsaprovenance1` và lượt `gitops` 40954609229). Lần promote
-    stg đầu, auto-merge của PR bot, promote prd và rescan đọc `svp-gitops`: **kiểm sau push**.
+    thật đã kiểm (bảy bản của `6ca2d8a`, `cosign verify-attestation --type slsaprovenance1` và lượt `gitops` 40954609229). Đã kiểm ngày
+    2026-10-30: lần promote stg đầu và auto-merge của PR bot (PR #4, #5, #6 của `svp-gitops`, lượt `images.yml` 40984668411 trên `2d9dab0`), promote
+    prd (lượt 41022346853, PR #7 `523ba34`, người học duyệt) và rescan đọc `svp-gitops` (lượt 41018158008: 14 digest của stg và prd, 28/28 qua cổng quét).
   - `.github/workflows/verify.yml` (giai đoạn 6b, [ADR-0021](docs/adr/0021-deferred-verification-stage6b.md); không check
     bắt buộc nào, không chạy ở PR): kiểm chứng trên runner `ubuntu-24.04` những gì máy 16 GB không chạy nổi, bằng đúng
     target `make` như trên máy. Trigger: `workflow_dispatch` (chỉ người có quyền ghi; ref `main` hay `feat/stage6b-*`, ref
@@ -740,7 +742,7 @@ liệt kê target):
     chạy kịch bản nào): `deploy/ci/record-stg.sh` tạo Deployment GitHub environment `stg` trên `svp-gitops` (`ref` = R, payload
     = `release-set.json`: bảy `repository@digest`, `charts`, R, `deployed_at`, URL lượt; `auto_merge: false`, `required_contexts: []`;
     trạng thái `success`): đó là **bản ghi stg** mà promote prd chép và check prd so. Lượt `gitops` 40954609229 (nhánh PR-B, mọi
-    bước) 17/17 target ok; `record-stg` và bước chờ phát hành trên `main`: **kiểm sau push**), `web-canary` (`make k8s-up`, `make k8s-smoke`, `make drill-k8s-web-canary`), `k6-cloud-mini`
+    bước) 17/17 target ok; `record-stg` trên `main` đã kiểm ngày 2026-10-30: lượt 41015270736, 18/18 target ok, Deployment `7433303337`, ref `e8a727e`; bước chờ phát hành trên `main`: chưa chạy, **kiểm sau push**), `web-canary` (`make k8s-up`, `make k8s-smoke`, `make drill-k8s-web-canary`), `k6-cloud-mini`
     (`make k8s-up`, seed ≥ 30 video `READY`, Job k6 profile `cloud` 1, 2, 4, 8 pod qua `run.sh --pods N`, mỗi mức lên 2 phút,
     giữ 10, xuống 1, dừng ở mức đầu tiên trượt; mỗi mức ghi số k6, khoá rate limit bằng số pod, p95/p99 phía server, CPU,
     throttle, working set của web; sau mỗi mức step `tempo-ingest-<n>`; **LOCAL LAB ONLY:** xoá khoá đăng ký giữa hai mức), `chaos` (`make k8s-up`, seed, cài Chaos
@@ -787,8 +789,9 @@ liệt kê target):
     `docs/postmortems/`; chỉ số thiếu dữ liệu in "chưa đủ dữ liệu" kèm lý do (ngưỡng 5 mẫu lead time, 10 deployment cho tỷ lệ),
     prd in "chưa có dữ liệu prd"; số PR promote đã merge (bỏ commit khởi tạo của `svp-gitops`) và digest đã merge chưa triển khai in
     riêng; danh sách đủ 100 bản ghi (trần của `ci_deployment_list`) thì cảnh báo. Bảng vào tóm tắt của lượt, JSON vào artifact
-    `dora` (30 ngày). Chạy trên máy: `deploy/ci/dora.sh <file>` (chế độ `local`, đọc bản clone `../gitops`, chỉ đọc). Lượt đầu:
-    **kiểm sau push**.
+    `dora` (30 ngày). Chạy trên máy: `deploy/ci/dora.sh <file>` (chế độ `local`, đọc bản clone `../gitops`, chỉ đọc). Lượt đầu
+    đã chạy ngày 2026-10-30 (dispatch 41022984599): xanh, deployment frequency 1, các chỉ số thiếu mẫu "chưa đủ dữ liệu" kèm lý do; lead time n = 0 dù đã có một
+    deployment (chưa rõ có do thiết kế).
   - **`svp-gitops`** (`https://github.com/anhnvcoder/svp-gitops`, public, không secret; [ADR-0025](docs/adr/0025-gitops-config-repo.md),
     quy trình tay ở [`docs/runbooks/svp-gitops-setup.md`](docs/runbooks/svp-gitops-setup.md)): `base/` (values gốc của chart upstream,
     `argo-cd.yaml`, `services/<svc>.yaml` không khối `image`), `envs/{stg,prd}/` (overlay, `svp-policy.yaml`, `charts.yaml` ghim
@@ -803,14 +806,15 @@ liệt kê target):
     `envs/stg/`, chart khác bản ghi đều đỏ), render root theo env × kiến trúc (mọi `targetRevision` vào `svp-gitops` phải tên đầy đủ),
     chart repo ở `revision` của env với `base/` và overlay, External Secrets qua kubeconform, mọi image bên thứ ba ghim digest (thay
     `deploy/k8s/check-image-digests.sh` đã xoá), `values-check.sh --gitops` cho env có file image, `charts.yaml` hay `svp-policy.yaml`
-    đổi; check tổng `gitops-ok`. `CHECKER_COMMIT` đang ghim `c59c742` (checker trước PR-B, chưa có bước so bản ghi prd): sau merge
-    PR-B người học bump bằng PR ở `svp-gitops`, cùng lúc đưa `GH_TOKEN: ${{ github.token }}` cho bước chạy `gitops-check.sh` (đọc bản
-    ghi stg), thiếu thì PR prd đỏ "records of stg cannot be read". Ba ruleset (`.github/rulesets/`): `main` (PR, `gitops-ok` bắt buộc, cấm xoá và force push, không ai
+    đổi; check tổng `gitops-ok`. `CHECKER_COMMIT` đang ghim `2d9dab0` (commit merge PR-B) và bước chạy `gitops-check.sh` có `GH_TOKEN: ${{ github.token }}` (đọc bản
+    ghi stg; thiếu thì PR prd đỏ "records of stg cannot be read"). Ba ruleset (`.github/rulesets/`): `main` (PR, `gitops-ok` bắt buộc, cấm xoá và force push, không ai
     bypass), `owners` (duyệt của Code Owner; vai admin bypass chỉ ở chế độ `pull_request`, có bản ghi), `tags` (cấm tạo, sửa, xoá tag;
     chỉ admin bypass), cộng dồn: PR bot chỉ đổi `envs/stg/` tự merge, PR prd và Renovate cần người học duyệt, PR của người học trên file
     có chủ merge bằng bypass `owners` mà vẫn cần `gitops-ok`. Đã kiểm: commit khởi tạo `55258e1`, commit thêm check `a84e26d`, lượt
-    `check` đầu 40902199532 xanh (token chỉ `Contents: read`), ba ruleset `active` (2026-10-29); chặn PR chưa duyệt, bypass có bản
-    ghi: **kiểm sau push**.
+    `check` đầu 40902199532 xanh (token chỉ `Contents: read`), ba ruleset `active` (2026-10-29); PR bot chỉ đổi `envs/stg/` tự merge đã kiểm ngày 2026-10-30 (PR #4, #5, #6). **Không đạt:** PR của người học đổi file có chủ merge được không
+    cần duyệt và không có bản ghi bypass (PR thử #8 ở trạng thái `CLEAN`, PR #3 có rule suite `pass`): GitHub coi tác giả PR kiêm Code Owner duy nhất là
+    đã thoả `require_code_owner_review`, nên người học không tự kiểm mình bằng duyệt, kiểm tự động `gitops-ok` là lớp chặn còn lại; luật vẫn áp lên PR của người
+    khác, ca âm cho PR của bot chưa có (việc mở: phần 4b, App thứ hai).
   - Check bắt buộc của ruleset `main`: `ci-ok`, `images-ok`, chỉ nhận từ app GitHub Actions. Ruleset, năm cài đặt repo
     của ADR-0015 §11 (quyền mặc định của `GITHUB_TOKEN` chỉ đọc kèm "Allow GitHub Actions to create and approve pull
     requests"; Actions chỉ cho action của GitHub và `sigstore/cosign-installer`, ghim SHA bắt buộc; duyệt workflow của PR

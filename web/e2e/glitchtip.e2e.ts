@@ -19,7 +19,8 @@ import { stack } from "./stack";
 // SENTRY_AUTH_TOKEN of .env (read with deploy/observability/glitchtip/dotenv.sh), k3d gets the token of Secret
 // svp-obs/glitchtip-api from e2e/k3d-e2e.sh in SVP_E2E_GLITCHTIP_TOKEN. GlitchTip is on 127.0.0.1:8000 on both:
 // compose publishes it there, e2e/k3d-e2e.sh opens a port-forward there for the run. Each browser's event, once found,
-// goes to test-results/glitchtip-<project>.json, which `make drill-k8s-web-obs` reads back.
+// goes to test-results/glitchtip-<project>.json (with the environment GlitchTip holds for it), which `make
+// drill-k8s-web-obs` reads back.
 
 const glitchtipURL = "http://127.0.0.1:8000";
 // Organization and project that GlitchTip's bootstrap creates on both stacks.
@@ -77,6 +78,7 @@ type Frame = { filename?: string; absPath?: string; abs_path?: string; function?
 type ExceptionValue = { type?: string; value?: string; stacktrace?: { frames?: Frame[] } };
 type EventDetail = {
   tags?: Tag[];
+  environment?: string;
   entries?: { type: string; data?: { values?: ExceptionValue[] } }[];
   exception?: { values?: ExceptionValue[] };
 };
@@ -95,7 +97,7 @@ function sourceOf(frame: Frame): string {
   return frame.filename || frame.absPath || frame.abs_path || "";
 }
 
-type Found = { issueId: string; eventId: string; type: string; sources: string[] };
+type Found = { issueId: string; eventId: string; type: string; environment: string; sources: string[] };
 
 // The events of the web's browser reports received since `since` (ms since the epoch) on the feed's route, newest
 // issue first, with their exception and frame sources.
@@ -125,6 +127,8 @@ async function browserEvents(token: string, since: number): Promise<Found[]> {
         issueId: issue.id,
         eventId: event.event_id,
         type: exception?.type ?? "",
+        // Sentry's API lists the event's environment among its tags; the stored event has it as a field of its own.
+        environment: tag(detail.tags, "environment") ?? detail.environment ?? "",
         sources: (exception?.stacktrace?.frames ?? []).map(sourceOf),
       });
     }
@@ -205,6 +209,7 @@ authedTest(
       event_id: mapped.eventId,
       issue_id: mapped.issueId,
       exception_type: mapped.type,
+      environment: mapped.environment,
       mapped_frames: mapped.sources.filter((source) => webSource.test(source)).length,
       app_frames: appFrames.length,
       frames: mapped.sources,

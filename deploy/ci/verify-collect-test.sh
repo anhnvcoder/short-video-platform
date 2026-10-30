@@ -778,6 +778,8 @@ mkdir -p "$repo/web/test-results/playwright/login-chromium"
 printf -- '- generic: Cookie: svp_sid=abc\n' >"$repo/web/test-results/playwright/login-chromium/error-context.md"
 echo '{"status":"failed","failedTests":["abc-123"]}' >"$repo/web/test-results/playwright/.last-run.json"
 echo '{"header":"Bearer abc"}' >"$repo/web/test-results/glitchtip-chromium.json"
+echo '{"stack":"k3d","project":"webkit","event_id":"0123456789abcdef0123456789abcdef","environment":"stg","mapped_frames":3}' \
+  >"$repo/web/test-results/glitchtip-webkit.json"
 echo '{"cookie":"svp_sid=abc"}' >"$repo/web/test-results/measure-web-1.json"
 echo "{\"key\":\"$private_key_header\"}" >"$repo/web/test-results/measure-upload-1.json"
 
@@ -938,6 +940,7 @@ expect k3d web/test-results/playwright/.last-run.json not-allowed
 lacks k3d "Playwright's .last-run.json is dropped without a warning" '.last-run.json'
 has k3d "another hidden file still gets a warning" 'lighthouse/.lighthouseci/lhr-1.json: hidden'
 expect k3d web/test-results/glitchtip-chromium.json bearer
+expect k3d web/test-results/glitchtip-webkit.json kept
 expect k3d web/test-results/measure-web-1.json session-cookie
 expect k3d web/test-results/measure-upload-1.json private-key
 for n in 07-drill-k8s-threats 08-drill-k8s-threats 09-drill-obs-threats 10-drill-obs-threats; do

@@ -11,7 +11,9 @@
 #              cumulative buckets (a series the e2e run made may hold a single sample, which increase() cannot read).
 #   3. errors  the GlitchTip event that web/e2e/glitchtip.e2e.ts found (web/test-results/glitchtip-<project>.json of
 #              `SVP_E2E_GLITCHTIP=1 make k8s-web-e2e` on k3d) is there, tagged service=web and runtime=browser, with
-#              frames mapped to the web's source (turbopack:///[project]/...), read again through the API.
+#              frames mapped to the web's source (turbopack:///[project]/...), read again through the API. Its
+#              environment (in the file and as the API returns it) must equal the SENTRY_ENVIRONMENT that the running
+#              web pods of namespace svp read: k3d on the dev cluster, stg on the GitOps one.
 # Each check prints PASS, FAIL (or SKIP for INP) and the table at the end; a FAIL does not stop the next check. Exit 1
 # when any check failed.
 #
@@ -147,8 +149,22 @@ glitchtip_get() {
   printf 'Authorization: Bearer %s\n' "$token" |
     curl -sS --max-time 10 -H @- -o "$2" -w '%{http_code}' "$glitchtip_url$1" || true
 }
+# web_environment: prints the SENTRY_ENVIRONMENT the web pods of svp run with; fails unless every running pod (a canary
+# has two ReplicaSets) reads the same non-empty value.
+web_environment() {
+  local pods values
+  pods=$(kc -n svp get pods -l app.kubernetes.io/name=web --field-selector=status.phase=Running -o json) ||
+    fail "list the running web pods of namespace svp"
+  values=$(jq -r '[.items[] | [.spec.containers[] | select(.name == "web") | .env[]?
+    | select(.name == "SENTRY_ENVIRONMENT") | .value][0] // ""] | unique | join(",")' <<<"$pods") ||
+    fail "read SENTRY_ENVIRONMENT of the web pods"
+  [ -n "$values" ] || fail "no running web pod of namespace svp has SENTRY_ENVIRONMENT set"
+  [[ $values != *,* ]] || fail "the running web pods read different SENTRY_ENVIRONMENT values ($values)"
+  printf '%s\n' "$values"
+}
 check_errors() {
-  local file project stack id status sources n=0
+  local file project stack id status sources env_want env_file env_event n=0
+  env_want=$(web_environment)
   token=$(kc -n svp-obs get secret glitchtip-api --ignore-not-found -o jsonpath='{.data.SENTRY_AUTH_TOKEN}' |
     base64 -d) || fail "read Secret svp-obs/glitchtip-api"
   [ -n "$token" ] || fail "Secret svp-obs/glitchtip-api has no SENTRY_AUTH_TOKEN; run make k8s-glitchtip-init first"
@@ -165,12 +181,18 @@ check_errors() {
     jq -e '([.tags[]? | select(.key == "service") | .value] == ["web"]) and
       ([.tags[]? | select(.key == "runtime") | .value] == ["browser"])' "$work/event.json" >/dev/null ||
       fail "GlitchTip event $id ($project) has tags service=web and runtime=browser"
+    env_file=$(jq -r '.environment // ""' "$file")
+    [ "$env_file" = "$env_want" ] ||
+      fail "web/test-results/glitchtip-$project.json has environment '$env_file', the web pods read '$env_want'"
+    env_event=$(jq -r '([.tags[]? | select(.key == "environment") | .value][0]) // .environment // ""' "$work/event.json")
+    [ "$env_event" = "$env_want" ] ||
+      fail "GlitchTip event $id ($project) has environment '$env_event', the web pods read '$env_want'"
     sources=$(jq -r '
       [((.entries // [])[] | select(.type == "exception") | .data.values[]?), (.exception.values[]?)]
       | .[0].stacktrace.frames // [] | map(.filename // .absPath // .abs_path // "")
       | "\(map(select(test("(^|/)\\[project\\]/|^web/"))) | length) of \(length)"' "$work/event.json")
     [[ $sources != 0\ of* ]] || fail "GlitchTip event $id ($project) has frames mapped to the web's source ($sources)"
-    ok "GlitchTip event $id ($project): $sources frames mapped to the web's source"
+    ok "GlitchTip event $id ($project): environment $env_event, $sources frames mapped to the web's source"
     n=$((n + 1))
   done
   token=
