@@ -6,10 +6,12 @@
 #   legs            JSON matrix {"include": [{image, arch, runner}]}, every image on amd64 and arm64 (native runners)
 #   has_images      true | false
 #   base            the commit the changes were compared with ("" when none could be used)
-#   values_changed  true when a file of deploy/k8s/values/services/ or a values file of chart svp-policy
-#                   (policy_values_paths of common.sh: what the releases must carry) changed since base (or base is
-#                   unknown); read only off main, where the values check runs
-#   values_ref      the dispatch input values_ref, checked (rescan only)
+#   promote_charts  true on a build of main that builds no image but changes what the charts of this repository read
+#                   (a file under deploy/helm/, or a file a symbolic link there points to, such as
+#                   deploy/observability/otelcol/k8s-config.yaml) since base: job promote still runs and moves the
+#                   charts stg runs (envs/stg/charts.yaml of svp-gitops) to this commit
+#   values_ref      the dispatch input values_ref, checked (rescan only): a ref of svp-gitops, or a commit of this
+#                   repository from before svp-gitops held the releases
 #
 # Inputs come from the environment only, never interpolated into a script: EVENT_NAME, GIT_REF (github.ref),
 # PR_BASE_REF (github.base_ref), INPUT_SERVICES, INPUT_RESCAN, INPUT_DRILL, INPUT_VALUES_REF, LAST_SUCCESS_JSON (the
@@ -49,7 +51,7 @@ fi
 
 base=
 images=()
-values_changed=false
+promote_charts=false
 case $mode in
 drill) images=("${drill_images[@]}") ;;
 rescan) ;;
@@ -86,10 +88,32 @@ build)
     read -r -a names <<<"$list"
     images=(${names[@]+"${names[@]}"})
   fi
-  if [ "$on_main" != true ]; then
-    if [ -z "$base" ] ||
-      [ -n "$(git -C "$repo_root" diff --name-only "$base" HEAD -- deploy/k8s/values/services/ "${policy_values_paths[@]}")" ]; then
-      values_changed=true
+  # A comparable base only: without one every image is built, and a newer run already promoted an older HEAD's charts.
+  if [ "$on_main" = true ] && [ ${#images[@]} -eq 0 ] && [ -n "$base" ] &&
+    git -C "$repo_root" merge-base --is-ancestor "$base" HEAD 2>/dev/null; then
+    # What the charts read: deploy/helm/, and the files its symbolic links point to (each resolved from the link's own
+    # folder), which a change of the link's target alone leaves out of a diff of deploy/helm/.
+    chart_paths=(deploy/helm)
+    while IFS= read -r link; do
+      target=$(git -C "$repo_root" show "HEAD:$link") || fail "read the symbolic link $link"
+      # The link's folder, then the target, with . and .. folded: a path of the repository.
+      IFS=/ read -r -a parts <<<"$(dirname "$link")/$target"
+      path=()
+      for part in "${parts[@]}"; do
+        case $part in
+        '' | .) ;;
+        ..) unset 'path[${#path[@]}-1]' ;;
+        *) path+=("$part") ;;
+        esac
+      done
+      chart_paths+=("$(IFS=/ && echo "${path[*]}")")
+    done < <(git -C "$repo_root" ls-tree -r HEAD -- deploy/helm | awk -F '\t' '$1 ~ /^120000 / { print $2 }')
+    changed=$(git -C "$repo_root" diff --name-only --no-renames "$base" HEAD -- "${chart_paths[@]}") ||
+      fail "list the files of the charts changed since $base"
+    if [ -n "$changed" ]; then
+      promote_charts=true
+      ci_summary "No image to build, but the charts changed since \`${base:0:12}\`: promote moves stg's charts to this commit." \
+        "$(sed 's/^/- /' <<<"$changed")"
     fi
   fi
   ;;
@@ -107,5 +131,5 @@ ci_output images "$json_images"
 ci_output legs "$legs"
 ci_output has_images "$has_images"
 ci_output base "$base"
-ci_output values_changed "$values_changed"
+ci_output promote_charts "$promote_charts"
 ci_output values_ref "$values_ref"

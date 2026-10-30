@@ -5,8 +5,8 @@ CA of its own and writes it into its MutatingWebhookConfiguration and Validating
 on every webhook configuration of the cluster: enough to change a webhook's rules and target so that the API server
 sends it every Secret written in any namespace. Here cert-manager writes the key pair into Secret cnpg-webhook-cert, the
 one the chart mounts into the operator's pod and the operator serves from, and its cainjector writes the certificate
-into both webhook configurations (annotation cert-manager.io/inject-ca-from in deploy/k8s/values/cloudnative-pg.yaml,
-cainjector's rights are an exception noted in deploy/k8s/values/cert-manager.yaml). The operator runs with
+into both webhook configurations (annotation cert-manager.io/inject-ca-from in base/cloudnative-pg.yaml of svp-gitops,
+cainjector's rights are an exception noted in base/cert-manager.yaml of svp-gitops). The operator runs with
 MANAGE_WEBHOOK_CONFIGURATIONS=false, leaves them alone, and holds no right on them (templates/cnpg-rbac.yaml).
 
 CloudNativePG 1.30.1 still reads this Secret at its start and every hour (pkg/certs/k8s.go) and signs a new certificate

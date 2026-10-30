@@ -13,7 +13,7 @@ counts the stable and the canary pods alike; Argo Rollouts' own restart (spec.re
 keda: a KEDA ScaledObject on the lag of the service's Kafka consumer group; KEDA creates and drives the HPA
 keda-hpa-<release> itself. Its Kafka scaler logs in through ClusterTriggerAuthentication keda-kafka (Redpanda user
 svp-keda, which may only DESCRIBE), made once for the cluster by chart svp-data: the KEDA operator may read the Secrets
-of namespace keda only (deploy/k8s/values/keda.yaml), so the login cannot be a TriggerAuthentication beside the
+of namespace keda only (base/keda.yaml of svp-gitops), so the login cannot be a TriggerAuthentication beside the
 ScaledObject. The operator runs in namespace keda, which denies no egress; Redpanda's ingress policy in svp-data opens
 9092 to it.
 */}}

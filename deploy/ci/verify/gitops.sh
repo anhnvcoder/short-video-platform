@@ -1,43 +1,76 @@
 # shellcheck shell=bash
 # Scenario gitops of deploy/ci/verify-run.sh, which sources this file: a new cluster k3d-svp that Argo CD builds from
-# this repository, running the signed release images of GHCR by digest (job gitops of .github/workflows/verify.yml).
-# make k8s-gitops-up on the branch this run checked out (the cluster runs as staging), the staging overlay seen applied,
-# make k8s-smoke, RAM at rest, the supply chain drill (Kyverno
+# the deployment configuration svp-gitops (main, the clone verify-run.sh makes with make gitops-clone) and the charts
+# of this repository at the commit its envs/stg/charts.yaml pins, running the signed release images of GHCR by digest
+# (job gitops of .github/workflows/verify.yml). The scripts of this run's checkout drive it (the bootstrap, the drills).
+# make k8s-gitops-up following main of svp-gitops (the cluster runs as staging), the staging overlay seen applied,
+# the set of releases stg runs read, make k8s-smoke, RAM at rest, the supply chain drill (Kyverno
 # enforcing), the threat model drill, the source maps of the image CI built, the web's e2e tests with GlitchTip, its
-# observability drill, KEDA with two workers transcoding twice (each with the RAM peak of it), RAM at rest again.
-# ram-rest-<label> and ram-peak-<n> are described in verify-run.sh.
+# observability drill, KEDA with two workers transcoding twice (each with the RAM peak of it), RAM at rest again, and
+# the set of releases stg ran through all of it, which job record-stg of verify.yml records in svp-gitops on a run of
+# main whose scenario step passed with release-set.json in the artifact, whatever the wait for a release after it
+# gives. Dispatched, or weekly on main with the other scenarios (SVP_VERIFY_SCHEDULED=true, set by the job on a
+# scheduled run only; any other value is a dispatch): on a scheduled run there is no wait for a release (both its
+# targets are skipped, with the reason), and drill-k8s-supplychain leaves out cases c and l when their image is too old
+# (below). ram-rest-<label> and ram-peak-<n> are described in verify-run.sh.
 #
 # Two parts of the job run in steps of their own around this scenario, since they need the job's token (it reads the
 # repository's runs, artifacts and events; nothing is written) and the scenario's step must not hold it:
-#   before it   deploy/ci/gitops-sourcemaps.sh fetch finds the source maps CI exported beside the web image Argo CD is
-#               about to run and leaves them, or why there are none, in <temp>/gitops-sourcemaps (ci_temp_dir of
-#               deploy/ci/platform.sh): status (ok, skipped or fail), reason, maps/;
+#   before it   deploy/ci/gitops-sourcemaps.sh fetch clones svp-gitops (as make gitops-clone), finds the source maps CI
+#               exported beside the web image Argo CD is about to run and leaves them, or why there are none, in
+#               <temp>/gitops-sourcemaps (ci_temp_dir of deploy/ci/platform.sh): status (ok, skipped or fail), reason,
+#               maps/;
 #   after it    "Waiting for a release on main": this file run as a script, `bash deploy/ci/verify/gitops.sh release`
 #               (release_wait below), the targets wait-release and measure-gitops. On a run of main it waits for a
-#               release merged while the cluster runs and measures it with make measure-gitops; on a branch it only says
-#               why there is nothing to wait for. Both names are in the scenario's list, so the dispatch's targets can
-#               name them (or leave them out) as any other; they get no line in results.tsv, the step's result is theirs.
+#               release reaching main of svp-gitops while the cluster runs and measures it with make measure-gitops; on
+#               a run of another branch of this repository, or on a scheduled run, it only says why it waits for
+#               nothing. Both names are in the scenario's list, so the dispatch's targets can name them (or leave them
+#               out) as any other; they get no line in results.tsv, the step's result is theirs, and it never decides
+#               whether the set is recorded.
 #
 # Steps that are not a make target of their own:
-#   gitops-env             the overlays of deploy/k8s/envs/stg reached the cluster: Application gateway reads
-#                          deploy/k8s/envs/stg/gateway.yaml after its values, and every running gateway pod has
+#   gitops-env             the overlays of envs/stg of svp-gitops reached the cluster: Application gateway reads
+#                          envs/stg/gateway.yaml after its values, and every running gateway pod has
 #                          SENTRY_ENVIRONMENT=stg (the only variable of the pod spec read)
 #   gitops-external-secrets the cluster's ExternalSecrets are exactly those of files/external-secrets.yaml of chart
-#                          svp-cluster, each Ready, and the Secret each builds exists with the type and exactly the keys
+#                          svp-cluster at the commit the cluster runs its charts at (envs/stg/charts.yaml of
+#                          svp-gitops at origin/main of the clone), each Ready, and the Secret each builds exists with
+#                          the type and exactly the keys
 #                          its ExternalSecret names (those of its template, or of its data without one): one line per
 #                          Secret. Only the names of the keys leave kubectl's pipe, never a value
+#   release-set-before     deploy/ci/release-set.sh snapshot --settle: first waits, for up to 300 s, until every Application
+#                          is Synced and Healthy on two reads in a row (a service's autoscaler is briefly Degraded
+#                          until metrics-server has a sample of its new pods), then records what stg runs right before k8s-smoke (the revision of
+#                          svp-gitops and of the charts every Application synced, its last history entry, the image of
+#                          every pod of each service) into $SVP_VERIFY_OUT/release-set/before.json; fails when that could
+#                          not be recorded now (a sync running, a rollout not over, two digests for a service)
+#   release-set            after the last check (ram-rest-end), before the wait for a release:
+#                          deploy/ci/release-set.sh snapshot again, then verify, which writes
+#                          $SVP_VERIFY_OUT/release-set.json (into the artifact) only when nothing of the first snapshot
+#                          moved and the set is exactly envs/stg/images/ and envs/stg/charts.yaml of svp-gitops at the
+#                          revision stg synced, k8s-smoke passed in between; the steps of the window go into it. Skipped,
+#                          with the reason (which fails the run), when the dispatch's targets leave out any target of
+#                          the scenario but wait-release and measure-gitops (the set was not checked by every step), or
+#                          when k8s-smoke or release-set-before did not pass or
+#                          was not chosen. The release the wait after the scenario may roll out is never recorded here:
+#                          the record is of the set the checks passed on, and a later run records that release
 #   drill-k8s-supplychain  make drill-k8s-supplychain with the images it needs, read from GHCR without credentials
 #                          (deploy/ci/gitops-sourcemaps.sh): the linux/amd64 manifest of the web release the cluster runs
 #                          as the unsigned image (no signature or attestation names it, they name its index), the newest
 #                          drill-vulnerable, and the newest drill-unsigned for when Kyverno admits the first. An image
 #                          that cannot be read is left out (its case SKIPs) and the step fails after the drill. For case
-#                          l (a release without build provenance) the newest web release in the history of
-#                          deploy/k8s/values/services/web.yaml that cosign finds signed without a provenance attestation
-#                          (gitops_no_provenance); none found and case l SKIPs, which fails nothing, while a release
+#                          l (a release without build provenance) the newest web release in the history of this
+#                          repository, where the releases lived before svp-gitops, that cosign finds signed without a
+#                          provenance attestation (gitops_no_provenance); none found and case l SKIPs, which fails
+#                          nothing, while a release
 #                          cosign cannot answer for is left out like the images above. Case l passes only when that
 #                          release's vuln attestation is within 72 hours: dispatch the rescan the drill names
 #                          (images.yml -f rescan=true -f values_ref=<a commit whose values name it>) less than 72 hours
-#                          before this run
+#                          before this run. Case c likewise needs drill-vulnerable built within 72 hours
+#                          (images.yml -f drill=true). Nobody dispatches either before a scheduled run, so there
+#                          gitops_stale leaves out the image of c or l whose vuln attestation is past the policy's
+#                          maximum age (its case SKIPs, failing nothing), with a NOTE line naming the case, its age and
+#                          that dispatch; every other case must pass as on a dispatch, which keeps both and fails them
 #   gitops-sourcemaps      make k8s-web-sourcemaps SOURCEMAPS_DIR=<maps/ the step before found>, which checks them
 #                          against the chunks the web serves before the upload; fails with the reason when that step
 #                          failed or left nothing. When it found none on a branch other than main (status skipped: the
@@ -52,23 +85,29 @@ k3d=1
 
 # The repository: verify-run.sh's when sourced, this file's own when run as a script.
 gitops_repo=${repo:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}
-# The branch the job checked out; Argo CD follows it as origin/<branch>, which a checkout of the whole history holds.
-gitops_rev=$(git -C "$gitops_repo" symbolic-ref --short -q HEAD) || gitops_rev=
-export gitops_rev
+# The branch of this repository the job checked out: on main only, a release is waited for after the scenario.
+gitops_branch=$(git -C "$gitops_repo" symbolic-ref --short -q HEAD) || gitops_branch=
+# The branch of svp-gitops Argo CD follows: main, the ref make gitops-clone checked out.
+gitops_rev=main
+export gitops_branch gitops_rev
 
-# gitops_up: make k8s-gitops-up on the run's branch; fails on a detached HEAD, which Argo CD could not follow.
+# gitops_up: make k8s-gitops-up following main of svp-gitops.
 gitops_up() {
-  if [ -z "$gitops_rev" ]; then
-    echo "FAIL  k8s-gitops-up: the checkout is on no branch, so Argo CD has no revision to follow"
-    return 1
-  fi
   make k8s-gitops-up GITOPS_REV="$gitops_rev"
+}
+
+# gitops_charts_rev: prints the commit of this repository whose charts the cluster runs, revision of
+# envs/stg/charts.yaml at origin/main of the clone of svp-gitops (SVP_GITOPS_DIR, which verify-run.sh sets once it has
+# cloned it; the revision the bootstrap read).
+gitops_charts_rev() {
+  git -C "${SVP_GITOPS_DIR:?the clone of svp-gitops, which verify-run.sh sets}" show \
+    "refs/remotes/origin/$gitops_rev:envs/stg/charts.yaml" | sed -n 's/^revision: *//p'
 }
 
 # gitops_env: see gitops-env in the header.
 gitops_env() {
   # shellcheck disable=SC2016 # $values is Argo CD's name of the values source, written as it is
-  local want='$values/deploy/k8s/envs/stg/gateway.yaml' files pods values
+  local want='$values/envs/stg/gateway.yaml' files pods values
   files=$(kc -n argocd get applications.argoproj.io gateway -o json |
     jq -r '[.spec.sources[] | .helm.valueFiles // [] | .[]] | join(" ")') || {
     echo "FAIL  gitops-env: read Application gateway"
@@ -102,8 +141,14 @@ gitops_env() {
 
 # gitops_external_secrets: see gitops-external-secrets in the header.
 gitops_external_secrets() {
-  local list=$repo/deploy/helm/svp-cluster/files/external-secrets.yaml want have es secrets report ns
-  want=$(awk '/^- namespace: / { ns = $3 } /^  name: / { if (ns != "") print ns "/" $2; ns = "" }' "$list" | sort)
+  local file=deploy/helm/svp-cluster/files/external-secrets.yaml rev list want have es secrets report ns
+  rev=$(gitops_charts_rev) && [[ $rev =~ ^[0-9a-f]{40}$ ]] &&
+    list=$(git -C "$repo" show "$rev:$file") || {
+    echo "FAIL  gitops-external-secrets: read $file at the commit envs/stg/charts.yaml of svp-gitops pins"
+    return 1
+  }
+  echo "charts of ${rev:0:12} (envs/stg/charts.yaml of svp-gitops)"
+  want=$(awk '/^- namespace: / { ns = $3 } /^  name: / { if (ns != "") print ns "/" $2; ns = "" }' <<<"$list" | sort)
   es=$(kc get externalsecrets.external-secrets.io -A -o json) || {
     echo "FAIL  gitops-external-secrets: list the ExternalSecrets"
     return 1
@@ -134,7 +179,7 @@ gitops_external_secrets() {
   }
   [ -z "$report" ] || printf '%s\n' "$report"
   if [ "$have" != "$want" ]; then
-    echo "FAIL  gitops-external-secrets: the cluster's ExternalSecrets (>) differ from files/external-secrets.yaml (<):"
+    echo "FAIL  gitops-external-secrets: the cluster's ExternalSecrets (>) differ from files/external-secrets.yaml at ${rev:0:12} (<):"
     diff <(printf '%s\n' "$want") <(printf '%s\n' "$have") | grep '^[<>]'
     return 1
   fi
@@ -142,13 +187,14 @@ gitops_external_secrets() {
   echo "ok    $(grep -c . <<<"$want") ExternalSecrets Ready, each Secret with its type and keys"
 }
 
-# gitops_no_provenance: prints REPOSITORY@DIGEST (values of <commit>) of the newest web release named in the history
-# of deploy/k8s/values/services/web.yaml (from HEAD) that carries a signature of images.yml on main and no provenance
-# attestation of it, read anonymously with cosign. Every release since CI attests provenance has one, so the search
-# passes over, without asking GHCR, a release whose tag (the commit it was built from) already holds
+# gitops_no_provenance: prints REPOSITORY@DIGEST (values of <commit>) of the newest web release named in the history of
+# this repository's deploy/k8s/values/services/web.yaml (from HEAD), where the releases were promoted before svp-gitops
+# held them (every release svp-gitops names has a provenance attestation), that carries a signature of images.yml on
+# main and no provenance attestation of it, read anonymously with cosign. Every release since CI attests provenance has
+# one, so the search passes over, without asking GHCR, a release whose tag (the commit it was built from) already holds
 # deploy/ci/provenance-predicate.sh: it stays a couple of cosign calls however many releases came since. Status 1, the
-# reason on stderr, when the history has none (case l SKIPs); 2 when cosign could not answer for a release (the
-# registry or Sigstore out of reach), so an error is never read as "no provenance".
+# reason on stderr, when the history has none (case l SKIPs); 2 when cosign could not answer for a release (the registry
+# or Sigstore out of reach), so an error is never read as "no provenance".
 gitops_no_provenance() (
   # shellcheck source=deploy/ci/common.sh
   . "$here/common.sh" || exit 1
@@ -189,9 +235,46 @@ gitops_no_provenance() (
   exit 1
 )
 
+# gitops_stale CASE IMAGE [VALUES_COMMIT]: status 0, after printing a NOTE line that names the case, the age and the
+# dispatch that makes it pass again, when the vuln attestation of IMAGE (REPOSITORY@DIGEST) was scanned longer ago than
+# the policy's maximum age (imageVerification.maxAttestationAge of chart svp-policy) less an hour, read as
+# drill-k8s-supplychain reads it: the oldest scanFinishedOn of the attestations cosign verifies, anonymously. CASE c is
+# drill-vulnerable, which only a new build of the drill images scans again; CASE l is the release without provenance,
+# rescanned with VALUES_COMMIT as values_ref. Status 1 otherwise, also when cosign or the time cannot be read: the drill then reads it
+# again and fails the case with what it got.
+gitops_stale() (
+  # shellcheck source=deploy/ci/common.sh
+  . "$here/common.sh" || exit 1
+  sign_identity
+  max_age=$(sed -n 's/^  maxAttestationAge: *//p' "$repo_root/deploy/helm/svp-policy/values.yaml")
+  [[ $max_age =~ ^[0-9]+[hms]$ ]] || exit 1
+  case $max_age in
+  *h) max_s=$((${max_age%h} * 3600)) ;;
+  *m) max_s=$((${max_age%m} * 60)) ;;
+  *s) max_s=${max_age%s} ;;
+  esac
+  envelopes=$(cosign_ verify-attestation --type vuln --certificate-oidc-issuer "$sign_issuer" \
+    --certificate-identity "$sign_subject" "$2" 2>/dev/null) || exit 1
+  scanned=$(jq -rs '[.[].payload | @base64d | fromjson | .predicate.metadata.scanFinishedOn] | min // empty' \
+    <<<"$envelopes" 2>/dev/null) || exit 1
+  [[ $scanned =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || exit 1
+  age=$(jq -nr --arg t "$scanned" 'now - ($t | fromdateiso8601) | floor') && [[ $age =~ ^[0-9]+$ ]] || exit 1
+  # An hour short of the maximum: the drill and Kyverno read the age again minutes later, after the cases before c.
+  [ "$age" -gt "$((max_s - 3600))" ] || exit 1
+  if [ "$1" = c ]; then
+    hint=$(ci_dispatch_hint images.yml main drill=true) || exit 1
+  else
+    hint=$(ci_dispatch_hint images.yml main rescan=true \
+      "values_ref=${3:-<a full commit of this repository whose deploy/k8s/values/services/ names it>}") || exit 1
+  fi
+  echo "NOTE  case $1 left out on this scheduled run (it SKIPs): $2 was scanned at $scanned, $((age / 3600)) h ago," \
+    "within an hour of $max_age or more; nobody rescans it before a scheduled run, so it is checked on a dispatch run within $max_age" \
+    "of: $hint"
+)
+
 # gitops_supplychain: see drill-k8s-supplychain in the header.
 gitops_supplychain() {
-  local unsigned vulnerable fallback no_provenance missing= rc=0
+  local unsigned vulnerable fallback no_provenance missing= rc=0 values_short values_full
   unsigned=$("$here/gitops-sourcemaps.sh" web-amd64) || missing="$missing the web release's linux/amd64 manifest;"
   vulnerable=$("$here/gitops-sourcemaps.sh" newest drill-vulnerable) || missing="$missing drill-vulnerable;"
   fallback=$("$here/gitops-sourcemaps.sh" newest drill-unsigned) || missing="$missing drill-unsigned;"
@@ -200,6 +283,15 @@ gitops_supplychain() {
     [ $? -eq 1 ] || missing="$missing a web release without provenance;"
     no_provenance=
   }
+  # A scheduled run: see SVP_VERIFY_SCHEDULED in the header.
+  if [ "${SVP_VERIFY_SCHEDULED:-}" = true ]; then
+    if [ -n "$vulnerable" ] && gitops_stale c "$vulnerable"; then vulnerable=; fi
+    if [ -n "$no_provenance" ]; then
+      values_short=$(sed -n 's/.*(values of \([0-9a-f]*\))$/\1/p' <<<"$no_provenance")
+      values_full=$(git -C "$repo" rev-parse --verify -q "${values_short:-none}^{commit}") || values_full=
+      if gitops_stale l "${no_provenance%% *}" "$values_full"; then no_provenance=; fi
+    fi
+  fi
   echo "unsigned: ${unsigned:-none}; vulnerable: ${vulnerable:-none}; unsigned if Kyverno admits that: ${fallback:-none}"
   echo "without provenance: ${no_provenance:-none, case l SKIPs}"
   make drill-k8s-supplychain SUPPLYCHAIN_UNSIGNED="$unsigned" SUPPLYCHAIN_VULNERABLE="$vulnerable" \
@@ -231,10 +323,11 @@ gitops_sourcemaps() {
     ;;
   esac
 }
-export -f gitops_up gitops_env gitops_external_secrets gitops_no_provenance gitops_supplychain gitops_sourcemaps
+export -f gitops_up gitops_charts_rev gitops_env gitops_external_secrets gitops_no_provenance gitops_stale \
+  gitops_supplychain gitops_sourcemaps
 
 scenario_targets() {
-  local round maps maps_status maps_reason no_maps
+  local round maps maps_status maps_reason no_maps before_status smoke_status listed unchecked=
   # Where deploy/ci/gitops-sourcemaps.sh fetch left its result.
   maps=$(ci_temp_dir)/gitops-sourcemaps || maps=
   maps_status=$(cat "$maps/status" 2>/dev/null) || maps_status=
@@ -242,17 +335,19 @@ scenario_targets() {
   step k8s-gitops-up 60 bash -c gitops_up
   step gitops-env 2 bash -c gitops_env
   step gitops-external-secrets 2 bash -c gitops_external_secrets
-  # The GitOps cluster runs the releases of main, whose media-worker may still write the media layout from before
-  # versioned keys; smoke accepts that layout only with this variable. Remove it once every release writes versioned
-  # keys.
-  step k8s-smoke 15 env SVP_SMOKE_LEGACY_MEDIA=1 make k8s-smoke
+  # Up to 300 s of waiting for the Applications to settle (see settle in release-set.sh), then the snapshot: the limit
+  # leaves the script time to name the Application that did not settle before the step is cut.
+  step release-set-before 8 "$here/release-set.sh" snapshot --settle "$SVP_VERIFY_OUT/release-set/before.json"
+  before_status=$last_status
+  step k8s-smoke 15 make k8s-smoke
+  smoke_status=$last_status
   step ram-rest-start 15 bash -c 'ram_rest start'
   step drill-k8s-supplychain 40 bash -c gitops_supplychain
   step drill-k8s-threats 30 make drill-k8s-threats
   # The source maps of the web image CI built and the cluster runs, uploaded to the cluster's GlitchTip, then the
   # browser error that must map to them; without maps on a branch, both checks of the mapping are left out.
   if [ "$maps_status" = skipped ]; then
-    no_maps="no source maps from CI for the web image the cluster runs on $gitops_rev (gitops-sourcemaps skipped)"
+    no_maps="no source maps from CI for the web image the cluster runs on a run of $gitops_branch (gitops-sourcemaps skipped)"
     skip gitops-sourcemaps "$maps_reason"
     step k8s-web-e2e 40 make k8s-web-e2e
     step drill-k8s-web-obs 15 env SVP_WEB_OBS_SKIP_ERRORS="$no_maps, so the e2e run sent no browser error" \
@@ -272,6 +367,31 @@ scenario_targets() {
     fi
   done
   step ram-rest-end 15 bash -c 'ram_rest end'
+  # A set is recorded only once every check of the scenario ran on it: the dispatch's targets leaving one out (the two
+  # of the job's step after this one aside, which run after the last snapshot) checked part of it. names is the list
+  # verify-run.sh made of this function's targets, chosen its choice of them.
+  if [ -z "${listing:-}" ] && [ -n "${targets:-}" ]; then
+    # shellcheck disable=SC2086,SC2154 # names: target names split on spaces, set by verify-run.sh
+    for listed in $names; do
+      case $listed in
+      release-set | wait-release | measure-gitops) ;;
+      *) chosen "$listed" || unchecked="$unchecked $listed" ;;
+      esac
+    done
+  fi
+  # Whatever ran since release-set-before is in the window; listing (no step has run) keeps the name in the list.
+  if [ -n "$unchecked" ]; then
+    skip release-set "targets leave out$unchecked: the set of releases stg ran was not checked by every step"
+  elif [ -z "${listing:-}" ] && [ "$smoke_status" != ok ]; then
+    skip release-set "k8s-smoke did not pass or was not chosen: the set of releases stg ran was not checked"
+  elif [ -z "${listing:-}" ] && [ "$before_status" != ok ]; then
+    skip release-set "release-set-before did not pass or was not chosen: there is nothing to compare the set with"
+  else
+    # verify says why after a snapshot that could not be recorded too, with what moved since the first.
+    step release-set 3 bash -c '"$1" snapshot "$2/release-set/after.json"
+      "$1" verify "$2/release-set/before.json" "$2/release-set/after.json" "$2/release-set.json" "$2/results.tsv"' \
+      _ "$here/release-set.sh" "$SVP_VERIFY_OUT"
+  fi
   # The two targets of the job's step after this one (release_wait), named only while verify-run.sh lists the names it
   # checks the dispatch's targets against: run here, they would hold the job's token in this step.
   if [ -n "${listing:-}" ]; then
@@ -281,21 +401,24 @@ scenario_targets() {
 }
 
 # release_wait: the job's step "Waiting for a release on main", after the scenario, while the cluster still runs.
-# Before the run, a change of a service with Postgres has been merged on main and the promote pull request of its
-# release waits, green, unmerged; it is merged while this step runs (the job's steps show which one runs). Then:
+# A change of a service with Postgres reaches main of this repository while this step runs (or just before), and its
+# release reaches main of svp-gitops through the promote pull request there (the job's steps show which one runs).
+# Then:
 #   1. drill traffic starts (make k8s-traffic-start), so the release rolls out under load, and stops at the end;
-#   2. every 30 s for at most 90 min, git ls-remote reads main on GitHub (no credentials: the repository is public).
-#      Once it moved, the new commit is fetched; when it changes image.digest of a service in
-#      deploy/k8s/values/services/ against its first parent it is the release, otherwise it is named and the wait goes
-#      on from it. None within 90 min fails ("no release");
-#   3. make measure-gitops REV=<release>, again every 30 s while it exits 2 (not pushed, synced or Ready yet) or
-#      exits 0 without the push time (no merged pull request found and GitHub's events do not list the push yet), for at most 20 min; then
-#      release_restarts (below) on what it wrote, and the step fails unless both pass. measure-gitops reads the push
-#      time (merged_at of the pull request, else GitHub's events) through ci_push_time, which needs the job's token: GH_TOKEN is given to that make
-#      alone, and taken out of the environment of everything else here (the drill traffic included).
+#   2. every 30 s for at most 90 min, git ls-remote reads main of svp-gitops on GitHub (no credentials: the repository
+#      is public). Once it moved, the new commit is fetched into the clone of svp-gitops; when it changes image.digest
+#      of a service in envs/stg/images/ against its first parent it is the release, otherwise it is named and the wait
+#      goes on from it. None within 90 min fails ("no release");
+#   3. make measure-gitops REV=<release, a commit of svp-gitops>, again every 30 s while it exits 2 (not pushed, synced
+#      or Ready yet) or exits 0 without the push time (no merged pull request found and GitHub's events do not list the
+#      push yet), for at most 20 min; then release_restarts (below) on what it wrote, and the step fails unless both
+#      pass. measure-gitops reads the push time (merged_at of the pull request, else GitHub's events) through
+#      ci_push_time, which needs the job's token: GH_TOKEN is given to that make alone, and taken out of the environment
+#      of everything else here (the drill traffic included).
 # Only the lines below reach the job's log; the targets' output goes to $SVP_VERIFY_OUT/logs/release-wait.log and
-# measure-gitops.log, which deploy/ci/verify-collect.sh copies into the artifact once they pass its scan. On a branch
-# other than main nothing is merged for this run to measure (Argo CD follows that branch), so it prints why and exits 0.
+# measure-gitops.log, which deploy/ci/verify-collect.sh copies into the artifact once they pass its scan. On a run of a
+# branch of this repository other than main, it prints why it waits for nothing and exits 0: no change of that branch
+# is released. On a scheduled run (SVP_VERIFY_SCHEDULED=true) too: nobody merges a release for it.
 # The dispatch's targets (SVP_VERIFY_TARGETS, empty: every target) choose as in verify-run.sh, which has already
 # refused a name not in the scenario's list: neither name chosen, it skips (exit 0) without traffic or wait;
 # wait-release alone waits and names the release; measure-gitops without wait-release fails at once, as it measures
@@ -328,9 +451,18 @@ release_wait() {
     echo "FAIL  measure-gitops measures the release wait-release finds: name wait-release in targets with it"
     return 1
   fi
-  if [ "$gitops_rev" != main ]; then
-    echo "skipped: this run follows $gitops_rev, where no release is merged for it; a release is waited for and measured on a run of main"
+  if [ "${SVP_VERIFY_SCHEDULED:-}" = true ]; then
+    echo "skipped: wait-release and measure-gitops: a scheduled run waits for no release (nobody merges one for it, so the wait could only fail); a dispatch on main waits and measures"
     return 0
+  fi
+  if [ "$gitops_branch" != main ]; then
+    echo "skipped: this run is of branch ${gitops_branch:-none} of this repository, whose changes are not released; a release is waited for and measured on a run of main"
+    return 0
+  fi
+  local config=${SVP_GITOPS_DIR:-}
+  if ! gitops_is_clone "$config"; then
+    echo "FAIL  the clone of svp-gitops (${config:-SVP_GITOPS_DIR unset}) is missing: the scenario's run makes it"
+    return 1
   fi
   out=${SVP_VERIFY_OUT:-$(ci_temp_dir)/verify}
   job_start=$(cat "$out/job-start" 2>/dev/null) || job_start=
@@ -349,8 +481,8 @@ release_wait() {
     echo "FAIL  cluster svp does not answer (did k8s-gitops-up pass?): there is no cluster to roll a release out on"
     return 1
   fi
-  base=$(git -C "$gitops_repo" rev-parse --verify --quiet refs/remotes/origin/main) || {
-    echo "FAIL  origin/main is not in this clone"
+  base=$(git -C "$config" rev-parse --verify --quiet refs/remotes/origin/main) || {
+    echo "FAIL  origin/main is not in the clone of svp-gitops"
     return 1
   }
   # traffic.sh start returns within seconds; the bound only keeps a stuck start from passing the deadline.
@@ -363,45 +495,45 @@ release_wait() {
   trap "make -C '$gitops_repo' k8s-traffic-stop >>'$out/release-wait.log' 2>&1" EXIT
   deadline=$(($(date +%s) + 90 * 60))
   [ "$cutoff" -lt "$deadline" ] && deadline=$cutoff
-  echo "waiting up to $(((deadline - $(date +%s)) / 60)) min for main to move from ${base:0:12} to a release; drill traffic runs meanwhile"
+  echo "waiting up to $(((deadline - $(date +%s)) / 60)) min for main of svp-gitops to move from ${base:0:12} to a release; drill traffic runs meanwhile"
   while [ -z "$rel" ]; do
     # Each call to GitHub within 60 s and before the deadline (GNU timeout reads 0 as no limit: none starts then).
     left=$((deadline - $(date +%s)))
     left=$((left < 60 ? left : 60))
     head=
     if [ "$left" -gt 0 ]; then
-      head=$(GIT_TERMINAL_PROMPT=0 timeout -k 5 "$left" git -C "$gitops_repo" ls-remote origin refs/heads/main \
+      head=$(GIT_TERMINAL_PROMPT=0 timeout -k 5 "$left" git -C "$config" ls-remote origin refs/heads/main \
         2>>"$out/release-wait.log" | cut -f1) || head=
     fi
     left=$((deadline - $(date +%s)))
     if [[ $head =~ ^[0-9a-f]{40}$ ]] && [ "$head" != "$base" ] && [ "$left" -gt 0 ]; then
-      GIT_TERMINAL_PROMPT=0 timeout -k 5 $((left < 60 ? left : 60)) git -C "$gitops_repo" fetch -q origin \
+      GIT_TERMINAL_PROMPT=0 timeout -k 5 $((left < 60 ? left : 60)) git -C "$config" fetch -q origin \
         "+refs/heads/main:refs/remotes/origin/main" >>"$out/release-wait.log" 2>&1 || {
         echo "FAIL  git fetch of main at ${head:0:12}"
         return 1
       }
       changed=
       for svc in "${svp_services[@]}"; do
-        new=$(git -C "$gitops_repo" show "$head:deploy/k8s/values/services/$svc.yaml" 2>/dev/null |
+        new=$(git -C "$config" show "$head:envs/stg/images/$svc.yaml" 2>/dev/null |
           values_field digest 2>/dev/null) || new=
-        old=$(git -C "$gitops_repo" show "$head^1:deploy/k8s/values/services/$svc.yaml" 2>/dev/null |
+        old=$(git -C "$config" show "$head^1:envs/stg/images/$svc.yaml" 2>/dev/null |
           values_field digest 2>/dev/null) || old=
         if [ -n "$new" ] && [ "$new" != "$old" ]; then changed="$changed $svc"; fi
       done
       if [ -n "$changed" ]; then
         rel=$head
-        echo "main moved to ${head:0:12}, a release of:$changed"
+        echo "main of svp-gitops moved to ${head:0:12}, a release of:$changed"
         break
       fi
-      echo "main moved to ${head:0:12}, which changes no image.digest of deploy/k8s/values/services/; waiting on"
+      echo "main of svp-gitops moved to ${head:0:12}, which changes no image.digest of envs/stg/images/; waiting on"
       base=$head
     fi
     left=$((deadline - $(date +%s)))
     if [ "$left" -le 0 ]; then
       if [ "$deadline" = "$cutoff" ]; then
-        echo "FAIL  no release: main did not move to a commit that changes an image.digest before the job's deadline (job start + $job_minutes min - 25 min)"
+        echo "FAIL  no release: main of svp-gitops did not move to a commit that changes an image.digest before the job's deadline (job start + $job_minutes min - 25 min)"
       else
-        echo "FAIL  no release: main did not move to a commit that changes an image.digest within 90 min"
+        echo "FAIL  no release: main of svp-gitops did not move to a commit that changes an image.digest within 90 min"
       fi
       return 1
     fi
@@ -499,9 +631,10 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   set -uo pipefail
   # shellcheck source=deploy/ci/platform.sh
   . "$gitops_repo/deploy/ci/platform.sh"
-  # values_field and svp_services.
+  # values_field, svp_services, gitops_is_clone, and the clone of svp-gitops the scenario's run made.
   # shellcheck source=deploy/k8s/lib.sh
   . "$gitops_repo/deploy/k8s/lib.sh"
+  export SVP_GITOPS_DIR=${SVP_GITOPS_DIR:-$gitops_ci_clone}
   case ${1:-} in
   release) release_wait ;;
   *)

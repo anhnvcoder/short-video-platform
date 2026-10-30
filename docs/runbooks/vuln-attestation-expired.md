@@ -1,7 +1,7 @@
 # Attestation `vuln` quá 72 giờ
 
 - Không có cảnh báo riêng. Dấu hiệu: pod `svp` mới trên cluster GitOps bị Kyverno từ chối với message `vuln attestation older
-  than 72h (scanFinishedOn)`; `make k8s-gitops-up` dừng trước khi tạo gì; job `values-check` của PR đỏ.
+  than 72h (scanFinishedOn)`; `make k8s-gitops-up` dừng trước khi tạo gì; check `gitops-ok` của PR trong `svp-gitops` đỏ.
 - Mọi lệnh ghi lên GitHub (dispatch workflow, bật workflow) do **người học chạy**.
 
 ## Ý nghĩa và tác động tới người dùng
@@ -11,8 +11,8 @@ cron `17 1 * * *` UTC, script `deploy/ci/rescan.sh`) quét lại mọi digest c�
 attestation. Ngưỡng tuổi ([ADR-0015](../adr/0015-cicd-devsecops-stage5.md) §7–8):
 
 - **72 giờ**: Kyverno (đường GitOps, Enforce) từ chối pod mới.
-- **48 giờ**: `values-check` của PR, `make k8s-gitops-up` (`deploy/k8s/gitops.sh`) và `deploy/ci/verify-release.sh` dừng, để còn
-  ít nhất 24 giờ trước ngưỡng của Kyverno.
+- **48 giờ**: check `gitops-ok` của PR trong `svp-gitops` (bước 5 của `deploy/ci/gitops-check.sh`), `make k8s-gitops-up`
+  (`deploy/k8s/gitops.sh`) và `deploy/ci/verify-release.sh` dừng, để còn ít nhất 24 giờ trước ngưỡng của Kyverno.
 
 Rescan không chạy hơn 3 ngày thì attestation của bản đang chạy quá 72 giờ. Pod đang chạy không bị đụng; người dùng chưa thấy
 gì cho tới khi một pod cần tạo lại (restart, drain, scale, phát hành): service mất replica và không lên lại được. Đường dev
@@ -26,12 +26,18 @@ gh run list --workflow images.yml --event schedule --limit 5
 gh workflow list --all | grep -i images
 # pod bị từ chối và message (GitOps)
 kubectl --context k3d-svp -n svp get events --field-selector reason=FailedCreate --sort-by=.lastTimestamp | tail -n 10
-# tuổi attestation của từng bản phát hành trên main (ẩn danh, cosign trên PATH hay COSIGN_IMAGE; ngưỡng 48 giờ)
-git fetch origin main
-for f in deploy/k8s/values/services/*.yaml; do
-  svc=$(basename "$f" .yaml)
-  digest=$(git show "origin/main:$f" | awk '$1 == "digest:" { gsub(/"/, "", $2); print $2; exit }')
-  [ -n "$digest" ] && deploy/ci/verify-release.sh "ghcr.io/anhnvcoder/short-video-platform/$svc" "$digest"
+# tuổi attestation của từng bản phát hành stg và prd ở origin/main của bản clone svp-gitops (ẩn danh, cosign trên PATH hay
+# COSIGN_IMAGE; ngưỡng 48 giờ); chạy từ gốc repo code, GITOPS là bản clone svp-gitops
+GITOPS=../gitops
+git -C "$GITOPS" fetch origin main
+rev=$(git -C "$GITOPS" rev-parse origin/main)
+for env in stg prd; do
+  for f in $(git -C "$GITOPS" ls-tree --name-only "$rev" "envs/$env/images/"); do
+    svc=$(basename "$f" .yaml)
+    digest=$(git -C "$GITOPS" show "$rev:$f" | awk '$1 == "digest:" { gsub(/"/, "", $2); print $2; exit }')
+    [ -n "$digest" ] && deploy/ci/verify-release.sh --gitops "$GITOPS" --rev "$rev" --env "$env" \
+      "ghcr.io/anhnvcoder/short-video-platform/$svc" "$digest"
+  done
 done
 ```
 

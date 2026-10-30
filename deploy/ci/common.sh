@@ -42,15 +42,15 @@ provenance_source() {
     fail "imageVerification.provenanceRepository and provenanceRef of $values must be one https:// URL and one refs/... each"
 }
 
-# _policy_file REV PATH: prints file PATH of the repository at commit REV, or of the working tree when REV is empty;
-# status 1 when there is no such file.
-_policy_file() {
-  if [ -n "$1" ]; then
-    git -C "$repo_root" cat-file -e "$1:$2" 2>/dev/null || return 1
-    git -C "$repo_root" show "$1:$2"
+# _config_file DIR REV PATH: prints file PATH of the configuration tree DIR (a clone of svp-gitops, or any folder laid
+# out as one) at its commit REV, or as it is on disk when REV is empty; status 1 when there is no such file.
+_config_file() {
+  if [ -n "$2" ]; then
+    git -C "$1" cat-file -e "$2:$3" 2>/dev/null || return 1
+    git -C "$1" show "$2:$3"
   else
-    [ -f "$repo_root/$2" ] || return 1
-    cat "$repo_root/$2"
+    [ -f "$1/$3" ] || return 1
+    cat "$1/$3"
   fi
 }
 
@@ -89,47 +89,70 @@ _require_provenance() {
   echo "$value"
 }
 
-# provenance_required [REV [ENV]]: prints true when chart svp-policy checks build provenance (requireProvenance) at
-# commit REV (the working tree when REV is empty) in environment ENV, false otherwise, from the files Argo CD hands
-# the chart there: its values.yaml, then deploy/k8s/envs/<ENV>/svp-policy.yaml when there is one. Without ENV: true
-# when any environment of deploy/k8s/envs at REV turns it on (the base alone when there is none), as the release
-# images are the same in every environment. A revision from before the key reads false. Fails, printing nothing on
-# stdout, when a file is not of the shape _require_provenance reads: callers must stop then, not read it as false.
+# provenance_required [REV [ENV [DIR]]]: prints true when chart svp-policy checks build provenance (requireProvenance)
+# in environment ENV of the deployment configuration DIR (a tree of svp-gitops; gitops_dir of deploy/k8s/lib.sh when
+# empty) at its commit REV (as DIR is on disk when REV is empty), false otherwise, from the files Argo CD hands the chart
+# there: deploy/helm/svp-policy/values.yaml of this repository at the commit envs/ENV/charts.yaml pins, then
+# envs/ENV/svp-policy.yaml when there is one. Without ENV: true when any environment of envs/ turns it on, as the
+# release images are the same in every environment; the working tree's values.yaml alone when DIR has no environment.
+# A charts.yaml pinning a commit from before the key reads false. Fails, printing nothing on stdout, when a file is not
+# of the shape _require_provenance reads, or when charts.yaml names no commit of this clone holding the chart: callers
+# must stop then, not read it as false.
 provenance_required() {
-  local rev=${1:-} env=${2:-} at=${1:+ at ${1:0:12}} file content base value envs e
-  file=deploy/helm/svp-policy/values.yaml
-  content=$(_policy_file "$rev" "$file") || {
-    echo "FAIL  no $file$at" >&2
-    return 1
-  }
-  base=$(_require_provenance "$file$at" <<<"$content") || return 1
-  base=${base:-false}
+  local rev=${1:-} env=${2:-} dir=${3:-} at=${1:+ at ${1:0:12}} file content base value envs e charts chart
+  chart=deploy/helm/svp-policy/values.yaml
+  if [ -z "$dir" ]; then
+    dir=$(gitops_dir) || return 1
+  fi
   if [ -n "$env" ]; then
     envs=$env
   elif [ -n "$rev" ]; then
-    envs=$(git -C "$repo_root" ls-tree --name-only "$rev:deploy/k8s/envs" 2>/dev/null) || envs=
+    envs=$(git -C "$dir" ls-tree --name-only "$rev:envs" 2>/dev/null) || envs=
   else
-    envs=$(cd "$repo_root/deploy/k8s/envs" 2>/dev/null && for e in */; do [ -d "$e" ] && echo "${e%/}"; done) || envs=
+    envs=$(cd "$dir/envs" 2>/dev/null && for e in */; do [ -d "$e" ] && echo "${e%/}"; done) || envs=
+  fi
+  if [ -z "$envs" ]; then
+    content=$(cat "$repo_root/$chart") || return 1
+    base=$(_require_provenance "$chart" <<<"$content") || return 1
+    echo "${base:-false}"
+    return 0
   fi
   for e in $envs; do
-    file=deploy/k8s/envs/$e/svp-policy.yaml
+    charts=$(_config_file "$dir" "$rev" "envs/$e/charts.yaml" | sed -n 's/^revision: *//p')
+    if ! [[ $charts =~ ^[0-9a-f]{40}$ ]] || ! content=$(git -C "$repo_root" show "$charts:$chart" 2>/dev/null); then
+      echo "FAIL  envs/$e/charts.yaml$at names no commit of this clone holding $chart (got '$charts')" >&2
+      return 1
+    fi
+    base=$(_require_provenance "$chart at ${charts:0:12}" <<<"$content") || return 1
+    file=envs/$e/svp-policy.yaml
     value=
-    if content=$(_policy_file "$rev" "$file"); then
+    if content=$(_config_file "$dir" "$rev" "$file"); then
       value=$(_require_provenance "$file$at" overlay <<<"$content") || return 1
     fi
-    if [ "${value:-$base}" = true ]; then
+    if [ "${value:-${base:-false}}" = true ]; then
       echo true
       return 0
     fi
   done
-  if [ -z "$envs" ]; then echo "$base"; else echo false; fi
+  echo false
 }
 
-# The values files of chart svp-policy that verify-release.sh reads (sign_identity, provenance_source,
-# provenance_required), as git pathspecs. A change of one can change what every release must carry (turning
-# requireProvenance on, above all), so values-check.sh then checks all seven releases, and plan.sh runs it.
+# The files of the deployment configuration (git pathspecs in a tree of svp-gitops) that decide what the releases of
+# an environment must carry: its overlay of chart svp-policy, and its charts.yaml, which pins the commit whose
+# values.yaml of the chart applies. A change of one can change what every release of that environment must carry
+# (turning requireProvenance on, above all), so values-check.sh then checks every release of that environment.
 # shellcheck disable=SC2034 # read by the scripts that source this file
-policy_values_paths=(deploy/helm/svp-policy/values.yaml 'deploy/k8s/envs/*/svp-policy.yaml')
+policy_values_paths=('envs/*/svp-policy.yaml' 'envs/*/charts.yaml')
+
+# The deployment repository (owner/name on its host, from gitops_url of deploy/k8s/lib.sh), the branch the promote of
+# stg rebuilds there, and the GitHub App whose token alone writes to it (its pull requests carry the app as author).
+# shellcheck disable=SC2034 # read by the scripts that source this file
+gitops_repo=${gitops_url#https://github.com/}
+gitops_repo=${gitops_repo%.git}
+# shellcheck disable=SC2034
+gitops_promote_branch=bot/promote-stg
+# shellcheck disable=SC2034
+gitops_app=svp-gitops-promoter
 
 # provenance_absent ISSUER SUBJECT IMAGE: status 0 when cosign verifies attestations of that identity on IMAGE
 # (REPOSITORY@DIGEST) and none of them is a build provenance (cosign's "none of the attestations matched the predicate

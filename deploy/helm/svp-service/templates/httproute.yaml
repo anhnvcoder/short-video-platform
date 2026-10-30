@@ -12,7 +12,7 @@ backendRefs' own filters below, and applies to every backend.
 
 With canary set the one rule has two backendRefs, the stable Service then the canary one, at
 weights 100 and 0: the Gateway API plugin of Argo Rollouts changes the two weights during a canary and puts them back
-to 100/0 when it ends (Argo CD ignores the weights, deploy/argocd/apps). The weights are written here because a
+to 100/0 when it ends (Argo CD ignores the weights, argocd/apps of svp-gitops). The weights are written here because a
 backendRef without one weighs 1, which would split every request half and half. Each backendRef sets header
 x-svp-backend (the gateway ignores it): a backendRef with a filter makes Envoy Gateway give it a cluster of its own,
 whose metrics AnalysisTemplate <release>-canary reads (templates/canary.yaml). A backendRef of weight 0 is left out

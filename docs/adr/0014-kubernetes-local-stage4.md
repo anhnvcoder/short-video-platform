@@ -16,7 +16,10 @@
   hạn 512 MiB, uid 10001); §10 (feed-service HPA 1–2 không PDB thành luôn 2 replica, PDB `minAvailable: 1`, ưu tiên trải hai
   node) và giới hạn RAM của Tempo trong bảng ngân sách (768 MiB thành 1 GiB) bị thay một phần bởi
   [0031](0031-chaos-findings-feed-engagement-tempo.md); §8 (Secret của đường GitOps do External Secrets Operator dựng từ giai đoạn 6b
-  phần 4 thay vì giai đoạn 7; đường dev giữ `secrets.sh`; store AWS ở giai đoạn 7) chỉnh bởi [0026](0026-secrets-gitops.md)
+  phần 4 thay vì giai đoạn 7; đường dev giữ `secrets.sh`; store AWS ở giai đoạn 7) chỉnh bởi [0026](0026-secrets-gitops.md); §12
+  (Argo CD đọc repo cấu hình `svp-gitops` cho root và values, repo code ở commit ghim của `envs/<env>/charts.yaml` cho chart của
+  repo; `sourceRepos` thêm `svp-gitops`; version và values của Argo CD ở `argocd/bootstrap.json`, `base/argo-cd.yaml` của `svp-gitops`;
+  đường dev đọc `components.json`, `base/` từ bản clone) chỉnh bởi [0025](0025-gitops-config-repo.md), từ 2026-10-30
 - Ngày: 2026-10-18
 
 ## Bối cảnh

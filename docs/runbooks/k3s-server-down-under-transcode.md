@@ -44,7 +44,7 @@ node bão hoà CPU, xem [liveness-timeout-cpu-saturation.md](liveness-timeout-cp
    VM, phần còn lại không đủ cho API server và kine.
 2. **Máy host thiếu tài nguyên**: chạy pin, Low Power Mode, giới hạn nhiệt, nhiều app mở (swap 15–17 GB, roadmap giai đoạn 5),
    test hay build chạy song song (lượt 1 ngày 2026-10-21).
-3. **`maxReplicaCount` bị nâng lại quá 2** (sửa `deploy/k8s/values/services/media-worker.yaml`).
+3. **`maxReplicaCount` bị nâng lại quá 2** (khoá `keda.maxReplicas` ở `base/services/media-worker.yaml` của repo `svp-gitops`; sửa bằng PR vào repo đó).
 
 ## Giảm thiểu
 

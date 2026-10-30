@@ -7,7 +7,7 @@ with a canary: responses by class, all responses, and the response time histogra
 adds its route to the regex below, or its analysis finds no series and every run ends Inconclusive.
 
 The PodMonitor lives in svp-obs although the pods are in envoy-gateway-system: the Prometheus operator watches svp-obs
-only (deploy/k8s/values/kube-prometheus-stack.yaml), and a PodMonitor elsewhere would never be picked up, with no error
+only (base/kube-prometheus-stack.yaml of svp-gitops), and a PodMonitor elsewhere would never be picked up, with no error
 anywhere. Prometheus finds the pods itself, with its own cluster-wide right to list pods; policy prometheus opens the
 port.
 */}}

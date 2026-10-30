@@ -20,21 +20,20 @@
     "labels": ["dependencies", "security"],
     "semanticCommitType": "fix"
   },
-  "ignorePaths": ["deploy/k8s/values/services/**", "deploy/ci/drill/**", "gen/**"],
+  "ignorePaths": ["deploy/ci/drill/**", "gen/**"],
   "postUpdateOptions": ["gomodTidy", "gomodUpdateImportPaths", "pnpmDedupe"],
   "helm-values": {
-    "description": "Also the values files of the platform charts and of the charts installed only on the cloud cluster (deploy/k8s/cloud/values/), which are not named values.yaml. Their image pins are repository + tag: <version>@sha256:<digest>, or an image: string with both. The services' values (deploy/k8s/values/services/) belong to the promote pull requests and are ignored above.",
-    "managerFilePatterns": ["/^deploy/k8s/values/[^/]+\\.ya?ml$/", "/^deploy/k8s/cloud/values/[^/]+\\.ya?ml$/"]
+    "description": "Also the values files of the charts installed only on the cloud cluster (deploy/k8s/cloud/values/), which are not named values.yaml. Their image pins are repository + tag: <version>@sha256:<digest>, or an image: string with both. The values of the platform charts and of the services are in svp-gitops, whose own Renovate configuration updates them.",
+    "managerFilePatterns": ["/^deploy/k8s/cloud/values/[^/]+\\.ya?ml$/"]
   },
   "customManagers": [
     {
-      "description": "Tool versions and chart versions with a '# renovate: datasource=... depName=... [registryUrl=...]' line right above a 'NAME := value' or 'NAME=value' line (Makefile *_VERSION, argocd_chart_version of gitops.sh).",
+      "description": "Tool versions with a '# renovate: datasource=... depName=... [registryUrl=...]' line right above a 'NAME := value' or 'NAME=value' line (Makefile *_VERSION).",
       "customType": "regex",
       "managerFilePatterns": [
         "/^Makefile$/",
         "/^deploy/compose/compose\\.mk$/",
         "/^deploy/k8s/lib\\.sh$/",
-        "/^deploy/k8s/gitops\\.sh$/",
         "/^deploy/k8s/k3d\\.yaml$/"
       ],
       "matchStrings": [
@@ -48,7 +47,6 @@
         "/^Makefile$/",
         "/^deploy/compose/compose\\.mk$/",
         "/^deploy/k8s/lib\\.sh$/",
-        "/^deploy/k8s/gitops\\.sh$/",
         "/^deploy/k8s/k3d\\.yaml$/"
       ],
       "matchStrings": [
@@ -56,21 +54,12 @@
       ]
     },
     {
-      "description": "Chart values whose image key does not end in 'image', so helm-values does not see them (KEDA, Tempo, and charts of the cloud cluster that only take a tag): the annotation, then 'tag: <version>@sha256:<digest>'.",
+      "description": "Values of the charts of the cloud cluster that only take a tag, so helm-values does not see them: the annotation, then 'tag: <version>@sha256:<digest>'.",
       "customType": "regex",
-      "managerFilePatterns": ["/^deploy/k8s/values/[^/]+\\.ya?ml$/", "/^deploy/k8s/cloud/values/[^/]+\\.ya?ml$/"],
+      "managerFilePatterns": ["/^deploy/k8s/cloud/values/[^/]+\\.ya?ml$/"],
       "matchStrings": [
         "#[ \\t]*renovate:[ \\t]*datasource=(?<datasource>[a-z-]+)[ \\t]+depName=(?<depName>\\S+)[ \\t]*\\n[ \\t]*tag:[ \\t]*(?<currentValue>[^@\\s\"']+)@(?<currentDigest>sha256:[0-9a-f]{64})[ \\t]*\\n"
       ]
-    },
-    {
-      "description": "Prometheus and Alertmanager of kube-prometheus-stack: the annotation, 'version: <version>', 'image:', 'tag: <version>@sha256:<digest>'. Unless version is set, the chart writes tag into the object's version field, which the operator parses as a version, so version holds the same version without the digest. Renovate's regex engine (RE2) has no backreferences, so the match cannot require the two to be equal: version and digest are read from tag, the image actually pulled, and the template writes version and tag from the same new version, so every update, a digest-only one included, makes them equal again.",
-      "customType": "regex",
-      "managerFilePatterns": ["/^deploy/k8s/values/[^/]+\\.ya?ml$/"],
-      "matchStrings": [
-        "(?<indentation>[ \\t]*)#[ \\t]*renovate:[ \\t]*datasource=(?<datasource>[a-z-]+)[ \\t]+depName=(?<depName>\\S+)[ \\t]*\\n[ \\t]*version:[ \\t]*\\S+[ \\t]*\\n[ \\t]*image:[ \\t]*\\n[ \\t]*tag:[ \\t]*(?<currentValue>[^@\\s\"']+)@(?<currentDigest>sha256:[0-9a-f]{64})[ \\t]*\\n"
-      ],
-      "autoReplaceStringTemplate": "{{{indentation}}}# renovate: datasource={{{datasource}}} depName={{{depName}}}\n{{{indentation}}}version: {{{newValue}}}\n{{{indentation}}}image:\n{{{indentation}}}  tag: {{{newValue}}}@{{{newDigest}}}\n"
     },
     {
       "description": "Images that compose.yaml defines once as a YAML anchor (x-<name>-image: &<name>-image <image>[:<tag>]@sha256:<digest>) and services use as *<name>-image: the docker-compose manager only reads image: lines.",
@@ -82,18 +71,18 @@
       "datasourceTemplate": "docker"
     },
     {
-      "description": "Charts of the platform components from a Helm repository: repo, chart and version of each entry of components.json, and of deploy/k8s/cloud/charts.json (charts installed only on the cloud cluster, same fields).",
+      "description": "Charts installed only on the cloud cluster from a Helm repository: repo, chart and version of each entry of deploy/k8s/cloud/charts.json (those of the platform components, components.json, are in svp-gitops).",
       "customType": "regex",
-      "managerFilePatterns": ["/^deploy/argocd/apps/components\\.json$/", "/^deploy/k8s/cloud/charts\\.json$/"],
+      "managerFilePatterns": ["/^deploy/k8s/cloud/charts\\.json$/"],
       "matchStrings": [
         "\"repo\":\\s*\"(?<registryUrl>https://[^\"]+)\",\\s*\"chart\":\\s*\"(?<depName>[^\"]+)\",\\s*\"version\":\\s*\"(?<currentValue>[^\"]+)\""
       ],
       "datasourceTemplate": "helm"
     },
     {
-      "description": "Charts of the platform components from an OCI registry (repo oci://<registry>/<path>): an OCI artifact, looked up as <registry>/<path>/<chart> on the docker datasource. Same for deploy/k8s/cloud/charts.json.",
+      "description": "Charts of deploy/k8s/cloud/charts.json from an OCI registry (repo oci://<registry>/<path>): an OCI artifact, looked up as <registry>/<path>/<chart> on the docker datasource.",
       "customType": "regex",
-      "managerFilePatterns": ["/^deploy/argocd/apps/components\\.json$/", "/^deploy/k8s/cloud/charts\\.json$/"],
+      "managerFilePatterns": ["/^deploy/k8s/cloud/charts\\.json$/"],
       "matchStrings": [
         "\"repo\":\\s*\"oci://(?<ociRepo>[^\"]+)\",\\s*\"chart\":\\s*\"(?<chart>[^\"]+)\",\\s*\"version\":\\s*\"(?<currentValue>[^\"]+)\""
       ],
@@ -204,52 +193,12 @@
       "prBodyNotes": ["A code or rule generator changed: run make tools, then make generate (and make slo for Sloth), and commit the regenerated files; the generate job of ci.yml fails until they match."]
     },
     {
-      "description": "Each chart is one pull request together with the image pins of its values file: a chart bump does not move a pin, since a pin overrides the chart's default.",
-      "matchFileNames": ["deploy/argocd/apps/components.json", "deploy/k8s/gitops.sh", "deploy/k8s/values/*.yaml"],
-      "prBodyNotes": ["A chart or a platform image changed: check it on the cluster (make k8s-up, make k8s-smoke, deploy/k8s/check-image-digests.sh) before merging."]
-    },
-    { "matchFileNames": ["deploy/k8s/values/cert-manager.yaml"], "groupName": "cert-manager chart" },
-    { "matchFileNames": ["deploy/argocd/apps/components.json"], "matchDepNames": ["cert-manager"], "groupName": "cert-manager chart" },
-    { "matchFileNames": ["deploy/k8s/values/envoy-gateway.yaml"], "groupName": "envoy-gateway chart" },
-    { "matchFileNames": ["deploy/argocd/apps/components.json"], "matchDepNames": ["docker.io/envoyproxy/gateway-helm"], "groupName": "envoy-gateway chart" },
-    { "matchFileNames": ["deploy/k8s/values/cloudnative-pg.yaml"], "groupName": "cloudnative-pg chart" },
-    { "matchFileNames": ["deploy/argocd/apps/components.json"], "matchDepNames": ["cloudnative-pg"], "groupName": "cloudnative-pg chart" },
-    { "matchFileNames": ["deploy/k8s/values/plugin-barman-cloud.yaml"], "groupName": "plugin-barman-cloud chart" },
-    { "matchFileNames": ["deploy/argocd/apps/components.json"], "matchDepNames": ["plugin-barman-cloud"], "groupName": "plugin-barman-cloud chart" },
-    { "matchFileNames": ["deploy/k8s/values/keda.yaml"], "groupName": "keda chart" },
-    { "matchFileNames": ["deploy/argocd/apps/components.json"], "matchDepNames": ["keda"], "groupName": "keda chart" },
-    { "matchFileNames": ["deploy/k8s/values/argo-rollouts.yaml"], "groupName": "argo-rollouts chart" },
-    { "matchFileNames": ["deploy/argocd/apps/components.json"], "matchDepNames": ["argo-rollouts"], "groupName": "argo-rollouts chart" },
-    { "matchFileNames": ["deploy/k8s/values/kyverno.yaml"], "groupName": "kyverno chart" },
-    { "matchFileNames": ["deploy/argocd/apps/components.json"], "matchDepNames": ["kyverno"], "groupName": "kyverno chart" },
-    { "matchFileNames": ["deploy/k8s/values/external-secrets.yaml"], "groupName": "external-secrets chart" },
-    { "matchFileNames": ["deploy/argocd/apps/components.json"], "matchDepNames": ["external-secrets"], "groupName": "external-secrets chart" },
-    {
-      "matchFileNames": ["deploy/argocd/apps/components.json", "deploy/k8s/values/kyverno.yaml"],
-      "matchDepNames": ["kyverno", "ghcr.io/kyverno/**"],
-      "prBodyNotes": [
-        "Kyverno changed: run make drill-k8s-supplychain before merging. Policy svp-images is an ImageValidatingPolicy, and the health check of Argo CD (deploy/k8s/values/argo-cd.yaml) reads its status.conditionStatus.ready; check both still hold in the new version."
-      ]
-    },
-    { "matchFileNames": ["deploy/k8s/values/kube-prometheus-stack.yaml"], "groupName": "kube-prometheus-stack chart" },
-    { "matchFileNames": ["deploy/argocd/apps/components.json"], "matchDepNames": ["kube-prometheus-stack"], "groupName": "kube-prometheus-stack chart" },
-    { "matchFileNames": ["deploy/k8s/values/redpanda.yaml"], "groupName": "redpanda chart" },
-    { "matchFileNames": ["deploy/argocd/apps/components.json"], "matchDepNames": ["redpanda"], "groupName": "redpanda chart" },
-    {
-      "description": "The same broker image in compose and in svp-data: it moves with the redpanda chart.",
+      "description": "The same broker image in compose and in chart svp-data: one pull request (the redpanda chart and its values are in svp-gitops).",
       "matchDepNames": ["docker.io/redpandadata/redpanda", "redpandadata/redpanda"],
       "groupName": "redpanda chart"
     },
-    { "matchFileNames": ["deploy/k8s/values/loki.yaml"], "groupName": "loki chart" },
-    { "matchFileNames": ["deploy/argocd/apps/components.json"], "matchDepNames": ["loki"], "groupName": "loki chart" },
-    { "matchFileNames": ["deploy/k8s/values/tempo.yaml"], "groupName": "tempo chart" },
-    { "matchFileNames": ["deploy/argocd/apps/components.json"], "matchDepNames": ["tempo"], "groupName": "tempo chart" },
-    { "matchFileNames": ["deploy/k8s/values/pyroscope.yaml"], "groupName": "pyroscope chart" },
-    { "matchFileNames": ["deploy/argocd/apps/components.json"], "matchDepNames": ["pyroscope"], "groupName": "pyroscope chart" },
-    { "matchFileNames": ["deploy/k8s/values/otel-collector.yaml"], "groupName": "opentelemetry-collector chart" },
-    { "matchFileNames": ["deploy/argocd/apps/components.json"], "matchDepNames": ["opentelemetry-collector"], "groupName": "opentelemetry-collector chart" },
     {
-      "description": "The Collector image of compose (otelcol, otelcol-elastic), of the cluster and of make otelcol-validate (OTELCOL_IMAGE) stays the same in all four places.",
+      "description": "The Collector image of compose (otelcol, otelcol-elastic) and of make otelcol-validate (OTELCOL_IMAGE) stays the same in all three places, and the same as the cluster's (base/otel-collector.yaml of svp-gitops, which its own Renovate updates).",
       "matchDepNames": ["otel/opentelemetry-collector-contrib"],
       "groupName": "opentelemetry-collector chart"
     },
@@ -271,8 +220,6 @@
     { "matchFileNames": ["deploy/k8s/cloud/charts.json"], "matchDepNames": ["chaos-mesh"], "groupName": "chaos-mesh chart" },
     { "matchFileNames": ["deploy/k8s/cloud/values/velero.yaml"], "groupName": "velero chart" },
     { "matchFileNames": ["deploy/k8s/cloud/charts.json"], "matchDepNames": ["velero"], "groupName": "velero chart" },
-    { "matchFileNames": ["deploy/k8s/values/argo-cd.yaml"], "groupName": "argo-cd chart" },
-    { "matchFileNames": ["deploy/k8s/gitops.sh"], "matchDepNames": ["argo-cd"], "groupName": "argo-cd chart" },
     {
       "description": "k3s: the node image of deploy/k8s/k3d.yaml and K3S_IMAGE_TAG of the Makefile (k3d's default k3s) are always the same version, in one pull request. Tags are v<major>.<minor>.<patch>-k3s<build>; the -amd64/-arm64 tags are left out. A patch is a separate update from a minor (separateMinorPatch): otherwise, once a new minor is out, Renovate proposes only that minor, which waits for approval below, and the patches of the current minor never come.",
       "matchDepNames": ["rancher/k3s"],

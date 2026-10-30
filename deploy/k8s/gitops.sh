@@ -1,31 +1,36 @@
 #!/usr/bin/env bash
-# The GitOps path: a new cluster svp on which Argo CD builds
-# everything from GitHub. This script installs only what git cannot hold or what must exist before Argo CD:
+# The GitOps path: a new cluster svp on which Argo CD builds everything from GitHub: the deployment configuration from
+# svp-gitops (root chart argocd/apps, base/, envs/stg/), the charts of this repository (deploy/helm/*) at the commit
+# envs/stg/charts.yaml there pins. This script installs only what git cannot hold or what must exist before Argo CD:
 #   1. the release images, before anything is created:
-#      image.repository and image.digest of the seven values files at the revision Argo CD will follow, which the
-#      promote pull request writes; each must be a release of ghcr.io/anhnvcoder/short-video-platform/<service> that
-#      GHCR serves to an anonymous pull (the nodes pull without credentials), signed by images.yml on main, with a
-#      vuln attestation that is clean and at most 48 hours old (Kyverno refuses new pods at 72), and with a build
-#      provenance attestation when chart svp-policy at that revision checks provenance for stg (requireProvenance);
+#      image.repository and image.digest of the seven files envs/stg/images/ of svp-gitops at the revision Argo CD will
+#      follow, which the promote pull request writes; each must be a release of
+#      ghcr.io/anhnvcoder/short-video-platform/<service> that GHCR serves to an anonymous pull (the nodes pull without
+#      credentials), signed by images.yml on main, with a vuln attestation that is clean and at most 48 hours old
+#      (Kyverno refuses new pods at 72), and with a build provenance attestation when chart svp-policy checks provenance
+#      in stg at that revision (its values at the commit of envs/stg/charts.yaml, then envs/stg/svp-policy.yaml:
+#      deploy/ci/values-check.sh --gitops);
 #   2. the registry and the cluster (as `make k8s-up`); nothing is built here, the images come from GHCR;
-#   3. the Secrets from .env (deploy/k8s/secrets.sh), which never go to git: at a revision whose overlay turns on
-#      externalSecrets of chart svp-cluster, only their source, the Secrets of namespace svp-secrets, from which
-#      External Secrets Operator (component external-secrets) builds every Secret once Argo CD has installed it;
-#   4. Argo CD (deploy/k8s/values/argo-cd.yaml) in namespace argocd with Pod Security "restricted", AppProject svp and
-#      the emptied AppProject default (deploy/argocd/project.yaml) and root Application svp-root (chart
-#      deploy/argocd/apps at the same revision, told the architecture of the nodes and the environment, stg: this
-#      cluster runs as staging, the base values plus the overlays of deploy/k8s/envs/stg). No repository Secret: the
-#      repository is public and Argo CD reads it over HTTPS without credentials, so this path holds no key or token;
-#      a repository that turned private again would need a read-only credential here;
+#   3. the Secrets from .env (deploy/k8s/secrets.sh), which never go to git: with externalSecrets of chart svp-cluster
+#      on in envs/stg (every revision of svp-gitops), only their source, the Secrets of namespace svp-secrets, from
+#      which External Secrets Operator (component external-secrets) builds every Secret once Argo CD has installed it;
+#   4. Argo CD (argocd/bootstrap.json: chart, version and values file base/argo-cd.yaml) in namespace argocd with Pod
+#      Security "restricted", AppProject svp and the emptied AppProject default (argocd/project.yaml) and root
+#      Application svp-root (chart argocd/apps at the same revision, told the architecture of the nodes and the
+#      environment, stg: this cluster runs as staging). No repository Secret: both repositories are public and Argo CD
+#      reads them over HTTPS without credentials, so this path holds no key or token; a repository that turned private
+#      again would need a read-only credential here;
 #   5. a bounded wait until every Application is Synced and Healthy with its last sync Succeeded, with GlitchTip's DSN
 #      put into Secret svp/sentry once GlitchTip is up (deploy/k8s/glitchtip-init.sh), so the services report errors
 #      on this path too. An error Argo CD keeps reporting for 180 s stops the wait early.
-# The release images and the list of Applications come from git, never from the working tree: what this script checks
-# is what Argo CD deploys.
+# The release images, Argo CD's install and the list of Applications come from git at the revision, never from a
+# working tree: what this script checks is what Argo CD deploys.
 #
 # Environment (set by `make k8s-gitops-up`):
-#   GITOPS_REV         what Argo CD follows: a branch of origin (default main; its values are read from
-#                      refs/remotes/origin/<branch> as fetched last, without a fetch) or a full commit SHA.
+#   GITOPS_REV         the revision of svp-gitops Argo CD follows: a branch of the clone's origin (default main; read
+#                      from refs/remotes/origin/<branch> as fetched last, without a fetch; Argo CD gets
+#                      refs/heads/<branch>) or a full commit SHA of the clone.
+#   SVP_GITOPS_DIR     the clone of svp-gitops (deploy/k8s/lib.sh, gitops_dir; CI's make gitops-clone sets it).
 #   SVP_ATTEST_MAX_AGE drills only (never in .env): a shorter limit than 48h for the age of the vuln attestations.
 #
 # Secrets live outside git, so a changed .env reaches this cluster by hand: `make k8s-secrets` (which, with External
@@ -48,84 +53,73 @@ set -euo pipefail
 # shellcheck source=deploy/ci/platform.sh
 . "$repo_root/deploy/ci/platform.sh"
 
-# The same URL as repoURL of deploy/argocd/apps/values.yaml and sourceRepos of AppProject svp.
-repo_url=https://github.com/anhnvcoder/short-video-platform.git
-# renovate: datasource=helm depName=argo-cd registryUrl=https://argoproj.github.io/argo-helm
-argocd_chart_version=10.10.5
+# repoURL and chartRepoURL of argocd/apps/values.yaml of svp-gitops, both in sourceRepos of AppProject svp.
+chart_repo_url=https://github.com/anhnvcoder/short-video-platform.git
 rev=${GITOPS_REV:-main}
 
 command -v jq >/dev/null || fail "jq is not installed (brew install jq): it reads components.json and Argo CD's status"
+gitops=$(gitops_dir) || exit 1
 
-# --- the revision and its release images, before anything is created.
-if sha=$(git -C "$repo_root" rev-parse --verify --quiet "refs/remotes/origin/$rev^{commit}"); then
-  echo "revision: origin/$rev = $sha (as last fetched; this script does not fetch)"
-elif [[ $rev =~ ^[0-9a-f]{40}$ ]] && sha=$(git -C "$repo_root" rev-parse --verify --quiet "$rev^{commit}"); then
-  echo "revision: commit $sha"
+# --- the revision of svp-gitops and its release images, before anything is created.
+if sha=$(git -C "$gitops" rev-parse --verify --quiet "refs/remotes/origin/$rev^{commit}"); then
+  target_rev=refs/heads/$rev
+  echo "revision: origin/$rev of svp-gitops = $sha (as last fetched in $gitops; this script does not fetch)"
+elif [[ $rev =~ ^[0-9a-f]{40}$ ]] && sha=$(git -C "$gitops" rev-parse --verify --quiet "$rev^{commit}"); then
+  target_rev=$sha
+  echo "revision: commit $sha of svp-gitops"
 else
-  fail "GITOPS_REV=$rev is neither a branch of origin (refs/remotes/origin/$rev) nor a full commit SHA of this clone"
+  fail "GITOPS_REV=$rev is neither a branch of origin (refs/remotes/origin/$rev) nor a full commit SHA of the clone $gitops"
 fi
-
-# The environment the root hands to chart deploy/argocd/apps (value env). Always stg: a lab cluster only ever runs as
-# staging, and prd is rendered by make helm-check alone, so there is nothing to choose. The overlays carry no image, so
-# the release images checked below, from the base values, are the ones deployed. A revision from before the overlays
-# has a chart that reads no env and builds from the base values; one whose chart reads it (files/envs) but that has no
-# directory for stg would only fail in Argo CD once the cluster exists, so it is refused here.
+# at FILE: prints FILE of svp-gitops at the revision.
+at() { git -C "$gitops" show "$sha:$1"; }
+# The environment the root hands to chart argocd/apps (value env). Always stg: a lab cluster only ever runs as
+# staging, and prd is rendered by the checks alone, so there is nothing to choose.
 env=stg
-envs_dir=deploy/k8s/envs
-if git -C "$repo_root" cat-file -e "$sha:$envs_dir/$env" 2>/dev/null; then
-  echo "env: $env (overlays of $envs_dir/$env at ${sha:0:12})"
-elif git -C "$repo_root" cat-file -e "$sha:deploy/argocd/apps/files/envs" 2>/dev/null; then
-  fail "${sha:0:12} has chart deploy/argocd/apps reading an environment but no $envs_dir/$env, so Argo CD could not render it; nothing was created"
-else
-  echo "skip  env: ${sha:0:12} has no $envs_dir/$env; its chart deploy/argocd/apps reads no environment and builds from the base values"
-fi
+for f in argocd/apps/Chart.yaml argocd/apps/components.json argocd/project.yaml argocd/bootstrap.json \
+  "envs/$env/charts.yaml"; do
+  git -C "$gitops" cat-file -e "$sha:$f" 2>/dev/null ||
+    fail "${sha:0:12} of svp-gitops has no $f, so Argo CD could not build $env from it; nothing was created"
+done
+# The commit of this repository whose charts stg runs; the namespaces below are rendered from its chart svp-cluster.
+chart_rev=$(at "envs/$env/charts.yaml" | sed -n 's/^revision: *//p')
+[[ $chart_rev =~ ^[0-9a-f]{40}$ ]] ||
+  fail "envs/$env/charts.yaml at ${sha:0:12} of svp-gitops: revision is '$chart_rev', not a full commit of this repository"
+git -C "$repo_root" cat-file -e "$chart_rev^{commit}" 2>/dev/null ||
+  fail "envs/$env/charts.yaml at ${sha:0:12} of svp-gitops pins commit ${chart_rev:0:12} of this repository, which this clone does not hold: git fetch origin, and run again"
+echo "env: $env (overlays and release images of envs/$env, charts of this repository at ${chart_rev:0:12})"
 
 # Every service is checked before the script stops, so one run names every release that is missing. release_image
-# (deploy/k8s/lib.sh) reads the values file from git and asks GHCR; deploy/ci/verify-release.sh then checks each
+# (deploy/k8s/lib.sh) reads the image file from git and asks GHCR; deploy/ci/values-check.sh --gitops then checks each
 # release's signature and vuln attestation anonymously, with the pinned cosign image COSIGN_IMAGE when cosign is not
-# installed, and its build provenance when chart svp-policy checks it at this revision for this environment (the
-# values Argo CD will hand it, read from git like the release images).
-values_dir=deploy/k8s/values/services
-release_images=()
-if git -C "$repo_root" cat-file -e "$sha:$values_dir" 2>/dev/null; then
-  unready=
-  for svc in "${svp_services[@]}"; do
-    file="$values_dir/$svc.yaml"
-    if ! content=$(git -C "$repo_root" show "$sha:$file" 2>/dev/null); then
-      echo "FAIL  $svc: $file is missing at ${sha:0:12}" >&2
-      unready=1
-    elif image=$(release_image "$svc" "$file at ${sha:0:12}" <<<"$content"); then
-      release_images+=("$image")
-    else
-      unready=1
-    fi
-  done
-  [ -z "$unready" ] || fail "the release images at ${sha:0:12} are not ready for the GitOps path (above); nothing was created"
-  for image in "${release_images[@]}"; do
-    "$repo_root/deploy/ci/verify-release.sh" --rev "$sha" --env "$env" "${image%@*}" "${image#*@}" || unready=1
-  done
-  if [ -n "$unready" ]; then
-    refresh=$(ci_dispatch_hint images.yml main rescan=true "values_ref=$sha") || exit 1
-    fail "a release at ${sha:0:12} is not signed, its vuln attestation is not clean and fresh, or the provenance the policy requires is missing or wrong (above); nothing was created. Refresh the vuln attestations of these values: $refresh, then run this again once that run is green (a missing provenance needs a new release instead, as named above)"
+# installed, and its build provenance when chart svp-policy checks it in this environment: on a copy of envs/$env at the
+# revision alone, so the releases of the other environments are not checked here.
+unready=
+for svc in "${svp_services[@]}"; do
+  file="envs/$env/images/$svc.yaml"
+  if ! content=$(at "$file" 2>/dev/null); then
+    echo "FAIL  $svc: $file is missing at ${sha:0:12} of svp-gitops" >&2
+    unready=1
+  elif ! release_image "$svc" "$file at ${sha:0:12} of svp-gitops" <<<"$content" >/dev/null; then
+    unready=1
   fi
-  ok "release images at ${sha:0:12}: GHCR serves all seven anonymously, each signed with a fresh, clean vuln attestation"
-else
-  echo "skip  release images: ${sha:0:12} has no $values_dir; Argo CD will report what the revision lacks"
+done
+[ -z "$unready" ] ||
+  fail "the release images at ${sha:0:12} of svp-gitops are not ready for the GitOps path (above); nothing was created"
+work=$(mktemp -d) || fail "create a temporary directory"
+trap 'rm -rf "$work"' EXIT
+mkdir -p "$work/release" &&
+  git -C "$gitops" archive "$sha" "envs/$env" | tar -x -C "$work/release" ||
+  fail "unpack envs/$env of ${sha:0:12} of svp-gitops with git archive"
+if ! "$repo_root/deploy/ci/values-check.sh" --gitops "$work/release" ""; then
+  refresh=$(ci_dispatch_hint images.yml main rescan=true) || exit 1
+  fail "a release at ${sha:0:12} of svp-gitops is not signed, its vuln attestation is not clean and fresh, or the provenance the policy requires is missing or wrong (above); nothing was created. Refresh the vuln attestations of the releases: $refresh, then run this again once that run is green (a missing provenance needs a new release instead, as named above)"
 fi
-# Without the app-of-apps chart at this revision Argo CD has nothing to build; the root Application is still created,
-# and the error it reports shows whether Argo CD reached the repository.
-apps_chart=deploy/argocd/apps/Chart.yaml
-has_apps=yes
-git -C "$repo_root" cat-file -e "$sha:$apps_chart" 2>/dev/null || has_apps=
+ok "release images at ${sha:0:12} of svp-gitops: GHCR serves all seven anonymously, each signed with a fresh, clean vuln attestation"
 # The Applications to wait for: the root and one per component of components.json at the revision, the copy the root
-# renders (the working tree's may list more or fewer).
-want_apps=
-if [ -n "$has_apps" ]; then
-  components=deploy/argocd/apps/components.json
-  want_apps=$(git -C "$repo_root" show "$sha:$components" 2>/dev/null | jq -r '.components[].name') &&
-    [ -n "$want_apps" ] || fail "read the component names of $components at ${sha:0:12}"
-  want_apps=$(printf 'svp-root\n%s\n' "$want_apps")
-fi
+# renders.
+want_apps=$(at argocd/apps/components.json | jq -r '.components[].name') && [ -n "$want_apps" ] ||
+  fail "read the component names of argocd/apps/components.json at ${sha:0:12} of svp-gitops"
+want_apps=$(printf 'svp-root\n%s\n' "$want_apps")
 
 # --- a new cluster only: the dev path's releases (Helm) and Argo CD's would fight over the same objects.
 if k3d_ cluster get svp >/dev/null 2>&1; then
@@ -136,7 +130,7 @@ fi
 ensure_registry
 ensure_cluster
 
-# The nodes' architecture, which the root hands to chart deploy/argocd/apps (value nodeArch): Argo Rollouts' traffic
+# The nodes' architecture, which the root hands to chart argocd/apps (value nodeArch): Argo Rollouts' traffic
 # router plugin is a native binary, and a component with archValues in components.json gets the values file of that
 # architecture (argo-rollouts-amd64.yaml on a Linux x86_64 host such as a CI runner). The first node's, and every
 # other node must run the same: one plugin binary serves the controller wherever it is scheduled.
@@ -152,92 +146,74 @@ esac
 
 # --- the Secrets. Chart svp-cluster (wave 1) owns the project's namespaces, but two things need them earlier: the
 # Secrets, before the first pod that reads one (wave 2), and Envoy Gateway (wave 0), which binds a Role in each
-# namespace it watches (deploy/k8s/values/envoy-gateway.yaml) and cannot sync while one is missing. So the namespaces of
-# svp-cluster's values are made here from its own template, with the same Pod Security labels, as
-# deploy/k8s/install.sh does; Argo CD's apply of svp-cluster then finds them as they are. The chart is the one at the
-# revision, unpacked with git archive (neither the working tree nor the index is read), so the namespaces match the
-# Envoy Gateway values Argo CD deploys from that revision. The overlay of the environment for svp-cluster, when the
-# revision has one, is read too, as Argo CD reads it: with externalSecrets on, it adds namespace svp-secrets, which
-# deploy/k8s/secrets.sh then fills with the source of the Secrets. A revision without the chart has no Application to
-# build either (has_apps): the working tree's chart then makes the namespaces for the Secrets alone.
+# namespace it watches (base/envoy-gateway.yaml of svp-gitops) and cannot sync while one is missing. So the namespaces
+# of svp-cluster's values are made here from its own template, with the same Pod Security labels, as
+# deploy/k8s/install.sh does; Argo CD's apply of svp-cluster then finds them as they are. The chart is the one stg runs,
+# at the commit of envs/stg/charts.yaml, unpacked with git archive (neither the working tree nor the index is read), so
+# the namespaces match the Envoy Gateway values Argo CD deploys. The overlay of the environment for svp-cluster, when
+# the revision has one, is read too, as Argo CD reads it: with externalSecrets on, it adds namespace svp-secrets, which
+# deploy/k8s/secrets.sh then fills with the source of the Secrets.
 cluster_chart=deploy/helm/svp-cluster
-cluster_overlay=$envs_dir/$env/svp-cluster.yaml
-if git -C "$repo_root" cat-file -e "$sha:$cluster_chart/Chart.yaml" 2>/dev/null; then
-  chart_dir=$(mktemp -d) || fail "create a temporary directory for chart svp-cluster of ${sha:0:12}"
-  archive_paths=("$cluster_chart")
-  overlay_args=()
-  if git -C "$repo_root" cat-file -e "$sha:$cluster_overlay" 2>/dev/null; then
-    archive_paths+=("$cluster_overlay")
-    overlay_args=(--values "$chart_dir/$cluster_overlay")
-  fi
-  if ! git -C "$repo_root" archive "$sha" "${archive_paths[@]}" | tar -x -C "$chart_dir"; then
-    rm -rf "$chart_dir"
-    fail "unpack $cluster_chart of ${sha:0:12} with git archive"
-  fi
-  rc=0
-  project_ns=$(hc template svp-cluster "$chart_dir/$cluster_chart" --show-only templates/namespaces.yaml \
-    ${overlay_args[@]+"${overlay_args[@]}"} --set-json 'platformNamespaces=[]') || rc=$?
-  rm -rf "$chart_dir"
-  [ "$rc" = 0 ] || fail "render the project's namespaces of chart svp-cluster at ${sha:0:12}"
-else
-  echo "skip  namespaces from git: ${sha:0:12} has no $cluster_chart; the working tree's makes them for the Secrets"
-  project_ns=$(hc template svp-cluster "$repo_root/$cluster_chart" --show-only templates/namespaces.yaml \
-    --set-json 'platformNamespaces=[]') || fail "render the project's namespaces of chart svp-cluster"
+cluster_overlay=envs/$env/svp-cluster.yaml
+git -C "$repo_root" cat-file -e "$chart_rev:$cluster_chart/Chart.yaml" 2>/dev/null ||
+  fail "commit ${chart_rev:0:12} of this repository (envs/$env/charts.yaml) has no $cluster_chart"
+mkdir -p "$work/charts" && git -C "$repo_root" archive "$chart_rev" "$cluster_chart" | tar -x -C "$work/charts" ||
+  fail "unpack $cluster_chart of ${chart_rev:0:12} with git archive"
+overlay_args=()
+if git -C "$gitops" cat-file -e "$sha:$cluster_overlay" 2>/dev/null; then
+  at "$cluster_overlay" >"$work/svp-cluster.yaml" || fail "read $cluster_overlay at ${sha:0:12} of svp-gitops"
+  overlay_args=(--values "$work/svp-cluster.yaml")
 fi
+project_ns=$(hc template svp-cluster "$work/charts/$cluster_chart" --show-only templates/namespaces.yaml \
+  ${overlay_args[@]+"${overlay_args[@]}"} --set-json 'platformNamespaces=[]') ||
+  fail "render the project's namespaces of chart svp-cluster at ${chart_rev:0:12}"
 kc apply --server-side --field-manager=svp-pod-security -f - <<<"$project_ns" >/dev/null ||
   fail "create the project's namespaces with Pod Security restricted"
 ok "the project's namespaces ($(sed -n 's/^  name: //p' <<<"$project_ns" | paste -sd ' ' -)) enforce Pod Security restricted"
 "$repo_root/deploy/k8s/secrets.sh"
 
-# --- Argo CD.
+# --- Argo CD, as argocd/bootstrap.json at the revision names it: one object of the form of a component of
+# components.json (repo, chart, version, values).
 # Pod Security "restricted" on namespace argocd before Argo CD's first pod (every pod of its chart meets it): the
 # Namespace of chart svp-cluster's template, as deploy/k8s/install.sh makes those of wave 0. It exists before helm, so
 # helm gets no --create-namespace, whose apply would leave the labels out.
-hc template svp-cluster "$repo_root/deploy/helm/svp-cluster" --show-only templates/namespaces.yaml \
+hc template svp-cluster "$work/charts/$cluster_chart" --show-only templates/namespaces.yaml \
   --set-json 'namespaces=[]' --set-json 'platformNamespaces=[{"name":"argocd"}]' |
   kc apply --server-side --field-manager=svp-pod-security -f - >/dev/null ||
   fail "create namespace argocd with Pod Security restricted"
 ok "namespace argocd enforces Pod Security restricted"
-echo "helm upgrade --install argocd (argo-cd $argocd_chart_version, namespace argocd)"
-hc upgrade --install argocd argo-cd --repo https://argoproj.github.io/argo-helm --version "$argocd_chart_version" \
-  --values "$repo_root/deploy/k8s/values/argo-cd.yaml" --namespace argocd --wait --timeout 10m \
-  >/dev/null || fail "install Argo CD"
+bootstrap=$(at argocd/bootstrap.json | jq -r '[.repo, .chart, .version, .values] | map(. // "") | join(" ")') ||
+  fail "read argocd/bootstrap.json at ${sha:0:12} of svp-gitops"
+read -r argocd_repo argocd_chart argocd_version argocd_values <<<"$bootstrap"
+[ -n "$argocd_values" ] && [ "$argocd_repo $argocd_chart" = "https://argoproj.github.io/argo-helm argo-cd" ] ||
+  fail "argocd/bootstrap.json at ${sha:0:12} of svp-gitops must install chart argo-cd of https://argoproj.github.io/argo-helm with a values file"
+at "$argocd_values" >"$work/argo-cd.yaml" || fail "read $argocd_values at ${sha:0:12} of svp-gitops"
+echo "helm upgrade --install argocd (argo-cd $argocd_version, namespace argocd)"
+hc upgrade --install argocd "$argocd_chart" --repo "$argocd_repo" --version "$argocd_version" \
+  --values "$work/argo-cd.yaml" --namespace argocd --wait --timeout 10m >/dev/null || fail "install Argo CD"
 ok "Argo CD installed"
 
-# No repository Secret: Argo CD reads $repo_url over HTTPS without credentials. The cluster is always new (above), so
-# no Secret of an earlier SSH setup (argocd/repo-short-video-platform with a deploy key) is left to remove.
+# No repository Secret: Argo CD reads $gitops_url and $chart_repo_url over HTTPS without credentials.
 
 # --force-conflicts: argocd-server created AppProject default at its start and owns its fields until this apply
 # empties them.
-kc apply --server-side --field-manager=svp-gitops --force-conflicts -f "$repo_root/deploy/argocd/project.yaml" \
-  >/dev/null || fail "apply AppProjects svp and default"
+at argocd/project.yaml | kc apply --server-side --field-manager=svp-gitops --force-conflicts -f - >/dev/null ||
+  fail "apply AppProjects svp and default"
 ok "AppProject svp, AppProject default emptied"
 
-# The root follows $rev, and hands the same revision to every Application it makes (value targetRevision of chart
-# deploy/argocd/apps), so the releases checked above are the ones deployed. argocd_root_app (lib.sh) writes the revision
-# and the environment as strings whatever they look like; the nodes' architecture joins them in the root's values, a
-# string too.
-argocd_root_app "$repo_url" "$rev" "$env" | jq --arg arch "$node_arch" '.spec.source.helm.valuesObject.nodeArch = $arch' |
+# The root follows $target_rev of svp-gitops, and hands the same revision to every Application it makes for its values
+# files (value targetRevision of chart argocd/apps), so the releases checked above are the ones deployed.
+# argocd_root_app (lib.sh) writes the revision and the environment as strings whatever they look like; the nodes'
+# architecture joins them in the root's values, a string too.
+argocd_root_app "$gitops_url" "$target_rev" "$env" "$chart_repo_url" |
+  jq --arg arch "$node_arch" '.spec.source.helm.valuesObject.nodeArch = $arch' |
   kc apply --server-side --field-manager=svp-gitops -f - >/dev/null ||
   fail "apply Application svp-root"
-ok "Application svp-root follows $rev of $repo_url (HTTPS, no credentials), nodeArch $node_arch, env $env"
-
-if [ -z "$has_apps" ]; then
-  # Argo CD reports a ComparisonError on the root once the repo-server has tried the revision: its message tells a
-  # missing path (the repository was read) from a failed login or an unknown revision.
-  deadline=$((SECONDS + 180))
-  until msg=$(kc -n argocd get applications.argoproj.io svp-root -o jsonpath='{.status.conditions[*].message}') &&
-    [ -n "$msg" ]; do
-    ((SECONDS < deadline)) || fail "Application svp-root reported no condition within 180s"
-    sleep 2
-  done
-  echo "svp-root: $msg"
-  fail "${sha:0:12} has no $apps_chart, so Argo CD has nothing to build yet: push the stage's work to $rev, then make k8s-down && make k8s-gitops-up"
-fi
+ok "Application svp-root follows $target_rev of $gitops_url (HTTPS, no credentials), charts of ${chart_rev:0:12}, nodeArch $node_arch, env $env"
 
 # app_report: reads the Applications of namespace argocd and prints one line per name of $want_apps:
 #   ready NAME             Synced, Healthy and its last sync Succeeded: the criterion of the health check for
-#                          Applications in deploy/k8s/values/argo-cd.yaml, so a PostSync hook still running or failed
+#                          Applications in base/argo-cd.yaml of svp-gitops, so a PostSync hook still running or failed
 #                          is not ready;
 #   wait NAME(S/H/P)       anything else, with its sync status, health and phase of its last sync ("-" when unset);
 #   missing NAME           not created by the root yet (a later wave);
@@ -307,11 +283,12 @@ while :; do
   if ((SECONDS >= deadline)); then
     kc -n argocd get applications.argoproj.io \
       -o jsonpath='{range .items[*]}{.metadata.name}: {.status.operationState.message} {.status.conditions[*].message}{"\n"}{end}' >&2
+    gitops_timeout_report "$want_apps" || true
     fail "every Application Synced and Healthy within 1800s"
   fi
   sleep 10
 done
-ok "$want Applications Synced and Healthy, their syncs Succeeded, at ${sha:0:12}"
+ok "$want Applications Synced and Healthy, their syncs Succeeded, at ${sha:0:12} of svp-gitops"
 export_ca
 
 echo

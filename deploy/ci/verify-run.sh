@@ -10,7 +10,8 @@
 # name of its first target, which builds what the others use), job_minutes_default (the job's limit when
 # SVP_VERIFY_JOB_MINUTES is not set) and k3d (1 when its targets run on cluster k3d-svp, 0 otherwise), may define
 # helpers of its own (exported when a step runs them through bash -c), and defines scenario_targets, its targets in
-# order through step and skip below. It sets no other variable of this script, and its own are local to its functions
+# order through step and skip below. It may read names (every target of its list, once listed) and call chosen (below)
+# while its targets run. It sets no other variable of this script, and its own are local to its functions
 # with names apart from this script's: step and skip see a caller's locals (bash scopes dynamically), so a local n in
 # scenario_targets would take the place of the target count. A name not in the list of this script, a missing file, a
 # file that does not declare those, or one whose first target is not its build target stops the script before
@@ -25,6 +26,11 @@
 # when any target was not ok. Once the last target has its line, $SVP_VERIFY_OUT/run-end gets the time: without it the
 # run was cut short (cancelled, or the step stopped by its timeout-minutes) and results.tsv may lack the target that
 # was running and every later one, so deploy/ci/verify-sample.sh does not count the run as ended in time.
+#
+# Before the first target of a k3d scenario: make gitops-clone, main of the deployment configuration svp-gitops cloned
+# anonymously into .gitops/svp-gitops of the checkout (base/ and components.json for make k8s-up, all of it for make
+# k8s-gitops-up), and SVP_GITOPS_DIR exported to it for every target (deploy/k8s/lib.sh, gitops_dir). No target can
+# pass without it: when the clone fails nothing starts (exit 1).
 #
 # The first target builds what the others use (the scenario file's build: up for compose-obs, k8s-gitops-up for gitops,
 # k8s-up for the other k3d scenarios). When it is not ok, every later target is skipped at once with the note
@@ -363,6 +369,18 @@ case "$names " in
     exit 2
     ;;
 esac
+if [ "$k3d" = 1 ]; then
+  # Fetches main again, not the commit the job's source-map step cloned. Accepted risk: a web release merged between
+  # the two steps makes those maps another release's, and target gitops-sourcemaps then fails, as it uploads nothing
+  # unless every chunk the web serves has its debug ID in the maps; so no wrong map is ever uploaded. Pinning that
+  # commit here would leave the clone off main, which the release wait after the scenario follows.
+  make -s gitops-clone || {
+    echo "FAIL  verify-run: make gitops-clone (the deployment configuration svp-gitops); nothing started" >&2
+    exit 1
+  }
+  SVP_GITOPS_DIR=$(. "$repo/deploy/k8s/lib.sh" && echo "$gitops_ci_clone") || exit 1
+  export SVP_GITOPS_DIR
+fi
 mkdir -p "$out/logs" || exit 1
 rm -f "$out/run-end"
 printf 'id\tname\tstatus\texit\tstart\tend\tseconds\tnote\n' >"$results"

@@ -63,7 +63,7 @@ misconfigurations:
       Secret (pkg/certs/k8s.go), and policy svp-cnpg-operator-secrets admits no other Secret it writes there
     expired_at: 2027-01-22
   # Images of the data charts come from their upstream publishers, pinned by the digest of their multi-arch index
-  # (deploy/k8s/check-image-digests.sh, Renovate proposes each new digest). The check trusts only ECR, GCR and ACR, so
+  # (step 4 of deploy/ci/gitops-check.sh, Renovate proposes each new digest). The check trusts only ECR, GCR and ACR, so
   # trusting a registry here means copying the image into a private one, a decision of the cloud stage.
   - id: KSV-0125
     paths:

@@ -9,18 +9,32 @@
 #     prove nothing about arm64). Writes OUT/amd64 and OUT/arm64 in the layout vuln-predicate.sh reads and prints the
 #     two manifest digests.
 #
-#   rescan.sh run OUT MAIN_REF [REF...]   (CI only: it attests)
-#     For image.repository + image.digest of the seven files deploy/k8s/values/services/*.yaml at each git REF (MAIN_REF
-#     is main's; others are the open promote PR and the dispatch input values_ref), read as data with `git show`, never
-#     run: an empty digest is skipped; a repository other than ghcr.io/anhnvcoder/short-video-platform/<service>, a
-#     malformed digest, or a digest without a signature of images.yml on main is not attested and fails the run, so
-#     whatever a REF lists, only digests this workflow signed on main get a fresh attestation. Each digest left is
-#     scanned (scan-index), its predicate built by vuln-predicate.sh --allow-critical and attested with
-#     `cosign attest --replace --type vuln`, so the attestation always holds the real result: a CRITICAL found today is
-#     recorded (Kyverno then refuses new pods because of it, not because of an old attestation) and fails the run, which
-#     mails the owner. A secret found today is never attested: it fails the run before anything is written, as at build
-#     time. SARIF of the digests of MAIN_REF go to OUT/sarif for the Security tab. The drill images are in no values
-#     file, so they are never rescanned.
+#   rescan.sh run OUT GITOPS_DIR [VALUES_REF]   (CI only: it attests)
+#     For every release `list` prints: an empty digest is skipped; a repository other than
+#     ghcr.io/anhnvcoder/short-video-platform/<service>, a malformed digest, or a digest without a signature of
+#     images.yml on main is not attested and fails the run, so whatever a ref lists, only digests this workflow signed
+#     on main get a fresh attestation. Each digest left is scanned (scan-index), its predicate built by
+#     vuln-predicate.sh --allow-critical and attested with `cosign attest --replace --type vuln`, so the attestation
+#     always holds the real result: a CRITICAL found today is recorded (Kyverno then refuses new pods because of it,
+#     not because of an old attestation) and fails the run, which mails the owner. A secret found today is never
+#     attested: it fails the run before anything is written, as at build time. SARIF of the digests of main of
+#     svp-gitops go to OUT/sarif for the Security tab. The drill images are in no image file, so they are never
+#     rescanned.
+#
+#   rescan.sh list GITOPS_DIR [VALUES_REF]
+#     Prints the releases a run rescans, one per line: service, repository, digest (both empty when not released) and
+#     where it was read, separated by tabs. Read as data with `git show`, never run: image.repository and image.digest
+#     of envs/<env>/images/<service>.yaml of every environment of the deployment repository svp-gitops, at its main,
+#     at bot/promote-stg while the promote pull request is open there (the app's own, never a fork's from a branch of
+#     that name), and at VALUES_REF when given (a branch, a full commit or refs/pull/<n>/head of svp-gitops). A
+#     VALUES_REF that svp-gitops has not, and that is a full commit of this repository from before svp-gitops held the
+#     releases, is read there instead, from deploy/k8s/values/services/<service>.yaml: a release only that history
+#     names (a web release from before CI attested provenance, which the supply chain drill needs) gets a fresh
+#     attestation too. GITOPS_DIR is a clone of svp-gitops (CI's, from make gitops-clone): the refs are fetched into
+#     it under refs/svp/rescan/, anonymously; the open pull request is asked of the repository's host with the job's
+#     own token, a read of a public repository. Fails, after printing every release it could read, when a file cannot
+#     be read or the host does not say whether the pull request is open (main and VALUES_REF are still listed); fails
+#     at once when VALUES_REF is neither.
 set -euo pipefail
 
 # shellcheck source=deploy/ci/common.sh
@@ -56,13 +70,79 @@ scan_index() {
   done
 }
 
-# release_of REF SERVICE: prints "repository digest" of SERVICE's values file at REF; nothing when not released.
-release_of() {
-  local file=deploy/k8s/values/services/$2.yaml values repo digest
-  values=$(git -C "$repo_root" show "$1:$file") || fail "read $file at $1"
-  digest=$(values_field digest <<<"$values") || fail "$file at $1: image.digest is not one plain line"
-  repo=$(values_field repository <<<"$values") || fail "$file at $1: image.repository is not one plain line"
-  [ -z "$digest" ] || echo "$repo $digest"
+# image_line FILE REF WHERE (stdin: FILE at REF): prints "service<TAB>repository<TAB>digest<TAB>WHERE" of an image
+# file; status 1, naming FILE at REF, when its image block cannot be read.
+image_line() {
+  local values svc repo digest
+  values=$(cat)
+  svc=$(basename "$1" .yaml)
+  digest=$(values_field digest <<<"$values") || {
+    echo "FAIL  $1 at $2: image.digest is not one plain line" >&2
+    return 1
+  }
+  repo=$(values_field repository <<<"$values") || {
+    echo "FAIL  $1 at $2: image.repository is not one plain line" >&2
+    return 1
+  }
+  printf '%s\t%s\t%s\t%s\n' "$svc" "$repo" "$digest" "$3"
+}
+
+# list GITOPS_DIR [VALUES_REF]: see `list` above.
+list() {
+  local dir=$1 values_ref=${2:-} refs=() labels=() prs open i ref e svc file status=0 code=
+  [ "$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$dir" 2>/dev/null && pwd -P)" ] ||
+    fail "$dir is not a clone of svp-gitops (make gitops-clone)"
+  # gf ARGS...: an anonymous fetch from svp-gitops into the clone.
+  gf() { GIT_TERMINAL_PROMPT=0 git -C "$dir" -c credential.helper= fetch --quiet --no-tags origin "$@"; }
+  gf "+refs/heads/main:refs/svp/rescan/main" || fail "fetch main of svp-gitops"
+  refs+=(refs/svp/rescan/main) labels+=("main of svp-gitops")
+  # Unanswered, the releases of main and of VALUES_REF are still listed (and rescanned) before the run fails: they are
+  # what stg and prd run, whose attestations must not age out because the host did not answer.
+  if ! prs=$(ci_change_request_list "$gitops_promote_branch" main "$gitops_repo"); then
+    echo "FAIL  ask the repository's host whether the promote pull request of $gitops_repo is open; $gitops_promote_branch not read" >&2
+    status=1
+  elif ! open=$(ci_change_request_pick "$gitops_app" <<<"$prs"); then
+    echo "FAIL  read the open pull requests of $gitops_promote_branch; $gitops_promote_branch not read" >&2
+    status=1
+  elif [ -n "$open" ]; then
+    gf "+refs/heads/$gitops_promote_branch:refs/svp/rescan/promote" || fail "fetch $gitops_promote_branch of svp-gitops"
+    refs+=(refs/svp/rescan/promote) labels+=("$gitops_promote_branch of svp-gitops (pull request #$open)")
+  fi
+  if [ -n "$values_ref" ]; then
+    if gf "+$values_ref:refs/svp/rescan/values-ref" 2>/dev/null; then
+      refs+=(refs/svp/rescan/values-ref) labels+=("$values_ref of svp-gitops")
+    elif [[ $values_ref =~ ^[0-9a-f]{40}$ ]]; then
+      # A clone of the code repository may be shallow (CI's checkout): the commit is fetched when it is not there.
+      git -C "$repo_root" cat-file -e "$values_ref^{commit}" 2>/dev/null ||
+        git -C "$repo_root" fetch --quiet --no-tags --depth 1 origin "$values_ref" 2>/dev/null || true
+      git -C "$repo_root" cat-file -e "$values_ref:deploy/k8s/values/services" 2>/dev/null ||
+        fail "values_ref $values_ref is neither a commit of svp-gitops nor one of this repository with deploy/k8s/values/services/"
+      code=$values_ref
+    else
+      fail "values_ref $values_ref is no ref of svp-gitops"
+    fi
+  fi
+  for i in "${!refs[@]}"; do
+    ref=${refs[$i]}
+    for e in $(git -C "$dir" ls-tree --name-only "$ref:envs" 2>/dev/null); do
+      for svc in "${svp_services[@]}"; do
+        file=envs/$e/images/$svc.yaml
+        if ! git -C "$dir" show "$ref:$file" 2>/dev/null | image_line "$file" "${labels[$i]}" "${labels[$i]}, $file"; then
+          status=1
+        fi
+      done
+    done
+  done
+  if [ -n "$code" ]; then
+    for svc in "${svp_services[@]}"; do
+      file=deploy/k8s/values/services/$svc.yaml
+      if ! git -C "$repo_root" show "$code:$file" 2>/dev/null |
+        image_line "$file" "${code:0:12}" "commit ${code:0:12} of the code repository, $file"; then
+        status=1
+      fi
+    done
+  fi
+  return "$status"
 }
 
 # rescan_one SERVICE REPOSITORY DIGEST DIR SARIF_DIR: scans, gates secrets, attests, then fails on CRITICAL for one
@@ -104,36 +184,30 @@ run() {
   local platform
   platform=$(ci_platform) || exit 1
   [ "$platform" != local ] || fail "rescan.sh run attests with the workflow's identity: CI only"
-  [ $# -ge 2 ] || fail "usage: rescan.sh run OUT MAIN_REF [REF...]"
-  local out=$1 main_ref=$2 ref svc line repo digest key sarif n=0 failed=0 seen=" "
-  shift
+  [ $# -ge 2 ] && [ $# -le 3 ] || fail "usage: rescan.sh run OUT GITOPS_DIR [VALUES_REF]"
+  local out=$1 lines svc repo digest where key sarif n=0 failed=0 seen=" "
   mkdir -p "$out/sarif" || fail "create $out"
   out=$(cd "$out" && pwd)
-  for ref in "$@"; do
-    for svc in "${svp_services[@]}"; do
-      if ! line=$(release_of "$ref" "$svc"); then
-        failed=1
-        continue
-      fi
-      if [ -z "$line" ]; then
-        ci_summary "- $svc at \`$ref\`: no digest, not released yet: skipped"
-        continue
-      fi
-      read -r repo digest <<<"$line"
-      key="$svc@$digest"
-      case $seen in *" $key "*) continue ;; esac
-      seen="$seen$key "
-      n=$((n + 1))
-      if [ "$repo" != "$ghcr_prefix/$svc" ] || ! is_digest "$digest"; then
-        echo "FAIL  $svc at $ref: $repo@$digest is not a release of $ghcr_prefix/$svc; not attested" >&2
-        failed=1
-        continue
-      fi
-      sarif=
-      [ "$ref" != "$main_ref" ] || sarif=$out/sarif
-      (rescan_one "$svc" "$repo" "$digest" "$out/$n-$svc" "$sarif") || failed=1
-    done
-  done
+  lines=$(list "$2" "${3:-}") || failed=1
+  while IFS=$'\t' read -r svc repo digest where; do
+    [ -n "$svc" ] || continue
+    if [ -z "$digest" ]; then
+      ci_summary "- $svc in $where: no digest, not released yet: skipped"
+      continue
+    fi
+    key="$svc@$digest"
+    case $seen in *" $key "*) continue ;; esac
+    seen="$seen$key "
+    n=$((n + 1))
+    if [ "$repo" != "$ghcr_prefix/$svc" ] || ! is_digest "$digest"; then
+      echo "FAIL  $svc in $where: $repo@$digest is not a release of $ghcr_prefix/$svc; not attested" >&2
+      failed=1
+      continue
+    fi
+    sarif=
+    case $where in "main of svp-gitops,"*) sarif=$out/sarif ;; esac
+    (rescan_one "$svc" "$repo" "$digest" "$out/$n-$svc" "$sarif") || failed=1
+  done <<<"$lines"
   [ "$n" -gt 0 ] || ci_summary "No released digest to rescan."
   return "$failed"
 }
@@ -148,5 +222,9 @@ run)
   shift
   run "$@"
   ;;
-*) fail "usage: rescan.sh scan-index REPOSITORY DIGEST OUT | rescan.sh run OUT MAIN_REF [REF...]" ;;
+list)
+  [ $# -ge 2 ] && [ $# -le 3 ] || fail "usage: rescan.sh list GITOPS_DIR [VALUES_REF]"
+  list "$2" "${3:-}"
+  ;;
+*) fail "usage: rescan.sh scan-index REPOSITORY DIGEST OUT | rescan.sh run OUT GITOPS_DIR [VALUES_REF] | rescan.sh list GITOPS_DIR [VALUES_REF]" ;;
 esac

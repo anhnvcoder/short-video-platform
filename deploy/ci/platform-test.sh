@@ -7,30 +7,45 @@
 #     and pull requests are written through gh with the job's repository;
 #   - local: everything on stdout, no mask, links "local", and no write through the platform's API (reads still are);
 #   - another CI (GitLab CI, a CI=true one): a clear error, nothing written;
+#   - pull requests of another repository (svp-gitops) and of an app's bot, auto-merge for a given head, the bot of an
+#     app (its id read from the host), the credential helper a push gets the job's token from, and the push time of a
+#     commit of another repository;
+#   - the records of an environment (deployments of svp-gitops): a record is a deployment with auto_merge false and
+#     required_contexts [], then a status success that leaves earlier records active, its id printed; a dry run and a
+#     machine print both requests and write nothing; a record of a short ref, an environment that is not a plain name
+#     or a payload that is not JSON is refused before gh; the list gives each record its latest state and every
+#     status the host returns, newest first; a run URL is a run of the code repository;
 #   - the scripts give what they gave when they read GitHub's variables themselves: plan.sh, vuln-predicate.sh,
 #     provenance-predicate.sh (the workflow, ref and commit of the run, and the services input of a dispatch),
-#     scan-gate.sh, values-check.sh (the signing identity is read from the policy's values) and promote.sh (a dry run
-#     and a local run in a throwaway git repository with a throwaway origin; on a machine, an origin with any push URL
-#     off its disk is refused, or with PROMOTE_DRY_RUN=1 the push is printed, and the branch never moves);
+#     scan-gate.sh and values-check.sh (the signing identity is read from the policy's values; promote.sh has a test
+#     of its own, promote-test.sh);
 #   - scan-gate.sh --grype on grype reports written by hand: a Critical match blocks and is named, --allow-critical lets
 #     it through, High and below are only counted; an entry of .trivyignore.yaml covers a match by its id or a related
 #     id with the same purl (qualifiers and escapes aside), never another version; an expired entry fails the gate;
 #     a report that is not grype's exits 2;
 #   - platform-guard.sh passes the throwaway checkout and fails, naming file:line, a script that reads GITHUB_OUTPUT or
 #     calls gh itself;
-#   - verify-release.sh with a fake cosign that answers from fixtures: without requireProvenance in the policy's values
-#     or the overlays only the signature and the vuln attestation are asked for; with it on (in the base values, in the
-#     overlay of an environment, at a commit with --rev, for one environment with --env) the release also needs exactly
-#     one provenance attestation whose builder.id, workflow repository and ref match the policy and whose commit the
-#     certificate names, each fault with its own message; an overlay holding anything else is refused;
-#   - plan.sh and values-check.sh on a pull request: one that changes only the policy's values (an overlay turning
-#     provenance on, or values.yaml) runs the values check on every release in the values, one of docs/ only on none;
+#   - verify-release.sh with a fake cosign that answers from fixtures, on a tree laid out as svp-gitops: without
+#     requireProvenance in the policy's values at the commit charts.yaml pins or in the overlays only the signature and
+#     the vuln attestation are asked for; with it on (in the values at that commit, in the overlay of an environment,
+#     at a commit of the tree with --rev, for one environment with --env, in the clone gitops_dir finds) the release
+#     also needs exactly one provenance attestation whose builder.id, workflow repository and ref match the policy and
+#     whose commit the certificate names, each fault with its own message; an overlay holding anything else, and a
+#     charts.yaml naming no commit, are refused;
+#   - values-check.sh --gitops on a pull request of that tree: one that turns provenance on in an overlay, or moves an
+#     environment's charts.yaml, checks every release of that environment and none of the other; one of an image file
+#     checks that file; one of another file checks none;
+#   - plan.sh on a push to main that builds no image: promote_charts when a file under deploy/helm/ or one a symbolic
+#     link there points to changed, not for docs/;
 #   - gitops_no_provenance of deploy/ci/verify/gitops.sh: the newest web release in the history of web.yaml that the
 #     fake cosign finds signed without provenance, passing over without cosign a release built from a commit holding
 #     provenance-predicate.sh; none found and an error of cosign each exit with their own status;
 #   - changed-services.sh builds all seven images for a change of platform.sh, as for common.sh, and none for a change
-#     of this test, of platform-guard.sh, of a scenario file under deploy/ci/verify/, of the policy's values or of
-#     docs/; all seven for a change of the GRYPE_IMAGE line of the Makefile, none for another line of it;
+#     of this test, of promote-test.sh, of platform-guard.sh, of a scenario file under deploy/ci/verify/, of the
+#     scripts of other workflows and of svp-gitops's check (record-stg.sh, gitops-check.sh, dora.sh and the tests of
+#     these and of release-set.sh, promote-prd.sh), of the policy's values or of docs/; all seven for a change of
+#     release-set.sh and promote-prd.sh (job promote-prd of images.yml), and of the GRYPE_IMAGE line of the Makefile,
+#     none for another line of it;
 #   - platform-guard.sh reads the scenario files under deploy/ci/verify/ too.
 # Runs on macOS and Linux: no network, no Docker, no cluster.
 #
@@ -63,7 +78,8 @@ lacks() { ! grep -qF -- "$2" "$1"; }
 
 # --- Fakes. gh writes each call to gh.log, one line of %q-quoted arguments, and answers pr list from gh/prs.json; api
 # with gh/runs.json for a workflow's runs, gh/artifacts-<run>.json for a run's artifacts (none when the file is missing),
-# gh/pulls.json for the pull requests of a commit (none when the file is missing), and gh/events.json otherwise, run through its --jq filter; run download writes the file image-digest into its --dir.
+# gh/run-<run>.json for a run (the host fails when the file is missing), gh/pulls.json for the pull requests of a commit (none when the file is missing), gh/user.json for a user, and
+# gh/events.json otherwise, run through its --jq filter; run download writes the file image-digest into its --dir.
 # With FAKE_GH_FAIL set it fails as the host would; with FAKE_GH_DOWNLOAD_FAIL set only run download fails, naming the
 # signed link it was sent to, as gh does, and with GH_DEBUG or DEBUG set run download prints its request line as gh's
 # debug log does. cosign records its arguments and refuses every signature; with FAKE_COSIGN_DIR set it accepts every
@@ -81,8 +97,26 @@ fi
 case "$1 $2" in
 "pr list") cat "$FAKE_GH_DIR/prs.json" ;;
 "api -X")
-  path=$4
+  method=$3 path=$4
+  # A body (--input FILE, - for stdin) is appended to inputs.jsonl, one compact line.
+  for ((i = 1; i <= $#; i++)); do
+    if [ "${!i}" = --input ]; then
+      j=$((i + 1))
+      if [ "${!j}" = - ]; then jq -c . >>"$FAKE_GH_DIR/inputs.jsonl"; else jq -c . "${!j}" >>"$FAKE_GH_DIR/inputs.jsonl"; fi
+    fi
+  done
   while [ $# -gt 0 ] && [ "$1" != --jq ]; do shift; done
+  case $method:$path in
+  POST:*/deployments) file=$FAKE_GH_DIR/deployment-made.json ;;
+  POST:*/deployments/*/statuses) file=$FAKE_GH_DIR/status-made.json ;;
+  GET:*/deployments/*/statuses)
+    id=${path%/statuses}
+    file=$FAKE_GH_DIR/statuses-${id##*/}.json
+    [ -f "$file" ] || file=$FAKE_GH_DIR/no-pulls.json
+    ;;
+  GET:*/deployments) file=$FAKE_GH_DIR/deployments.json ;;
+  esac
+  [ -z "${file:-}" ] || { jq -r "$2" "$file"; exit; }
   case $path in
   */actions/workflows/*/runs) file=$FAKE_GH_DIR/runs.json ;;
   */actions/runs/*/artifacts)
@@ -90,10 +124,15 @@ case "$1 $2" in
     file=$FAKE_GH_DIR/artifacts-${id##*/}.json
     [ -f "$file" ] || file=$FAKE_GH_DIR/no-artifacts.json
     ;;
+  */actions/runs/*)
+    file=$FAKE_GH_DIR/run-${path##*/}.json
+    [ -f "$file" ] || { echo "HTTP 404: Not Found" >&2 && exit 1; }
+    ;;
   */commits/*/pulls)
     file=$FAKE_GH_DIR/pulls.json
     [ -f "$file" ] || file=$FAKE_GH_DIR/no-pulls.json
     ;;
+  users/*) file=$FAKE_GH_DIR/user.json ;;
   *) file=$FAKE_GH_DIR/events.json ;;
   esac
   jq -r "$2" "$file"
@@ -149,6 +188,9 @@ chmod 755 "$work/bin/gh" "$work/bin/cosign"
 echo '[]' >"$work/gh/prs.json"
 echo '{"total_count": 0, "artifacts": []}' >"$work/gh/no-artifacts.json"
 echo '[]' >"$work/gh/no-pulls.json"
+echo '{"id": 271828}' >"$work/gh/user.json"
+echo '{"id": 9001, "sha": "x"}' >"$work/gh/deployment-made.json"
+echo '{"id": 1, "state": "success"}' >"$work/gh/status-made.json"
 
 # on PLATFORM COMMAND...: runs COMMAND with the variables of PLATFORM and none of the others': github (a made-up job of
 # repository octo/repo), local (none), gitlab (GitLab CI's own). git reads no configuration of this machine.
@@ -266,6 +308,30 @@ out=$(on github env -u GITHUB_SHA "$BASH" -c '. "$0"; ci_commit' "$here/platform
   "FAIL  GITHUB_SHA is empty: the CI platform sets it for every job" "$out"
 same "github: the bot" 'github-actions[bot] 41898282+github-actions[bot]@users.noreply.github.com' \
   "$(fn github 'echo "$(ci_bot_name) $(ci_bot_email)"')"
+fresh
+same "github: the bot of an app, its id read from the host" \
+  'svp-gitops-promoter[bot] 271828+svp-gitops-promoter[bot]@users.noreply.github.com' \
+  "$(fn github 'echo "$(ci_bot_name svp-gitops-promoter) $(ci_bot_email svp-gitops-promoter)"')"
+same "github: the bot's user is asked for by its escaped name" \
+  "$(gh_line api -X GET 'users/svp-gitops-promoter%5Bbot%5D' --jq .id)" "$(cat "$work/gh.log")"
+echo '{"message": "Not Found"}' >"$work/gh/user.json"
+if fn github 'ci_bot_email no-such-app' >/dev/null 2>&1; then fail "github: an app with no bot user fails"; else
+  ok "github: an app with no bot user fails"
+fi
+echo '{"id": 271828}' >"$work/gh/user.json"
+
+# The credential helper of a push: git asks it, and it answers with GH_TOKEN of that moment; none without a token.
+got=$(on github env GH_TOKEN=s3cret-token "$BASH" -c '. "$0"; ci_git_auth' "$here/platform.sh")
+same "github: two git options, the first clearing every other helper" 2 "$(grep -c . <<<"$got")"
+check "github: the token is not in the options" test "${got/s3cret-token/}" = "$got"
+auth=()
+while IFS= read -r o; do auth+=(-c "$o"); done <<<"$got"
+same "github: git gets the token from the helper" $'username=x-access-token\npassword=s3cret-token' \
+  "$(printf 'protocol=https\nhost=github.com\npath=anhnvcoder/svp-gitops.git\n\n' |
+    on github env GH_TOKEN=s3cret-token GIT_TERMINAL_PROMPT=0 git "${auth[@]}" credential fill | grep -E '^(username|password)=')"
+if on github env -u GH_TOKEN "$BASH" -c '. "$0"; ci_git_auth' "$here/platform.sh" >/dev/null 2>&1; then
+  fail "github: no GH_TOKEN, no credential helper"
+else ok "github: no GH_TOKEN, no credential helper"; fi
 
 # Pull requests through gh, with the job's repository.
 fresh
@@ -298,6 +364,34 @@ echo '[]' >"$work/gh/prs.json"
 same "github: no pull request, nothing picked" "" "$(fn github 'ci_change_request_list bot/promote main |
   ci_change_request_pick')"
 
+# Pull requests of another repository, opened by an app.
+fresh
+jq -n '[{number: 5, isCrossRepository: false, author: {login: "app/github-actions"}},
+  {number: 6, isCrossRepository: true, author: {login: "app/svp-gitops-promoter"}},
+  {number: 7, isCrossRepository: false, author: {login: "app/svp-gitops-promoter"}}]' >"$work/gh/prs.json"
+same "github: the app's own pull request of the other repository is picked" 7 \
+  "$(fn github 'ci_change_request_list bot/promote-stg main anhnvcoder/svp-gitops | ci_change_request_pick svp-gitops-promoter')"
+same "github: the list asks for the other repository" "$(gh_line pr list --repo anhnvcoder/svp-gitops \
+  --head bot/promote-stg --base main --state open --limit 500 --json number,isCrossRepository,author)" \
+  "$(cat "$work/gh.log")"
+echo '[]' >"$work/gh/prs.json"
+fresh
+fn github 'ci_change_request_write "" bot/promote-stg main "chore(stg): x" /tmp/body anhnvcoder/svp-gitops' >/dev/null
+same "github: a pull request opened in the other repository" "$(gh_line pr create --repo anhnvcoder/svp-gitops \
+  --base main --head bot/promote-stg --title "chore(stg): x" --body-file /tmp/body)" "$(cat "$work/gh.log")"
+fresh
+fn github "ci_change_request_auto_merge 7 $(printf 'a%.0s' $(seq 40)) anhnvcoder/svp-gitops" >/dev/null
+same "github: auto-merge, squashed, only while the head is that commit" "$(gh_line pr merge 7 \
+  --repo anhnvcoder/svp-gitops --auto --squash --match-head-commit "$(printf 'a%.0s' $(seq 40))")" "$(cat "$work/gh.log")"
+fresh
+got=$(fn github "ci_change_request_auto_merge --dry-run bot/promote-stg $(printf 'b%.0s' $(seq 40)) anhnvcoder/svp-gitops")
+same "github: auto-merge --dry-run prints the command" "dry run: gh $(gh_line pr merge bot/promote-stg \
+  --repo anhnvcoder/svp-gitops --auto --squash --match-head-commit "$(printf 'b%.0s' $(seq 40))")" "$got "
+check "github: auto-merge --dry-run runs no gh" test ! -s "$work/gh.log"
+if fn github 'ci_change_request_auto_merge 7 main anhnvcoder/svp-gitops' >/dev/null 2>&1; then
+  fail "github: auto-merge takes only a full commit as the head"
+else ok "github: auto-merge takes only a full commit as the head"; fi
+
 # --- local: stdout, nothing masked, no write through the API.
 fresh
 same "local: outputs on stdout" $'mode=build\nbase=' "$(fn local 'ci_output mode build; ci_output base ""')"
@@ -324,8 +418,17 @@ same "local: a pull request is printed, not written" "dry run: gh $(gh_line pr c
   --repo anhnvcoder/short-video-platform --base main --head bot/promote --title "chore(release): x" \
   --body-file /tmp/body)" "$got "
 check "local: gh is not called to write" test ! -s "$work/gh.log"
-same "local: the dispatch hint" "gh workflow run images.yml --ref main -f rescan=true -f values_ref=abc" \
+got=$(fn local "ci_change_request_auto_merge 7 $(printf 'a%.0s' $(seq 40)) anhnvcoder/svp-gitops")
+same "local: auto-merge is printed, not turned on" "dry run: gh $(gh_line pr merge 7 --repo anhnvcoder/svp-gitops \
+  --auto --squash --match-head-commit "$(printf 'a%.0s' $(seq 40))")" "$got "
+check "local: gh is not called for auto-merge" test ! -s "$work/gh.log"
+same "local: no credential helper" "" "$(fn local ci_git_auth)"
+same "local: the dispatch hint names the code repository" \
+  "gh workflow run images.yml --repo anhnvcoder/short-video-platform --ref main -f rescan=true -f values_ref=abc" \
   "$(fn local 'ci_dispatch_hint images.yml main rescan=true values_ref=abc')"
+same "github: the dispatch hint names the code repository, not the job's" \
+  "gh workflow run images.yml --repo anhnvcoder/short-video-platform --ref main" \
+  "$(fn github 'ci_dispatch_hint images.yml main')"
 sha=0123456789abcdef0123456789abcdef01234567
 jq -n --arg sha "$sha" '[{type: "PushEvent", payload: {head: "ffff"}, created_at: "2026-10-01T00:00:00Z"},
   {type: "PushEvent", payload: {head: $sha}, created_at: "2026-10-02T03:04:05Z"},
@@ -363,6 +466,16 @@ fi
 check "local: a failed read of the pull requests is not answered from the events" test "$(wc -l <"$work/gh.log")" -eq 1
 if fn local 'ci_push_time "x\" or true"' 2>/dev/null; then fail "local: ci_push_time takes only a full SHA"; else
   ok "local: ci_push_time takes only a full SHA"
+fi
+fresh
+same "local: the push time of a commit of another repository" \
+  "2026-10-02T03:04:05Z PushEvent of the repository's events" "$(fn local "ci_push_time $sha anhnvcoder/svp-gitops")"
+same "local: the pull requests, then the events, are read for that repository" "$(gh_line api -X GET \
+  repos/anhnvcoder/svp-gitops/commits/$sha/pulls -f per_page=100 --jq "$pulls_filter")
+$(gh_line api -X GET repos/anhnvcoder/svp-gitops/events -f per_page=100 --jq "$events_filter")" \
+  "$(cat "$work/gh.log")"
+if fn local "ci_push_time $sha 'a b/c'" 2>/dev/null; then fail "local: ci_push_time takes a repository as owner/name"; else
+  ok "local: ci_push_time takes a repository as owner/name"
 fi
 
 # --- ci_hosted_runner: true only on a runner GitHub hands out for the job; silent either way.
@@ -530,6 +643,85 @@ results.blob.example: no such host" "$(cat "$work/err")"
   check "$p: ci_artifact_fetch never prints the signed part of the link" lacks "$work/err" SIGNEDQUERY
 done
 
+# --- ci_is_run_url, ci_run_workflow, ci_deployment_record, ci_deployment_list: the records of an environment in
+# svp-gitops and the runs they name.
+check "github: a run of the code repository is a run URL" fn github \
+  'ci_is_run_url https://github.com/anhnvcoder/short-video-platform/actions/runs/4242'
+for bad in https://github.com/someone/fork/actions/runs/4242 https://github.com/anhnvcoder/short-video-platform/actions/runs/x \
+  "https://github.com/anhnvcoder/short-video-platform/actions/runs/4242/attempts/1" ""; do
+  if fn local "ci_is_run_url '$bad'"; then fail "local: '$bad' is no run URL"; else ok "local: '$bad' is no run URL"; fi
+done
+echo '{"id": 4242, "path": ".github/workflows/verify.yml", "head_branch": "main", "event": "schedule"}' >"$work/gh/run-4242.json"
+for p in github local; do
+  fresh
+  same "$p: ci_run_workflow prints the workflow file and the branch of a run" ".github/workflows/verify.yml main" \
+    "$(fn "$p" 'ci_run_workflow https://github.com/anhnvcoder/short-video-platform/actions/runs/4242')"
+  check "$p: ci_run_workflow asks the host for the run of the code repository" grep -qF -- \
+    "$(gh_line api -X GET repos/anhnvcoder/short-video-platform/actions/runs/4242)" "$work/gh.log"
+  if fn "$p" 'ci_run_workflow https://github.com/anhnvcoder/short-video-platform/actions/runs/4243' >/dev/null 2>&1; then
+    fail "$p: ci_run_workflow fails when the host knows no such run"
+  else
+    ok "$p: ci_run_workflow fails when the host knows no such run"
+  fi
+  fresh
+  if fn "$p" 'ci_run_workflow https://github.com/someone/fork/actions/runs/4242' >/dev/null 2>&1; then
+    fail "$p: ci_run_workflow refuses a run of another repository"
+  else
+    ok "$p: ci_run_workflow refuses a run of another repository"
+  fi
+  check "$p: a refused run URL calls no gh" test ! -s "$work/gh.log"
+done
+rev=$(printf 'c%.0s' $(seq 40))
+echo '{"environment": "stg", "ref": "'"$rev"'", "images": {}}' >"$work/payload.json"
+fresh
+: >"$work/gh/inputs.jsonl"
+same "github: ci_deployment_record prints the id of the record" 9001 "$(fn github "ci_deployment_record anhnvcoder/svp-gitops stg $rev '$work/payload.json' 'stg checked' https://github.com/anhnvcoder/short-video-platform/actions/runs/4242")"
+same "github: a deployment, then its status" \
+  "$(gh_line api -X POST repos/anhnvcoder/svp-gitops/deployments --input - --jq .id)"$'\n'"$(gh_line api -X POST repos/anhnvcoder/svp-gitops/deployments/9001/statuses --input - --jq .state)" \
+  "$(cat "$work/gh.log")"
+same "github: the deployment: ref, environment, payload, no auto-merge, no required contexts" \
+  "$rev stg stg false [] false" \
+  "$(sed -n 1p "$work/gh/inputs.jsonl" | jq -r '"\(.ref) \(.environment) \(.payload.environment) \(.auto_merge) \(.required_contexts | tojson) \(.transient_environment)"')"
+same "github: the status: success, the run as its log, earlier records left active" \
+  "success https://github.com/anhnvcoder/short-video-platform/actions/runs/4242 false" \
+  "$(sed -n 2p "$work/gh/inputs.jsonl" | jq -r '"\(.state) \(.log_url) \(.auto_inactive)"')"
+fresh
+got=$(fn github "ci_deployment_record --dry-run anhnvcoder/svp-gitops stg $rev '$work/payload.json' 'stg checked' https://example.invalid/run")
+check "github: ci_deployment_record --dry-run runs no gh" test ! -s "$work/gh.log"
+check "github: ci_deployment_record --dry-run prints the deployment" grep -qF \
+  'dry run: gh api -X POST repos/anhnvcoder/svp-gitops/deployments --input -' <<<"$got"
+check "github: ci_deployment_record --dry-run prints the body" grep -qF '"auto_merge":false,"required_contexts":[]' <<<"$got"
+got=$(fn local "ci_deployment_record anhnvcoder/svp-gitops stg $rev '$work/payload.json' 'stg checked' https://example.invalid/run")
+check "local: ci_deployment_record writes nothing" test ! -s "$work/gh.log"
+check "local: ci_deployment_record prints the status it would write" grep -qF '"state":"success"' <<<"$got"
+for args in "anhnvcoder/svp-gitops stg main '$work/payload.json' d https://example.invalid/run" \
+  "anhnvcoder/svp-gitops 'st g' $rev '$work/payload.json' d https://example.invalid/run" \
+  "anhnvcoder/svp-gitops stg $rev '$work/gh.log' d https://example.invalid/run"; do
+  if fn github "ci_deployment_record $args" >/dev/null 2>&1; then fail "github: ci_deployment_record refuses $args"; else
+    ok "github: ci_deployment_record refuses $args"
+  fi
+done
+check "github: a refused record calls no gh" test ! -s "$work/gh.log"
+echo '[{"id": 12, "sha": "'"$rev"'", "ref": "'"$rev"'", "created_at": "2026-10-30T02:00:00Z", "creator": {"login": "svp-gitops-promoter[bot]"}, "payload": {"environment": "stg"}},
+  {"id": 11, "sha": "'"$rev"'", "ref": "'"$rev"'", "created_at": "2026-10-30T01:00:00Z", "creator": {"login": "someone"}, "payload": "text"}]' \
+  >"$work/gh/deployments.json"
+echo '[{"state": "success"}, {"state": "in_progress"}]' >"$work/gh/statuses-12.json"
+fresh
+same "github: ci_deployment_list: each record with its latest state, newest first" \
+  '12 svp-gitops-promoter[bot] success stg|11 someone  text' \
+  "$(fn github 'ci_deployment_list anhnvcoder/svp-gitops stg' | jq -r 'map("\(.id) \(.creator) \(.state) \(.payload.environment? // .payload)") | join("|")')"
+check "github: ci_deployment_list asks for the environment" grep -qF -- "$(gh_line api -X GET repos/anhnvcoder/svp-gitops/deployments -f environment=stg -f per_page=100)" "$work/gh.log"
+same "github: ci_deployment_list: every status of each record, newest first" '12 success,in_progress|11 ' \
+  "$(fn github 'ci_deployment_list anhnvcoder/svp-gitops stg' | jq -r 'map("\(.id) \(.states | join(","))") | join("|")')"
+check "github: ci_deployment_list reads every status of a record" grep -qF -- \
+  "$(gh_line api -X GET repos/anhnvcoder/svp-gitops/deployments/12/statuses -f per_page=100)" "$work/gh.log"
+if on github env FAKE_GH_FAIL=1 "$BASH" -c '. "$0"; ci_deployment_list anhnvcoder/svp-gitops stg' "$here/platform.sh" \
+  >/dev/null 2>&1; then
+  fail "github: ci_deployment_list fails when the host does"
+else
+  ok "github: ci_deployment_list fails when the host does"
+fi
+
 # --- another CI: a clear error, nothing written.
 fresh
 if out=$(fn gitlab 'ci_output mode build; ci_summary x; ci_mask y' 2>&1); then
@@ -543,18 +735,17 @@ if grep -qv '^FAIL  ' <<<"$out"; then fail "gitlab: nothing printed but the erro
 fi
 
 # --- A throwaway checkout, with its own origin, of what the scripts below read: deploy/ci/, deploy/k8s/lib.sh, the
-# policy's values and the seven values files (the gateway released at the first commit). GIT_DIR is set for every git
+# policy's values, a chart file and a symbolic link of a chart to a file beside the charts. GIT_DIR is set for every git
 # call of the test itself, so git can never reach another repository.
 tree=$work/tree
-mkdir -p "$tree/deploy/k8s/values/services" "$tree/deploy/helm/svp-policy" "$tree/docs"
+mkdir -p "$tree/deploy/k8s" "$tree/deploy/helm/svp-policy" "$tree/deploy/helm/svp-observability/files" \
+  "$tree/deploy/observability/otelcol" "$tree/docs"
 cp -R "$here" "$tree/deploy/ci"
 cp "$src/deploy/k8s/lib.sh" "$tree/deploy/k8s/"
 cp "$src/deploy/helm/svp-policy/values.yaml" "$tree/deploy/helm/svp-policy/"
+echo "receivers: {}" >"$tree/deploy/observability/otelcol/k8s-config.yaml"
+ln -s ../../../observability/otelcol/k8s-config.yaml "$tree/deploy/helm/svp-observability/files/otelcol-k8s-config.yaml"
 echo "# A decision" >"$tree/docs/decision.md"
-for svc in gateway user-service video-service engagement-service feed-service media-worker web; do
-  printf 'image:\n  repository: ghcr.io/anhnvcoder/short-video-platform/%s\n  tag: ""\n  digest: ""\n' "$svc" \
-    >"$tree/deploy/k8s/values/services/$svc.yaml"
-done
 g() {
   GIT_DIR=$tree/.git GIT_WORK_TREE=$tree GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=test \
     -c user.email=test@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"
@@ -565,9 +756,6 @@ g remote add origin "$work/origin.git" && g push -q origin main
 base=$(g rev-parse HEAD)
 digest_a=sha256:$(printf 'a%.0s' $(seq 64))
 digest_b=sha256:$(printf 'b%.0s' $(seq 64))
-printf 'image:\n  repository: ghcr.io/anhnvcoder/short-video-platform/gateway\n  tag: "%s"\n  digest: "%s"\n' \
-  "${base:0:12}" "$digest_a" >"$tree/deploy/k8s/values/services/gateway.yaml"
-g commit -qam "release gateway" && g push -q origin main
 
 # plan.sh: a drill run on main hands its seven outputs on, in this order, and writes its summary.
 want_plan='mode=drill
@@ -575,7 +763,7 @@ images=["drill-vulnerable","drill-unsigned"]
 legs={"include":[{"image":"drill-vulnerable","arch":"amd64","runner":"ubuntu-24.04"},{"image":"drill-vulnerable","arch":"arm64","runner":"ubuntu-24.04-arm"},{"image":"drill-unsigned","arch":"amd64","runner":"ubuntu-24.04"},{"image":"drill-unsigned","arch":"arm64","runner":"ubuntu-24.04-arm"}]}
 has_images=true
 base=
-values_changed=false
+promote_charts=false
 values_ref='
 fresh
 got=$(on github env EVENT_NAME=workflow_dispatch GIT_REF=refs/heads/main INPUT_DRILL=true "$tree/deploy/ci/plan.sh")
@@ -733,118 +921,6 @@ rm -f "$tree/.trivyignore.yaml"
 gate_grype "scan-gate.sh --grype: a trivy report is refused" 2 "$work/report.json"
 check "scan-gate.sh --grype: says it is not a grype report" has "$work/gate.err" "is not a grype JSON report"
 
-# values-check.sh: the identity cosign is asked for is the policy's (the values Kyverno checks), and a failed check
-# prints and summarizes the dispatch that refreshes the attestations.
-fresh
-if on github env PR_NUMBER=42 "$tree/deploy/ci/values-check.sh" "" >/dev/null 2>"$work/vc.err"; then
-  fail "values-check.sh: an unsigned release fails"
-else ok "values-check.sh: an unsigned release fails"; fi
-same "values-check.sh: cosign is asked for the policy's issuer and subject" \
-  "verify --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main ghcr.io/anhnvcoder/short-video-platform/gateway@$digest_a" \
-  "$(cat "$work/cosign.log")"
-hint="gh workflow run images.yml --ref main -f rescan=true -f values_ref=refs/pull/42/head"
-check "values-check.sh: the dispatch in the log" has "$work/vc.err" "  $hint"
-same "values-check.sh: the dispatch in the summary" "values-check failed: refresh the vuln attestations with \`$hint\`; a missing provenance needs a new release (above)" "$(cat "$work/summary")"
-
-# promote.sh: a dry run on github, then a run on a machine, in the throwaway checkout. The gateway of this run is a
-# newer build of the commit main runs, so it wins; the branch is pushed to the throwaway origin for real.
-mkdir -p "$work/releases/release-gateway"
-echo ghcr.io/anhnvcoder/short-video-platform/gateway >"$work/releases/release-gateway/repository"
-echo "${base:0:12}" >"$work/releases/release-gateway/tag"
-echo "$digest_b" >"$work/releases/release-gateway/digest"
-title="chore(release): phát hành gateway ${base:0:12}"
-fresh
-on github env PROMOTE_DRY_RUN=1 "$tree/deploy/ci/promote.sh" "$work/releases" >"$work/promote.out" 2>&1 ||
-  fail "promote.sh dry run on github exits 0 ($(tail -n 1 "$work/promote.out"))"
-check "promote.sh dry run: no gh call at all" test ! -s "$work/gh.log"
-line=$(grep '^dry run: gh ' "$work/promote.out" || true)
-case $line in
-"dry run: gh pr create --repo octo/repo --base main --head bot/promote --title "*" --body-file "*)
-  ok "promote.sh dry run on github: the pull request it would open, for the job's repository" ;;
-*) fail "promote.sh dry run on github: the pull request it would open (got '$line')" ;;
-esac
-check "promote.sh dry run on github: the body links the run" has "$work/promote.out" \
-  "dry run: body | Lượt chạy: https://github.example/octo/repo/actions/runs/4242"
-# origin GIT_ARGS...: git in the throwaway origin.
-origin() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git --git-dir="$work/origin.git" "$@"; }
-same "promote.sh dry run on github: the summary" \
-  "Promote: \`bot/promote\` at $(origin rev-parse --short=12 bot/promote): $title" "$(cat "$work/summary")"
-same "promote.sh: the branch is the bot's commit" \
-  "github-actions[bot] 41898282+github-actions[bot]@users.noreply.github.com $title" \
-  "$(origin log -1 --format='%an %ae %s' bot/promote)"
-same "promote.sh: the branch carries this run's digest" "  digest: \"$digest_b\"" \
-  "$(origin show bot/promote:deploy/k8s/values/services/gateway.yaml | grep '^  digest:')"
-
-# On a machine only an origin on its own disk takes the push. A release of a newer build of the same commit (digest c)
-# makes every run below reach the push. An origin off the disk (https, host:path; never reached: the script refuses
-# before reading anything) stops the run, naming PROMOTE_DRY_RUN=1 and not the URL; with PROMOTE_DRY_RUN=1 and a push
-# URL off the disk (fetches still go to the throwaway origin) the push is printed instead. The branch never moves.
-digest_c=sha256:$(printf 'c%.0s' $(seq 64))
-mkdir -p "$work/releases-c/release-gateway"
-cp "$work/releases/release-gateway/repository" "$work/releases/release-gateway/tag" "$work/releases-c/release-gateway/"
-echo "$digest_c" >"$work/releases-c/release-gateway/digest"
-pushed=$(origin rev-parse bot/promote)
-refusal="FAIL  origin is not a repository on this machine's disk: only CI pushes bot/promote there, since its pull request belongs to CI. PROMOTE_DRY_RUN=1 runs everything else and prints the push and the pull request"
-for url in https://example.invalid/octo/repo.git git@example.invalid:octo/repo.git; do
-  g remote set-url origin "$url"
-  fresh
-  if on local "$tree/deploy/ci/promote.sh" "$work/releases-c" >"$work/promote.out" 2>&1; then
-    fail "promote.sh on a machine, origin $url: refused"
-  else
-    same "promote.sh on a machine, origin $url: refused before anything else, naming PROMOTE_DRY_RUN=1" "$refusal" \
-      "$(cat "$work/promote.out")"
-  fi
-  check "promote.sh on a machine, origin $url: no gh call" test ! -s "$work/gh.log"
-done
-g remote set-url origin "$work/origin.git"
-g remote set-url --push origin https://example.invalid/octo/repo.git
-fresh
-on local env PROMOTE_DRY_RUN=1 "$tree/deploy/ci/promote.sh" "$work/releases-c" >"$work/promote.out" 2>&1 ||
-  fail "promote.sh dry run on a machine, push URL off the disk, exits 0 ($(tail -n 1 "$work/promote.out"))"
-check "promote.sh dry run on a machine, push URL off the disk: the push is printed" has "$work/promote.out" \
-  "dry run: git push --quiet --force-with-lease=refs/heads/bot/promote:$pushed origin "
-check "promote.sh dry run on a machine, push URL off the disk: not pushed" lacks "$work/promote.out" "ok    pushed"
-check "promote.sh dry run on a machine: the pull request and its body are printed" has "$work/promote.out" \
-  "dry run: body | Lượt chạy: local"
-check "promote.sh dry run on a machine: no gh call" test ! -s "$work/gh.log"
-same "promote.sh on a machine, origin off the disk: the branch did not move" "$pushed" "$(origin rev-parse bot/promote)"
-g config --unset remote.origin.pushurl
-
-# git push origin pushes to every push URL: one off the disk among them, first or second, refuses the run as one alone
-# does. So does a URL on the disk that pushInsteadOf turns into one off it. No URL is printed.
-off_disk=https://example.invalid/octo/repo.git
-for order in "$work/origin.git $off_disk" "$off_disk $work/origin.git" pushinsteadof; do
-  if [ "$order" = pushinsteadof ]; then
-    g config "url.$off_disk.pushInsteadOf" "$work/origin.git"
-  else
-    for url in $order; do g remote set-url --add --push origin "$url"; done
-  fi
-  fresh
-  if on local "$tree/deploy/ci/promote.sh" "$work/releases-c" >"$work/promote.out" 2>&1; then
-    fail "promote.sh on a machine, push URLs ($order): refused"
-  else
-    same "promote.sh on a machine, push URLs ($order): refused before anything else, no URL printed" "$refusal" \
-      "$(cat "$work/promote.out")"
-  fi
-  check "promote.sh on a machine, push URLs ($order): no gh call" test ! -s "$work/gh.log"
-  same "promote.sh on a machine, push URLs ($order): the branch did not move" "$pushed" "$(origin rev-parse bot/promote)"
-  g config --unset-all remote.origin.pushurl || g config --remove-section "url.$off_disk"
-done
-
-# With the throwaway origin, as before: pushed for real, the pull request printed.
-fresh
-on local "$tree/deploy/ci/promote.sh" "$work/releases-c" >"$work/promote.out" 2>&1 ||
-  fail "promote.sh on a machine exits 0 ($(tail -n 1 "$work/promote.out"))"
-same "promote.sh on a machine: gh only lists, never writes" "$(gh_line pr list \
-  --repo anhnvcoder/short-video-platform --head bot/promote --base main --state open --limit 500 \
-  --json number,isCrossRepository,author)" "$(cat "$work/gh.log")"
-check "promote.sh on a machine: the pull request is printed" has "$work/promote.out" \
-  "dry run: gh pr create --repo anhnvcoder/short-video-platform --base main --head bot/promote --title "
-check "promote.sh on a machine: the summary on stdout" has "$work/promote.out" "Promote: \`bot/promote\` at "
-check "promote.sh on a machine, origin on the disk: pushed" has "$work/promote.out" "ok    pushed bot/promote "
-same "promote.sh on a machine, origin on the disk: the branch carries the new digest" "  digest: \"$digest_c\"" \
-  "$(origin show bot/promote:deploy/k8s/values/services/gateway.yaml | grep '^  digest:')"
-
 # --- platform-guard.sh, in the throwaway checkout: clean as it is (the adapter and its two tests are left out, and a
 # symbolic link to a directory is skipped); a script not yet committed that writes GITHUB_OUTPUT itself and a tracked
 # one that calls gh pr fail it, each named by file:line.
@@ -866,8 +942,9 @@ rm "$tree/deploy/ci/new-step.sh" "$tree/deploy/ci/linked-dir" "$tree/deploy/ci/v
 g checkout -q -- deploy/ci/rescan.sh
 
 # --- changed-services.sh: platform.sh is part of the image pipeline (common.sh sources it), so a change of it builds
-# all seven; this test, platform-guard.sh, provenance-predicate-test.sh, the scripts of the verification runs, the
-# policy's values and docs/ are read by no image job.
+# all seven, as do release-set.sh and promote-prd.sh (job promote-prd); this test, platform-guard.sh,
+# provenance-predicate-test.sh, the scripts of the verification runs and of the other workflows, the policy's values
+# and docs/ are read by no image job.
 changed_by() {
   echo "# changed" >>"$tree/$1"
   g commit -qam "change $1"
@@ -876,6 +953,7 @@ changed_by() {
 all="engagement-service feed-service gateway media-worker user-service video-service web"
 same "changed-services: a change of platform.sh builds all seven" "$all" "$(changed_by deploy/ci/platform.sh)"
 same "changed-services: a change of platform-test.sh builds nothing" "" "$(changed_by deploy/ci/platform-test.sh)"
+same "changed-services: a change of promote-test.sh builds nothing" "" "$(changed_by deploy/ci/promote-test.sh)"
 same "changed-services: a change of platform-guard.sh builds nothing" "" "$(changed_by deploy/ci/platform-guard.sh)"
 same "changed-services: a change of provenance-predicate-test.sh builds nothing" "" \
   "$(changed_by deploy/ci/provenance-predicate-test.sh)"
@@ -884,6 +962,12 @@ same "changed-services: a change of verify-tempo.sh builds nothing" "" "$(change
 same "changed-services: a change of gitops-sourcemaps.sh builds nothing" "" "$(changed_by deploy/ci/gitops-sourcemaps.sh)"
 same "changed-services: a change of gitops-sourcemaps-test.sh builds nothing" "" \
   "$(changed_by deploy/ci/gitops-sourcemaps-test.sh)"
+for f in record-stg.sh gitops-check.sh gitops-check-test.sh dora.sh dora-test.sh release-set-test.sh \
+  promote-prd-test.sh; do
+  same "changed-services: a change of $f builds nothing" "" "$(changed_by "deploy/ci/$f")"
+done
+same "changed-services: a change of release-set.sh builds all seven" "$all" "$(changed_by deploy/ci/release-set.sh)"
+same "changed-services: a change of promote-prd.sh builds all seven" "$all" "$(changed_by deploy/ci/promote-prd.sh)"
 same "changed-services: a change of common.sh builds all seven" "$all" "$(changed_by deploy/ci/common.sh)"
 same "changed-services: a change of the policy's values builds nothing" "" \
   "$(changed_by deploy/helm/svp-policy/values.yaml)"
@@ -898,15 +982,47 @@ same "changed-services: a change of the GRYPE_IMAGE line builds all seven" "$all
 same "changed-services: a change of another line of the Makefile builds nothing" "" "$(changed_by Makefile)"
 
 # --- verify-release.sh: build provenance, only where the policy checks it. A copy of the throwaway checkout, whose
-# history the cases below change freely; the fake cosign answers from $fx.
+# history the cases below change freely, and a tree laid out as svp-gitops (envs/<env>/charts.yaml pinning a commit
+# of the copy, overlays envs/<env>/svp-policy.yaml), a git repository whose origin names svp-gitops (never reached);
+# the fake cosign answers from $fx.
 vr=$work/vr
 cp -R "$tree" "$vr"
 gv() {
   GIT_DIR=$vr/.git GIT_WORK_TREE=$vr GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=test \
     -c user.email=test@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"
 }
+cfg=$work/cfg
+gc() {
+  GIT_DIR=$cfg/.git GIT_WORK_TREE=$cfg GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=test \
+    -c user.email=test@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"
+}
+off_rev=$(gv rev-parse HEAD)
+sed 's/^  requireProvenance: false$/  requireProvenance: true/' "$tree/deploy/helm/svp-policy/values.yaml" \
+  >"$vr/deploy/helm/svp-policy/values.yaml"
+gv commit -qam "provenance on in the policy's values"
+on_rev=$(gv rev-parse HEAD)
+gv checkout -q "$off_rev" -- deploy/helm/svp-policy/values.yaml && gv commit -qm "provenance off again"
+off_rev=$(gv rev-parse HEAD)
+gv update-ref refs/remotes/origin/main HEAD
+# charts ENV REV: envs/ENV/charts.yaml of the tree pins commit REV of the copy.
+charts() {
+  printf 'revision: %s\npodSecurityVersion: v1.36\ncollectorConfigSha256: %s\n' "$2" "$(printf '0%.0s' $(seq 64))" \
+    >"$cfg/envs/$1/charts.yaml"
+}
+overlay() { printf 'imageVerification:\n  requireProvenance: %s\n' "$2" >"$cfg/envs/$1/svp-policy.yaml"; }
+mkdir -p "$cfg/envs/stg/images" "$cfg/envs/prd/images" "$cfg/base"
+echo "# The base values" >"$cfg/base/README.md"
+for env in stg prd; do
+  charts "$env" "$off_rev"
+  for svc in gateway user-service video-service engagement-service feed-service media-worker web; do
+    printf 'image:\n  repository: ghcr.io/anhnvcoder/short-video-platform/%s\n  tag: ""\n  digest: ""\n' "$svc" \
+      >"$cfg/envs/$env/images/$svc.yaml"
+  done
+done
+gc init -q -b main && gc add -A && gc commit -qm init
+gc remote add origin https://github.com/anhnvcoder/svp-gitops.git
 fx=$work/cosign-fixtures
-mkdir -p "$fx" "$vr/deploy/k8s/envs/stg" "$vr/deploy/k8s/envs/prd"
+mkdir -p "$fx"
 image=ghcr.io/anhnvcoder/short-video-platform/web
 subject=https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main
 commit=0123456789abcdef0123456789abcdef01234567
@@ -929,16 +1045,16 @@ provenance() {
     jq -c "${1:-.}" | envelope >"$fx/slsaprovenance1.jsonl"
 }
 echo "$commit" >"$fx/cert-sha"
-# release NAME WANT_RC [ARGS...]: verify-release.sh [ARGS...] web $digest_a on a machine, output in vr.out.
+# release NAME WANT_RC [ARGS...]: verify-release.sh --gitops <tree> [ARGS...] web $digest_a on a machine, output in
+# vr.out.
 release() {
   local name=$1 want=$2 rc=0
   shift 2
   fresh
-  on local env FAKE_COSIGN_DIR="$fx" "$vr/deploy/ci/verify-release.sh" "$@" "$image" "$digest_a" >"$work/vr.out" 2>&1 ||
-    rc=$?
+  on local env FAKE_COSIGN_DIR="$fx" "$vr/deploy/ci/verify-release.sh" --gitops "$cfg" "$@" "$image" "$digest_a" \
+    >"$work/vr.out" 2>&1 || rc=$?
   same "verify-release.sh: $name (exit $want)" "$want" "$rc"
 }
-overlay() { printf 'imageVerification:\n  requireProvenance: %s\n' "$2" >"$vr/deploy/k8s/envs/$1/svp-policy.yaml"; }
 
 rm -f "$fx/slsaprovenance1.jsonl"
 release "provenance off everywhere: signature and vuln only" 0
@@ -948,7 +1064,7 @@ check "verify-release.sh: provenance off: the ok line names no provenance" lacks
 overlay stg true
 release "on in the stg overlay, the release has no provenance" 1
 check "verify-release.sh: names the missing provenance and the release to build again" has "$work/vr.out" \
-  "has no provenance attestation of images.yml on main, which the policy requires here: a release built before CI attested provenance; release it again (gh workflow run images.yml --ref main -f services=web)"
+  "has no provenance attestation of images.yml on main, which the policy requires here: a release built before CI attested provenance; release it again (gh workflow run images.yml --repo anhnvcoder/short-video-platform --ref main -f services=web)"
 release "on in stg only, checked for prd: no provenance needed" 0 --env prd
 check "verify-release.sh: for prd no provenance asked for" lacks "$work/cosign.log" slsaprovenance1
 
@@ -988,83 +1104,150 @@ cat "$fx/slsaprovenance1.jsonl" "$fx/slsaprovenance1.jsonl" >"$fx/two" && mv "$f
 release "two provenance attestations" 1
 check "verify-release.sh: two provenance attestations: says so" has "$work/vr.out" "carries 2 provenance attestations, not exactly one"
 
-# At a commit (--rev, as deploy/k8s/gitops.sh reads it), not the working tree.
+# At a commit of the tree (--rev), not as it is on disk.
 rm -f "$fx/slsaprovenance1.jsonl"
-before=$(gv rev-parse HEAD)
-gv add -A deploy/k8s/envs && gv commit -qm "provenance on in stg"
-on_stg=$(gv rev-parse HEAD)
-rm "$vr/deploy/k8s/envs/stg/svp-policy.yaml"
-release "off in the working tree" 0
+before=$(gc rev-parse HEAD)
+gc add -A envs && gc commit -qm "provenance on in stg"
+on_stg=$(gc rev-parse HEAD)
+rm "$cfg/envs/stg/svp-policy.yaml"
+release "off on disk" 0
 release "on at a commit (--rev --env stg), no provenance" 1 --rev "$on_stg" --env stg
 check "verify-release.sh: on at a commit: the provenance is missing" has "$work/vr.out" "has no provenance attestation"
 release "at the commit before (--rev), off" 0 --rev "$before" --env stg
 
-# On in the base values: every environment without an overlay inherits it; one that turns it off is off.
-sed 's/^  requireProvenance: false$/  requireProvenance: true/' "$tree/deploy/helm/svp-policy/values.yaml" \
-  >"$vr/deploy/helm/svp-policy/values.yaml"
-release "on in the base values, no provenance" 1
-check "verify-release.sh: on in the base values: the provenance is missing" has "$work/vr.out" "has no provenance attestation"
+# Without --gitops: the clone gitops_dir names (SVP_GITOPS_DIR here), as it is on disk.
+overlay stg true
+rc=0
+fresh
+on local env FAKE_COSIGN_DIR="$fx" SVP_GITOPS_DIR="$cfg" "$vr/deploy/ci/verify-release.sh" "$image" "$digest_a" \
+  >"$work/vr.out" 2>&1 || rc=$?
+same "verify-release.sh: the clone of SVP_GITOPS_DIR, on in its stg overlay, no provenance (exit 1)" 1 "$rc"
+rc=0
+on local env FAKE_COSIGN_DIR="$fx" SVP_GITOPS_DIR="$work/none" "$vr/deploy/ci/verify-release.sh" "$image" "$digest_a" \
+  >"$work/vr.out" 2>&1 || rc=$?
+same "verify-release.sh: no clone of svp-gitops (exit 1)" 1 "$rc"
+check "verify-release.sh: no clone: names what to clone" has "$work/vr.out" "is not a clone of svp-gitops"
+rm "$cfg/envs/stg/svp-policy.yaml"
+
+# On in the values at the commit charts.yaml pins: every environment without an overlay inherits it; one that turns it
+# off is off. A charts.yaml naming no commit of the copy is refused.
+charts stg "$on_rev"
+charts prd "$on_rev"
+release "on in the values at the pinned commit, no provenance" 1
+check "verify-release.sh: on in the values: the provenance is missing" has "$work/vr.out" "has no provenance attestation"
 overlay stg false
-release "on in the base, off in the stg overlay, checked for stg" 0 --env stg
-release "on in the base, prd without overlay, checked for any environment" 1
-cp "$tree/deploy/helm/svp-policy/values.yaml" "$vr/deploy/helm/svp-policy/values.yaml"
+release "on in the values, off in the stg overlay, checked for stg" 0 --env stg
+release "on in the values, prd without overlay, checked for any environment" 1
+charts prd "$(printf 'f%.0s' $(seq 40))"
+release "a charts.yaml naming no commit of this clone" 1 --env prd
+check "verify-release.sh: a charts.yaml naming no commit: names it" has "$work/vr.out" \
+  "envs/prd/charts.yaml names no commit of this clone holding deploy/helm/svp-policy/values.yaml"
+charts stg "$off_rev"
+charts prd "$off_rev"
 
 # Overlays of another shape: refused, never read as off.
-printf 'imageVerification:\n  requireProvenance: "true"\n' >"$vr/deploy/k8s/envs/stg/svp-policy.yaml"
+printf 'imageVerification:\n  requireProvenance: "true"\n' >"$cfg/envs/stg/svp-policy.yaml"
 release "an overlay with a quoted value" 1
 check "verify-release.sh: a quoted value: names the overlay" has "$work/vr.out" \
-  "deploy/k8s/envs/stg/svp-policy.yaml: the overlay of svp-policy holds exactly"
-printf 'imageVerification:\n  requireProvenance: false\n  mode: Audit\n' >"$vr/deploy/k8s/envs/stg/svp-policy.yaml"
+  "envs/stg/svp-policy.yaml: the overlay of svp-policy holds exactly"
+printf 'imageVerification:\n  requireProvenance: false\n  mode: Audit\n' >"$cfg/envs/stg/svp-policy.yaml"
 release "an overlay that sets another key" 1
 check "verify-release.sh: another key: names the overlay" has "$work/vr.out" \
-  "deploy/k8s/envs/stg/svp-policy.yaml: the overlay of svp-policy holds exactly"
-printf 'imageVerification: {requireProvenance: true}\n' >"$vr/deploy/k8s/envs/stg/svp-policy.yaml"
+  "envs/stg/svp-policy.yaml: the overlay of svp-policy holds exactly"
+printf 'imageVerification: {requireProvenance: true}\n' >"$cfg/envs/stg/svp-policy.yaml"
 release "an overlay in flow style" 1
 check "verify-release.sh: an overlay refused: cosign never asked" test ! -s "$work/cosign.log"
 
-# --- plan.sh and values-check.sh in the copy: a pull request that changes only the policy's values (the one that turns
-# provenance on) runs the values check on every release in the values; one that changes docs/ only checks nothing.
+# --- values-check.sh --gitops on a pull request of the tree: the policy of one environment changed (its overlay, or
+# its charts.yaml) checks every release of that environment and none of the other; an image file checks itself; any
+# other file nothing. The gateway is released in both environments.
 overlay stg false
-gv add deploy/k8s/envs/stg/svp-policy.yaml && gv commit -qm "provenance off in stg"
-gv update-ref refs/remotes/origin/main HEAD
-pr_base=$(gv rev-parse HEAD)
-echo "# Another decision" >>"$vr/docs/decision.md"
-gv add docs/decision.md && gv commit -qm "a decision"
-# plan_values NAME WANT: plan.sh of a pull request into main hands on values_changed=WANT.
-plan_values() {
-  fresh
-  on github env EVENT_NAME=pull_request GIT_REF=refs/pull/7/merge PR_BASE_REF=main "$vr/deploy/ci/plan.sh" \
-    >/dev/null 2>&1 || fail "plan.sh: $1: exits 0"
-  same "plan.sh: $1" "values_changed=$2" "$(grep '^values_changed=' "$work/output")"
-}
-# values_check NAME WANT_RC: values-check.sh with the pull request's base, on a machine, output in vc.out.
+for env in stg prd; do
+  printf 'image:\n  repository: ghcr.io/anhnvcoder/short-video-platform/gateway\n  tag: "%s"\n  digest: "%s"\n' \
+    "${off_rev:0:12}" "$digest_a" >"$cfg/envs/$env/images/gateway.yaml"
+done
+gc add -A && gc commit -qm "the gateway released"
+pr_base=$(gc rev-parse HEAD)
+# values_check NAME WANT_RC: values-check.sh --gitops with the pull request's base, on a machine, output in vc.out.
 values_check() {
   local rc=0
   fresh
-  on local env FAKE_COSIGN_DIR="$fx" "$vr/deploy/ci/values-check.sh" "$pr_base" >"$work/vc.out" 2>&1 || rc=$?
+  on local env FAKE_COSIGN_DIR="$fx" "$vr/deploy/ci/values-check.sh" --gitops "$cfg" "$pr_base" >"$work/vc.out" 2>&1 ||
+    rc=$?
   same "values-check.sh: $1 (exit $2)" "$2" "$rc"
 }
-plan_values "a pull request of docs/ only runs no values check" false
-values_check "docs/ only: nothing to check" 0
-check "values-check.sh: docs/ only: cosign never asked" test ! -s "$work/cosign.log"
+echo "# More" >>"$cfg/base/README.md"
+gc commit -qam "base only"
+values_check "a change of base/ only: nothing to check" 0
+check "values-check.sh: base/ only: cosign never asked" test ! -s "$work/cosign.log"
+rm -f "$fx/slsaprovenance1.jsonl"
 overlay stg true
-gv add deploy/k8s/envs/stg/svp-policy.yaml && gv commit -qm "provenance on in stg"
-plan_values "a pull request that turns provenance on in an overlay runs the values check" true
-values_check "provenance turned on, a release in the values has none" 1
-check "values-check.sh: provenance turned on: says the policy's values changed" has "$work/vc.out" \
-  "note  the values of chart svp-policy changed since ${pr_base:0:12} (deploy/k8s/envs/stg/svp-policy.yaml)"
-check "values-check.sh: provenance turned on: names the release without provenance" has "$work/vc.out" \
+gc commit -qam "provenance on in stg"
+values_check "provenance turned on in stg, its gateway has none" 1
+check "values-check.sh: provenance on in stg: says stg's policy changed" has "$work/vc.out" \
+  "note  what the releases of stg must carry may have changed since ${pr_base:0:12} (envs/stg/svp-policy.yaml)"
+check "values-check.sh: provenance on in stg: names the release without provenance" has "$work/vc.out" \
   "ghcr.io/anhnvcoder/short-video-platform/gateway@$digest_a has no provenance attestation"
-check "values-check.sh: provenance turned on: every service is read" has "$work/vc.out" "ok    web: no digest"
+check "values-check.sh: provenance on in stg: every service of stg is read" has "$work/vc.out" \
+  "ok    envs/stg/images/web.yaml: no digest"
+check "values-check.sh: provenance on in stg: prd is not read" lacks "$work/vc.out" "envs/prd/"
+hint="gh workflow run images.yml --repo anhnvcoder/short-video-platform --ref main -f rescan=true"
+check "values-check.sh: the dispatch in the log, naming the code repository" has "$work/vc.out" "  $hint"
 provenance
-values_check "provenance turned on, the release has it" 0
+values_check "provenance turned on in stg, the release has it" 0
+overlay stg false
+gc commit -qam "provenance off in stg"
+charts prd "$on_rev"
+gc commit -qam "prd runs newer charts"
+rm -f "$fx/slsaprovenance1.jsonl"
+values_check "prd's charts.yaml moved to values that turn provenance on" 1
+check "values-check.sh: prd's charts moved: prd is read" has "$work/vc.out" "check envs/prd/images/gateway.yaml"
+check "values-check.sh: prd's charts moved: stg is not" lacks "$work/vc.out" "envs/stg/"
+charts prd "$off_rev"
+gc commit -qam "prd back"
+gc update-ref refs/heads/main HEAD
+pr_base=$(gc rev-parse HEAD)
+printf 'image:\n  repository: ghcr.io/anhnvcoder/short-video-platform/web\n  tag: "%s"\n  digest: "%s"\n' \
+  "${off_rev:0:12}" "$digest_a" >"$cfg/envs/stg/images/web.yaml"
+gc commit -qam "web released in stg"
+values_check "an image file changed: only it is checked" 0
+same "values-check.sh: an image file changed: one check" "check envs/stg/images/web.yaml" "$(grep '^check ' "$work/vc.out")"
+fresh
+if on github "$vr/deploy/ci/values-check.sh" --gitops "$cfg" "" >/dev/null 2>"$work/vc.err"; then
+  fail "values-check.sh: no base, unsigned releases fail"
+else ok "values-check.sh: no base, unsigned releases fail"; fi
+check "values-check.sh: cosign is asked for the policy's issuer and subject" has "$work/cosign.log" \
+  "verify --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main ghcr.io/anhnvcoder/short-video-platform/gateway@$digest_a"
+same "values-check.sh: the dispatch in the summary" "values-check failed: refresh the vuln attestations with \`$hint\`; a missing provenance needs a new release (above)" "$(cat "$work/summary")"
+
+# --- plan.sh on a push to main that builds no image (the base: the newest successful push run): promote_charts when
+# what the charts read changed (a file under deploy/helm/, or the file a symbolic link there points to), not for docs/.
+# plan_charts NAME WANT: plan.sh of a push to main after one commit hands on promote_charts=WANT.
+plan_charts() {
+  local last
+  last=$(jq -nc --arg sha "$(gv rev-parse HEAD~1)" \
+    '{workflow_runs: [{head_sha: $sha, conclusion: "success", event: "push", head_branch: "main"}]}')
+  fresh
+  on github env EVENT_NAME=push GIT_REF=refs/heads/main LAST_SUCCESS_JSON="$last" "$vr/deploy/ci/plan.sh" \
+    >/dev/null 2>&1 || fail "plan.sh: $1: exits 0"
+  same "plan.sh: $1" "promote_charts=$2 has_images=false" \
+    "$(grep '^promote_charts=' "$work/output") $(grep '^has_images=' "$work/output")"
+}
+echo "# Another decision" >>"$vr/docs/decision.md"
+gv commit -qam "a decision"
+plan_charts "a push of docs/ only promotes nothing" false
 echo "# A comment" >>"$vr/deploy/helm/svp-policy/values.yaml"
-gv add deploy/helm/svp-policy/values.yaml && gv commit -qm "a comment in the policy's values"
-plan_values "a change of the policy's values.yaml runs the values check" true
+gv commit -qam "a comment in a chart"
+plan_charts "a push that changes a chart promotes the charts" true
+check "plan.sh: the summary names the chart's file" has "$work/summary" "- deploy/helm/svp-policy/values.yaml"
+echo "exporters: {}" >>"$vr/deploy/observability/otelcol/k8s-config.yaml"
+gv commit -qam "the collector's config"
+plan_charts "a push that changes the file a chart's link points to promotes the charts" true
 
 # --- gitops_no_provenance (deploy/ci/verify/gitops.sh) in the copy: the newest web release in the history of web.yaml
 # that cosign finds signed without provenance. A release built from a commit holding provenance-predicate.sh is passed
 # over without asking cosign; an error of cosign is never "no provenance".
+mkdir -p "$vr/deploy/k8s/values/services"
 web_release() {
   printf 'image:\n  repository: ghcr.io/anhnvcoder/short-video-platform/web\n  tag: "%s"\n  digest: "%s"\n' "$1" "$2" \
     >"$vr/deploy/k8s/values/services/web.yaml"

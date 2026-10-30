@@ -1,0 +1,66 @@
+# The DORA metrics of stg (deploy/ci/dora.sh): deployment frequency, change lead time, change fail rate, failed
+# deployment recovery time and deployment rework rate, from the deployment records of stg in svp-gitops (evidence that
+# a release ran and passed the checks there, never a merge), the git history of both repositories and the front matter
+# of docs/postmortems/. The table goes to the summary page of the run, the whole result to artifact dora. Nothing is
+# kept between runs: the records stay, so any period is computed again by a dispatch with more days.
+#
+#   gh workflow run dora.yml --ref main [-f days=<1..3650>]
+#
+# Reads only, so:
+# - schedule (the code of main, no input) and workflow_dispatch (write access to the repository needed), never
+#   pull_request, pull_request_target or workflow_run;
+# - the job has contents: read and actions: read (the run each record names, to check it is one of verify.yml on main)
+#   and no secret, no environment. Both repositories are public: the job's token only lifts the rate limit of the
+#   host's API for the records of svp-gitops and the runs;
+# - every action is GitHub's own and pinned to a full commit SHA; checkout never leaves the token in .git/config;
+# - the input days goes into the script through env, never through ${{ }} in the script.
+name: dora
+
+on:
+  # Saturday 09:17 UTC, after the weekly runs of verify.yml (00:37 UTC) have recorded what stg ran.
+  schedule:
+    - cron: "17 9 * * 6"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: The window, in whole days up to now (1 to 3650)
+        type: string
+        default: "30"
+
+permissions: {}
+
+concurrency:
+  group: dora
+  cancel-in-progress: false
+
+jobs:
+  dora:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    # The clone of svp-gitops that make gitops-clone makes below (main, anonymously); dora.sh reads it there through
+    # gitops_dir of deploy/k8s/lib.sh.
+    env:
+      SVP_GITOPS_DIR: ${{ github.workspace }}/.gitops/svp-gitops
+    steps:
+      # The whole history: the lead time of a change reaches back to the commit of each image the records name.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # Public repository, over HTTPS without credentials: no token, no secret.
+      - run: make gitops-clone
+      - name: DORA metrics
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DAYS: ${{ inputs.days || '30' }}
+        run: deploy/ci/dora.sh --days "$DAYS" "$RUNNER_TEMP/dora/dora.json"
+      - name: Keep the result
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dora
+          path: ${{ runner.temp }}/dora/dora.json
+          retention-days: 30
+          if-no-files-found: error

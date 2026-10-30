@@ -1,7 +1,12 @@
 # 0025. Cấu hình triển khai chuyển sang repo public `svp-gitops` (values gốc, overlay và digest của mỗi env, manifest Argo CD), PR promote mở bằng GitHub App chỉ cài trên repo đó; chart vẫn ở repo code và mỗi env ghim commit chart của nó cùng bộ digest
 
-- Trạng thái: Chấp nhận (người học duyệt 2026-10-28, chọn (a) ở cả sáu dòng "Cần người học chọn"); chưa hiện thực (phần 4 của
-  giai đoạn 6b, sau phần chuẩn bị: provenance, Secret của đường GitOps, media bất biến)
+- Trạng thái: Chấp nhận (người học duyệt 2026-10-28, chọn (a) ở cả sáu dòng "Cần người học chọn"); §3A chỉnh 2026-10-29 (người học
+  quyết bố cục workspace: đường dev đọc bản clone cạnh bên `<workspace>/gitops`, CI vẫn `make gitops-clone`); §7, §8, §9 chỉnh
+  2026-10-30 (ruleset thứ ba `tags`, `targetRevision` tên đầy đủ); quy ước revert và cài đặt squash của `svp-gitops` (mục 7) chỉnh
+  bởi [0028](0028-dora-metrics.md) §5. Hiện thực 2026-10-29 đến 2026-10-30 (phần 4 của giai đoạn 6b, mục Hiện thực ở): `svp-gitops`
+  khởi tạo (`55258e1`, rồi `a84e26d` thêm `check.yml`; lượt `check` đầu trên `main` xanh) với ba ruleset; PR-B cắt repo code (nhánh
+  `feat/stage6b-gitops-split`, PR #39): CI, kịch bản `dev-k3d` và `gitops` trên nhánh đạt (mục Kiểm chứng sau); auto-merge của PR bot,
+  bản ghi stg, promote prd, bypass `owners` kiểm sau merge PR-B
 - Ngày: 2026-10-28
 
 ## Bối cảnh
@@ -184,7 +189,7 @@ svp-gitops/
       files/envs -> ../../../envs
   .github/
     workflows/check.yml         mục 5
-    rulesets/main.json, owners.json   mục 7
+    rulesets/main.json, owners.json, tags.json   mục 7
 ```
 
 - `components.json`: `values` thành `base/<x>.yaml`; component chart của repo giữ `path: deploy/helm/<chart>` (đường trong repo code,
@@ -230,15 +235,24 @@ svp-gitops/
 
 ### 3. Đường dev và CI repo code đọc bản clone (3A)
 
-- `make gitops-clone`: clone `https://github.com/anhnvcoder/svp-gitops.git` ẩn danh vào `.gitops/svp-gitops` (thêm vào `.gitignore`),
-  có rồi thì fetch và chuyển tới `GITOPS_REF` (mặc định `main`); bản clone có thay đổi chưa commit thì từ chối, không ghi đè.
-  `SVP_GITOPS_DIR=<thư mục tuyệt đối>` trỏ bản clone khác (bản đang sửa); một hàm của `deploy/k8s/lib.sh` trả thư mục cấu hình, mọi
-  script đọc qua hàm đó.
+- Thư mục cấu hình (chỉnh 2026-10-29, theo bố cục workspace người học quyết: thư mục gốc không git chứa `backend/` là repo code,
+  `gitops/` là bản clone `svp-gitops`, `.worktrees/` là worktree tạm của repo code): một hàm của `deploy/k8s/lib.sh` trả thư mục cấu
+  hình, mọi script đọc qua hàm đó. `SVP_GITOPS_DIR=<thư mục>` nếu đặt (bản clone khác, bản đang sửa; CI đặt tới bản clone của `make
+  gitops-clone`); không thì `<workspace>/gitops`, với `<workspace>` là thư mục cha của thư mục chứa `git rev-parse --path-format=absolute
+  --git-common-dir` (luôn `backend/.git`, nên đúng cả từ worktree ở `.worktrees/`; `--show-toplevel` từ worktree cho `.worktrees/`).
+  Thư mục đó không có hay không phải bản clone `svp-gitops` (gốc một work tree git, remote `origin` là `svp-gitops`) thì in lệnh `git
+  clone https://github.com/anhnvcoder/svp-gitops.git <workspace>/gitops` và dừng, không đọc bản nào khác thay. Đường dev **không tự
+  clone, không fetch, không đổi nhánh** bản của người học.
+- `make gitops-clone` (CI): clone `https://github.com/anhnvcoder/svp-gitops.git` ẩn danh, đủ lịch sử, vào `.gitops/svp-gitops` của
+  checkout (thêm vào `.gitignore`), có rồi thì fetch và chuyển tới `GITOPS_REF` (mặc định `main`, nhánh hay SHA đầy đủ); bản clone có
+  thay đổi chưa commit thì từ chối, không ghi đè. Job cần cấu hình đặt `SVP_GITOPS_DIR` tới thư mục đó (job `config` khai ở `env` của
+  job, `verify-run.sh` export sau khi clone).
 - Đường dev (`make k8s-up`, `install.sh`) đọc **working tree** của bản clone như đọc working tree của repo code: `base/` và
   `components.json`, không `envs/`, không `images/` (dev build image của nó, ADR-0024 4A). Sửa thử base: sửa trong bản clone, `make
   k8s-up`, rồi mở PR ở `svp-gitops`.
-- CI repo code: job `config` của `ci.yml` và các kịch bản của `verify.yml` chạy `make gitops-clone` (ref `main`) trước `make helm-check`
-  và bước dựng; `helm-check` render chart của working tree với `base/` của bản clone.
+- CI repo code: job `config` của `ci.yml` và các kịch bản k3d của `verify.yml` chạy `make gitops-clone` (ref `main`) trước `make
+  helm-check` và bước dựng; `helm-check` render chart của working tree với `base/` của bản clone (`deploy/ci/gitops-check.sh
+  --worktree`, cùng script mà check của `svp-gitops` chạy).
 - Thay đổi chéo hai repo theo thứ tự: values mới phải dùng được với chart đang ghim (merge ở `svp-gitops` trước), rồi chart dùng values
   đó (repo code); bỏ một value thì ngược lại.
 
@@ -278,7 +292,7 @@ cũ ở lại repo code public.
   | --- | --- | --- |
   | `promote` của `images.yml` (push `main`, dispatch `services`) | `contents`, `pull_requests` write | Nhánh `bot/promote-stg` của `svp-gitops`, PR, bật auto-merge |
   | promote prd của `images.yml` (dispatch, nhận id bản ghi) | `contents`, `pull_requests` write | Nhánh `bot/promote-prd`, PR không auto-merge |
-  | ghi bản ghi stg của `verify.yml` (sau job `gitops` xanh, ref `main`) | `deployments` write | Deployment `stg` trên `svp-gitops` |
+  | ghi bản ghi stg của `verify.yml` (bước kịch bản của job `gitops` xanh và `release-set.json` trong artifact, ref `main`; [ADR-0021](0021-deferred-verification-stage6b.md) mục 3) | `deployments` write | Deployment `stg` trên `svp-gitops` |
 
   Không job `pull_request` nào khai `promote`. Tạo Deployment phải đặt `auto_merge: false` (mặc định `true` merge nhánh mặc định vào
   `ref`) và `required_contexts: []` (mặc định đòi mọi commit status `success`) [N9].
@@ -307,6 +321,11 @@ cũ ở lại repo code public.
   pull_request` [N4]. Hai ruleset cộng dồn [N3]: PR của bot chỉ đổi `envs/stg/` cần
   check, không cần duyệt, auto-merge [N7]; PR đổi file có chủ do bot mở (prd, Renovate) cần người học duyệt (tác giả không tự duyệt
   [N6]); PR của người học trên file có chủ merge bằng bypass `owners`, check của `main` vẫn bắt buộc.
+- Ruleset `tags` (thêm 2026-10-30, file `.github/rulesets/tags.json` của `svp-gitops`): `target: tag`, mọi tên (`~ALL`), rule
+  `creation`, `update`, `deletion`; bypass duy nhất vai admin của repo, `bypass_mode: always` (`pull_request` chỉ áp cho ruleset nhánh
+  [N4]). Lý do: token App có `contents: write` đẩy được tag, và Argo CD có thể phân giải `targetRevision` tên ngắn sang tag cùng tên
+  [N17], nên một tag `main` do token lộ tạo có thể thành thứ được deploy; lab không dùng tag trong repo cấu hình. Đi cùng mục 8
+  (`targetRevision` luôn tên đầy đủ).
 - Cài đặt repo: "Allow auto-merge" bật [N7]; "Allow GitHub Actions to create and approve pull requests" tắt (không workflow nào của
   `svp-gitops` mở PR) [N8]; Actions chỉ action của GitHub, ghim SHA bắt buộc; duyệt workflow PR fork cho mọi người ngoài [N8]; secret
   scanning, push protection, Dependabot alerts như repo code (ADR-0015 §11).
@@ -316,6 +335,11 @@ cũ ở lại repo code public.
 - Root `svp-root`: `repoURL` `https://github.com/anhnvcoder/svp-gitops.git`, `path: argocd/apps`, `targetRevision` = `GITOPS_REV` (nhánh
   hay SHA của `svp-gitops`), `valuesObject`: `targetRevision`, `env`, `nodeArch` như ADR-0024 §4, thêm `chartRepoURL` =
   `https://github.com/anhnvcoder/short-video-platform.git`.
+- Mọi `targetRevision` đọc `svp-gitops` (root, `argocd_root_app` của `deploy/k8s/lib.sh`, mặc định `targetRevision` của
+  `argocd/apps/values.yaml`) là tên đầy đủ `refs/heads/<nhánh>` hay SHA 40 hex, không bao giờ tên ngắn (chỉnh 2026-10-30). Lý do: Argo CD
+  lấy mọi nhánh và tag của repo, tên ngắn trùng cả nhánh lẫn tag thì có thể bị phân giải sang commit của tag; tài liệu Argo CD khuyên
+  dùng tên đầy đủ [N17] (mục 7, ruleset `tags`). `gitops.sh` chuyển `GITOPS_REV` là nhánh thành `refs/heads/<nhánh>`;
+  `deploy/ci/gitops-check.sh` từ chối cây mà render của chart app-of-apps có nguồn `svp-gitops` với `targetRevision` tên ngắn.
 - Application con: chart upstream như nay; chart repo: `repoURL` repo code, `targetRevision` = `revision` của `envs/<env>/charts.yaml`,
   `path: deploy/helm/<chart>`; nguồn `ref: values` là `svp-gitops` ở revision của root (`$values/base/…`, `$values/envs/<env>/…`,
   `$values/envs/<env>/images/…`).
@@ -332,7 +356,7 @@ cũ ở lại repo code public.
    `deploy/ci/gitops-check.sh` (sẽ tạo) cùng test vào `main` của repo code bằng một PR nhỏ riêng.
 3. Người học: tạo App, cài lên `svp-gitops`, environment `promote` với khoá; cài đặt repo `svp-gitops` (mục 7).
 4. Người điều phối push commit khởi tạo (không `.github/workflows/`), rồi commit thứ hai thêm workflow ghim commit checker đã merge; lượt
-   đầu của workflow trên `main` phải xanh. Người học nhập hai ruleset.
+   đầu của workflow trên `main` phải xanh. Người học nhập ba ruleset (`main`, `owners`, `tags`).
 5. **Đóng băng** từ bước 4: không merge PR promote nào ở repo code.
 6. PR-B "cắt" ở repo code: đọc bản clone, xoá `deploy/k8s/values/`, `deploy/k8s/envs/`, `deploy/argocd/`, promote sang `svp-gitops`;
    trước merge, kịch bản `dev-k3d` và `gitops` trên nhánh (đọc `svp-gitops` `main`) xanh, và bảy digest của `envs/stg/images/` ở `main`
@@ -377,7 +401,7 @@ Theo bảng lựa chọn 11. Bảng ánh xạ GitLab ([ADR-0023](0023-ci-platfor
 | --- | --- |
 | `deploy/k8s/lib.sh` | hàm thư mục cấu hình; `release_image` đọc `envs/<env>/images/`; `values_field`, `values_set_image` đọc file chỉ có khối `image` (giữ dạng); `argocd_root_app` thêm `chartRepoURL`, `path: argocd/apps` |
 | `deploy/k8s/install.sh` | `components.json`, `base/` từ bản clone; values của chart repo trong `base/` nếu có |
-| `deploy/k8s/k8s.mk`, `Makefile`, `.gitignore` | target `gitops-clone`; `k8s-up`, `k8s-gitops-up` gọi nó; `helm-check` render với bản clone; `.gitops/` |
+| `deploy/k8s/k8s.mk`, `Makefile`, `.gitignore` | target `gitops-clone` (CI); `k8s-up`, `k8s-gitops-up` chỉ gọi hàm thư mục cấu hình, không clone (CI đặt `SVP_GITOPS_DIR` bằng `make gitops-clone` trước); `helm-check` render với bản clone; `.gitops/` |
 | `deploy/k8s/gitops.sh` | repo URL `svp-gitops`; `GITOPS_REV` là revision của `svp-gitops`; digest, `charts.yaml`, `bootstrap.json`, `project.yaml` từ bản clone |
 | `deploy/k8s/check-image-digests.sh` | gộp vào `deploy/ci/gitops-check.sh` (mới), không hai bản cùng logic |
 | `deploy/ci/gitops-check.sh`, `deploy/ci/gitops-check-test.sh` (mới) | mục 5 |
@@ -421,19 +445,20 @@ Mỗi dòng hai phương án trở lên đều dùng được; đề xuất đ�
 
 ## Kiểm chứng sau
 
-Giả định chưa kiểm được lúc viết (không push, không ghi GitHub); mỗi dòng nêu phép kiểm; kết quả và ngày ghi vào cột cuối.
+Giả định chưa kiểm được lúc viết (không push, không ghi GitHub); mỗi dòng nêu phép kiểm; kết quả và ngày ghi vào cột cuối. Dòng
+"kiểm sau merge PR-B" cần lượt trên `main` sau khi PR #39 merge.
 
 | Giả định | Phép kiểm | Kết quả |
 | --- | --- | --- |
-| Token App bật được auto-merge với `contents`, `pull_requests` write (tài liệu không ghi quyền của thao tác này [N7]); PR bot chỉ đổi `envs/stg/` tự merge sau `gitops-ok`, không ai duyệt | Lần promote stg đầu sau PR-B, **kiểm sau push** | Chưa kiểm |
-| PR do token App mở sinh lượt `pull_request` của `check.yml` không cần bấm duyệt [N11] | Cùng lần trên: check chạy ngay | Chưa kiểm |
-| `require_code_owner_review` với 0 approval vẫn chặn PR đổi file có chủ chưa được Code Owner duyệt; duyệt của App không thay Code Owner | PR thử của bot đổi `base/` (không merge được tới khi người học duyệt); App gửi review approve trên PR thử, vẫn bị chặn | Chưa kiểm |
-| Bypass ruleset `owners` của admin để merge PR của mình không bỏ được check `gitops-ok` của ruleset `main`, và có bản ghi bypass | PR thử của người học sửa `README.md` khi check đỏ (không merge được), rồi khi xanh (merge bằng bypass; Rule Insights có dòng bypass) | Chưa kiểm |
-| Argo CD đọc hai repo ẩn danh, nguồn chart repo code ở SHA 40 hex | Kịch bản `gitops` trên nhánh PR-B: mọi Application Synced, Healthy; Application `svp-cluster` có `targetRevision` bằng `envs/stg/charts.yaml` | Chưa kiểm |
-| Check của `svp-gitops` chạy script của repo code ở commit checker ghim, không phải của PR | Lượt đầu của `check.yml` trên `main` (bước 4 của trình tự): log in commit đã checkout; PR thử sửa script ở repo code không đổi kết quả của check | Chưa kiểm |
-| Token App chỉ ghi được `svp-gitops`, chỉ quyền đã xin; không job `pull_request` nào lấy được khoá | Bước thử trong job `promote` đầu: `git push` lên repo code bằng token đó bị từ chối; lượt `pull_request` khai `promote` bị environment từ chối | Chưa kiểm |
-| Tạo Deployment với `auto_merge: false`, `required_contexts: []` trả 201 [N9]; check prd chỉ nhận bản ghi của App | Phần 4, lượt `gitops` trên `main` rồi promote prd (theo ADR-0024 Kiểm chứng sau) | Chưa kiểm |
-| Check chặn image mới hơn chart và hai giá trị dẫn xuất sai | Phần 4, ca âm trong `gitops-check-test.sh` (bản sao tạm): tag image không phải tổ tiên của `revision`; `collectorConfigSha256` sai | Chưa kiểm |
+| Token App bật được auto-merge với `contents`, `pull_requests` write (tài liệu không ghi quyền của thao tác này [N7]); PR bot chỉ đổi `envs/stg/` tự merge sau `gitops-ok`, không ai duyệt | Lần promote stg đầu sau PR-B, **kiểm sau push** | Chưa kiểm: lần promote stg đầu chạy sau merge PR-B (kiểm sau merge PR-B) |
+| PR do token App mở sinh lượt `pull_request` của `check.yml` không cần bấm duyệt [N11] | Cùng lần trên: check chạy ngay | Chưa kiểm (kiểm sau merge PR-B, cùng lần trên) |
+| `require_code_owner_review` với 0 approval vẫn chặn PR đổi file có chủ chưa được Code Owner duyệt; duyệt của App không thay Code Owner | PR thử của bot đổi `base/` (không merge được tới khi người học duyệt); App gửi review approve trên PR thử, vẫn bị chặn | Chưa kiểm (kiểm sau merge PR-B). Ba ruleset `main`, `owners`, `tags` đã nhập, `active` (tạo 2026-10-29 UTC, đọc lại bằng API) |
+| Bypass ruleset `owners` của admin để merge PR của mình không bỏ được check `gitops-ok` của ruleset `main`, và có bản ghi bypass | PR thử của người học sửa `README.md` khi check đỏ (không merge được), rồi khi xanh (merge bằng bypass; Rule Insights có dòng bypass) | Chưa kiểm (kiểm sau merge PR-B) |
+| Argo CD đọc hai repo ẩn danh, nguồn chart repo code ở SHA 40 hex | Kịch bản `gitops` trên nhánh PR-B: mọi Application Synced, Healthy; Application `svp-cluster` có `targetRevision` bằng `envs/stg/charts.yaml` | Đạt (2026-10-29, `gitops` [40954609229](https://github.com/anhnvcoder/short-video-platform/actions/runs/40954609229), nhánh PR-B ở `027f8bd`, `svp-gitops` `cf28b34`): root `svp-root` theo `refs/heads/main` của `svp-gitops` qua HTTPS không credential, nguồn chart của repo code ở `c59c7426663d` (bằng `revision` của `envs/stg/charts.yaml`); 26/26 Application Synced, Healthy, sync cuối `Succeeded` sau 610 s. Lượt trước [40938235138](https://github.com/anhnvcoder/short-video-platform/actions/runs/40938235138) kẹt lúc dựng (`kube-prometheus-stack` Progressing: operator chỉ dò CRD một lần lúc khởi động, CR Prometheus tới trước CRD), sửa bằng sync wave trong `svp-gitops` (PR #2: CRD wave 0, operator 1, CR Prometheus, Alertmanager 2) |
+| Check của `svp-gitops` chạy script của repo code ở commit checker ghim, không phải của PR | Lượt đầu của `check.yml` trên `main` (bước 4 của trình tự): log in commit đã checkout; PR thử sửa script ở repo code không đổi kết quả của check | Một phần: lượt `check` đầu trên `main` của `svp-gitops` [40902199532](https://github.com/anhnvcoder/svp-gitops/actions/runs/40902199532) (2026-10-29, `a84e26d`, checker ghim `c59c7426663d`) xanh, `gitops-ok`, token chỉ `Contents: read`. PR thử sửa script ở repo code: chưa kiểm |
+| Token App chỉ ghi được `svp-gitops`, chỉ quyền đã xin; không job `pull_request` nào lấy được khoá | Bước thử trong job `promote` đầu: `git push` lên repo code bằng token đó bị từ chối; lượt `pull_request` khai `promote` bị environment từ chối | Chưa kiểm (kiểm sau merge PR-B). Tĩnh: không job `pull_request` nào khai `promote` (`images.yml`, `verify.yml` trên nhánh PR-B) |
+| Tạo Deployment với `auto_merge: false`, `required_contexts: []` trả 201 [N9]; check prd chỉ nhận bản ghi của App | Phần 4, lượt `gitops` trên `main` rồi promote prd (theo ADR-0024 Kiểm chứng sau) | Chưa kiểm (kiểm sau merge PR-B: job `record-stg` chỉ chạy trên `main`, ở lượt dispatch hay lượt lịch tuần có bước kịch bản `gitops` xanh, không cần bản phát hành trong lượt) |
+| Check chặn image mới hơn chart và hai giá trị dẫn xuất sai | Phần 4, ca âm trong `gitops-check-test.sh` (bản sao tạm): tag image không phải tổ tiên của `revision`; `collectorConfigSha256` sai | Đạt: ca âm của `deploy/ci/gitops-check-test.sh` (tag image không phải tổ tiên của `revision`, `collectorConfigSha256` sai, image mới hơn chart) đỏ đúng message; chạy ở job `config` của CI PR #39 [40954602918](https://github.com/anhnvcoder/short-video-platform/actions/runs/40954602918) (2026-10-29, `027f8bd`) xanh |
 
 ## Hệ quả
 
@@ -454,7 +479,7 @@ Giả định chưa kiểm được lúc viết (không push, không ghi GitHub)
   - Có người thứ hai: bỏ bypass ruleset `owners`, bắt duyệt thật.
   - Source Hydrator hay Kargo đủ chín (ADR-0024, Xem lại khi): Freight thay `charts.yaml` + `images/`.
   - Chart cần dùng ngoài lab: xét gói OCI ký (lựa chọn 2C).
-- **ADR cũ được chỉnh** (ghi "chỉnh bởi 0025" ở trạng thái của chúng và dòng mục lục ở `docs/adr/README.md` khi ADR này hiện thực):
+- **ADR cũ được chỉnh** (đã ghi "chỉnh bởi 0025" ở trạng thái của chúng và ở `docs/adr/README.md` ngày 2026-10-30):
   - [ADR-0014](0014-kubernetes-local-stage4.md) §12: Argo CD đọc `svp-gitops` (root, values) và repo code ở commit ghim (chart);
     `sourceRepos` thêm `svp-gitops`; values và version của Argo CD ở `svp-gitops`.
   - [ADR-0015](0015-cicd-devsecops-stage5.md) §9: promote sang `svp-gitops` bằng token App (lựa chọn "App riêng" từng bị loại, nay
@@ -470,15 +495,50 @@ Giả định chưa kiểm được lúc viết (không push, không ghi GitHub)
 
 ## Hiện thực ở
 
-Dự kiến, chưa hiện thực:
+Hiện thực 2026-10-29 đến 2026-10-30 (PR-B, nhánh `feat/stage6b-gitops-split`, PR #39):
 
-- Repo `svp-gitops` (mọi file sẽ tạo): `base/`, `envs/{stg,prd}/` (`charts.yaml`, `images/`), `argocd/` (`project.yaml`,
-  `bootstrap.json`, `apps/`), `CODEOWNERS`, `renovate.json`, `.github/workflows/check.yml`, `.github/rulesets/{main,owners}.json`,
-  `README.md`.
-- Repo code: các file của mục 12 (`deploy/k8s/lib.sh`, `install.sh`, `gitops.sh`, `k8s.mk`, `Makefile`, `.gitignore`,
-  `deploy/ci/gitops-check.sh` (mới), `promote.sh`, `rescan.sh`, `values-check.sh`, `plan.sh`, `platform.sh`, `.github/workflows/images.yml`,
-  `verify.yml`, `ci.yml`, `renovate.json`).
-- Cài đặt GitHub (người học): App `svp-gitops-promoter`, environment `promote` của repo code, cài đặt và ruleset của `svp-gitops`.
+- Repo `svp-gitops` (mục 1, 5, 7, 10): `README.md`, `CODEOWNERS`, `renovate.json`; `base/` (values gốc, `base/argo-cd.yaml`,
+  `base/services/<svc>.yaml` không khối `image`); `envs/{stg,prd}/` (overlay, `svp-policy.yaml`, `charts.yaml`, `images/<svc>.yaml`);
+  `argocd/project.yaml`, `argocd/bootstrap.json`, `argocd/apps/` (`components.json`, `values.yaml` mặc định `refs/heads/main`,
+  `templates/applications.yaml`, symlink `files/envs`); `.github/workflows/check.yml` (job `gitops`, check tổng `gitops-ok`, commit
+  checker ghim một chỗ), `.github/rulesets/main.json`, `owners.json`, `tags.json`.
+- Thư mục cấu hình và đường dev (mục 3): `gitops_is_clone`, `gitops_dir`, `gitops_clone` của `deploy/k8s/lib.sh`; target `gitops-clone`
+  (`GITOPS_REF`) của `deploy/k8s/k8s.mk`; `.gitops/` trong `.gitignore`; `deploy/k8s/install.sh` (`components.json`, `base/` của bản
+  clone); `deploy/k8s/drills/threats.sh` đọc `components.json` của bản clone.
+- Check (mục 2, 5, 8): `deploy/ci/gitops-check.sh` (cây, `charts.yaml`, luật tổ tiên, bước 1b so PR prd với bản ghi stg, render
+  root và chart mỗi env × kiến trúc, từ chối `targetRevision` tên ngắn, image bên thứ ba ghim digest, gộp và thay
+  `deploy/k8s/check-image-digests.sh` đã xoá; `--worktree` là `make helm-check` của `Makefile`), test `deploy/ci/gitops-check-test.sh`
+  (gồm ca của `gitops_dir`, `gitops_clone`); `deploy/ci/values-check.sh` (chỉ `--gitops DIR BASE`), `deploy/ci/verify-release.sh`
+  (`--gitops DIR`), `provenance_required`, `_config_file` của `deploy/ci/common.sh` đọc `envs/<env>/svp-policy.yaml` của thư mục
+  cấu hình.
+- Argo CD (mục 8): `argocd_root_app` (`path: argocd/apps`, `chartRepoURL`, `targetRevision` tên đầy đủ) của `deploy/k8s/lib.sh`;
+  `deploy/k8s/gitops.sh` (revision của `svp-gitops`, bảy bản ở `envs/stg/images/`, `bootstrap.json`, AppProject từ bản clone, namespace
+  từ `svp-cluster` ở commit của `charts.yaml`; hết hạn chờ thì `gitops_timeout_report` của `lib.sh` in trạng thái từng Application,
+  tài nguyên chưa Healthy đọc thẳng từ cluster và sự kiện).
+- Promote stg (mục 2, 6): `deploy/ci/promote.sh` (nhánh `bot/promote-stg`, `envs/stg/images/` và `envs/stg/charts.yaml`, luật không lùi,
+  `--force-with-lease`, đọc lại PR sau push, auto-merge), test `deploy/ci/promote-test.sh`; job `promote` của
+  `.github/workflows/images.yml` (environment `promote`, token App chỉ `svp-gitops`, `contents` và `pull_requests` write);
+  `promote_charts` của `deploy/ci/plan.sh` (promote chỉ chart), bỏ job `values-check`; `deploy/ci/changed-services.sh` (script và test
+  không job image nào đọc).
+- Bản ghi stg và promote prd (mục 2, 6; ADR-0024 §8): `deploy/ci/release-set.sh` (`snapshot [--settle]`, `verify`, `records`, `check`),
+  test `deploy/ci/release-set-test.sh`; bước `release-set-before`, `release-set` của `deploy/ci/verify/gitops.sh`, `release-set.json`
+  trong `deploy/ci/verify-collect.sh`; `deploy/ci/record-stg.sh` và job `record-stg` của `.github/workflows/verify.yml` (environment
+  `promote`, token chỉ `deployments` write); `deploy/ci/promote-prd.sh` (nhánh `bot/promote-prd`), test `deploy/ci/promote-prd-test.sh`,
+  job `promote-prd` của `images.yml` (dispatch `promote_prd`, `record`).
+- Rescan (mục 12): `deploy/ci/rescan.sh` (`list`, `run`: `envs/*/images/` của `svp-gitops` ở `main`, ở PR `bot/promote-stg` đang mở, ở
+  `values_ref`, hay commit cũ của repo code trước PR-B), job `rescan` của `images.yml` (`make gitops-clone`).
+- Adapter (mục 12; [ADR-0023](0023-ci-platform-neutral.md)): `deploy/ci/platform.sh` (PR ở repo đích, `ci_change_request_auto_merge`,
+  `ci_git_auth`, `ci_bot_*` theo App, `ci_push_time SHA [REPO]`, `ci_deployment_record`, `ci_deployment_list`, `ci_run_workflow`), test
+  `deploy/ci/platform-test.sh`.
+- Kịch bản và diễn tập đọc `svp-gitops`: `deploy/ci/verify/gitops.sh`, `deploy/ci/verify-run.sh` (clone trước kịch bản k3d),
+  `deploy/ci/gitops-sourcemaps.sh` (test `deploy/ci/gitops-sourcemaps-test.sh`), `deploy/k8s/drills/gitops.sh` (`measure-gitops` đo commit
+  của `svp-gitops`), `deploy/k8s/drills/supplychain.sh` (digest ở `envs/stg/images/`).
+- CI và Renovate: job `config` của `.github/workflows/ci.yml` (`make gitops-clone`, `gitops-check-test.sh`, `promote-test.sh`,
+  `promote-prd-test.sh`, `release-set-test.sh`); `renovate.json` bỏ manager của đường đã dời (mục 10).
+- Đã xoá khỏi repo code: `deploy/k8s/values/`, `deploy/k8s/envs/`, `deploy/argocd/`, `deploy/k8s/check-image-digests.sh`.
+- Cài đặt GitHub (người học): App `svp-gitops-promoter`, environment `promote` của repo code (biến `SVP_GITOPS_APP_CLIENT_ID`, secret
+  `SVP_GITOPS_APP_PRIVATE_KEY`), cài đặt và ba ruleset của `svp-gitops`; quy trình tay ở
+  [`docs/runbooks/svp-gitops-setup.md`](../runbooks/svp-gitops-setup.md).
 
 ## Nguồn
 
@@ -516,3 +576,6 @@ Dự kiến, chưa hiện thực:
 - [N15] Kargo, "Core Concepts" (Freight gồm image và cấu hình, đi qua các Stage như một khối): <https://docs.kargo.io/user-guide/core-concepts/>
 - [N16] `git filter-repo`, README (được dự án git khuyên thay `filter-branch`; commit id cũ ánh xạ sang id mới):
   <https://github.com/newren/git-filter-repo>
+- [N17] Argo CD, "Tracking and Deployment Strategies", mục "Handling Ambiguous Git References in Argo CD" (đọc 2026-10-30: "If the
+  `targetRevision` matches multiple references, Argo CD attempts to resolve it and may select a different commit than expected"; khuyên
+  `refs/heads/<nhánh>`, `refs/tags/<tag>`): <https://argo-cd.readthedocs.io/en/stable/user-guide/tracking_strategies/>

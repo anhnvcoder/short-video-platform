@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# Installs or upgrades every component of deploy/argocd/apps/components.json into the running cluster svp, in
-# ascending wave order (files order within a wave), with `helm upgrade --install --wait`: the dev path.
-# The GitOps path builds Argo CD Applications from the same file, so both install the same charts, versions and values.
+# Installs or upgrades every component of argocd/apps/components.json of the deployment configuration svp-gitops (the
+# working tree of its clone, gitops_dir of deploy/k8s/lib.sh) into the running cluster svp, in ascending wave order
+# (files order within a wave), with `helm upgrade --install --wait`: the dev path. Only base/ of that clone is read,
+# never envs/: the dev path builds its own images. The GitOps path builds Argo CD Applications from the same file, so
+# both install the same charts, versions and base values.
 #
 # A component is an upstream chart (repo + chart + version; a Helm OCI repository is written oci://...) or a chart in
-# this repository (path), with an optional values file relative to the repository root. A component with gitopsOnly
-# (External Secrets Operator) belongs to the GitOps path alone and is skipped here: the dev path's Secrets come from
-# .env through deploy/k8s/secrets.sh. Run by `make k8s-up` after the registry and the cluster exist; running it again
-# only upgrades what changed.
+# this repository (path, read from this working tree), with an optional values file relative to the top of the clone
+# of svp-gitops. A component with gitopsOnly (External Secrets Operator) belongs to the GitOps path alone and is
+# skipped here: the dev path's Secrets come from .env through deploy/k8s/secrets.sh. Run by `make k8s-up` after the
+# registry and the cluster exist; running it again only upgrades what changed.
 set -euo pipefail
 
 # shellcheck source=deploy/k8s/lib.sh
 . "$(dirname "$0")/lib.sh"
 
-components="$repo_root/deploy/argocd/apps/components.json"
+gitops=$(gitops_dir) || exit 1
+components="$gitops/argocd/apps/components.json"
 command -v jq >/dev/null || fail "jq not found (brew install jq)"
 kc get --raw /readyz >/dev/null 2>&1 || fail "cluster svp is not reachable (context k3d-svp); run make k8s-up"
 # A cluster made by `make k8s-gitops-up` belongs to Argo CD: Helm releases installed over its Applications would be
@@ -33,8 +36,8 @@ fi
 
 # The services' images first, so a build that fails stops the run before anything is installed. Each release of
 # chart svp-service then gets its image with --set (never written to a file): the local registry, the service's dev
-# tag and an empty digest (image_sets). The repository, tag and digest in deploy/k8s/values/services/ name releases on
-# GHCR for the GitOps path; this path neither reads nor pulls them.
+# tag and an empty digest (image_sets). The repository, tag and digest in envs/<env>/images/ of svp-gitops name
+# releases on GHCR for the GitOps path; this path neither reads nor pulls them.
 service_chart=deploy/helm/svp-service
 build_dev_images
 
@@ -240,7 +243,7 @@ pg_backup_sets() {
 
 # rollouts_plugin_check: Argo Rollouts' Gateway API traffic router plugin is a native binary, which the controller
 # downloads when it starts and executes at the first reconcile of a Rollout with a canary. Its values file
-# deploy/k8s/values/argo-rollouts.yaml pins the linux-arm64 asset, for the nodes of a Mac; on amd64 nodes (a Linux
+# base/argo-rollouts.yaml pins the linux-arm64 asset, for the nodes of a Mac; on amd64 nodes (a Linux
 # x86_64 host, such as a CI runner) that binary cannot run: the controller fails to start the plugin on every reconcile,
 # before it scales the Rollout's ReplicaSet, so the gateway never gets a pod. There the file archValues of
 # components.json names for amd64 is read after it, as on the GitOps path, and replaces the plugin with the asset of
@@ -251,7 +254,7 @@ rollouts_plugin_check() {
   all=$(jq -r '.components[] | select(.name == "argo-rollouts") | .values, ((.archValues // {})[])' "$components") ||
     fail "read the values files of argo-rollouts in $components"
   for file in $all; do
-    loc=$(sed -n 's/^ *location: *//p' "$repo_root/$file")
+    loc=$(sed -n 's/^ *location: *//p' "$gitops/$file")
     [[ $loc =~ ^https://[^[:space:]]+/[^/[:space:]]+$ ]] ||
       fail "$file pins no single plugin location (got '$loc')"
     if [ -z "$release" ]; then
@@ -346,7 +349,7 @@ after_install() {
       ;;
     cloudnative-pg)
       # cert-manager's cainjector writes the webhook's certificate into the operator's two webhook configurations soon
-      # after this release made them (deploy/k8s/values/cloudnative-pg.yaml); until then the API server cannot call
+      # after this release made them (base/cloudnative-pg.yaml of svp-gitops); until then the API server cannot call
       # them, and the Cluster of svp-data (wave 4) would be refused.
       for webhook_kind in mutating validating; do
         wait_until 60 "cainjector writes the CA into cnpg-$webhook_kind-webhook-configuration" \
@@ -453,7 +456,7 @@ test_ge() {
 # under a field manager of their own: a namespace that a previous run's --create-namespace made gets the labels added,
 # and no release's later apply removes them. The loop below then finds the namespace and passes no --create-namespace.
 # The project's namespaces (namespaces of svp-cluster's values, with the same labels too) are made here as well: Envoy
-# Gateway, of wave 0, binds a Role in each namespace it watches (deploy/k8s/values/envoy-gateway.yaml), and Helm
+# Gateway, of wave 0, binds a Role in each namespace it watches (base/envoy-gateway.yaml), and Helm
 # cannot create a Role in a namespace that does not exist yet. svp-cluster takes them over (--take-ownership below).
 wave0=$(jq -c '[.components[] | select(.wave == 0 and .gitopsOnly != true) | {name: .namespace}] | unique' "$components") ||
   fail "read the namespaces of wave 0 in $components"
@@ -465,7 +468,7 @@ ok "namespaces of wave 0 ($(jq -r 'map(.name) | join(", ")' <<<"$wave0")) and th
 
 # The architecture of the nodes, which ensure_cluster has checked all run the host's: a component with archValues in
 # components.json gets the values file named there for it after its values, as the GitOps path does
-# (deploy/argocd/apps; rollouts_plugin_check says why).
+# (chart argocd/apps of svp-gitops; rollouts_plugin_check says why).
 node_arch=$(kc get nodes -o jsonpath='{.items[0].metadata.labels.kubernetes\.io/arch}') ||
   fail "read the architecture of the nodes of svp"
 case $node_arch in
@@ -491,8 +494,8 @@ while IFS=$sep read -r name namespace wave path repo chart version values canary
   else
     args+=("$chart" --repo "$repo" --version "$version")
   fi
-  if [ -n "$values" ]; then args+=(--values "$repo_root/$values"); fi
-  if [ -n "$arch_values" ]; then args+=(--values "$repo_root/$arch_values"); fi
+  if [ -n "$values" ]; then args+=(--values "$gitops/$values"); fi
+  if [ -n "$arch_values" ]; then args+=(--values "$gitops/$arch_values"); fi
   if [ "$name" = svp-data ]; then
     pg_backup_sets
     args+=(${pg_sets[@]+"${pg_sets[@]}"})
@@ -538,9 +541,9 @@ while IFS=$sep read -r name namespace wave path repo chart version values canary
     # A client-side upgrade patches only what changed between the previous release's manifest and this one, so an
     # unchanged Service or route is left as the controller set it. Helm's --wait (kstatus) never sees the Rollout as
     # ready and would hold until --timeout: Helm waits for hooks only, wait_rollout below for the Rollout.
-    if grep -qx 'canary: true' "$repo_root/$values"; then
+    if grep -qx 'canary: true' "$gitops/$values"; then
       args+=(--server-side=false) helm_wait=--wait=hookOnly
-      # The GitOps path ignores the weights of the route components.json names (deploy/argocd/apps): without it there,
+      # The GitOps path ignores the weights of the route components.json names (chart argocd/apps): without it there,
       # Argo CD's selfHeal would set them back in the middle of every canary.
       [ -n "$canary_route" ] || fail "$values sets canary: true, but component $name has no canaryRoute in $components"
     elif [ -n "$canary_route" ]; then
@@ -551,7 +554,7 @@ while IFS=$sep read -r name namespace wave path repo chart version values canary
     watch_migrate "$namespace" "$name-migrate" "$old_job" &
     watcher=$!
     kind=$(workload_kind "$namespace" "$name")
-    if [ "$kind" = rollout ] && canary_ahead "$namespace" "$name" "$repo_root/$values" "${image_sets[@]}"; then
+    if [ "$kind" = rollout ] && canary_ahead "$namespace" "$name" "$gitops/$values" "${image_sets[@]}"; then
       start_canary_traffic "$name"
     fi
   fi

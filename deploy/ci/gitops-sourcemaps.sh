@@ -7,30 +7,33 @@
 #
 #   gitops-sourcemaps.sh fetch
 #       The job's step before the scenario, the only part that talks to the CI platform's API (its token reads the
-#       repository's runs and artifacts; nothing is written there). The web release Argo CD will run is the one at
-#       origin/<branch of the checkout> (deploy/k8s/gitops.sh follows the same): image.digest of
-#       deploy/k8s/values/services/web.yaml there, an index whose linux/amd64 manifest is read from GHCR without
-#       credentials, and image.tag, the first 12 hex digits of the commit that built it, made a full SHA by git (the
-#       checkout holds the whole history). Every finished images.yml run of that commit that still holds
-#       web-sourcemaps-amd64 is tried, the latest first, each downloaded into an empty folder of its own; the first whose
-#       image-digest is that linux/amd64 manifest is taken. A commit can be built more than once (a dispatch that
-#       rebuilds web makes another bundle under another digest), so the commit alone never picks the maps: an artifact
-#       of the right commit with another digest is never taken. The artifact is another run's output, so only
-#       image-digest (one line, sha256:<64 hex>) is read here, nothing in it is run, and the maps are checked again,
-#       with the debug ids the web serves, by deploy/observability/glitchtip/sourcemaps.sh before any upload.
+#       repository's runs and artifacts; nothing is written there). It clones the deployment configuration first, as
+#       make gitops-clone does (gitops_clone of deploy/k8s/lib.sh, GITOPS_REF, default main). The web release Argo CD
+#       will run is the one at origin/<GITOPS_REV, default main> of that clone of svp-gitops (deploy/k8s/gitops.sh
+#       follows the same): image.digest of envs/stg/images/web.yaml there, an index whose linux/amd64 manifest is read
+#       from GHCR without credentials, and image.tag, the first 12 hex digits of the commit of this repository that
+#       built it, made a full SHA by git (the checkout holds the whole history). Every finished images.yml run of that
+#       commit that still holds web-sourcemaps-amd64 is tried, the latest first, each downloaded into an empty folder of
+#       its own; the first whose image-digest is that linux/amd64 manifest is taken. A commit can be built more than
+#       once (a dispatch that rebuilds web makes another bundle under another digest), so the commit alone never picks
+#       the maps: an artifact of the right commit with another digest is never taken. The artifact is another run's
+#       output, so only image-digest (one line, sha256:<64 hex>) is read here, nothing in it is run, and the maps are
+#       checked again, with the debug ids the web serves, by deploy/observability/glitchtip/sourcemaps.sh before any
+#       upload.
 #       Leaves in <temp>/gitops-sourcemaps (ci_temp_dir of deploy/ci/platform.sh: the runner's temp directory, never
 #       uploaded): status, one of
 #         ok       maps/ holds the _next/ folder of the artifact taken;
-#         skipped  no artifact matches, on a branch other than main: the web release there was often built before CI
-#                  exported maps, and the steps that need them skip (the scenario reads this);
+#         skipped  no artifact matches, on a run of a branch of this repository other than main, which may follow a
+#                  release built before CI exported maps: the steps that need them skip (the scenario reads this);
 #         fail     no artifact matches on main, where a release always has its maps, or anything went wrong (the
 #                  platform's API, GHCR, git), on any branch;
 #       and reason, one line naming the digest, the commit and how many runs were tried. Exit 0 for ok and skipped, 1 for
 #       fail: the job carries on to the scenario either way (the steps that do not need the maps still run).
 #   gitops-sourcemaps.sh web-amd64
-#       Prints ghcr.io/anhnvcoder/short-video-platform/web@<digest of the linux/amd64 manifest> of the same release: a
-#       real image of the project's repository that no signature or attestation names (they name the index), which the
-#       supply chain drill sends as its unsigned web image.
+#       Prints ghcr.io/anhnvcoder/short-video-platform/web@<digest of the linux/amd64 manifest> of the same release,
+#       read from the clone gitops_dir names (SVP_GITOPS_DIR, which the scenario's run sets): a real image of the
+#       project's repository that no signature or attestation names (they name the index), which the supply chain drill
+#       sends as its unsigned web image.
 #   gitops-sourcemaps.sh newest IMAGE
 #       Prints ghcr.io/anhnvcoder/short-video-platform/IMAGE@<digest> of the newest index of IMAGE (drill-vulnerable,
 #       drill-unsigned) on GHCR: its tags of 12 hex digits name the commit of main that CI built them at, and the newest
@@ -82,16 +85,15 @@ manifest() {
   echo "$got"
 }
 
-# web_release: sets rev (origin/<branch of the checkout>, which Argo CD follows), rev_sha, web_tag and web_index
-# (image.tag and image.digest of deploy/k8s/values/services/web.yaml there) once image.repository is the project's web.
+# web_release: sets rev (origin/<GITOPS_REV, default main> of svp-gitops, which Argo CD follows), rev_sha, web_tag and
+# web_index (image.tag and image.digest of envs/stg/images/web.yaml there) once image.repository is the project's web.
 web_release() {
-  local branch values repo file=deploy/k8s/values/services/web.yaml
-  branch=$(git -C "$repo_root" symbolic-ref --short -q HEAD) ||
-    fail "the checkout is on no branch, so there is no origin/<branch> for Argo CD to follow"
-  rev=origin/$branch
-  rev_sha=$(git -C "$repo_root" rev-parse --verify --quiet "refs/remotes/$rev^{commit}") ||
-    fail "$rev is not in this clone (fetched with its whole history?)"
-  values=$(git -C "$repo_root" show "$rev_sha:$file") || fail "read $file at $rev (${rev_sha:0:12})"
+  local gitops values repo file=envs/stg/images/web.yaml
+  gitops=$(gitops_dir) || exit 1
+  rev="origin/${GITOPS_REV:-main} of svp-gitops"
+  rev_sha=$(git -C "$gitops" rev-parse --verify --quiet "refs/remotes/origin/${GITOPS_REV:-main}^{commit}") ||
+    fail "origin/${GITOPS_REV:-main} is not in the clone of svp-gitops $gitops"
+  values=$(git -C "$gitops" show "$rev_sha:$file") || fail "read $file at $rev (${rev_sha:0:12})"
   repo=$(values_field repository <<<"$values") || fail "read image.repository of $file at $rev"
   [ "$repo" = "$ghcr_prefix/web" ] || fail "image.repository of $file at $rev is '$repo', not $ghcr_prefix/web"
   web_tag=$(values_field tag <<<"$values") || fail "read image.tag of $file at $rev"
@@ -131,7 +133,7 @@ lookup() {
   web_release
   child=$(web_amd64 "$out") || exit 1
   commit=$(git -C "$repo_root" rev-parse --verify --quiet "$web_tag^{commit}") && [[ $commit == "$web_tag"* ]] ||
-    fail "commit $web_tag (image.tag of web at $rev) is not in this clone"
+    fail "commit $web_tag (image.tag of web at $rev) is not in this clone of the code repository"
   runs=$(ci_artifact_runs "$sourcemaps_workflow" "$commit" "$sourcemaps_artifact") || rc=$?
   case $rc in
   0) ;;
@@ -167,10 +169,20 @@ lookup() {
 
 # fetch: see the header.
 fetch() {
-  local out status reason rc=0 branch
+  local out status reason rc=0 branch clone
   out=$(ci_temp_dir)/gitops-sourcemaps || exit 1
   rm -rf "$out"
   mkdir -p "$out" || fail "create $out"
+  # In a subshell, so a failed clone exits it alone and is recorded as fail.
+  if ! clone=$( (gitops_clone) 2>&1); then
+    printf '%s\n' "$clone" >&2
+    printf 'fail\n' >"$out/status"
+    sed -n 's/^FAIL  //p' <<<"$clone" | tail -n 1 >"$out/reason"
+    echo "fail: $(cat "$out/reason")"
+    return 1
+  fi
+  echo "$clone"
+  export SVP_GITOPS_DIR=$gitops_ci_clone
   branch=$(git -C "$repo_root" symbolic-ref --short -q HEAD) || branch=
   reason=$(lookup "$out" 2>"$out/lookup.err") || rc=$?
   cat "$out/lookup.err" >&2

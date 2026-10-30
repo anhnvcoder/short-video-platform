@@ -74,7 +74,7 @@ make k8s-smoke                                                # LOCAL LAB ONLY
 ```
 
 Kiểu 2: kiểm thêm mọi pod `svp` tạo trong lúc không có webhook chạy image hợp lệ: so image của pod với digest trong
-`deploy/k8s/values/services/*.yaml`.
+`envs/<env>/images/<service>.yaml` của repo `svp-gitops` (env của cluster; bản clone `../gitops`, sau `git -C ../gitops fetch origin main`, đọc bằng `git -C ../gitops show origin/main:envs/<env>/images/<service>.yaml`).
 
 ```sh
 kubectl --context k3d-svp -n svp get pods -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.containers[*].image}{"\n"}{end}'

@@ -304,7 +304,7 @@ cmd_check() {
   # ExternalSecret owning it or the cert-manager Certificate named on it, both restored with the namespace, or the
   # chart that renders it (Redpanda's redpanda-sts-lifecycle and redpanda-configurator), applied again by Argo CD once
   # auto-sync is back on. Argo CD v3 marks what it applies with the annotation argocd.argoproj.io/tracking-id (the
-  # default tracking method, deploy/k8s/values/argo-cd.yaml does not change it). Any other Secret (one written from
+  # default tracking method, base/argo-cd.yaml of svp-gitops does not change it). Any other Secret (one written from
   # .env by a script) would be gone for good, and the pods reading it would never start.
   local orphans
   orphans=$(kc -n "$ns" get secrets -o json | jq -r '.items[]

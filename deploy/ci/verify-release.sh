@@ -1,36 +1,39 @@
 #!/usr/bin/env bash
-# verify-release.sh [--rev REV] [--env ENV] REPOSITORY DIGEST: true when the release REPOSITORY@DIGEST may enter main
-# and the GitOps cluster: REPOSITORY is an image of this repository, DIGEST carries a
+# verify-release.sh [--gitops DIR] [--rev REV] [--env ENV] REPOSITORY DIGEST: true when the release REPOSITORY@DIGEST
+# may enter an environment of the deployment configuration: REPOSITORY is an image of this repository, DIGEST carries a
 # signature and exactly one vuln attestation of images.yml on main, and that attestation covers linux/amd64 and
 # linux/arm64, lists no CRITICAL and is at most 48 hours old (SVP_ATTEST_MAX_AGE in drills). 48 hours leaves at least
 # 24 before Kyverno refuses new pods at 72. Anonymous: needs no token, so a pull request job (contents: read) and a
 # machine can run it; cosign from PATH, otherwise COSIGN_IMAGE.
-# When chart svp-policy checks build provenance (requireProvenance) at commit REV (the working tree without --rev) in
-# environment ENV (any environment without --env; provenance_required of common.sh), the release must also carry
-# exactly one provenance attestation of the same identity that passes what Kyverno checks (builder.id, workflow
-# repository and ref), whose source commit is the commit the certificate of its signature names (cosign
-# --certificate-github-workflow-sha): a provenance that claims another commit than the run that signed it is refused.
+# When chart svp-policy checks build provenance (requireProvenance) in environment ENV (any environment without --env)
+# of the deployment configuration DIR (a tree of svp-gitops; gitops_dir of deploy/k8s/lib.sh without --gitops) at its
+# commit REV (DIR as it is on disk without --rev): its values.yaml at the commit envs/ENV/charts.yaml pins, then
+# envs/ENV/svp-policy.yaml (provenance_required of common.sh), the release must also carry exactly one provenance
+# attestation of the same identity that passes what Kyverno checks (builder.id, workflow repository and ref), whose
+# source commit is the commit the certificate of its signature names (cosign --certificate-github-workflow-sha): a
+# provenance that claims another commit than the run that signed it is refused.
 set -euo pipefail
 
 # shellcheck source=deploy/ci/common.sh
 . "$(dirname "$0")/common.sh"
 
-rev= env=
+rev= env= dir=
 while [ $# -gt 2 ]; do
   case $1 in
+  --gitops) dir=$2 ;;
   --rev) rev=$2 ;;
   --env) env=$2 ;;
   *) break ;;
   esac
   shift 2
 done
-[ $# -eq 2 ] || fail "usage: verify-release.sh [--rev REV] [--env ENV] REPOSITORY DIGEST"
+[ $# -eq 2 ] || fail "usage: verify-release.sh [--gitops DIR] [--rev REV] [--env ENV] REPOSITORY DIGEST"
 repo=$1 digest=$2
 case $repo in "$ghcr_prefix"/*) ;; *) fail "$repo is not under $ghcr_prefix" ;; esac
 is_digest "$digest" || fail "$digest is not sha256:<64 hex>"
 max=$(attest_max_age)
 sign_identity
-provenance=$(provenance_required "$rev" "$env") || fail "read whether chart svp-policy checks build provenance (above)"
+provenance=$(provenance_required "$rev" "$env" "$dir") || fail "read whether chart svp-policy checks build provenance (above)"
 
 verify_signature "$repo" "$digest" || fail "$repo@$digest has no signature of images.yml on main"
 envelopes=$(cosign_ verify-attestation --type vuln --certificate-oidc-issuer "$sign_issuer" \

@@ -254,12 +254,15 @@ policy_checks_provenance() {
     jq -r 'if any(.spec.attestations[]?; .name == "provenance") then "yes" else "no" end'
 }
 
-# values_commit DIGEST: the newest commit of HEAD's history whose values files of the services name DIGEST, the
-# values_ref a rescan of that release needs; status 1 without one.
+# values_commit DIGEST: the full SHA of the newest commit of this repository's history (from HEAD) whose
+# deploy/k8s/values/services/ names DIGEST, the values_ref a rescan of that release needs. A release without
+# provenance predates svp-gitops, so only this history names it (rescan.sh reads a full commit of this repository
+# there); status 1 without one.
 values_commit() {
   local c
-  for c in $(git -C "$repo_root" log --format=%H -S"$1" -- deploy/k8s/values/services); do
-    if git -C "$repo_root" grep -qF -- "$1" "$c" -- deploy/k8s/values/services; then
+  for c in $(git -C "$repo_root" log --format=%H -S"$1" HEAD -- deploy/k8s/values/services); do
+    # -S also lists the commit that removed DIGEST: only one whose tree still names it is a values_ref.
+    if git -C "$repo_root" grep -qF -- "$1" "$c" -- 'deploy/k8s/values/services/*'; then
       echo "$c"
       return 0
     fi
@@ -662,7 +665,7 @@ elif [[ -z $no_provenance ]]; then
   result l SKIP "SUPPLYCHAIN_NO_PROVENANCE is not set (digest of a release signed before CI attested build provenance)"
 else
   rescan=$(ci_dispatch_hint images.yml main rescan=true \
-    "values_ref=$(values_commit "${no_provenance#*@}" || echo '<a commit whose deploy/k8s/values/services names it>')") || exit 1
+    "values_ref=$(values_commit "${no_provenance#*@}" || echo '<a full commit of this repository whose deploy/k8s/values/services/ names it>')") || exit 1
   envelopes=$(cosign_ verify-attestation --type vuln --certificate-oidc-issuer "$policy_issuer" \
     --certificate-identity "$policy_subject" "$no_provenance" 2>"$work/cosign.err") || envelopes=
   if ! cosign_ verify --certificate-oidc-issuer "$policy_issuer" --certificate-identity "$policy_subject" \

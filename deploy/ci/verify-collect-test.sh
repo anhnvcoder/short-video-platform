@@ -13,8 +13,10 @@
 # also with its last sample written late by a fake sampler; its k6.tsv over fixtures of /proc and of the cgroup tree;
 # the criteria of the k3d scenarios of part 3 (two KEDA drills of gitops, the k6 pods' CPU throttling).
 # Then deploy/ci/verify-run.sh with a fake make (and a fake psql and docker for the copy back to MinIO): the scenarios
-# of compose-obs and dev-k3d, each scenario of part 3 by its name, and made-up scenario files for what a scenario file
-# can get wrong and for a drill run twice. Then the self-test of deploy/ci/verify-tempo.sh.
+# of compose-obs and dev-k3d, each scenario of part 3 by its name, gitops with part of its checks in targets (no set
+# recorded), its release wait on a scheduled run, and made-up scenario files for what a scenario file can get wrong and
+# for a drill run twice. Then gitops_stale of deploy/ci/verify/gitops.sh with a fake cosign, and the self-test of
+# deploy/ci/verify-tempo.sh.
 # Last, that deploy/ci/changed-services.sh builds no image for a change of these scripts, in a throwaway git repository
 # holding a copy of it. Runs on macOS and Linux, no network, no Docker, no cluster.
 #
@@ -76,14 +78,28 @@ EOF
 
 # The fake kubectl: kubectl --context k3d-svp --request-timeout=10s -n NS get secrets -o json. FAKE_KUBECTL_FAIL=1
 # makes it fail, as for a cluster that no longer answers. For unready_report: kubectl --context k3d-svp -n NS get pods
-# -o json prints pods-NS.json; kubectl --context k3d-svp -n NS logs POD -c CONTAINER [--previous] --tail=40 prints
-# logs/NS.POD.CONTAINER[.previous]; both are recorded in calls.
+# -o json prints pods-NS.json; kubectl --context k3d-svp -n NS logs POD -c CONTAINER [--previous] --tail=N prints
+# logs/NS.POD.CONTAINER[.previous]; both are recorded in calls. For gitops_timeout_report, kubectl --context k3d-svp
+# [-n NS] get TYPE [NAME...] [flags] prints the list of TYPE-NS.json (cluster.TYPE.json without -n), or fails as for a
+# resource type the server does not have; given names, as kubectl with --ignore-not-found: the one object for one name,
+# a List for several, nothing when none is there. Recorded in calls too.
 cat >"$work/bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
 [ "${FAKE_KUBECTL_FAIL:-}" = 1 ] && { echo "The connection to the server was refused" >&2; exit 1; }
+if [ "$1 $2" = "--context k3d-svp" ] && { [ "$3" = get ] || [ "$3 $5" = "-n get" ]; }; then
+  echo "$*" >>"$FAKE_KUBECTL_DIR/calls"
+  if [ "$3" = get ]; then type=$4 f=cluster.$4 && shift 4; else type=$6 f=$6-$4 && shift 6; fi
+  f=$FAKE_KUBECTL_DIR/$f.json
+  [ -f "$f" ] || { echo "error: the server doesn't have a resource type \"$type\"" >&2; exit 1; }
+  names=()
+  while [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; do names+=("$1") && shift; done
+  [ ${#names[@]} = 0 ] && { cat "$f"; exit; }
+  jq '[.items[] | select(.metadata.name | IN($ARGS.positional[]))]
+    | if ($ARGS.positional | length) > 1 then {kind: "List", items: .} else .[] end' --args "${names[@]}" <"$f"
+  exit
+fi
 if [ "$1 $2 $3" = "--context k3d-svp -n" ]; then
   echo "$*" >>"$FAKE_KUBECTL_DIR/calls"
-  if [ "$5 $6 $7 $8" = "get pods -o json" ]; then cat "$FAKE_KUBECTL_DIR/pods-$4.json"; exit; fi
   [ "$5 $7" = "logs -c" ] || exit 2
   f=$FAKE_KUBECTL_DIR/logs/$4.$6.$8
   case " $* " in *" --previous "*) f=$f.previous ;; esac
@@ -216,6 +232,162 @@ case $shown in
   *) ok "unready: log_tail_namespaces has neither svp, Envoy nor kube-system, and is not empty" ;;
 esac
 
+# --- gitops_timeout_report of deploy/k8s/lib.sh, which deploy/k8s/gitops.sh prints when its wait for the Applications
+# runs out. The Applications as Argo CD 3 writes them: no health on their resources. Two waited for that are not
+# Healthy (one Healthy left out, one not waited for left out), their resources read from the cluster and judged: a
+# Deployment not ready beside a ready one and a missing one (one call, a List), a DaemonSet of a generation not
+# observed, a Prometheus object without status beside a ready Alertmanager (one object each), a cluster-scoped
+# ClusterIssuer not Ready, an HTTPRoute whose parent has ResolvedRefs False, a PersistentVolumeClaim Pending, a failed
+# Job, a kind the server does not have; a hook, a Secret, a ConfigMap and a CRD never read. Then the CRDs of the
+# Prometheus and Alertmanager objects, by name (another group's left out, a missing one skipped), a Prometheus object
+# no controller reconciled beside a reconciled Alertmanager, and the operator's log and its attempt before, marked with
+# svp-obs (GlitchTip's pod beside it is not the operator's). Then the same with neither the CRDs nor any pod.
+gk=$work/kube-gitops
+mkdir -p "$gk/logs"
+jq -n '{items: [
+  {metadata: {name: "kube-prometheus-stack"}, status: {health: {status: "Progressing"}, resourceHealthSource: "appTree",
+   resources: [
+    {group: "apiextensions.k8s.io", kind: "CustomResourceDefinition", name: "prometheuses.monitoring.coreos.com", status: "Synced"},
+    {kind: "ConfigMap", namespace: "svp-obs", name: "kps-dashboards", status: "Synced"},
+    {kind: "Secret", namespace: "svp-obs", name: "alertmanager-kps", status: "Synced"},
+    {group: "apps", kind: "Deployment", namespace: "svp-obs", name: "kps-operator", status: "Synced"},
+    {group: "apps", kind: "Deployment", namespace: "svp-obs", name: "kps-kube-state-metrics", status: "Synced"},
+    {group: "apps", kind: "Deployment", namespace: "svp-obs", name: "kps-gone", status: "OutOfSync"},
+    {group: "apps", kind: "DaemonSet", namespace: "svp-obs", name: "kps-node-exporter", status: "Synced"},
+    {group: "monitoring.coreos.com", kind: "Prometheus", namespace: "svp-obs", name: "kps-prometheus", status: "Synced"},
+    {group: "monitoring.coreos.com", kind: "Alertmanager", namespace: "svp-obs", name: "kps-alertmanager", status: "Synced"},
+    {group: "batch", kind: "Job", namespace: "svp-obs", name: "kps-hook", hook: true, status: "Synced"}]}},
+  {metadata: {name: "svp-cluster"}, status: {health: {status: "Degraded"}, resourceHealthSource: "appTree", resources: [
+    {group: "cert-manager.io", kind: "ClusterIssuer", name: "svp-ca", status: "Synced"},
+    {kind: "PersistentVolumeClaim", namespace: "svp-data", name: "data-x", status: "Synced"},
+    {group: "batch", kind: "Job", namespace: "svp-data", name: "pg-init", status: "Synced"},
+    {group: "keda.sh", kind: "ScaledObject", namespace: "svp", name: "media-worker", status: "Synced"},
+    {group: "gateway.networking.k8s.io", kind: "HTTPRoute", namespace: "svp", name: "gateway", status: "Synced"}]}},
+  {metadata: {name: "svp-root"}, status: {health: {status: "Healthy"}, resources: [
+    {group: "argoproj.io", kind: "Application", namespace: "argocd", name: "loki", status: "Synced"}]}},
+  {metadata: {name: "not-waited-for"}, status: {health: {status: "Degraded"}, resources: [
+    {group: "apps", kind: "Deployment", namespace: "other", name: "other-deploy", status: "Synced"}]}}]}' \
+  >"$gk/applications.argoproj.io-argocd.json"
+jq -n '{items: [
+  {kind: "Deployment", metadata: {name: "kps-operator", generation: 1}, spec: {replicas: 1},
+   status: {observedGeneration: 1, replicas: 1, updatedReplicas: 1, conditions: [
+     {type: "Available", status: "False", reason: "MinimumReplicasUnavailable"},
+     {type: "Progressing", status: "False", reason: "ProgressDeadlineExceeded", message: "line one\nline two"}]}},
+  {kind: "Deployment", metadata: {name: "kps-kube-state-metrics", generation: 3}, spec: {replicas: 2},
+   status: {observedGeneration: 3, replicas: 2, readyReplicas: 2, updatedReplicas: 2}}]}' >"$gk/Deployment.apps-svp-obs.json"
+jq -n '{items: [{kind: "DaemonSet", metadata: {name: "kps-node-exporter", generation: 2},
+  status: {observedGeneration: 1, desiredNumberScheduled: 1, numberReady: 1, updatedNumberScheduled: 1}}]}' \
+  >"$gk/DaemonSet.apps-svp-obs.json"
+jq -n '{items: [{kind: "Prometheus", metadata: {name: "kps-prometheus", generation: 1}}]}' \
+  >"$gk/Prometheus.monitoring.coreos.com-svp-obs.json"
+jq -n '{items: [{kind: "Alertmanager", metadata: {name: "kps-alertmanager", generation: 1},
+  status: {conditions: [{type: "Available", status: "True"}, {type: "Reconciled", status: "True"}]}}]}' \
+  >"$gk/Alertmanager.monitoring.coreos.com-svp-obs.json"
+jq -n '{items: [{kind: "ClusterIssuer", metadata: {name: "svp-ca"},
+  status: {conditions: [{type: "Ready", status: "False", reason: "ErrInitIssuer", message: "no CA"}]}}]}' \
+  >"$gk/cluster.ClusterIssuer.cert-manager.io.json"
+jq -n '{items: [{kind: "HTTPRoute", metadata: {name: "gateway"}, status: {parents: [{conditions: [
+  {type: "Accepted", status: "True"}, {type: "ResolvedRefs", status: "False", reason: "BackendNotFound"}]}]}}]}' \
+  >"$gk/HTTPRoute.gateway.networking.k8s.io-svp.json"
+jq -n '{items: [{kind: "PersistentVolumeClaim", metadata: {name: "data-x"}, status: {phase: "Pending"}}]}' \
+  >"$gk/PersistentVolumeClaim-svp-data.json"
+jq -n '{items: [{kind: "Job", metadata: {name: "pg-init"}, status: {failed: 3, conditions: [
+  {type: "Failed", status: "True", reason: "BackoffLimitExceeded", message: "Job has reached the specified backoff limit"}]}}]}' \
+  >"$gk/Job.batch-svp-data.json"
+jq -n '{items: [
+  {metadata: {name: "prometheuses.monitoring.coreos.com", creationTimestamp: "2026-10-29T19:24:50Z"},
+   spec: {group: "monitoring.coreos.com"},
+   status: {conditions: [{type: "NamesAccepted", status: "True"},
+     {type: "Established", status: "True", lastTransitionTime: "2026-10-29T19:25:20Z"}]}},
+  {metadata: {name: "clusters.postgresql.cnpg.io", creationTimestamp: "2026-10-29T19:20:00Z"},
+   spec: {group: "postgresql.cnpg.io"}}]}' >"$gk/cluster.customresourcedefinitions.apiextensions.k8s.io.json"
+jq -n '{items: [
+  {kind: "Prometheus", metadata: {namespace: "svp-obs", name: "kps-prometheus"}},
+  {kind: "Alertmanager", metadata: {namespace: "svp-obs", name: "kps-alertmanager"},
+   status: {conditions: [{type: "Available", status: "True"}, {type: "Reconciled", status: "True", reason: "Ok", message: "m"}]}}]}' \
+  >"$gk/cluster.prometheuses.monitoring.coreos.com,alertmanagers.monitoring.coreos.com.json"
+jq -n '{items: [
+  {metadata: {name: "kps-operator-abc", labels: {"app.kubernetes.io/component": "prometheus-operator"}},
+   status: {containerStatuses: [{name: "kube-prometheus-stack", restartCount: 1,
+     state: {running: {startedAt: "2026-10-29T19:25:05Z"}}}]}},
+  {metadata: {name: "glitchtip-abc", labels: {"app.kubernetes.io/name": "glitchtip"}},
+   status: {containerStatuses: [{name: "glitchtip", restartCount: 0, state: {running: {}}}]}}]}' >"$gk/pods-svp-obs.json"
+echo 'level=warn msg="resource \"prometheuses\" (group: \"monitoring.coreos.com/v1\") not installed in the cluster" OPERATOR-LOG-MARKER' \
+  >"$gk/logs/svp-obs.kps-operator-abc.kube-prometheus-stack"
+echo OPERATOR-PREVIOUS-MARKER >"$gk/logs/svp-obs.kps-operator-abc.kube-prometheus-stack.previous"
+echo GLITCHTIP-MARKER >"$gk/logs/svp-obs.glitchtip-abc.glitchtip"
+: >"$gk/calls"
+timeout_report=$work/timeout-report.txt
+(
+  PATH=$work/bin:$PATH FAKE_KUBECTL_DIR=$gk
+  . "$here/../k8s/lib.sh"
+  gitops_timeout_report $'svp-root\nkube-prometheus-stack\nsvp-cluster\n'
+) 2>"$timeout_report" >/dev/null && ok "timeout report: exit 0" || fail "timeout report: exit 0"
+timeout_lines=$(sed -n '/^Applications not Healthy/,/^CRDs of/p' "$timeout_report")
+want_lines='Applications not Healthy, and their resources that are not ready:
+  kube-prometheus-stack: Progressing
+    DaemonSet svp-obs/kps-node-exporter: generation 2 not observed yet
+    Deployment svp-obs/kps-operator: 0/1 ready, 1 updated; Progressing=False ProgressDeadlineExceeded: line one line two
+    Deployment svp-obs/kps-gone: missing
+    Prometheus svp-obs/kps-prometheus: no status (no controller has reconciled it)
+  svp-cluster: Degraded
+    ClusterIssuer svp-ca: Ready=False ErrInitIssuer: no CA
+    HTTPRoute svp/gateway: ResolvedRefs=False BackendNotFound
+    cannot read ScaledObject.keda.sh in svp: error: the server doesn'"'"'t have a resource type "ScaledObject.keda.sh"
+    PersistentVolumeClaim svp-data/data-x: phase Pending
+    Job svp-data/pg-init: Failed=True BackoffLimitExceeded: Job has reached the specified backoff limit
+CRDs of the Prometheus and Alertmanager objects:'
+[ "$timeout_lines" = "$want_lines" ] &&
+  ok "timeout report: only the waited-for Applications not Healthy, only their resources not ready, read live, one line each" ||
+  fail "timeout report: only the waited-for Applications not Healthy, only their resources not ready, read live, one line each"
+has_report() { if grep -qxF -- "$2" "$timeout_report"; then ok "timeout report: $1"; else fail "timeout report: $1"; fi; }
+has_report "a CRD of monitoring.coreos.com, created and Established" \
+  "  prometheuses.monitoring.coreos.com: created 2026-10-29T19:24:50Z, Established True since 2026-10-29T19:25:20Z"
+has_report "a Prometheus object without conditions" \
+  "  Prometheus svp-obs/kps-prometheus: no status conditions (no controller has reconciled it)"
+has_report "an Alertmanager object's conditions" \
+  "  Alertmanager svp-obs/kps-alertmanager: Available=True; Reconciled=True Ok: m"
+has_report "the operator's container, when it started" \
+  "  pod svp-obs/kps-operator-abc, container kube-prometheus-stack: started 2026-10-29T19:25:05Z, 1 restart(s); last lines of its log:"
+has_report "the operator's log, marked with svp-obs" \
+  '    [svp-obs] level=warn msg="resource \"prometheuses\" (group: \"monitoring.coreos.com/v1\") not installed in the cluster" OPERATOR-LOG-MARKER'
+has_report "the operator's attempt before, marked with svp-obs" "    [svp-obs] OPERATOR-PREVIOUS-MARKER"
+for m in clusters.postgresql.cnpg.io not-waited-for loki kps-kube-state-metrics GLITCHTIP-MARKER; do
+  if grep -qF -- "$m" "$timeout_report"; then fail "timeout report: no $m"; else ok "timeout report: no $m"; fi
+done
+grep -qxF -- '--context k3d-svp -n svp-obs get Deployment.apps kps-operator kps-kube-state-metrics kps-gone --ignore-not-found -o json' \
+  "$gk/calls" && grep -qxF -- '--context k3d-svp get ClusterIssuer.cert-manager.io svp-ca --ignore-not-found -o json' "$gk/calls" &&
+  grep -qxF -- '--context k3d-svp get customresourcedefinitions.apiextensions.k8s.io prometheuses.monitoring.coreos.com alertmanagers.monitoring.coreos.com --ignore-not-found -o json' \
+    "$gk/calls" &&
+  ok "timeout report: one call per namespace and kind, cluster-scoped without -n, the two CRDs by name" ||
+  fail "timeout report: one call per namespace and kind, cluster-scoped without -n, the two CRDs by name"
+grep -q -- '-n svp-obs logs kps-operator-abc -c kube-prometheus-stack --tail=60$' "$gk/calls" &&
+  grep -q -- '-n svp-obs logs kps-operator-abc -c kube-prometheus-stack --previous --tail=60$' "$gk/calls" &&
+  ! grep -q 'logs glitchtip' "$gk/calls" && ! grep -qi secret "$gk/calls" &&
+  ! grep -qE 'get (ConfigMap|CustomResourceDefinition)|kps-hook|other-deploy|get Application\.' "$gk/calls" &&
+  ok "timeout report: reads the operator's logs only, no Secret, no hook, no kind it does not judge" ||
+  fail "timeout report: reads the operator's logs only, no Secret, no hook, no kind it does not judge"
+echo '{"items": []}' >"$gk/cluster.customresourcedefinitions.apiextensions.k8s.io.json"
+rm "$gk/cluster.prometheuses.monitoring.coreos.com,alertmanagers.monitoring.coreos.com.json" \
+  "$gk/Prometheus.monitoring.coreos.com-svp-obs.json"
+echo '{"items": []}' >"$gk/pods-svp-obs.json"
+(
+  PATH=$work/bin:$PATH FAKE_KUBECTL_DIR=$gk
+  . "$here/../k8s/lib.sh"
+  gitops_timeout_report kube-prometheus-stack
+) 2>"$work/timeout-report-bare.txt" >/dev/null && ok "timeout report without the CRDs: exit 0" ||
+  fail "timeout report without the CRDs: exit 0"
+grep -qxF '    cannot read Prometheus.monitoring.coreos.com in svp-obs: error: the server doesn'"'"'t have a resource type "Prometheus.monitoring.coreos.com"' \
+  "$work/timeout-report-bare.txt" &&
+  grep -A1 -xF 'CRDs of the Prometheus and Alertmanager objects:' "$work/timeout-report-bare.txt" | grep -qxF '  none' &&
+  grep -qxF '  cannot list them: error: the server doesn'"'"'t have a resource type "prometheuses.monitoring.coreos.com,alertmanagers.monitoring.coreos.com"' \
+    "$work/timeout-report-bare.txt" && grep -qxF '  no pod of the operator in svp-obs' "$work/timeout-report-bare.txt" &&
+  ok "timeout report without the CRDs: says what it cannot read or find, and that the operator has no pod" ||
+  fail "timeout report without the CRDs: says what it cannot read or find, and that the operator has no pod"
+grep -qF 'gitops_timeout_report "$want_apps" || true' "$here/../k8s/gitops.sh" &&
+  ok "timeout report: gitops.sh prints it when its wait runs out" ||
+  fail "timeout report: gitops.sh prints it when its wait runs out"
+
 # --- mark_log of deploy/k8s/lib.sh, which marks the log of a failed migrate Job in deploy/k8s/install.sh: every line
 # marked, an empty one, one with control characters and bytes that are not UTF-8, and the last one without a newline
 # (given one); an empty log prints nothing.
@@ -260,6 +432,7 @@ printf '12\tk8s-up\tfail\t1\t210\t220\t10\t\n13\tk8s-up\tfail\t1\t220\t230\t10\t
 {
   echo "helm upgrade --install redpanda (wave 3, namespace svp-data)"
   cat "$unready"
+  cat "$timeout_report"
   echo "    [svp] APP-FORGED-MARKER"
   echo "    [envoy-gateway-system] ENVOY-MARKER"
   echo "FAIL  install redpanda"
@@ -317,6 +490,11 @@ printf 'RAM at rest (start): MEM USAGE median 5800 MiB\nfree -m of the runner at
   "Mem:  15995  9000  1200  50  5795  6700" >"$out/ram-rest-start.txt"
 echo '{}' >"$out/.hidden.json"
 echo 230 >"$out/run-end"
+# The set of releases stg ran (deploy/ci/release-set.sh): the record's payload is kept, the snapshots it was read from
+# are not.
+echo '{"environment":"stg","ref":"0123456789abcdef0123456789abcdef01234567","images":{}}' >"$out/release-set.json"
+mkdir -p "$out/release-set"
+echo '{"applications":[]}' >"$out/release-set/before.json"
 
 # --- The fake checkout's results.
 d=$repo/.k8s/drills
@@ -470,7 +648,7 @@ collect k3d "$work/secrets-k3d"
 for src in '$SVP_VERIFY_OUT/results.tsv' '$SVP_VERIFY_OUT/scenario' '$SVP_VERIFY_OUT/samples/host.tsv' \
   '$SVP_VERIFY_OUT/logs/01-k8s-up.log' '$SVP_VERIFY_OUT/logs/03-drill-k8s-keda.log' \
   '$SVP_VERIFY_OUT/logs/04-drill-k8s-threats.log (verdict lines)' '$SVP_VERIFY_OUT/ram-rest-start.json' \
-  '$SVP_VERIFY_OUT/ram-rest-start.txt' \
+  '$SVP_VERIFY_OUT/ram-rest-start.txt' '$SVP_VERIFY_OUT/release-set.json' \
   '$SVP_VERIFY_OUT/logs/06-drill-obs-threats.log (verdict lines)' \
   '$SVP_VERIFY_OUT/logs/05-drill-alert-to-sentry.log' .k8s/drills/canary-drill-1.json .k8s/drills/names-1.json \
   .k8s/drills/identifiers-1.json .k8s/drills/traffic-1.log .k6/local-1/summary.json \
@@ -483,6 +661,9 @@ expect k3d .k8s/drills/binary-piece-1.json secret-value
 expect k3d '$SVP_VERIFY_OUT/logs/02-k8s-smoke.log' secret-value
 expect k3d '$SVP_VERIFY_OUT/sampler.pid' not-allowed
 expect k3d '$SVP_VERIFY_OUT/run-end' not-allowed
+expect k3d '$SVP_VERIFY_OUT/release-set/before.json' not-allowed
+[ -f "$work/art-k3d/release-set.json" ] && ok "k3d: release-set.json lands at the top of the artifact" ||
+  fail "k3d: release-set.json lands at the top of the artifact"
 lacks k3d "verify-run.sh's end mark is dropped without a warning" 'run-end'
 expect k3d '$SVP_VERIFY_OUT/.hidden.json' hidden
 expect k3d .k8s/drills/backup-1.json secret-value
@@ -563,9 +744,13 @@ grep -q MIGRATE-PANIC-MARKER "$a/01-k8s-up.log" && fail "k3d: a migrate Job's lo
 expect k3d '$SVP_VERIFY_OUT/logs/12-k8s-up.log' kept
 expect k3d '$SVP_VERIFY_OUT/logs/13-k8s-up.log' secret-value
 grep -qxF "    [svp-data] INFRA-TAIL-MARKER" "$a/12-k8s-up.log" && grep -qF INFRA-MESSAGE-MARKER "$a/12-k8s-up.log" &&
+  grep -qF "    [svp-obs] OPERATOR-PREVIOUS-MARKER" "$a/12-k8s-up.log" &&
+  grep -qxF "  Prometheus svp-obs/kps-prometheus: no status conditions (no controller has reconciled it)" "$a/12-k8s-up.log" &&
+  grep -qxF "    Prometheus svp-obs/kps-prometheus: no status (no controller has reconciled it)" "$a/12-k8s-up.log" &&
+  grep -qxF "    HTTPRoute svp/gateway: ResolvedRefs=False BackendNotFound" "$a/12-k8s-up.log" &&
   grep -q '^pod svp/gateway-abc, container gateway: ' "$a/12-k8s-up.log" &&
-  ok "k3d: the log tail of an infrastructure container and every container's state are kept" ||
-  fail "k3d: the log tail of an infrastructure container and every container's state are kept"
+  ok "k3d: the log tail of an infrastructure container, every container's state and the timeout report are kept" ||
+  fail "k3d: the log tail of an infrastructure container, every container's state and the timeout report are kept"
 if grep -qE 'APP-FORGED-MARKER|ENVOY-MARKER' "$a/12-k8s-up.log"; then
   fail "k3d: a log line of namespace svp or envoy-gateway-system is left out"
 else
@@ -1121,15 +1306,17 @@ same "sample: dev-k3d has no k6 criterion" "null level-1=4/2/2" "$(throttle k6-d
 rm -f "$so/k6-windows.tsv" "$so/samples/k6.tsv"
 echo compose-obs >"$so/scenario"
 
-# --- verify-run.sh: the build target's failure skips the rest at once, SVP_VERIFY_TARGETS picks targets. It runs from
-# a copy in a throwaway tree with a fake .env, a fake make first on PATH (it logs its arguments and fails for the
-# targets FAKE_MAKE_FAIL names), a fake docker and the fake kubectl above (no cluster answers), so no target, no
-# container, no cluster and no real .env is ever reached. verify-run.sh needs GNU timeout (and GNU date for its time
-# lines: gdate on macOS).
+# --- verify-run.sh: the build target's failure skips the rest at once, SVP_VERIFY_TARGETS picks targets, a k3d scenario
+# clones svp-gitops first (make gitops-clone) and starts nothing when that fails. It runs from a copy in a throwaway
+# tree with a fake .env, a fake make first on PATH (it logs its arguments and fails for the targets FAKE_MAKE_FAIL
+# names), a fake docker and the fake kubectl above (no cluster answers), so no target, no container, no cluster, no
+# clone and no real .env is ever reached. verify-run.sh needs GNU timeout (and GNU date for its time lines: gdate on
+# macOS).
 vr=$work/verify-run
 vb=$work/verify-run-bin
-mkdir -p "$vr/deploy/ci" "$vr/deploy/observability/glitchtip" "$vb"
+mkdir -p "$vr/deploy/ci" "$vr/deploy/k8s" "$vr/deploy/observability/glitchtip" "$vb"
 cp "$here/verify-run.sh" "$here/verify-mask.sh" "$here/verify-sample.sh" "$here/platform.sh" "$vr/deploy/ci/"
+cp "$here/../k8s/lib.sh" "$vr/deploy/k8s/"
 cp -R "$here/verify" "$vr/deploy/ci/"
 cp "$here/../observability/glitchtip/dotenv.sh" "$vr/deploy/observability/glitchtip/"
 cp "$repo/.env" "$vr/.env"
@@ -1227,15 +1414,22 @@ if timeout --version 2>/dev/null | grep -q GNU; then
 
   rc=$(run_verify one dev-k3d SVP_VERIFY_TARGETS=drill-k8s-threats)
   same "verify-run: a run of the chosen targets that pass passes" 0 "$rc"
-  same "verify-run: only the build target and the chosen one run" "$(printf 'k8s-up\ndrill-k8s-threats')" \
-    "$(cat "$work/run-one.make")"
+  same "verify-run: a k3d scenario clones svp-gitops, then only the build target and the chosen one run" \
+    "$(printf -- '-s gitops-clone\nk8s-up\ndrill-k8s-threats')" "$(cat "$work/run-one.make")"
   same "verify-run: the targets left out keep their ids and are skipped as not in targets" \
     "$(want_rows "$k3d_names" ok 'not in targets' '04 drill-k8s-threats ok ')" "$(results one)"
 
   rc=$(run_verify one-fails dev-k3d 'SVP_VERIFY_TARGETS=drill-k8s-pdb  drill-k8s-threats' FAKE_MAKE_FAIL=drill-k8s-pdb)
   same "verify-run: a chosen target that fails makes the run fail" 1 "$rc"
   same "verify-run: chosen targets run in the scenario's order, whatever the order given" \
-    "$(printf 'k8s-up\ndrill-k8s-threats\ndrill-k8s-pdb')" "$(cat "$work/run-one-fails.make")"
+    "$(printf -- '-s gitops-clone\nk8s-up\ndrill-k8s-threats\ndrill-k8s-pdb')" "$(cat "$work/run-one-fails.make")"
+
+  rc=$(run_verify clone-fails dev-k3d FAKE_MAKE_FAIL=gitops-clone)
+  same "verify-run: a failed clone of svp-gitops makes the run fail" 1 "$rc"
+  [ "$(cat "$work/run-clone-fails.make")" = "-s gitops-clone" ] && [ ! -e "$work/run-clone-fails.out/results.tsv" ] &&
+    ok "verify-run: after a failed clone of svp-gitops no target starts" ||
+    fail "verify-run: after a failed clone of svp-gitops no target starts"
+  has run-clone-fails "the failed clone is named" "make gitops-clone (the deployment configuration svp-gitops); nothing started"
 
   rc=$(run_verify peak dev-k3d SVP_VERIFY_TARGETS=ram-peak)
   same "verify-run: ram-peak without drill-k8s-keda makes the run fail" 1 "$rc"
@@ -1330,8 +1524,9 @@ if timeout --version 2>/dev/null | grep -q GNU; then
     ok "verify-run: the s3-init log is counted, never printed" || fail "verify-run: the s3-init log is counted, never printed"
 
   # Each scenario of part 3 is a name verify-run.sh takes, its file sourced: the build target failing skips every other
-  # target at once, and only the build target ran. What comes after it is left to each scenario's own work. The copy
-  # is a git checkout on a branch, which gitops gives make k8s-gitops-up as the revision Argo CD follows.
+  # target at once, and only the build target ran, after the clone of svp-gitops. What comes after it is left to each
+  # scenario's own work. The copy is a git checkout on a branch, which gitops does not give Argo CD: the cluster
+  # follows main of svp-gitops whatever the branch of this repository.
   git -c init.defaultBranch=feat/stage6b-verify init -q "$vr"
   for sc in gitops:k8s-gitops-up web-canary:k8s-up k6-cloud-mini:k8s-up chaos:k8s-up velero:k8s-up; do
     scn=${sc%%:*}
@@ -1345,10 +1540,34 @@ if timeout --version 2>/dev/null | grep -q GNU; then
       ok "verify-run: $scn skips every target after its build target for it" ||
       fail "verify-run: $scn skips every target after its build target for it"
   done
-  same "verify-run: gitops builds the cluster from the branch of the checkout" \
-    "k8s-gitops-up GITOPS_REV=feat/stage6b-verify" "$(cat "$work/run-infra-gitops.make")"
-  same "verify-run: a k3d scenario of the dev path runs only make k8s-up when it fails" "k8s-up" \
-    "$(cat "$work/run-infra-velero.make")"
+  same "verify-run: gitops builds the cluster from main of svp-gitops, cloned first" \
+    "$(printf -- '-s gitops-clone\nk8s-gitops-up GITOPS_REV=main')" "$(cat "$work/run-infra-gitops.make")"
+  same "verify-run: a k3d scenario of the dev path runs only the clone and make k8s-up when it fails" \
+    "$(printf -- '-s gitops-clone\nk8s-up')" "$(cat "$work/run-infra-velero.make")"
+  # gitops with targets that leave out some of its checks: release-set, though chosen, is skipped with the reason and
+  # fails the run, so no release-set.json is written for job record-stg to record.
+  rc=$(run_verify part-gitops gitops 'SVP_VERIFY_TARGETS=k8s-smoke release-set-before release-set')
+  same "verify-run: gitops with part of its checks in targets fails" 1 "$rc"
+  same "verify-run: gitops skips release-set when the targets leave out a check of the set" \
+    "release-set skipped targets leave out gitops-env gitops-external-secrets ram-rest-start drill-k8s-supplychain drill-k8s-threats gitops-sourcemaps k8s-web-e2e drill-k8s-web-obs drill-k8s-keda-1 ram-peak-1 drill-k8s-keda-2 ram-peak-2 ram-rest-end: the set of releases stg ran was not checked by every step" \
+    "$(results part-gitops | awk '$2 == "release-set" { $1 = ""; print substr($0, 2) }')"
+  [ ! -e "$work/run-part-gitops.out/release-set.json" ] && ok "verify-run: gitops with part of its checks writes no release-set.json" ||
+    fail "verify-run: gitops with part of its checks writes no release-set.json"
+  # The step after the scenario (release_wait): a scheduled run waits for no release; only true marks one, so any
+  # other value is a dispatch, here of a branch, which waits for nothing either but says so for its own reason.
+  wait_step() {
+    env -u GITHUB_ACTIONS -u CI -u GITLAB_CI -u JENKINS_URL -u TF_BUILD PATH="$vb:$work/bin:$PATH" GH_TOKEN= \
+      SVP_VERIFY_TARGETS= SVP_VERIFY_OUT="$work/wait-$1.out" "${@:2}" bash "$vr/deploy/ci/verify/gitops.sh" release \
+      >"$work/wait-$1.log" 2>&1 </dev/null
+  }
+  rc=0 && wait_step scheduled SVP_VERIFY_SCHEDULED=true || rc=$?
+  same "release wait: a scheduled run passes without waiting" 0 "$rc"
+  has wait-scheduled "a scheduled run says why it waits for nothing" \
+    "skipped: wait-release and measure-gitops: a scheduled run waits for no release"
+  rc=0 && wait_step not-scheduled SVP_VERIFY_SCHEDULED=1 || rc=$?
+  same "release wait: SVP_VERIFY_SCHEDULED other than true is a dispatch (of a branch here)" 0 "$rc"
+  has wait-not-scheduled "a dispatch of a branch says it is one" "skipped: this run is of branch feat/stage6b-verify"
+  lacks wait-not-scheduled "a dispatch is not taken for a scheduled run" "a scheduled run"
   rc=$(run_verify no-scenario nope)
   same "verify-run: a name that is no scenario stops it" 2 "$rc"
   [ ! -s "$work/run-no-scenario.make" ] && [ ! -e "$work/run-no-scenario.out/results.tsv" ] &&
@@ -1358,7 +1577,7 @@ if timeout --version 2>/dev/null | grep -q GNU; then
   # first target is not its build target, one fake scenario that runs a drill twice, each followed by its RAM peak.
   vr2=$work/verify-run-2
   mkdir -p "$vr2/deploy"
-  cp -R "$vr/deploy/ci" "$vr/deploy/observability" "$vr2/deploy/"
+  cp -R "$vr/deploy/ci" "$vr/deploy/k8s" "$vr/deploy/observability" "$vr2/deploy/"
   cp "$vr/.env" "$vr2/.env"
   rm "$vr2/deploy/ci/verify/web-canary.sh"
   printf 'build=k8s-up\njob_minutes_default=330\nscenario_targets() { step k8s-up 1 make k8s-up; }\n' \
@@ -1433,6 +1652,41 @@ EOF2
 else
   echo "skip  verify-run: no GNU timeout on PATH (Linux, or coreutils on macOS)"
 fi
+
+# --- gitops_stale of deploy/ci/verify/gitops.sh: on a scheduled run, the drill image of case c or l is left out only
+# when the oldest vuln attestation cosign verifies is past the policy's maximum age (72h). A fake cosign first on PATH
+# answers verify-attestation with one envelope scanned FAKE_SCAN_HOURS ago, or fails with FAKE_COSIGN_FAIL=1.
+mkdir -p "$work/cosign-bin"
+cat >"$work/cosign-bin/cosign" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = verify-attestation ] && [ "${FAKE_COSIGN_FAIL:-}" != 1 ] || exit 1
+jq -nc --argjson h "$FAKE_SCAN_HOURS" \
+  '{payload: ({predicate: {metadata: {scanFinishedOn: (now - $h * 3600 | floor | todate)}}} | tojson | @base64)}'
+EOF
+chmod 755 "$work/cosign-bin/cosign"
+stale_image=ghcr.io/anhnvcoder/short-video-platform/drill-vulnerable@sha256:$(printf '%064d' 0)
+# stale NAME CASE [VAR=VALUE...]: gitops_stale CASE on stale_image; its output in $work/stale-NAME.log, prints its status.
+stale() {
+  local name=$1 case=$2 rc=0
+  shift 2
+  env -u GITHUB_ACTIONS -u CI -u GITLAB_CI -u JENKINS_URL -u TF_BUILD PATH="$work/cosign-bin:$PATH" here="$here" \
+    "$@" bash -c '. "$1/verify/gitops.sh" && gitops_stale "$2" "$3" "$4"' _ "$here" "$case" "$stale_image" \
+    "$(printf '%040d' 1)" >"$work/stale-$name.log" 2>&1 </dev/null || rc=$?
+  echo "$rc"
+}
+same "gitops_stale: an attestation older than 72h leaves case c out" 0 "$(stale old c FAKE_SCAN_HOURS=100)"
+has stale-old "the NOTE names the case, the age and the build of the drill images" \
+  "NOTE  case c left out on this scheduled run (it SKIPs): $stale_image was scanned at"
+has stale-old "the age is in hours" ", 100 h ago, within an hour of 72h or more;"
+same "gitops_stale: an attestation within the last hour before 72h leaves the case out too" 0 \
+  "$(stale near c FAKE_SCAN_HOURS=71.5)"
+has stale-old "case c names the build of the drill images" "-f drill=true"
+same "gitops_stale: case l too" 0 "$(stale old-l l FAKE_SCAN_HOURS=80)"
+has stale-old-l "case l names the rescan with the values commit" "-f rescan=true -f values_ref=$(printf '%040d' 1)"
+same "gitops_stale: an attestation within 72h keeps the case" 1 "$(stale fresh c FAKE_SCAN_HOURS=10)"
+lacks stale-fresh "nothing is noted for a case kept" NOTE
+same "gitops_stale: cosign without an answer keeps the case (the drill fails it)" 1 \
+  "$(stale no-cosign c FAKE_COSIGN_FAIL=1 FAKE_SCAN_HOURS=100)"
 
 # --- verify-tempo.sh: its own self-test (fake kubectl, curl and nc; no cluster, no network), so that job config of CI
 # runs it with the rest of the verification scripts' tests.
