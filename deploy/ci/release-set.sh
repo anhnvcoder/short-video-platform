@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # release-set.sh: the set of releases staging ran while the checks of a run of scenario gitops passed, and the
-# records of it (deployment records of environment stg in svp-gitops). stg follows main of svp-gitops on its own, so
-# what it runs can change between the checks and the moment it is read: the set is read twice, once before smoke and
-# once after the last check, and recorded only when nothing moved in between and it is exactly what svp-gitops said.
+# records of it (deployment records of environment stg in svp-gitops). In the run the cluster is built at one commit of
+# svp-gitops and stays there until the wait for a release after the checks, so the set should not change during them;
+# it is still read twice, once before smoke and once after the last check, and recorded only when nothing moved in
+# between and it is exactly what svp-gitops said.
 #
 #   release-set.sh snapshot [--settle] FILE
 #     With --settle, first waits (settle below) for every Application to be Synced and Healthy on two reads in a row.

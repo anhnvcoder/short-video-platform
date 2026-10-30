@@ -78,9 +78,11 @@ spec:
 # stack's ServiceMonitors (Grafana, kube-state-metrics, Alertmanager and its config reloader, the operator), of each
 # node's kubelet (cAdvisor and probe metrics), of the Envoy proxy (PodMonitor envoy-svp), of Postgres svp-pg's
 # exporter (PodMonitor svp-pg) and of Argo CD's application controller on the GitOps path (PodMonitor
-# argocd-application-controller). Prometheus scraping its own pod stays inside the pod. Neither argo-rollouts,
-# envoy-gateway-system nor argocd denies traffic by default, so the policy here is the only one those flows need;
-# svp-data does, and its chart opens 9187 of the Postgres pods to Prometheus.
+# argocd-application-controller). Prometheus scraping its own pod stays inside the pod. Neither argo-rollouts nor
+# envoy-gateway-system denies traffic by default, so the policy here is the only one those flows need. argocd has the
+# argo-cd chart's own ingress policies (one per component), and the application controller's already admits its port
+# metrics (8082) from every namespace; svp-data denies by default, and its chart opens 9187 of the Postgres pods to
+# Prometheus.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

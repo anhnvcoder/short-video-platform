@@ -2,7 +2,7 @@
 
 - Trạng thái: Chấp nhận (người học duyệt 2026-10-28, chọn (a) ở cả sáu dòng "Cần người học chọn"); §3A chỉnh 2026-10-29 (người học
   quyết bố cục workspace: đường dev đọc bản clone cạnh bên `<workspace>/gitops`, CI vẫn `make gitops-clone`); §7, §8, §9 chỉnh
-  2026-10-30 (ruleset thứ ba `tags`, `targetRevision` tên đầy đủ); quy ước revert và cài đặt squash của `svp-gitops` (mục 7) chỉnh
+  2026-10-30 (ruleset thứ ba `tags`, `targetRevision` tên đầy đủ; §8 thêm: dựng ở commit đã kiểm rồi mới theo nhánh); quy ước revert và cài đặt squash của `svp-gitops` (mục 7) chỉnh
   bởi [0028](0028-dora-metrics.md) §5. Hiện thực 2026-10-29 đến 2026-10-30 (phần 4 của giai đoạn 6b, mục Hiện thực ở): `svp-gitops`
   khởi tạo (`55258e1`, rồi `a84e26d` thêm `check.yml`; lượt `check` đầu trên `main` xanh) với ba ruleset; PR-B cắt repo code (nhánh
   `feat/stage6b-gitops-split`, PR #39): CI, kịch bản `dev-k3d` và `gitops` trên nhánh đạt (mục Kiểm chứng sau); auto-merge của PR bot,
@@ -335,6 +335,18 @@ cũ ở lại repo code public.
 - Root `svp-root`: `repoURL` `https://github.com/anhnvcoder/svp-gitops.git`, `path: argocd/apps`, `targetRevision` = `GITOPS_REV` (nhánh
   hay SHA của `svp-gitops`), `valuesObject`: `targetRevision`, `env`, `nodeArch` như ADR-0024 §4, thêm `chartRepoURL` =
   `https://github.com/anhnvcoder/short-video-platform.git`.
+- **Dựng ở commit đã kiểm, theo nhánh sau** (chỉnh 2026-10-30): `GITOPS_REV` là nhánh thì `gitops.sh` dựng root ở đúng SHA mà nó đã
+  kiểm image (`origin/<nhánh>` của bản clone), chờ mọi Application Synced/Healthy ở SHA đó, rồi mới chuyển root sang
+  `refs/heads/<nhánh>` (`follow_branch`); `GITOPS_REV` là SHA thì cluster ở yên SHA đó. Lý do: lượt `verify.yml`
+  [40984138133](https://github.com/anhnvcoder/short-video-platform/actions/runs/40984138133) dựng theo nhánh, PR promote #4 của
+  `svp-gitops` merge giữa lúc dựng, Argo CD triển khai bản mới thành canary không có traffic, `restartAt` của `glitchtip-init.sh` chờ
+  Rollout `web` Healthy 300 s rồi đỏ, và các phép kiểm image đã chạy trên commit cũ. Nhánh đã đi tiếp lúc chuyển thì `gitops.sh` in một
+  dòng `note` nêu hai commit (bản mới ra như mọi lần phát hành, canary cần traffic) và không chờ. Kịch bản `gitops` của `verify.yml`
+  dựng bằng SHA của `origin/main` trong bản clone và giữ SHA đó suốt các bước kiểm (bộ phát hành mà `release-set` ghi không đổi giữa
+  chừng); chỉ bước chờ phát hành (`release_wait`) mới chuyển sang `refs/heads/main` (`deploy/k8s/gitops.sh follow main`), sau khi
+  traffic diễn tập đã chạy. Bản phát hành merge vào `main` của `svp-gitops` trong lúc ghim chỉ triển khai lúc chuyển, nên thời gian từ
+  push tới pod của nó tính cả thời gian ghim (hàng chục phút tới hàng giờ), không phải độ trễ GitOps: `release_wait` không đo nó, in
+  một dòng `not measured` nêu commit ghim, commit Argo CD vừa nhận và các bản phát hành ở giữa, rồi chờ bản phát hành sau commit đó.
 - Mọi `targetRevision` đọc `svp-gitops` (root, `argocd_root_app` của `deploy/k8s/lib.sh`, mặc định `targetRevision` của
   `argocd/apps/values.yaml`) là tên đầy đủ `refs/heads/<nhánh>` hay SHA 40 hex, không bao giờ tên ngắn (chỉnh 2026-10-30). Lý do: Argo CD
   lấy mọi nhánh và tag của repo, tên ngắn trùng cả nhánh lẫn tag thì có thể bị phân giải sang commit của tag; tài liệu Argo CD khuyên
@@ -510,11 +522,15 @@ Hiện thực 2026-10-29 đến 2026-10-30 (PR-B, nhánh `feat/stage6b-gitops-sp
   `deploy/k8s/check-image-digests.sh` đã xoá; `--worktree` là `make helm-check` của `Makefile`), test `deploy/ci/gitops-check-test.sh`
   (gồm ca của `gitops_dir`, `gitops_clone`); `deploy/ci/values-check.sh` (chỉ `--gitops DIR BASE`), `deploy/ci/verify-release.sh`
   (`--gitops DIR`), `provenance_required`, `_config_file` của `deploy/ci/common.sh` đọc `envs/<env>/svp-policy.yaml` của thư mục
-  cấu hình.
+  cấu hình; `tag_provenance_mismatch` của `common.sh` (bước 5: `image.tag` bằng commit mà dòng `ok` của `verify-release.sh` nêu từ
+  provenance; env đòi provenance mà dòng `ok` không nêu commit thì đỏ, không bao giờ qua).
 - Argo CD (mục 8): `argocd_root_app` (`path: argocd/apps`, `chartRepoURL`, `targetRevision` tên đầy đủ) của `deploy/k8s/lib.sh`;
   `deploy/k8s/gitops.sh` (revision của `svp-gitops`, bảy bản ở `envs/stg/images/`, `bootstrap.json`, AppProject từ bản clone, namespace
   từ `svp-cluster` ở commit của `charts.yaml`; hết hạn chờ thì `gitops_timeout_report` của `lib.sh` in trạng thái từng Application,
-  tài nguyên chưa Healthy đọc thẳng từ cluster và sự kiện).
+  tài nguyên chưa Healthy đọc thẳng từ cluster và sự kiện; root dựng ở SHA đã kiểm, `follow_branch` và `gitops.sh follow BRANCH` chuyển
+  sang nhánh, chỉnh 2026-10-30); `restart_workload` của `lib.sh` dừng ngay khi Rollout đang canary (`rollout_not_canary`); `gitops_up`
+  dựng bằng SHA, `release_wait` gọi `gitops.sh follow`, nhánh đã đi tiếp thì `follow_moved`, `gitops_releases_between` nêu bản phát
+  hành không đo và chờ từ commit mới (`deploy/ci/verify/gitops.sh`); test ở `deploy/ci/verify-collect-test.sh`.
 - Promote stg (mục 2, 6): `deploy/ci/promote.sh` (nhánh `bot/promote-stg`, `envs/stg/images/` và `envs/stg/charts.yaml`, luật không lùi,
   `--force-with-lease`, đọc lại PR sau push, auto-merge), test `deploy/ci/promote-test.sh`; job `promote` của
   `.github/workflows/images.yml` (environment `promote`, token App chỉ `svp-gitops`, `contents` và `pull_requests` write);

@@ -31,7 +31,9 @@
 #     at a commit of the tree with --rev, for one environment with --env, in the clone gitops_dir finds) the release
 #     also needs exactly one provenance attestation whose builder.id, workflow repository and ref match the policy and
 #     whose commit the certificate names, each fault with its own message; an overlay holding anything else, and a
-#     charts.yaml naming no commit, are refused;
+#     charts.yaml naming no commit, are refused; a provenance cosign cannot read (registry out of reach, or a first
+#     call that failed and a second that verified) asks to check again, never for a new release; the ok line it prints
+#     is the one tag_provenance_mismatch of common.sh reads (image.tag against the provenance's commit);
 #   - values-check.sh --gitops on a pull request of that tree: one that turns provenance on in an overlay, or moves an
 #     environment's charts.yaml, checks every release of that environment and none of the other; one of an image file
 #     checks that file; one of another file checks none;
@@ -42,7 +44,8 @@
 #     provenance-predicate.sh; none found and an error of cosign each exit with their own status;
 #   - changed-services.sh builds all seven images for a change of platform.sh, as for common.sh, and none for a change
 #     of this test, of promote-test.sh, of platform-guard.sh, of a scenario file under deploy/ci/verify/, of the
-#     scripts of other workflows and of svp-gitops's check (record-stg.sh, gitops-check.sh, dora.sh and the tests of
+#     scripts of other workflows and of svp-gitops's check (record-stg.sh, gitops-check.sh with values-check.sh and
+#     verify-release.sh, dora.sh and the tests of
 #     these and of release-set.sh, promote-prd.sh), of the policy's values or of docs/; all seven for a change of
 #     release-set.sh and promote-prd.sh (job promote-prd of images.yml), and of the GRYPE_IMAGE line of the Makefile,
 #     none for another line of it;
@@ -168,6 +171,13 @@ if [ -n "${FAKE_COSIGN_DIR:-}" ]; then
       esac
       shift
     done
+    # FAKE_COSIGN_DOWN=TYPE: the registry is out of reach for that type; with FAKE_COSIGN_DOWN_ONCE=FILE only for the
+    # first call, which writes FILE.
+    if [ "${FAKE_COSIGN_DOWN:-}" = "$type" ] && { [ -z "${FAKE_COSIGN_DOWN_ONCE:-}" ] || [ ! -e "$FAKE_COSIGN_DOWN_ONCE" ]; }; then
+      [ -z "${FAKE_COSIGN_DOWN_ONCE:-}" ] || : >"$FAKE_COSIGN_DOWN_ONCE"
+      echo "Error: GET https://ghcr.io/v2/: dial tcp: i/o timeout" >&2
+      exit 1
+    fi
     if [ ! -f "$FAKE_COSIGN_DIR/$type.jsonl" ]; then
       echo "Error: none of the attestations matched the predicate type: $type" >&2
       exit 1
@@ -962,8 +972,8 @@ same "changed-services: a change of verify-tempo.sh builds nothing" "" "$(change
 same "changed-services: a change of gitops-sourcemaps.sh builds nothing" "" "$(changed_by deploy/ci/gitops-sourcemaps.sh)"
 same "changed-services: a change of gitops-sourcemaps-test.sh builds nothing" "" \
   "$(changed_by deploy/ci/gitops-sourcemaps-test.sh)"
-for f in record-stg.sh gitops-check.sh gitops-check-test.sh dora.sh dora-test.sh release-set-test.sh \
-  promote-prd-test.sh; do
+for f in record-stg.sh gitops-check.sh gitops-check-test.sh values-check.sh verify-release.sh dora.sh dora-test.sh \
+  release-set-test.sh promote-prd-test.sh; do
   same "changed-services: a change of $f builds nothing" "" "$(changed_by "deploy/ci/$f")"
 done
 same "changed-services: a change of release-set.sh builds all seven" "$all" "$(changed_by deploy/ci/release-set.sh)"
@@ -1065,6 +1075,10 @@ overlay stg true
 release "on in the stg overlay, the release has no provenance" 1
 check "verify-release.sh: names the missing provenance and the release to build again" has "$work/vr.out" \
   "has no provenance attestation of images.yml on main, which the policy requires here: a release built before CI attested provenance; release it again (gh workflow run images.yml --repo anhnvcoder/short-video-platform --ref main -f services=web)"
+FAKE_COSIGN_DOWN=slsaprovenance1 release "on in the stg overlay, GHCR out of reach for the provenance" 1
+check "verify-release.sh: an unreachable registry is not read as a release from before provenance" has "$work/vr.out" \
+  "its provenance attestation could not be verified (Error: GET https://ghcr.io/v2/: dial tcp: i/o timeout); check again, do not build it again"
+check "verify-release.sh: an unreachable registry asks for no new build" lacks "$work/vr.out" "release it again"
 release "on in stg only, checked for prd: no provenance needed" 0 --env prd
 check "verify-release.sh: for prd no provenance asked for" lacks "$work/cosign.log" slsaprovenance1
 
@@ -1074,6 +1088,26 @@ check "verify-release.sh: the ok line names the provenance's commit" has "$work/
   "provenance of ${commit:0:12} by $subject"
 check "verify-release.sh: the certificate is asked for the provenance's commit" has "$work/cosign.log" \
   "verify-attestation --type slsaprovenance1 --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity $subject --certificate-github-workflow-sha $commit $image@$digest_a"
+# The contract with step 5 of gitops-check.sh: tag_provenance_mismatch of common.sh reads this very ok line.
+tp=$work/tag-provenance
+mkdir -p "$tp/envs/stg/images"
+{ echo "check envs/stg/images/web.yaml" && grep '^ok ' "$work/vr.out"; } >"$work/tp.out"
+# tp_case NAME TAG WANT: image.tag TAG in envs/stg/images/web.yaml, stg requiring provenance; the output must be WANT.
+tp_case() {
+  printf 'image:\n  repository: %s\n  tag: "%s"\n  digest: "%s"\n' "$image" "$2" "$digest_a" >"$tp/envs/stg/images/web.yaml"
+  same "tag_provenance_mismatch on the ok line of verify-release.sh: $1" "$3" \
+    "$(on local bash -c '. "$1/deploy/ci/common.sh" && tag_provenance_mismatch "$2" "$3" stg' _ "$vr" "$tp" "$work/tp.out")"
+}
+tp_case "the tag of the provenance's commit agrees" "${commit:0:12}" ""
+tp_case "another tag is a mismatch" 89abcdef0123 \
+  "envs/stg/images/web.yaml: image.tag is 89abcdef0123, but its provenance says it was built from ${commit:0:12}"
+FAKE_COSIGN_DOWN=slsaprovenance1 FAKE_COSIGN_DOWN_ONCE=$work/cosign-once release \
+  "on, GHCR out of reach once, then the provenance verifies" 1
+rm -f "$work/cosign-once"
+check "verify-release.sh: a provenance that verifies on the second call is not read as missing" has "$work/vr.out" \
+  "its provenance attestation could not be verified (cosign failed once, then verified one); check again, do not build it again"
+check "verify-release.sh: a provenance that verifies on the second call asks for no new build" lacks "$work/vr.out" \
+  "release it again"
 
 echo 89abcdef0123456789abcdef0123456789abcdef >"$fx/cert-sha"
 release "the certificate names another commit" 1

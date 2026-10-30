@@ -405,6 +405,250 @@ grep -qF 'mark_log "$namespace" <"$migrate_log" >&2' "$here/../k8s/install.sh" &
   ok "mark_log: install.sh marks a failed migrate Job's log with it" ||
   fail "mark_log: install.sh marks a failed migrate Job's log with it"
 
+# --- restart_workload of deploy/k8s/lib.sh on a Rollout, with a fake kubectl of its own (bin-rollout): it answers each
+# `get rollout web` with the next of the states rollout-1.json, rollout-2.json, ... (the last one again once they run
+# out), whose restartedAt AT is the time of the patch it got, and records every call. A canary before the restart stops
+# it at once, without a patch; one that starts during the restart (a release arriving) stops it at its next read, not
+# after 300 s; a Rollout running its stable revision alone is restarted and waited for; a Deployment (the drill of
+# Postgres' backup restarts only those) goes through kubectl rollout restart and status as before.
+rk=$work/kube-rollout
+mkdir -p "$work/bin-rollout"
+cat >"$work/bin-rollout/kubectl" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_ROLLOUT_DIR/calls"
+[ "$1 $2 $3 $4" = "--context k3d-svp -n svp" ] || exit 2
+shift 4
+case "$*" in
+  "get rollouts.argoproj.io web") exit 0 ;;
+  "get rollouts.argoproj.io "*) echo "Error from server (NotFound)" >&2; exit 1 ;;
+  "patch rollout web --type merge -p "*) jq -r .spec.restartAt <<<"$7" >"$FAKE_ROLLOUT_DIR/at"; exit 0 ;;
+  "rollout restart deployment user-service" | "rollout status deployment user-service --timeout=300s") exit 0 ;;
+  "get rollout web -o "*)
+    n=$(($(cat "$FAKE_ROLLOUT_DIR/n" 2>/dev/null || echo 0) + 1))
+    echo "$n" >"$FAKE_ROLLOUT_DIR/n"
+    f=$FAKE_ROLLOUT_DIR/rollout-$n.json
+    [ -f "$f" ] || f=$(ls "$FAKE_ROLLOUT_DIR"/rollout-*.json | sort -t- -k2 -n | tail -n 1)
+    state=$(jq --arg at "$(cat "$FAKE_ROLLOUT_DIR/at" 2>/dev/null)" \
+      'if .status.restartedAt == "AT" then .status.restartedAt = $at else . end' "$f")
+    if [ "$5" = json ]; then echo "$state"; else jq -j '"\(.status.restartedAt // "") \(.status.phase // "")"' <<<"$state"; fi
+    exit 0
+    ;;
+esac
+exit 2
+EOF
+chmod 755 "$work/bin-rollout/kubectl"
+stable='{"spec": {}, "status": {"phase": "Healthy", "currentPodHash": "7974b879c7", "stableRS": "7974b879c7"}}'
+restarted='{"spec": {}, "status": {"phase": "Healthy", "currentPodHash": "7974b879c7", "stableRS": "7974b879c7",
+  "restartedAt": "AT"}}'
+canary='{"spec": {}, "status": {"phase": "Paused", "currentPodHash": "7f9dc67c4c", "stableRS": "7974b879c7",
+  "restartedAt": "AT", "pauseConditions": [{"reason": "CanaryPauseStep"}], "canary": {"weights": {"canary": {"weight": 25}}}}}'
+# restart_case NAME STATE...: restart_workload svp web (svp user-service when NAME starts with deployment) over the
+# states, in a directory of its own; its output in NAME.out, its exit status and seconds taken in NAME.rc.
+restart_case() {
+  local name=$1 i=0 rc=0 start=$SECONDS target=web
+  shift
+  rm -rf "$rk" && mkdir -p "$rk"
+  for state in "$@"; do i=$((i + 1)) && echo "$state" >"$rk/rollout-$i.json"; done
+  case $name in deployment*) target=user-service ;; esac
+  (
+    PATH=$work/bin-rollout:$PATH FAKE_ROLLOUT_DIR=$rk
+    export FAKE_ROLLOUT_DIR
+    . "$here/../k8s/lib.sh"
+    restart_workload svp "$target"
+    echo "restarted"
+  ) >"$work/$name.out" 2>&1 || rc=$?
+  cp "$rk/calls" "$work/$name.calls"
+  echo "$rc $((SECONDS - start))" >"$work/$name.rc"
+}
+restart_case canary-before "$canary"
+read -r rc took <"$work/canary-before.rc"
+[ "$rc" = 1 ] && [ "$took" -lt 60 ] && ! grep -q patch "$work/canary-before.calls" &&
+  grep -qxF "FAIL  rollout svp/web runs a canary (pod template 7f9dc67c4c rolling out beside the stable 7974b879c7, canary weight 25%; paused (CanaryPauseStep)): it turns Healthy only once the canary is over, so its restart is not waited for. Let the canary finish (its analysis promotes it only under traffic: make k8s-traffic-start) or abort it (kubectl --context k3d-svp -n svp patch rollout web --subresource status --type merge -p '{\"status\":{\"abort\":true}}'), then run this again" \
+    "$work/canary-before.out" &&
+  ok "restart_workload: a Rollout in a canary stops it at once, naming the canary and the ways out, before any patch" ||
+  fail "restart_workload: a Rollout in a canary stops it at once, naming the canary and the ways out, before any patch (exit $rc in ${took}s: $(cat "$work/canary-before.out"))"
+restart_case canary-during "$stable" "$canary"
+read -r rc took <"$work/canary-during.rc"
+[ "$rc" = 1 ] && [ "$took" -lt 60 ] && [ "$(grep -c '^--context k3d-svp -n svp patch rollout web' "$work/canary-during.calls")" = 1 ] &&
+  grep -qF 'FAIL  rollout svp/web runs a canary (pod template 7f9dc67c4c rolling out beside the stable 7974b879c7' \
+    "$work/canary-during.out" && ! grep -qF 'within 300s' "$work/canary-during.out" &&
+  ok "restart_workload: a canary that starts during the restart stops it at the next read, not after 300 s" ||
+  fail "restart_workload: a canary that starts during the restart stops it at the next read, not after 300 s (exit $rc in ${took}s: $(cat "$work/canary-during.out"))"
+restart_case stable "$stable" "$restarted"
+read -r rc took <"$work/stable.rc"
+[ "$rc" = 0 ] && grep -qx restarted "$work/stable.out" &&
+  grep -q '^--context k3d-svp -n svp patch rollout web --type merge -p {"spec":{"restartAt":"20[0-9-]*T[0-9:]*Z"}}$' \
+    "$work/stable.calls" &&
+  ok "restart_workload: a Rollout on its stable revision gets spec.restartAt and is waited for until Healthy" ||
+  fail "restart_workload: a Rollout on its stable revision gets spec.restartAt and is waited for until Healthy (exit $rc: $(cat "$work/stable.out"))"
+restart_case deployment "$stable"
+read -r rc took <"$work/deployment.rc"
+[ "$rc" = 0 ] && grep -qx -- '--context k3d-svp -n svp rollout restart deployment user-service' "$work/deployment.calls" &&
+  grep -qx -- '--context k3d-svp -n svp rollout status deployment user-service --timeout=300s' "$work/deployment.calls" &&
+  ! grep -q 'get rollout ' "$work/deployment.calls" &&
+  ok "restart_workload: a Deployment is restarted with kubectl rollout restart and status, its canary never read" ||
+  fail "restart_workload: a Deployment is restarted with kubectl rollout restart and status, its canary never read (exit $rc: $(cat "$work/deployment.out"))"
+
+# --- deploy/k8s/gitops.sh follow BRANCH, with a fake kubectl of its own (bin-follow): Application argocd/svp-root at
+# revision FROM (from), compared at the target its last patch gave (Synced), at revision NOW (now) once patched. The
+# branch unchanged: one patch of both targetRevisions to refs/heads/main, the wait until Argo CD compares and syncs it
+# there, an ok line. The branch moved: the note line with both commits and the canary, no wait for Synced (the fake
+# stays OutOfSync then). A short or broken name is refused before any call to the cluster.
+fk=$work/kube-follow
+mkdir -p "$work/bin-follow"
+cat >"$work/bin-follow/kubectl" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_FOLLOW_DIR/calls"
+[ "$1 $2 $3 $4" = "--context k3d-svp -n argocd" ] || exit 2
+shift 4
+patched=$(cat "$FAKE_FOLLOW_DIR/target" 2>/dev/null)
+case "$*" in
+  "get applications.argoproj.io svp-root") exit 0 ;;
+  "patch applications.argoproj.io/svp-root --type merge -p "*)
+    jq -r .spec.source.targetRevision <<<"$6" >"$FAKE_FOLLOW_DIR/target"
+    echo "$6" >"$FAKE_FOLLOW_DIR/patch"
+    ;;
+  "get applications.argoproj.io/svp-root -o jsonpath={.status.sync.revision}")
+    if [ -n "$patched" ]; then printf '%s' "$(cat "$FAKE_FOLLOW_DIR/now")"; else printf '%s' "$(cat "$FAKE_FOLLOW_DIR/from")"; fi
+    ;;
+  "get applications.argoproj.io/svp-root -o jsonpath={.status.sync.comparedTo.source.targetRevision}")
+    printf '%s' "${patched:-$(cat "$FAKE_FOLLOW_DIR/from")}"
+    ;;
+  "get applications.argoproj.io/svp-root -o jsonpath={.status.sync.status}")
+    if [ -n "$patched" ] && [ "$(cat "$FAKE_FOLLOW_DIR/now")" = "$(cat "$FAKE_FOLLOW_DIR/from")" ]; then
+      printf Synced
+    else printf OutOfSync; fi
+    ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod 755 "$work/bin-follow/kubectl"
+built=0a9dec9fb641cd3fd0be6e1ce4ceb8e9d1be5380
+newer=cb7ebf2fa0b6581c5c15b3010fcc6456eb007bda
+# follow_case NAME FROM NOW ARG...: deploy/k8s/gitops.sh ARG... over the fake; output in NAME.out, exit status and
+# seconds taken in NAME.rc, the calls in NAME.calls.
+follow_case() {
+  local name=$1 rc=0 start=$SECONDS
+  rm -rf "$fk" && mkdir -p "$fk" && echo "$2" >"$fk/from" && echo "$3" >"$fk/now" && : >"$fk/calls"
+  shift 3
+  env -u GITHUB_ACTIONS -u CI -u GITLAB_CI -u JENKINS_URL -u TF_BUILD PATH="$work/bin-follow:$PATH" FAKE_FOLLOW_DIR="$fk" \
+    "$here/../k8s/gitops.sh" "$@" >"$work/$name.out" 2>&1 </dev/null || rc=$?
+  cp "$fk/calls" "$work/$name.calls"
+  [ ! -f "$fk/patch" ] || cp "$fk/patch" "$work/$name.patch"
+  echo "$rc $((SECONDS - start))" >"$work/$name.rc"
+}
+follow_case follow-same "$built" "$built" follow main
+read -r rc took <"$work/follow-same.rc"
+[ "$rc" = 0 ] && [ "$(jq -c . "$work/follow-same.patch")" = '{"spec":{"source":{"targetRevision":"refs/heads/main","helm":{"valuesObject":{"targetRevision":"refs/heads/main"}}}}}' ] &&
+  grep -qxF "ok    Application svp-root follows refs/heads/main of svp-gitops, still at ${built:0:12}: nothing new to roll out" \
+    "$work/follow-same.out" && grep -q 'jsonpath={.status.sync.status}$' "$work/follow-same.calls" &&
+  [ "$(grep -c ' patch ' "$work/follow-same.calls")" = 1 ] &&
+  ok "gitops.sh follow: the branch unchanged, both targetRevisions become refs/heads/main, waited for until Synced" ||
+  fail "gitops.sh follow: the branch unchanged, both targetRevisions become refs/heads/main, waited for until Synced (exit $rc: $(cat "$work/follow-same.out"))"
+follow_case follow-moved "$built" "$newer" follow main
+read -r rc took <"$work/follow-moved.rc"
+[ "$rc" = 0 ] && [ "$took" -lt 60 ] && ! grep -q 'jsonpath={.status.sync.status}$' "$work/follow-moved.calls" &&
+  grep -qxF "note  Application svp-root follows refs/heads/main of svp-gitops, which moved from $built (the commit the cluster runs) to $newer: Argo CD deploys it now, a release like any other; a changed gateway or web goes out as a canary, whose analysis promotes it only under traffic (make k8s-traffic-start)" \
+    "$work/follow-moved.out" && ! grep -q '^ok ' "$work/follow-moved.out" &&
+  ok "gitops.sh follow: the branch moved, one note line with both commits and the canary, no wait for Synced" ||
+  fail "gitops.sh follow: the branch moved, one note line with both commits and the canary, no wait for Synced (exit $rc in ${took}s: $(cat "$work/follow-moved.out"))"
+follow_case follow-bad "$built" "$built" follow 'main..x'
+follow_case follow-none "$built" "$built" follow
+[ "$(cut -d' ' -f1 "$work/follow-bad.rc") $(cut -d' ' -f1 "$work/follow-none.rc")" = "1 1" ] &&
+  grep -qxF "FAIL  'main..x' is not a branch name" "$work/follow-bad.out" &&
+  grep -qxF 'FAIL  usage: deploy/k8s/gitops.sh follow BRANCH' "$work/follow-none.out" &&
+  ! grep -q ' patch ' "$work/follow-bad.calls" && [ ! -s "$work/follow-none.calls" ] &&
+  ok "gitops.sh follow: a broken branch name or none is refused, nothing patched" ||
+  fail "gitops.sh follow: a broken branch name or none is refused, nothing patched"
+
+# --- What release_wait of deploy/ci/verify/gitops.sh does with that output: follow_moved reads both commits of the note
+# line, nothing from the ok line; gitops_releases_between names the releases a moved branch brought (they are not
+# measured), oldest first, over a fake clone of svp-gitops: a release of web, a commit that releases nothing, a release
+# of gateway and web; a commit the clone lacks fails. release_wait then waits from the commit Argo CD deploys now.
+# verify_gitops FUNCTION ARG...: FUNCTION of verify/gitops.sh, with lib.sh's values_field and svp_services (repo, the
+# fake checkout's folder here, is what verify-run.sh gives the scenario file, so it is left out).
+verify_gitops() { (unset repo && . "$here/../k8s/lib.sh" && . "$here/verify/gitops.sh" && "$@"); }
+[ "$(verify_gitops follow_moved <"$work/follow-moved.out")" = "$built $newer" ] &&
+  [ -z "$(verify_gitops follow_moved <"$work/follow-same.out")" ] &&
+  ok "release wait: follow_moved reads both commits of the note line, nothing from the ok line" ||
+  fail "release wait: follow_moved reads both commits of the note line, nothing from the ok line"
+pinned=$work/pinned-clone
+git init -q "$pinned"
+# image_file DIGIT: an image file of svp-gitops whose digest is 64 times DIGIT.
+image_file() { printf 'image:\n  repository: r\n  tag: ""\n  digest: "sha256:%s"\n' "$(printf "%064d" 0 | tr 0 "$1")"; }
+# pinned_commit MESSAGE: commits the files of the fake clone, prints the commit.
+pinned_commit() {
+  git -C "$pinned" add -A &&
+    git -C "$pinned" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false \
+      -c core.hooksPath=/dev/null commit -q -m "$1" && git -C "$pinned" rev-parse HEAD
+}
+mkdir -p "$pinned/envs/stg/images"
+image_file 1 >"$pinned/envs/stg/images/gateway.yaml" && image_file 1 >"$pinned/envs/stg/images/web.yaml"
+pin_from=$(pinned_commit base)
+image_file 2 >"$pinned/envs/stg/images/web.yaml"
+pin_web=$(pinned_commit "release web")
+echo docs >"$pinned/README.md"
+pinned_commit docs >/dev/null
+image_file 3 >"$pinned/envs/stg/images/gateway.yaml" && image_file 3 >"$pinned/envs/stg/images/web.yaml"
+pin_both=$(pinned_commit "release gateway web")
+want=$(printf '%s (web)\n%s (gateway web)' "${pin_web:0:12}" "${pin_both:0:12}")
+[ "$(verify_gitops gitops_releases_between "$pinned" "$pin_from" "$pin_both")" = "$want" ] &&
+  [ -z "$(verify_gitops gitops_releases_between "$pinned" "$pin_both" "$pin_both")" ] &&
+  ok "release wait: the releases a moved branch brought are named, oldest first, a commit without one left out" ||
+  fail "release wait: the releases a moved branch brought are named, oldest first, a commit without one left out"
+rc=0 && verify_gitops gitops_releases_between "$pinned" "$pin_from" "$newer" >/dev/null 2>&1 || rc=$?
+[ "$rc" = 1 ] && ok "release wait: a commit the clone lacks fails the list of releases" ||
+  fail "release wait: a commit the clone lacks fails the list of releases (exit $rc)"
+# release_wait run for real: a fake gitops.sh follow says main moved from the commit the cluster ran to pin_both, a
+# local repository stands for GitHub (origin of the clone, which the real git fetch and git ls-remote read) and has a
+# release after pin_both, and a fake kubectl and make stand for the cluster. The releases between the two commits are
+# named, never measured, and the wait starts from the commit Argo CD deploys now.
+if timeout --version 2>/dev/null | grep -q GNU; then
+  git -C "$pinned" branch -M main
+  image_file 4 >"$pinned/envs/stg/images/web.yaml"
+  pin_next=$(pinned_commit "release web again")
+  git -C "$pinned" clone -q --bare "$pinned" "$work/rw-remote.git" 2>/dev/null
+  git clone -q "$work/rw-remote.git" "$work/rw-clone" 2>/dev/null
+  git -C "$work/rw-clone" update-ref refs/remotes/origin/main "$pin_from"
+  mkdir -p "$work/rw-repo/deploy/k8s" "$work/bin-rw" "$work/rw-out"
+  cat >"$work/rw-repo/deploy/k8s/gitops.sh" <<EOF
+#!/usr/bin/env bash
+echo "note  Application svp-root follows refs/heads/main of svp-gitops, which moved from $pin_from (the commit the cluster runs) to $pin_both: Argo CD deploys it now"
+EOF
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$work/bin-rw/kubectl"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$work/bin-rw/make"
+  chmod 755 "$work/rw-repo/deploy/k8s/gitops.sh" "$work/bin-rw/kubectl" "$work/bin-rw/make"
+  rc=0
+  (
+    unset repo
+    . "$here/../k8s/lib.sh"
+    . "$here/verify/gitops.sh"
+    # The clone's origin is a local path here, not svp-gitops on GitHub.
+    gitops_is_clone() { [ -d "$1" ]; }
+    gitops_repo=$work/rw-repo gitops_branch=main
+    export PATH=$work/bin-rw:$PATH GH_TOKEN= SVP_GITOPS_DIR=$work/rw-clone SVP_VERIFY_OUT=$work/rw-out \
+      SVP_VERIFY_TARGETS=wait-release SVP_VERIFY_SCHEDULED=
+    release_wait
+  ) >"$work/rw.out" 2>&1 </dev/null || rc=$?
+  [ "$rc" = 0 ] &&
+    grep -qF "not measured: main of svp-gitops moved from ${pin_from:0:12} to ${pin_both:0:12} while" "$work/rw.out" &&
+    grep -qF "Releases among those commits: ${pin_web:0:12} (web), ${pin_both:0:12} (gateway web)" "$work/rw.out" &&
+    grep -qF "to move from ${pin_both:0:12} to a release" "$work/rw.out" &&
+    grep -qF "main of svp-gitops moved to ${pin_next:0:12}, a release of: web" "$work/rw.out" &&
+    ok "release wait: after a moved branch, its releases are named, not measured, and the wait starts from the commit deployed now" ||
+    fail "release wait: after a moved branch, its releases are named, not measured, and the wait starts from the commit deployed now (exit $rc: $(cat "$work/rw.out"))"
+else
+  echo "skip  release wait: no GNU timeout on PATH (Linux, or coreutils on macOS)"
+fi
+# The bootstrap builds at the commit it checked and follows the branch only after its wait; the verification run
+# builds at a commit and has the cluster follow main in the step after the scenario.
+grep -qF 'argocd_root_app "$gitops_url" "$sha" "$env" "$chart_repo_url"' "$here/../k8s/gitops.sh" &&
+  [ "$(grep -n -e '^ok "$want Applications Synced and Healthy' -e '^\[ -z "$branch" \] || follow_branch "$branch"$' \
+    "$here/../k8s/gitops.sh" | cut -d: -f1 | awk 'NR == 1 { a = $1 } NR == 2 { print ($1 == a + 1) }')" = 1 ] &&
+  grep -qF '"$gitops_repo/deploy/k8s/gitops.sh" follow "$gitops_rev"' "$here/verify/gitops.sh" &&
+  ok "gitops.sh: the root is applied at the commit checked, follows the branch after the wait; release_wait follows main" ||
+  fail "gitops.sh: the root is applied at the commit checked, follows the branch after the wait; release_wait follows main"
+
 # --- The fake results of a k3d run.
 out=$work/out
 mkdir -p "$out/logs" "$out/samples"
@@ -527,6 +771,11 @@ echo "<html>Set-Cookie: svp=1</html>" >"$l/a.report.html"
 echo '{"audits":{}}' >"$l/b.report.json"
 echo '{}' >"$l/.lighthouseci/lhr-1.json"
 echo 'zip' >"$repo/web/test-results/playwright/trace.zip"
+mkdir -p "$repo/web/test-results/playwright/feed-first-video-chromium"
+printf '# Error\n- generic [ref=e1]: Feed\n' >"$repo/web/test-results/playwright/feed-first-video-chromium/error-context.md"
+echo 'zip' >"$repo/web/test-results/playwright/feed-first-video-chromium/trace.zip"
+mkdir -p "$repo/web/test-results/playwright/login-chromium"
+printf -- '- generic: Cookie: svp_sid=abc\n' >"$repo/web/test-results/playwright/login-chromium/error-context.md"
 echo '{"status":"failed","failedTests":["abc-123"]}' >"$repo/web/test-results/playwright/.last-run.json"
 echo '{"header":"Bearer abc"}' >"$repo/web/test-results/glitchtip-chromium.json"
 echo '{"cookie":"svp_sid=abc"}' >"$repo/web/test-results/measure-web-1.json"
@@ -681,6 +930,10 @@ expect k3d .k6/cloud-20261026T080000Z/machine.json not-allowed
 expect k3d web/test-results/lighthouse/a.report.html set-cookie
 expect k3d web/test-results/lighthouse/.lighthouseci/lhr-1.json hidden
 expect k3d web/test-results/playwright/trace.zip not-allowed
+expect k3d web/test-results/playwright/feed-first-video-chromium/trace.zip not-allowed
+expect k3d web/test-results/playwright/login-chromium/error-context.md session-cookie
+[ -f "$work/art-k3d/web-test-results/playwright/feed-first-video-chromium/error-context.md" ] &&
+  ok "k3d: a failed test's error-context.md is kept" || fail "k3d: a failed test's error-context.md is kept"
 expect k3d web/test-results/playwright/.last-run.json not-allowed
 lacks k3d "Playwright's .last-run.json is dropped without a warning" '.last-run.json'
 has k3d "another hidden file still gets a warning" 'lighthouse/.lighthouseci/lhr-1.json: hidden'
@@ -1525,9 +1778,16 @@ if timeout --version 2>/dev/null | grep -q GNU; then
 
   # Each scenario of part 3 is a name verify-run.sh takes, its file sourced: the build target failing skips every other
   # target at once, and only the build target ran, after the clone of svp-gitops. What comes after it is left to each
-  # scenario's own work. The copy is a git checkout on a branch, which gitops does not give Argo CD: the cluster
-  # follows main of svp-gitops whatever the branch of this repository.
+  # scenario's own work. The copy is a git checkout on a branch, which gitops does not give Argo CD: the cluster is
+  # built at main of svp-gitops whatever the branch of this repository, at the commit of origin/main in the clone (a
+  # fake one here, with one commit), given as that commit.
   git -c init.defaultBranch=feat/stage6b-verify init -q "$vr"
+  fake_clone=$vr/.gitops/svp-gitops
+  git init -q "$fake_clone" &&
+    git -C "$fake_clone" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false \
+      -c core.hooksPath=/dev/null commit -q --allow-empty -m base &&
+    git -C "$fake_clone" update-ref refs/remotes/origin/main HEAD
+  fake_clone_sha=$(git -C "$fake_clone" rev-parse HEAD)
   for sc in gitops:k8s-gitops-up web-canary:k8s-up k6-cloud-mini:k8s-up chaos:k8s-up velero:k8s-up; do
     scn=${sc%%:*}
     b=${sc#*:}
@@ -1540,8 +1800,8 @@ if timeout --version 2>/dev/null | grep -q GNU; then
       ok "verify-run: $scn skips every target after its build target for it" ||
       fail "verify-run: $scn skips every target after its build target for it"
   done
-  same "verify-run: gitops builds the cluster from main of svp-gitops, cloned first" \
-    "$(printf -- '-s gitops-clone\nk8s-gitops-up GITOPS_REV=main')" "$(cat "$work/run-infra-gitops.make")"
+  same "verify-run: gitops builds the cluster at the commit of main of svp-gitops, cloned first" \
+    "$(printf -- '-s gitops-clone\nk8s-gitops-up GITOPS_REV=%s' "$fake_clone_sha")" "$(cat "$work/run-infra-gitops.make")"
   same "verify-run: a k3d scenario of the dev path runs only the clone and make k8s-up when it fails" \
     "$(printf -- '-s gitops-clone\nk8s-up')" "$(cat "$work/run-infra-velero.make")"
   # gitops with targets that leave out some of its checks: release-set, though chosen, is skipped with the reason and
@@ -1722,10 +1982,10 @@ got=$(changed_by deploy/ci/verify-run.sh)
 got=$(changed_by deploy/ci/verify/dev-k3d.sh)
 [ -z "$got" ] && ok "changed-services: a change of a scenario file of verify-run.sh builds nothing" ||
   fail "changed-services: a change of a scenario file of verify-run.sh builds nothing (got '$got')"
+# verify-release.sh runs in svp-gitops's check, make k8s-gitops-up and the drills only, no image job.
 got=$(changed_by deploy/ci/verify-release.sh)
-[ "$got" = "engagement-service feed-service gateway media-worker user-service video-service web" ] &&
-  ok "changed-services: a change of verify-release.sh builds all seven" ||
-  fail "changed-services: a change of verify-release.sh builds all seven (got '$got')"
+[ -z "$got" ] && ok "changed-services: a change of verify-release.sh builds nothing" ||
+  fail "changed-services: a change of verify-release.sh builds nothing (got '$got')"
 
 if ((failures)); then
   echo "$failures check(s) failed" >&2

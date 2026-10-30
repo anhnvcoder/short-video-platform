@@ -313,7 +313,9 @@ Hiện thực 2026-10-29 tới bậc 1 của mục 6 (sinh provenance, policy v�
 - `deploy/helm/svp-policy/` (`values.yaml`: `imageVerification.requireProvenance`, `provenanceRepository`, `provenanceRef`;
   `templates/imagevalidatingpolicy.yaml`: attestation `provenance`, phép 7–10): mục 4.
 - `deploy/ci/common.sh` (`provenance_required`, `provenance_source`, `check_provenance_statement`, `policy_values_paths`,
-  `provenance_absent`), `deploy/ci/verify-release.sh` (`--rev`, `--env`, đối chiếu commit bằng `--certificate-github-workflow-sha`),
+  `provenance_absent`, `tag_provenance_mismatch`), `deploy/ci/verify-release.sh` (`--rev`, `--env`, đối chiếu commit bằng
+  `--certificate-github-workflow-sha`; thiếu provenance chỉ đòi phát hành lại khi `provenance_absent` thấy cosign trả "không có
+  attestation loại này", lỗi khác của cosign thì báo kiểm lại),
   `deploy/ci/values-check.sh` (cả bảy khi values hay overlay của `svp-policy` đổi), `deploy/ci/plan.sh` (`values_changed`),
   `deploy/k8s/gitops.sh` (`--rev <revision> --env stg`): mục 5.
 - `deploy/k8s/drills/supplychain.sh` (ca `l`, `SUPPLYCHAIN_NO_PROVENANCE`), `deploy/k8s/k8s.mk`, `deploy/ci/verify/gitops.sh`

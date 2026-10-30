@@ -15,6 +15,9 @@
 #     of one record passes; a set mixed from two records, the seven releases of a record with other charts, and a set
 #     merged into envs/stg/images/ of main that no record holds each fail with their own message; a record whose
 #     commit is not on main of svp-gitops is left out; the whole check stops at that step for a mixed set.
+#   - tag_provenance_mismatch of common.sh, which step 5 reads the release checks with (offline, synthetic checks):
+#     image.tag against the commit the provenance names, and a check that names no provenance commit in an environment
+#     requiring provenance (a reworded line of verify-release.sh) fails instead of passing.
 # First, gitops_dir of deploy/k8s/lib.sh, which every script asks for the clone of svp-gitops, in a draft workspace laid
 # out as the lab's (<workspace>/backend, a git repository holding a copy of lib.sh; a worktree of it in
 # <workspace>/.worktrees/; <workspace>/gitops): from the main checkout, from a folder inside it and from the worktree it
@@ -322,6 +325,33 @@ if [ "$rc" != 0 ] && [[ $out == *"mixes releases of several records of stg"* ]] 
 else
   fail "prd: the whole check stops at the records (exit $rc):"$'\n'"$(sed 's/^/      /' <<<"$out")"
 fi
+
+# tag_provenance_mismatch of common.sh (step 5 of the check, which needs the network): image.tag against the commit the
+# release's check names, and no pass when an environment requiring provenance gets a check that names none.
+tp=$work/tag-provenance
+mkdir -p "$tp/envs/stg/images" "$tp/envs/prd/images"
+printf 'image:\n  tag: "aaaaaaaaaaaa"\n  digest: "sha256:%064d"\n' 0 >"$tp/envs/stg/images/gateway.yaml"
+cp "$tp/envs/stg/images/gateway.yaml" "$tp/envs/prd/images/gateway.yaml"
+# tp_case NAME ENVS WANT OK_LINE: the check of envs/stg/images/gateway.yaml printed OK_LINE; the output must be WANT.
+tp_case() {
+  local got
+  printf 'check envs/stg/images/gateway.yaml\n%s\n' "$4" >"$tp/out"
+  got=$(bash -c '. "$1/common.sh" && tag_provenance_mismatch "$2" "$3" "$4"' _ "$here" "$tp" "$tp/out" "$2")
+  [ "$got" = "$3" ] && ok "tag/provenance: $1" || fail "tag/provenance: $1: got '$got'"
+}
+prov_ok="ok    ghcr.io/x/gateway@sha256:0 signed, one vuln attestation, both platforms, no CRITICAL, within 2880 minutes"
+tp_case "the tag is the commit the provenance names" "stg" "" \
+  "$prov_ok, provenance of aaaaaaaaaaaa by https://example.invalid/images.yml@refs/heads/main"
+tp_case "another commit is a mismatch" "stg" \
+  "envs/stg/images/gateway.yaml: image.tag is aaaaaaaaaaaa, but its provenance says it was built from bbbbbbbbbbbb" \
+  "$prov_ok, provenance of bbbbbbbbbbbb by https://example.invalid/images.yml@refs/heads/main"
+tp_case "no provenance where it is required is a problem" "stg prd" \
+  "envs/stg/images/gateway.yaml: stg requires provenance, but the check of its release names no provenance commit" \
+  "$prov_ok"
+tp_case "a reworded provenance line fails, it does not pass" "stg" \
+  "envs/stg/images/gateway.yaml: stg requires provenance, but the check of its release names no provenance commit" \
+  "$prov_ok, provenance from aaaaaaaaaaaa signed by https://example.invalid/images.yml@refs/heads/main"
+tp_case "no provenance where none is required passes" "prd" "" "$prov_ok"
 
 if [ "$failures" -gt 0 ]; then
   echo "FAIL  $failures check(s) failed" >&2

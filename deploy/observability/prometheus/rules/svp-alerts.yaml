@@ -260,11 +260,19 @@ groups:
   - name: argocd
     rules:
       # A deploy that did not land, for 10 minutes: a Deployment or Rollout whose pods crash or are refused (Kyverno),
-      # a canary aborted by its analysis, a resource the sync could not create (Missing) or one Argo CD cannot assess
-      # (Unknown). The stable version may still serve: the page is about the release, the SLO alerts about users.
+      # a canary aborted by its analysis, an Application none of whose resources exists (Missing: Argo CD v3 leaves a
+      # single resource the sync could not create out of the health, the Application is OutOfSync, the ticket below),
+      # or one Argo CD cannot assess (Unknown). Root svp-root turns Degraded once a child's sync has failed for good
+      # (its health check of child Applications), which pages for a sync that cannot apply. The stable version may
+      # still serve: the page is about the release, the SLO alerts about users. An Application being deleted
+      # (operation="delete": removed from components.json, its finalizer deleting what it deployed) loses its
+      # resources on purpose and never pages; a deletion that hangs keeps a resource "Pending deletion" (Progressing),
+      # the ticket.
       - alert: ArgoCDApplicationDegraded
         expr: >-
-          max by (name, dest_namespace) (argocd_app_info{health_status=~"Degraded|Missing|Unknown"}) == 1
+          max by (name, dest_namespace) (
+            argocd_app_info{health_status=~"Degraded|Missing|Unknown",operation!="delete"}
+          ) == 1
         for: 10m
         labels:
           severity: page
