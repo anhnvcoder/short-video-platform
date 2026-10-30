@@ -30,7 +30,9 @@
 # a route, a status and a duration), .k6/<run>/summary.json, the summary of each pod of the k6 Job
 # (.k6/cloud-<time>/pod-<i>.json of deploy/k6/cloud/run.sh logs, whose table is in the target's output),
 # web/test-results/measure-*.json and glitchtip-*.json, the
-# Lighthouse reports web/test-results/lighthouse/*.json and *.html. Everything else under those places is listed in
+# Lighthouse reports web/test-results/lighthouse/*.json and *.html, and the error-context.md Playwright writes for a
+# failed test (web/test-results/playwright/<test>/: the error and the page's accessibility tree at that moment, text,
+# so the next red e2e test has evidence; its trace stays out). Everything else under those places is listed in
 # files.txt as not-allowed: .env, kubeconfig, .k8s/ca.*, .k8s/helm/, .k8s/drills/threats-*.log, Playwright traces,
 # videos, screenshots, HAR and HTML report, k6's machine.json, hidden files and every service log never get in. A
 # hidden file is dropped with its own rule and a warning, except web/test-results/playwright/.last-run.json, which
@@ -233,6 +235,7 @@ for pair in .k8s/drills:k8s-drills .k6:k6 web/test-results:web-test-results; do
       .k6:*/summary.json | .k6:cloud-*/pod-*.json) allowed=1 ;;
       web/test-results:lighthouse/*/*) ;;
       web/test-results:lighthouse/*.json | web/test-results:lighthouse/*.html) allowed=1 ;;
+      web/test-results:playwright/*/error-context.md) allowed=1 ;;
       web/test-results:*/*) ;;
       web/test-results:measure-*.json | web/test-results:glitchtip-*.json) allowed=1 ;;
     esac

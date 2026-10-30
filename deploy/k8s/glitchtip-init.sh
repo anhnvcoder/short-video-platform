@@ -22,9 +22,9 @@
 # GitOps path starts the services beside GlitchTip), so it restarts too. For a Deployment `kubectl rollout restart`
 # only adds the annotation kubectl.kubernetes.io/restartedAt to the pod template, the same one Argo CD's own restart
 # action writes; the gateway, a Rollout, gets spec.restartAt instead, which restarts its pods without a new revision
-# (a changed template would be a canary). The version goes into the workload's metadata. None of these is in the
-# manifests in git, and Argo CD's diff, a three-way merge against what it last applied, does not report fields it
-# never applied, nor does a sync remove them. A workload whose template does not read Secret sentry yet (a release from
+# (a changed template would be a canary); a Rollout running a canary stops this script at once, naming it. The version
+# goes into the workload's metadata. None of these is in the manifests in git, and Argo CD's diff, a three-way merge
+# against what it last applied, does not report fields it never applied, nor does a sync remove them. A workload whose template does not read Secret sentry yet (a release from
 # before error tracking) is left alone: its next upgrade rolls it with the new template, which reads the Secret then.
 #
 # Needs only GlitchTip ready (its init Job has run); run by deploy/k8s/install.sh after chart svp-observability, by

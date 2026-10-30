@@ -403,7 +403,9 @@ Code, cấu hình và tài liệu dùng đúng các tên này; đổi tên nào 
   bảng của `.k8s/drills/*.json`,
   `.k8s/drills/traffic-*.log` (mỗi dòng chỉ có thời điểm, `u1`…`u4`/`web`, tên route, mã HTTP, mili giây), `.k6/*/summary.json`,
   JSON kết quả của `web/test-results/` mà target đo ghi (`measure-*`, `glitchtip-*.json`), báo cáo Lighthouse đã lọc cookie
-  (`web/test-results/lighthouse/*.json`, `*.html`, như job `stack`), mẫu của sampler, bảng RAM, đầu ra `make k8s-status` và `kubectl
+  (`web/test-results/lighthouse/*.json`, `*.html`, như job `stack`), `error-context.md` của test Playwright đỏ
+  (`web/test-results/playwright/<test>/`: lỗi và cây accessibility của trang lúc đó, dạng chữ; thêm 2026-10-30 vì e2e đỏ ở lượt
+  40986504316 không để lại bằng chứng; trace vẫn cấm), mẫu của sampler, bảng RAM, đầu ra `make k8s-status` và `kubectl
   get events -A` lúc cuối, `df` trước/sau. Mỗi file tối đa 5 MiB.
 - **Cấm, dù script nào ghi ra:** `.env`, kubeconfig, `.k8s/ca.*`, `.k8s/helm/`, `.k8s/drills/threats-*.log` (nội dung thăm dò),
   trace, video, ảnh, HAR, báo cáo HTML của Playwright, `machine.json` của k6, thư mục ẩn, mọi log của service.

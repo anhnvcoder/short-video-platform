@@ -143,12 +143,13 @@ Theo thứ tự hay gặp, mỗi cái kèm dấu hiệu trong kết quả của 
    [`util/git/client.go`](https://github.com/argoproj/argo-cd/blob/v3.5.5/util/git/client.go), bản Argo CD của chart ghim; danh sách
    đọc từ map của go-git). Nên với `targetRevision: main`, tag `main` của kẻ có token có thể được sync lên stg: commit chưa qua
    `gitops-ok` lẫn Code Owner. Vì vậy Argo CD đọc `svp-gitops` bằng tên đầy đủ `refs/heads/main` (root `svp-root` và nguồn `$values`
-   của mọi Application), tên không bao giờ khớp tag. Có cluster GitOps chạy trong thời gian nghi lộ thì kiểm cả hai: mọi nguồn
+   của mọi Application), tên không bao giờ khớp tag; trong lúc dựng (`make k8s-gitops-up`) và suốt các bước kiểm của kịch bản `gitops`
+   trước bước chờ phát hành, nguồn đọc SHA 40 hex đã kiểm, cũng không khớp tag nào. Có cluster GitOps chạy trong thời gian nghi lộ thì kiểm cả hai: mọi nguồn
    `svp-gitops` đọc tên đầy đủ, và mọi revision `svp-gitops` Argo CD đã sync là commit của `main` (lịch sử giữ 10 lượt sync gần nhất
    mỗi Application, mặc định của Argo CD):
 
    ```sh
-   # targetRevision của mọi nguồn svp-gitops: refs/heads/main
+   # targetRevision của mọi nguồn svp-gitops: refs/heads/main, hay SHA 40 hex khi cluster dựng ở một commit
    kubectl --context k3d-svp -n argocd get applications.argoproj.io -o json | jq -r '.items[] | .metadata.name as $a
      | (.spec.sources // [.spec.source])[] | select((.repoURL // "") | test("svp-gitops")) | [$a, .targetRevision] | @tsv'
    # lịch sử sync: Application, thời điểm, SHA svp-gitops đã đọc
@@ -190,7 +191,9 @@ Theo thứ tự hay gặp, mỗi cái kèm dấu hiệu trong kết quả của 
        '{"spec":{"source":{"targetRevision":"refs/heads/main","helm":{"valuesObject":{"targetRevision":"refs/heads/main"}}}}}'
      ```
 
-     Rồi chạy lại lệnh `targetRevision` ở trên: mọi dòng `refs/heads/main` sau một chu kỳ sync của root.
+     Rồi chạy lại lệnh `targetRevision` ở trên: mọi dòng `refs/heads/main` sau một chu kỳ sync của root. Cùng patch đó là
+     `deploy/k8s/gitops.sh follow main` (chờ Argo CD so ở nhánh, in commit trước và sau), lệnh mà `make k8s-gitops-up` chạy sau khi
+     dựng xong ở commit đã kiểm.
    - **Lần dựng sau:** PR ở repo nơi tên ngắn nằm (`argocd/apps/values.yaml` của `svp-gitops`, hay `GITOPS_REV`/`argocd_root_app` của
      repo code). PR chỉ có hiệu lực ở cluster dựng sau nó; `gitops-check.sh` từ chối cây có nguồn `svp-gitops` đọc tên ngắn.
 

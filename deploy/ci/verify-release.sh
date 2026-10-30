@@ -48,8 +48,15 @@ if [ "$provenance" = true ]; then
   provenance_source
   rebuild=$(ci_dispatch_hint images.yml main "services=${repo##*/}") || exit 1
   envelopes=$(cosign_ verify-attestation --type slsaprovenance1 --certificate-oidc-issuer "$sign_issuer" \
-    --certificate-identity "$sign_subject" "$repo@$digest" 2>/dev/null) ||
-    fail "$repo@$digest has no provenance attestation of images.yml on main, which the policy requires here: a release built before CI attested provenance; release it again ($rebuild)"
+    --certificate-identity "$sign_subject" "$repo@$digest" 2>/dev/null) || {
+    # Only cosign's own "no attestation of this type" means a release from before provenance; any other error (GHCR or
+    # Sigstore out of reach) is no reason to build it again.
+    absent=0
+    why=$(provenance_absent "$sign_issuer" "$sign_subject" "$repo@$digest" 2>&1) || absent=$?
+    [ "$absent" -ne 0 ] ||
+      fail "$repo@$digest has no provenance attestation of images.yml on main, which the policy requires here: a release built before CI attested provenance; release it again ($rebuild)"
+    fail "$repo@$digest: its provenance attestation could not be verified (${why:-cosign failed once, then verified one}); check again, do not build it again"
+  }
   count=$(printf '%s\n' "$envelopes" | grep -c . || true)
   # As for vuln: Kyverno keeps one payload per type, so with two it could read either.
   [ "$count" -eq 1 ] || fail "$repo@$digest carries $count provenance attestations, not exactly one"

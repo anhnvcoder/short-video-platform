@@ -980,7 +980,7 @@ EOF
 }
 
 ff3() {
-  local line n bad ns label out want node pids tokens pod
+  local line n bad ns label out want node pids tokens pod try
   # Names only: no Secret value is printed or kept.
   tokens=$(kc -n svp get secrets --field-selector type=kubernetes.io/service-account-token -o json | jq -c '[.items[].metadata.name]') ||
     fail "FF-4: list the Secrets of type service-account-token in svp"
@@ -1040,7 +1040,21 @@ ff3() {
   grep -qF "violates PodSecurity \"restricted:$psa_version\"" <<<"$out" &&
     ok "FF-4: a pod running as root in svp is Forbidden by PSA (server-side dry run): $(grep -o 'runAsNonRoot[^,;]*' <<<"$out" | head -n 1)" ||
     miss "FF-4: a pod running as root in svp is Forbidden by PSA restricted:$psa_version (got: $(head -n 1 <<<"$out"))"
-  out=$(psa_pod 65532 | kc create --dry-run=server -f - 2>&1 || true)
+  # In svp the dry run also goes through Kyverno's image webhook (on the GitOps path, failurePolicy Fail), whose first
+  # verification of an image reads GHCR and Sigstore and can run past the webhook's 30 s: a timeout is tried again, up
+  # to 3 times, as it says nothing about PSA; a refusal by the webhook ("denied the request") is not. The API server
+  # answers a timeout either as the webhook's ("failed calling webhook ...: context deadline exceeded") or, when the
+  # whole request ran past its own limit, "Timeout: request did not complete within requested timeout".
+  for try in 1 2 3; do
+    out=$(psa_pod 65532 | kc create --dry-run=server -f - 2>&1 || true)
+    grep -Eq 'failed calling webhook.*(deadline exceeded|[Tt]imeout)|request did not complete within requested timeout' \
+      <<<"$out" || break
+    if [ "$try" -lt 3 ]; then
+      info "control: Kyverno's webhook timed out on the restricted pod in svp, trying again"
+    else
+      info "control: Kyverno's webhook timed out on the restricted pod in svp 3 times, giving up"
+    fi
+  done
   grep -q 'created (server dry run)' <<<"$out" && control "the same pod as uid 65532 is admitted in svp (server-side dry run)" ||
     miss "control: the restricted pod is admitted in svp (got: $(head -n 1 <<<"$out"))"
 

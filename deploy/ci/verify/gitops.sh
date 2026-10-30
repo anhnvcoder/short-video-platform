@@ -3,8 +3,9 @@
 # the deployment configuration svp-gitops (main, the clone verify-run.sh makes with make gitops-clone) and the charts
 # of this repository at the commit its envs/stg/charts.yaml pins, running the signed release images of GHCR by digest
 # (job gitops of .github/workflows/verify.yml). The scripts of this run's checkout drive it (the bootstrap, the drills).
-# make k8s-gitops-up following main of svp-gitops (the cluster runs as staging), the staging overlay seen applied,
-# the set of releases stg runs read, make k8s-smoke, RAM at rest, the supply chain drill (Kyverno
+# make k8s-gitops-up at the commit of main of svp-gitops the clone holds (the cluster runs as staging, and stays at
+# that commit through every check, so a release merged meanwhile changes nothing the checks read), the staging overlay
+# seen applied, the set of releases stg runs read, make k8s-smoke, RAM at rest, the supply chain drill (Kyverno
 # enforcing), the threat model drill, the source maps of the image CI built, the web's e2e tests with GlitchTip, its
 # observability drill, KEDA with two workers transcoding twice (each with the RAM peak of it), RAM at rest again, and
 # the set of releases stg ran through all of it, which job record-stg of verify.yml records in svp-gitops on a run of
@@ -21,10 +22,11 @@
 #               <temp>/gitops-sourcemaps (ci_temp_dir of deploy/ci/platform.sh): status (ok, skipped or fail), reason,
 #               maps/;
 #   after it    "Waiting for a release on main": this file run as a script, `bash deploy/ci/verify/gitops.sh release`
-#               (release_wait below), the targets wait-release and measure-gitops. On a run of main it waits for a
-#               release reaching main of svp-gitops while the cluster runs and measures it with make measure-gitops; on
-#               a run of another branch of this repository, or on a scheduled run, it only says why it waits for
-#               nothing. Both names are in the scenario's list, so the dispatch's targets can name them (or leave them
+#               (release_wait below), the targets wait-release and measure-gitops. On a run of main it has the cluster
+#               follow main of svp-gitops from then on, waits for a release reaching it and measures it with make
+#               measure-gitops (a release that reached main while the cluster stayed at the commit of the checks is
+#               named, never measured); on a run of another branch of this repository, or on a scheduled run, it only says why
+#               it waits for nothing. Both names are in the scenario's list, so the dispatch's targets can name them (or leave them
 #               out) as any other; they get no line in results.tsv, the step's result is theirs, and it never decides
 #               whether the set is recorded.
 #
@@ -93,13 +95,21 @@ k3d=1
 gitops_repo=${repo:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}
 # The branch of this repository the job checked out: on main only, a release is waited for after the scenario.
 gitops_branch=$(git -C "$gitops_repo" symbolic-ref --short -q HEAD) || gitops_branch=
-# The branch of svp-gitops Argo CD follows: main, the ref make gitops-clone checked out.
+# The branch of svp-gitops: main, the ref make gitops-clone checked out. The cluster is built at its commit in the clone
+# and follows it only in the step after the scenario (release_wait).
 gitops_rev=main
 export gitops_branch gitops_rev
 
-# gitops_up: make k8s-gitops-up following main of svp-gitops.
+# gitops_up: make k8s-gitops-up at the commit of main of svp-gitops in the clone (SVP_GITOPS_DIR, which verify-run.sh
+# sets once it has cloned it), given as that commit: the cluster stays at it until release_wait has it follow main.
 gitops_up() {
-  make k8s-gitops-up GITOPS_REV="$gitops_rev"
+  local sha
+  sha=$(git -C "${SVP_GITOPS_DIR:?the clone of svp-gitops, which verify-run.sh sets}" rev-parse --verify --quiet \
+    "refs/remotes/origin/$gitops_rev^{commit}") || {
+    echo "FAIL  origin/$gitops_rev is not in the clone of svp-gitops ($SVP_GITOPS_DIR)"
+    return 1
+  }
+  make k8s-gitops-up GITOPS_REV="$sha"
 }
 
 # gitops_charts_rev: prints the commit of this repository whose charts the cluster runs, revision of
@@ -148,7 +158,8 @@ gitops_env() {
 # gitops_argocd_metrics: see gitops-argocd-metrics in the header.
 gitops_argocd_metrics() {
   local file=deploy/helm/svp-observability/templates/argocd.yaml port=19091 rev apps pid deadline got healthy firing
-  rev=$(gitops_charts_rev) && [[ $rev =~ ^[0-9a-f]{40}$ ]] || {
+  # The commit itself must be there: a clone without it would read as charts without the PodMonitor and pass.
+  rev=$(gitops_charts_rev) && [[ $rev =~ ^[0-9a-f]{40}$ ]] && git -C "$repo" cat-file -e "$rev^{commit}" 2>/dev/null || {
     echo "FAIL  gitops-argocd-metrics: read the commit envs/stg/charts.yaml of svp-gitops pins"
     return 1
   }
@@ -448,11 +459,45 @@ scenario_targets() {
   fi
 }
 
+# gitops_release CLONE COMMIT: prints the services, space-separated, whose image.digest in envs/stg/images/ of
+# svp-gitops COMMIT changes against its first parent (the clone CLONE holds both); nothing when COMMIT is no release.
+gitops_release() {
+  local svc new old changed=
+  for svc in "${svp_services[@]}"; do
+    new=$(git -C "$1" show "$2:envs/stg/images/$svc.yaml" 2>/dev/null | values_field digest 2>/dev/null) || new=
+    old=$(git -C "$1" show "$2^1:envs/stg/images/$svc.yaml" 2>/dev/null | values_field digest 2>/dev/null) || old=
+    if [ -n "$new" ] && [ "$new" != "$old" ]; then changed="$changed $svc"; fi
+  done
+  printf '%s' "${changed# }"
+}
+
+# gitops_releases_between CLONE FROM TO: one line "<commit, 12 digits> (<services>)" per release (gitops_release) on
+# the first-parent line of svp-gitops after FROM up to TO, oldest first; exit 1 when CLONE cannot list those commits.
+gitops_releases_between() {
+  local commits c rel
+  commits=$(git -C "$1" rev-list --reverse --first-parent "$2..$3") || return 1
+  for c in $commits; do
+    rel=$(gitops_release "$1" "$c")
+    [ -z "$rel" ] || echo "${c:0:12} ($rel)"
+  done
+}
+
+# follow_moved: reads the output of deploy/k8s/gitops.sh follow on stdin and prints "FROM TO" when it says the branch
+# had moved from FROM, the commit the cluster ran, to TO, which Argo CD deploys now; nothing when it had not.
+follow_moved() {
+  sed -n 's/^note .* moved from \([0-9a-f]\{40\}\) .* to \([0-9a-f]\{40\}\): .*/\1 \2/p'
+}
+
 # release_wait: the job's step "Waiting for a release on main", after the scenario, while the cluster still runs.
 # A change of a service with Postgres reaches main of this repository while this step runs (or just before), and its
 # release reaches main of svp-gitops through the promote pull request there (the job's steps show which one runs).
 # Then:
-#   1. drill traffic starts (make k8s-traffic-start), so the release rolls out under load, and stops at the end;
+#   1. drill traffic starts (make k8s-traffic-start), so the release rolls out under load, and stops at the end; then
+#      the cluster, built at the commit of main the checks ran on, follows refs/heads/main of svp-gitops
+#      (deploy/k8s/gitops.sh follow), its line in the job's log: unchanged, or moved meanwhile, which rolls out now.
+#      Moved, the commits since the one the cluster ran reach it only now, so the time from their push would count the
+#      wait at that commit, not GitOps: none of them is measured. Their releases are named (the commit fetched into the
+#      clone of svp-gitops first), and the wait below starts from the commit Argo CD deploys now;
 #   2. every 30 s for at most 90 min, git ls-remote reads main of svp-gitops on GitHub (no credentials: the repository
 #      is public). Once it moved, the new commit is fetched into the clone of svp-gitops; when it changes image.digest
 #      of a service in envs/stg/images/ against its first parent it is the release, otherwise it is named and the wait
@@ -477,8 +522,8 @@ scenario_targets() {
 # and each make measure-gitops is stopped there. Less than a minute left before the wait (or the measure) starts: it
 # is skipped with that reason, and the step fails, as a target verify-run.sh skips for its deadline fails the run.
 release_wait() {
-  local token=${GH_TOKEN:-} targets=${SVP_VERIFY_TARGETS:-} wait=1 measure=1 out base head rel= changed deadline rc svc \
-    new old json no_push job_start job_minutes cutoff left start_measure
+  local token=${GH_TOKEN:-} targets=${SVP_VERIFY_TARGETS:-} wait=1 measure=1 out base head rel= changed deadline rc \
+    json no_push job_start job_minutes cutoff left start_measure follow moved from now skipped
   unset GH_TOKEN
   case $targets in
   *[!a-z0-9\ -]*)
@@ -541,6 +586,31 @@ release_wait() {
   }
   # shellcheck disable=SC2064 # the folder is fixed now
   trap "make -C '$gitops_repo' k8s-traffic-stop >>'$out/release-wait.log' 2>&1" EXIT
+  follow=$("$gitops_repo/deploy/k8s/gitops.sh" follow "$gitops_rev" 2>&1) || {
+    printf '%s\n' "$follow" >>"$out/release-wait.log"
+    echo "FAIL  the cluster does not follow refs/heads/$gitops_rev of svp-gitops (deploy/k8s/gitops.sh follow; release-wait.log)"
+    return 1
+  }
+  printf '%s\n' "$follow" >>"$out/release-wait.log"
+  printf '%s\n' "$follow" | grep -E '^(ok|note) ' || true
+  # Moved while the cluster stayed at the commit the checks ran on (step 1 above): nothing up to the commit Argo CD
+  # deploys now is measured, and the wait starts from it.
+  moved=$(printf '%s\n' "$follow" | follow_moved)
+  if [ -n "$moved" ]; then
+    read -r from now <<<"$moved"
+    left=$((cutoff - $(date +%s)))
+    left=$((left < 60 ? left : 60))
+    skipped=
+    { [ "$left" -gt 0 ] &&
+      GIT_TERMINAL_PROMPT=0 timeout -k 5 "$left" git -C "$config" fetch -q origin \
+        "+refs/heads/main:refs/remotes/origin/main" >>"$out/release-wait.log" 2>&1 &&
+      skipped=$(gitops_releases_between "$config" "$from" "$now" 2>>"$out/release-wait.log"); } || {
+      echo "FAIL  git fetch of main of svp-gitops, or the commits from ${from:0:12} to ${now:0:12} in it (release-wait.log)"
+      return 1
+    }
+    echo "not measured: main of svp-gitops moved from ${from:0:12} to ${now:0:12} while the cluster stayed at ${from:0:12} for the checks; Argo CD rolls that out only now, so the time from a push would count the wait. Releases among those commits: $(printf '%s\n' "${skipped:-none}" | paste -sd, - | sed 's/,/, /g')"
+    base=$now
+  fi
   deadline=$(($(date +%s) + 90 * 60))
   [ "$cutoff" -lt "$deadline" ] && deadline=$cutoff
   echo "waiting up to $(((deadline - $(date +%s)) / 60)) min for main of svp-gitops to move from ${base:0:12} to a release; drill traffic runs meanwhile"
@@ -560,17 +630,10 @@ release_wait() {
         echo "FAIL  git fetch of main at ${head:0:12}"
         return 1
       }
-      changed=
-      for svc in "${svp_services[@]}"; do
-        new=$(git -C "$config" show "$head:envs/stg/images/$svc.yaml" 2>/dev/null |
-          values_field digest 2>/dev/null) || new=
-        old=$(git -C "$config" show "$head^1:envs/stg/images/$svc.yaml" 2>/dev/null |
-          values_field digest 2>/dev/null) || old=
-        if [ -n "$new" ] && [ "$new" != "$old" ]; then changed="$changed $svc"; fi
-      done
+      changed=$(gitops_release "$config" "$head")
       if [ -n "$changed" ]; then
         rel=$head
-        echo "main of svp-gitops moved to ${head:0:12}, a release of:$changed"
+        echo "main of svp-gitops moved to ${head:0:12}, a release of: $changed"
         break
       fi
       echo "main of svp-gitops moved to ${head:0:12}, which changes no image.digest of envs/stg/images/; waiting on"

@@ -36,10 +36,11 @@ gitops-clone: ## CI: clone svp-gitops anonymously into .gitops/svp-gitops (gitig
 # The GitOps path: a new cluster svp that Argo CD builds from GitHub, running the release images of GHCR, as the
 # staging environment: base/ of svp-gitops plus the overlays and release images of its envs/stg, with the charts of this
 # repository at the commit envs/stg/charts.yaml pins (production is only rendered, by the checks). GITOPS_REV is the
-# revision of svp-gitops Argo CD follows: a branch of the clone's origin (read from origin/<branch> as last fetched;
-# Argo CD gets refs/heads/<branch>) or a full commit SHA. Releases are built, signed and promoted by CI
-# (.github/workflows/images.yml): no target builds one on this machine. Argo CD reads both public repositories over
-# HTTPS without credentials: no deploy key, no secret.
+# revision of svp-gitops Argo CD follows: a branch of the clone's origin (read from origin/<branch> as last fetched) or a
+# full commit SHA. The cluster is built at the commit checked (the root and every values source read that SHA); given a
+# branch, the root then moves to refs/heads/<branch> once the cluster is built, given a SHA it stays there. Releases
+# are built, signed and promoted by CI (.github/workflows/images.yml): no target builds one on this machine. Argo CD
+# reads both public repositories over HTTPS without credentials: no deploy key, no secret.
 GITOPS_REV ?= main
 
 k8s-gitops-up: k8s-exclusive env-required ## Create a new cluster svp that runs as staging (base/ plus envs/stg of svp-gitops), built by Argo CD from GitHub over anonymous HTTPS (no deploy key) [GITOPS_REV=main, a branch of the clone of svp-gitops or a commit]; first checks that the seven release digests of envs/stg/images/ at that revision are on GHCR (anonymous pull), signed, with a clean vuln attestation at most 48 h old; applies the Secrets of .env, installs Argo CD with the plugin of Argo Rollouts for the nodes' architecture, waits until every Application is Synced and Healthy

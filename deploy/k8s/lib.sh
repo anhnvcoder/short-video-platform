@@ -433,20 +433,53 @@ workload_kind() {
 # update). A Rollout: not that, since any change of its template is a new revision and so a canary; spec.restartAt
 # instead, which Argo Rollouts reads as "evict every pod created before this time", one at a time and through the
 # PodDisruptionBudget, the template unchanged. It is done once status.restartedAt equals it and the Rollout is Healthy.
-# restartAt is a field no chart writes, so neither Helm nor Argo CD puts it back.
+# restartAt is a field no chart writes, so neither Helm nor Argo CD puts it back. A Rollout in a canary, before the
+# restart or once it has begun (a new release arriving meanwhile), stops it at once (rollout_not_canary).
 restart_workload() {
-  local ns=$1 name=$2 at
+  local ns=$1 name=$2 at deadline
   if [ "$(workload_kind "$ns" "$name")" = rollout ]; then
+    rollout_not_canary "$ns" "$name"
     at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     kc -n "$ns" patch rollout "$name" --type merge -p "{\"spec\":{\"restartAt\":\"$at\"}}" >/dev/null ||
       fail "restart rollout $ns/$name (spec.restartAt)"
-    wait_until 300 "rollout $ns/$name restarted (status.restartedAt $at) and Healthy" \
-      test_output "$at Healthy" kc -n "$ns" get rollout "$name" -o jsonpath='{.status.restartedAt} {.status.phase}'
+    deadline=$((SECONDS + 300))
+    until test_output "$at Healthy" kc -n "$ns" get rollout "$name" -o jsonpath='{.status.restartedAt} {.status.phase}' \
+      >/dev/null 2>&1; do
+      ((SECONDS < deadline)) || fail "rollout $ns/$name restarted (status.restartedAt $at) and Healthy within 300s"
+      rollout_not_canary "$ns" "$name"
+      sleep 2
+    done
   else
     kc -n "$ns" rollout restart deployment "$name" >/dev/null || fail "restart deployment $ns/$name"
     kc -n "$ns" rollout status deployment "$name" --timeout=300s >/dev/null ||
       fail "deployment $ns/$name ready again within 300s of its restart"
   fi
+}
+
+# rollout_not_canary NAMESPACE NAME: fails, naming the canary and the ways out of it, when Rollout NAME runs one: a pod
+# template other than its stable one rolling out (status.currentPodHash is not status.stableRS), a pause or an abort.
+# Such a Rollout turns Healthy only once its canary is over, which its analysis decides from the traffic the canary
+# gets, so a restart waiting for Healthy would only run out its time and blame the restart.
+rollout_not_canary() {
+  local ns=$1 name=$2 json why
+  json=$(kc -n "$ns" get rollout "$name" -o json) || fail "read rollout $ns/$name"
+  why=$(jq -r '(.status // {}) as $s | [
+      if ($s.currentPodHash // "") != "" and ($s.stableRS // "") != "" and $s.currentPodHash != $s.stableRS then
+        "pod template \($s.currentPodHash) rolling out beside the stable \($s.stableRS), canary weight \($s.canary.weights.canary.weight // 0)%"
+      else empty end,
+      if (.spec.paused // false) or (($s.pauseConditions // []) | length > 0) then
+        "paused (\([$s.pauseConditions[]?.reason] | if length == 0 then "spec.paused" else join(", ") end))"
+      else empty end,
+      if $s.abort // false then "aborted" else empty end] | join("; ")' <<<"$json") || fail "read rollout $ns/$name"
+  [ -n "$why" ] || return 0
+  # An aborted Rollout keeps status.abort and the canary's template, so it stays Degraded until the template goes back
+  # to the stable one: aborting again cannot get it out.
+  case $why in
+  *aborted*)
+    fail "rollout $ns/$name runs a canary ($why): an aborted Rollout stays Degraded until its pod template goes back to the stable one, so its restart is not waited for. Revert the release (a pull request reverting its promote in svp-gitops on the GitOps path; make k8s-up on the dev path), then run this again"
+    ;;
+  esac
+  fail "rollout $ns/$name runs a canary ($why): it turns Healthy only once the canary is over, so its restart is not waited for. Let the canary finish (its analysis promotes it only under traffic: make k8s-traffic-start) or abort it (kubectl --context k3d-svp -n $ns patch rollout $name --subresource status --type merge -p '{\"status\":{\"abort\":true}}'), then run this again"
 }
 
 # test_output WANT COMMAND...: true when COMMAND prints exactly WANT.

@@ -444,8 +444,15 @@ liệt kê target):
   không Secret repo; [ADR-0021](docs/adr/0021-deferred-verification-stage6b.md) §6): root `svp-root` và nguồn values đọc
   `svp-gitops`, chart `deploy/helm/*` đọc repo này ở commit `revision` của `envs/stg/charts.yaml`; kéo image từ GHCR theo digest, ẩn
   danh. `GITOPS_REV` là revision của `svp-gitops` trong thư mục cấu hình: nhánh của `origin` (đọc `refs/remotes/origin/<nhánh>` như lần
-  fetch cuối, không `git fetch`; Argo CD nhận tên đầy đủ `refs/heads/<nhánh>`, không bao giờ tên ngắn, vì tên ngắn có thể phân giải
-  sang tag cùng tên) hay SHA đủ 40 hex. Trước khi tạo gì, kiểm ở đúng revision đó cả 7 file `envs/stg/images/`: repository
+  fetch cuối, không `git fetch`) hay SHA đủ 40 hex. Cluster luôn **dựng ở đúng commit đã kiểm** (root và mọi nguồn values đọc SHA đó),
+  nên PR promote merge giữa lúc dựng không đổi gì (lượt 40984138133 đỏ vì Argo CD theo nhánh, triển khai bản mới thành canary không
+  traffic, `restartAt` của Rollout `web` không bao giờ Healthy); `GITOPS_REV` là nhánh thì sau vòng chờ root mới chuyển sang
+  `refs/heads/<nhánh>` (Argo CD nhận tên đầy đủ, không bao giờ tên ngắn, vì tên ngắn có thể phân giải sang tag cùng tên; `follow_branch`,
+  cũng chạy riêng được: `deploy/k8s/gitops.sh follow <nhánh>`): nhánh không đổi thì chỉ root sync, dòng `ok … follows refs/heads/…,
+  still at <sha>`; nhánh đã đi tiếp thì một dòng `note` nêu hai commit, Argo CD triển khai bản mới như mọi lần phát hành (canary của
+  gateway, web cần traffic: `make k8s-traffic-start`), script không chờ; `GITOPS_REV` là SHA thì cluster ở yên đó. `restart_workload`
+  của `deploy/k8s/lib.sh` (restart sau khi Secret đổi, cả `glitchtip-init.sh`) gặp Rollout đang canary (pod template khác `stableRS`,
+  pause, abort), trước hay giữa lúc restart, thì dừng ngay, nêu canary và cách gỡ, không chờ 300 s. Trước khi tạo gì, kiểm ở đúng revision đó cả 7 file `envs/stg/images/`: repository
   `ghcr.io/anhnvcoder/short-video-platform/<svc>`, manifest kéo ẩn danh được (package GHCR đã public), chữ ký và attestation `vuln`
   đúng identity, không CRITICAL, không quá 48 giờ (`deploy/ci/values-check.sh --gitops` trên bản trích `envs/stg` của revision, gọi
   `verify-release.sh --gitops`, bằng `cosign` trên PATH, không có thì `COSIGN_IMAGE`; quá hạn thì in lệnh dispatch rescan), và khi
@@ -638,7 +645,8 @@ liệt kê target):
     quyền ở đầu log chỉ `Contents: read`, artifact chỉ hai loại).
   - `.github/workflows/images.yml` (PR, push `main`, dispatch, lịch hằng ngày): chỉ build service đổi so với base
     (`deploy/ci/changed-services.sh`; đổi `images.yml`, `deploy/ci/` (trừ `trivy-config-ignore.yaml`, script và test của
-    `verify.yml`, `platform-test.sh`, `platform-guard.sh`, `promote-test.sh`, `record-stg.sh`, `gitops-check.sh`, `dora.sh` và test
+    `verify.yml`, `platform-test.sh`, `platform-guard.sh`, `promote-test.sh`, `record-stg.sh`, `gitops-check.sh` cùng `values-check.sh`, `verify-release.sh` (chỉ check `svp-gitops`,
+    `make k8s-gitops-up` và diễn tập chạy hai script này), `dora.sh` và test
     `gitops-check-test.sh`, `dora-test.sh`, `release-set-test.sh`, `promote-prd-test.sh`: không job image nào đọc chúng;
     `release-set.sh`, `promote-prd.sh` vẫn tính vì job `promote-prd` chạy chúng), `deploy/k8s/lib.sh` hay dòng
     `TRIVY_IMAGE`/`SYFT_IMAGE`/`GRYPE_IMAGE`/`COSIGN_IMAGE` của `Makefile` thì cả bảy; `web` chỉ build khi đổi file dưới `web/` hay
@@ -700,7 +708,8 @@ liệt kê target):
     `make k8s-web-sourcemaps`, `SVP_E2E_GLITCHTIP=1 make k8s-web-e2e`, `make drill-k8s-web-obs`, `make drill-k8s-keda N=9` và
     RAM đỉnh, `make drill-k8s-backup` rồi `MODE=pitr`, RAM nghỉ cuối). Phần 3 (chỉ dispatch, không vào lịch, trừ `gitops` vào lịch từ
     2026-10-30): `gitops` (job `gitops`, hạn 330 phút: bước `Find the source maps of the web image`, rồi bước kịch bản 175 phút: `make k8s-gitops-up`
-    (vai stg; `make gitops-clone` trước, Argo CD theo `refs/heads/main` của `svp-gitops`), `gitops-env` (overlay stg có trên pod
+    (vai stg; `make gitops-clone` trước; `GITOPS_REV` là SHA của `origin/main` trong bản clone, nên cluster ở yên commit đó suốt các bước
+    kiểm, bộ mà `release-set` ghi không đổi giữa chừng), `gitops-env` (overlay stg có trên pod
     gateway), `gitops-external-secrets` (ExternalSecret của cluster đúng bằng danh sách của chart, mỗi cái `Ready`, Secret đích đúng
     type và đúng tên key, không đọc giá trị), `release-set-before` (`deploy/ci/release-set.sh snapshot --settle`: chờ tới ~300 s mọi
     Application Synced, Healthy, không sync đang chạy qua hai lần đọc liền rồi mới chụp; hết hạn vẫn ghi bản chụp nhưng bước đỏ;
@@ -720,7 +729,10 @@ liệt kê target):
     Application, history không thêm mục, mọi pod của mỗi service một digest và bộ bảy digest bằng `envs/stg/images/` ở R, chart của
     mọi Application một commit bằng `envs/stg/charts.yaml` ở R; `k8s-smoke` không chạy hay đỏ, hay `targets` bỏ một bước nào của kịch
     bản ngoài `wait-release`, `measure-gitops`, thì SKIP); rồi bước
-    `Waiting for a release on main` 115 phút: trên `main` bật traffic diễn tập, chờ tối đa 90 phút một commit của `main` `svp-gitops`
+    `Waiting for a release on main` 115 phút: trên `main` bật traffic diễn tập, chuyển root sang `refs/heads/main`
+    (`deploy/k8s/gitops.sh follow main`, dòng `ok`/`note` vào log job; nhánh đã đi tiếp trong lúc ghim thì các commit đó chỉ triển
+    khai lúc này, thời gian từ push sẽ tính cả lúc ghim nên không đo: một dòng `not measured` nêu hai commit và các bản phát hành trong
+    đó, vòng chờ tính từ commit Argo CD vừa nhận), chờ tối đa 90 phút một commit của `main` `svp-gitops`
     đổi đúng một digest ở `envs/stg/images/` (bản phát hành tới bằng auto-merge của PR bot, không cần merge tay), `make
     measure-gitops`; trên nhánh hay ở lượt lịch thì `skipped`; bước này không chụp lại, không ghi đè `release-set.json`). Job
     `record-stg` (`needs: gitops`, chỉ khi output `recorded` của job đó là `true`, tức bước kịch bản xanh và `release-set.json` có

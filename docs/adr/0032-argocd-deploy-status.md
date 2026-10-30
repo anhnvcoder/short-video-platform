@@ -55,8 +55,13 @@ Hai môi trường của lab hôm nay đều dựng tạm trên runner rồi xo�
 Chọn **A + B + C**, theo hai đợt:
 
 1. **C làm ngay.** Prometheus scrape application controller của Argo CD (PodMonitor `argocd-application-controller` trong
-   `svp-obs`, chỉ giữ `argocd_app_info`; policy `prometheus` mở cổng 8082 của pod đó). Hai cảnh báo:
-   - `ArgoCDApplicationDegraded` (`severity=page`): Application ở health `Degraded`, `Missing` hay `Unknown` liền 10 phút.
+   `svp-obs`, chỉ giữ `argocd_app_info`; policy `prometheus` mở egress tới cổng 8082 của pod đó, phía `argocd` policy ingress của
+   chart argo-cd 10.10.5 đã nhận cổng `metrics` của controller từ mọi namespace). Hai cảnh báo:
+   - `ArgoCDApplicationDegraded` (`severity=page`): Application ở health `Degraded`, `Missing` hay `Unknown` liền 10 phút, trừ
+     Application đang bị xoá (`operation="delete"`: bỏ khỏi `components.json`, finalizer xoá những gì nó đã triển khai).
+     Argo CD v3.5.5 không tính tài nguyên chưa tạo được vào health của Application (chỉ `OutOfSync`), nên `Missing` là khi
+     không tài nguyên nào của nó còn; sync không áp được thì page tới từ root `svp-root`, `Degraded` khi sync của Application
+     con đã `Failed` hẳn (health check của Application con trong `base/argo-cd.yaml` của `svp-gitops`).
    - `ArgoCDApplicationNotConverged` (`severity=ticket`): Application không `Synced` hay vẫn `Progressing`/`Suspended` liền 30 phút.
 
    Gộp theo `name`, `dest_namespace` để một Application đổi nhãn trạng thái (`Degraded` sang `Missing`) vẫn đếm liền. Metric được
@@ -81,8 +86,8 @@ Không chọn D vì phá mô hình pull; không chọn E vì thay cả luồng p
 
 | Giả định | Phép kiểm | Kết quả |
 | --- | --- | --- |
-| Rule đúng: cháy sau 10 phút `Degraded`, đếm liền qua đổi nhãn, không cháy khi hồi trong 8 phút; ticket sau 30 phút `OutOfSync` hay `Suspended`; không series thì không cháy | `make slo-check` (`promtool test rules`, `svp-alerts.test.yaml`) | Đạt (2026-10-30, trên máy) |
-| Prometheus thấy mọi Application qua PodMonitor và policy mới, cả cụm Synced/Healthy thì không cảnh báo nào cháy | Bước `gitops-argocd-metrics` của kịch bản `gitops` (`verify.yml`); bước tự bỏ qua khi chart stg đang chạy chưa có PodMonitor | Chưa kiểm: cần bản chart có PodMonitor được promote lên `envs/stg/charts.yaml` (sau merge), rồi lượt `gitops` trên `main` |
+| Rule đúng: cháy sau 10 phút `Degraded`, đếm liền qua đổi nhãn, không cháy khi hồi trong 8 phút; ticket sau 30 phút `OutOfSync` hay `Suspended`; không series thì không cháy; Application bị gỡ (series hết) hay đang xoá (`operation="delete"`) không page | `make slo-check` (`promtool test rules`, `svp-alerts.test.yaml`) | Đạt (2026-10-30, trên máy; ca đang xoá đỏ khi bỏ bộ lọc `operation`) |
+| Prometheus thấy mọi Application qua PodMonitor và policy mới, cả cụm Synced/Healthy thì không cảnh báo nào cháy | Bước `gitops-argocd-metrics` của kịch bản `gitops` (`verify.yml`); bước tự bỏ qua khi chart stg đang chạy chưa có PodMonitor | Chưa kiểm: chart có PodMonitor (`fa5af94`) tới `envs/stg/charts.yaml` ở commit `cb7ebf2` của `svp-gitops` (2026-10-30), nên bước không còn tự bỏ qua; chưa có lượt `gitops` nào sau đó. Commit ghim không có trong bản clone thì bước đỏ, không bỏ qua |
 | Cảnh báo cháy thật khi một Application hỏng trên cluster | Chưa có diễn tập | Chưa kiểm |
 
 ## Hiện thực ở

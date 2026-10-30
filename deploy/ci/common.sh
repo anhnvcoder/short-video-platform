@@ -137,6 +137,32 @@ provenance_required() {
   echo false
 }
 
+# tag_provenance_mismatch TREE CHECKED PROVENANCE_ENVS: prints one problem per line, nothing when every release
+# agrees. CHECKED is the output of values-check.sh --gitops on TREE (a tree of svp-gitops): a line "check <file>" per
+# image file it verified, then that release's "ok" line from verify-release.sh. PROVENANCE_ENVS lists the environments
+# whose policy requires provenance (provenance_required), space separated. A release checked in one of them must name
+# the commit of its provenance ("provenance of <commit> by"), and image.tag of its file must be that commit: image.tag is
+# what the rule "no image newer than its charts" reads, so a tag edited by hand would pass it for a newer build. An ok
+# line that names no readable commit where provenance is required is a problem too, never a pass: a reworded line of
+# verify-release.sh must not let every release through unchecked.
+tag_provenance_mismatch() {
+  awk -v tree="$1" -v envs=" $3 " '
+    /^check / { file = $2; next }
+    /^ok / && file != "" {
+      env = file; sub(/^envs\//, "", env); sub(/\/.*/, "", env)
+      if (match($0, /provenance of [0-9a-f]+ by /)) {
+        commit = substr($0, RSTART + 14, RLENGTH - 18)
+        tag = ""
+        while ((getline l < (tree "/" file)) > 0) if (l ~ /^  tag:/) { tag = l; gsub(/^  tag: *"?|"?$/, "", tag) }
+        close(tree "/" file)
+        if (tag != commit) print file ": image.tag is " tag ", but its provenance says it was built from " commit
+      } else if (index(envs, " " env " ")) {
+        print file ": " env " requires provenance, but the check of its release names no provenance commit"
+      }
+      file = ""
+    }' "$2"
+}
+
 # The files of the deployment configuration (git pathspecs in a tree of svp-gitops) that decide what the releases of
 # an environment must carry: its overlay of chart svp-policy, and its charts.yaml, which pins the commit whose
 # values.yaml of the chart applies. A change of one can change what every release of that environment must carry

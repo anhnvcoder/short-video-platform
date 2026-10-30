@@ -9,11 +9,13 @@
 # trivy-config-ignore.yaml (read only by make trivy-config, so renewing one of its entries, due every 90 days at most,
 # releases nothing), the scripts of the verification runs of .github/workflows/verify.yml (verify-host.sh,
 # verify-run.sh and the scenario files under deploy/ci/verify/ it sources, verify-sample.sh, verify-mask.sh,
-# verify-collect.sh and its test, verify-tempo.sh, gitops-sourcemaps.sh and its test; verify-release.sh is not one of them: values-check.sh runs it), platform-test.sh, the test of platform.sh, platform-guard.sh, the check that no other
+# verify-collect.sh and its test, verify-tempo.sh, gitops-sourcemaps.sh and its test), platform-test.sh, the test of
+# platform.sh, platform-guard.sh, the check that no other
 # script reads the CI platform itself, provenance-predicate-test.sh, the test of provenance-predicate.sh, and
 # promote-test.sh, the test of promote.sh and rescan.sh's list of releases (all four run by job config of ci.yml and on
 # a machine), the scripts of the other workflows and of svp-gitops's check: record-stg.sh (job record-stg of verify.yml),
-# gitops-check.sh (svp-gitops's check and make helm-check), dora.sh (dora.yml) and the tests gitops-check-test.sh,
+# gitops-check.sh (svp-gitops's check and make helm-check) with values-check.sh and verify-release.sh, which only it,
+# make k8s-gitops-up and the drills run, dora.sh (dora.yml) and the tests gitops-check-test.sh,
 # dora-test.sh, release-set-test.sh and promote-prd-test.sh (job config of ci.yml); release-set.sh and promote-prd.sh
 # still count, as job promote-prd of images.yml runs them (platform.sh itself counts: common.sh sources it, and so does
 # provenance-predicate.sh: sign-image.sh runs it), the helpers deploy/ci/ sources from deploy/k8s/lib.sh (docker_, values_field,
@@ -77,7 +79,8 @@ while IFS= read -r path; do
     deploy/ci/gitops-sourcemaps-test.sh | deploy/ci/verify/* | deploy/ci/platform-test.sh | deploy/ci/platform-guard.sh | \
     deploy/ci/provenance-predicate-test.sh | deploy/ci/promote-test.sh | deploy/ci/record-stg.sh | \
     deploy/ci/gitops-check.sh | deploy/ci/gitops-check-test.sh | deploy/ci/dora.sh | deploy/ci/dora-test.sh | \
-    deploy/ci/release-set-test.sh | deploy/ci/promote-prd-test.sh)
+    deploy/ci/values-check.sh | deploy/ci/verify-release.sh | deploy/ci/release-set-test.sh | \
+    deploy/ci/promote-prd-test.sh)
     continue
     ;;
   esac

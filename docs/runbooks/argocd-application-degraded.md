@@ -11,8 +11,14 @@ Prometheus scrape metric `argocd_app_info` của application controller (PodMoni
 ([ADR-0032](../adr/0032-argocd-deploy-status.md)).
 
 - **`ArgoCDApplicationDegraded`**: một Application ở health `Degraded`, `Missing` hay `Unknown` liền 10 phút. Nghĩa là một lần
-  triển khai không lên: pod mới crash hay bị Kyverno từ chối, canary bị phân tích abort, tài nguyên sync không tạo được
-  (`Missing`), hay Argo CD không đánh giá được (`Unknown`).
+  triển khai không lên: pod mới crash hay bị Kyverno từ chối, canary bị phân tích abort, không tài nguyên nào của Application
+  còn trên cluster (`Missing`), hay Argo CD không đánh giá được (`Unknown`). Argo CD v3.5.5 không tính health của một tài nguyên
+  chưa tạo được vào health của Application (Application chỉ `OutOfSync`, tức cảnh báo ticket bên dưới; `controller/health.go`):
+  sync áp không được thì cảnh báo page tới từ root `svp-root`, chuyển `Degraded` khi sync của Application con đã `Failed` hẳn
+  (hết 10 lần thử lại, khoảng 20 phút cộng thời gian mỗi lượt sync: chờ 10 s, gấp đôi tới trần 3 phút, tức
+  10 + 20 + 40 + 80 + 160 + 5 × 180 = 1 210 s; page của `svp-root` tới sau khoảng 30 phút, cộng `for` 10 phút; health check của
+  Application con ở `base/argo-cd.yaml` của `svp-gitops`). Application đang
+  bị xoá có chủ đích (bỏ khỏi `components.json`, nhãn `operation="delete"`) không bao giờ page.
 - **`ArgoCDApplicationNotConverged`**: một Application không `Synced` hay vẫn `Progressing`/`Suspended` liền 30 phút. Nghĩa là
   một lần triển khai không xong: sync tự động lỗi lặp lại, hook (Job migrate) treo, rollout không hoàn tất, canary dừng vì
   AnalysisRun `Inconclusive`.
@@ -50,6 +56,9 @@ kubectl --context k3d-svp -n svp get rollouts.argoproj.io,analysisruns.argoproj.
 - Rollout `Degraded` với AnalysisRun `Failed` → canary bị abort đúng thiết kế: bản mới làm tăng lỗi hay độ trễ.
 - Rollout `Paused`/`Suspended` với AnalysisRun `Inconclusive` → không đủ traffic để phân tích (cụm ít người dùng).
 - `operationState.phase` là `Failed` hay `Error` với message của API server (field không hợp lệ, CRD thiếu) → manifest sai.
+  Cảnh báo nêu `svp-root`: message health của nó (`kubectl … get applications.argoproj.io svp-root -o
+  jsonpath='{.status.health.message}'`) và Application con `Degraded` cho biết Application nào sync lỗi; đọc tiếp lệnh trên
+  với tên đó.
 - Job `<svc>-migrate` lỗi hay chạy mãi → migration lỗi hay chờ khoá (Application `Progressing`/`OutOfSync`).
 
 ## Nguyên nhân thường gặp
@@ -67,15 +76,32 @@ kubectl --context k3d-svp -n svp get rollouts.argoproj.io,analysisruns.argoproj.
   merge); Argo CD kéo về trong khoảng 60 s. Không sửa tay trên cluster: self-heal của Argo CD ghi đè. Quy trình và cách tìm
   commit: [svp-gitops-setup.md](svp-gitops-setup.md) phần C (rollback). Với migration đã chạy: bản trước phải tương thích
   schema mới (expand/contract); không chạy migration `down`.
-- **Canary dừng vì `Inconclusive` (4)**: quyết promote hay abort bằng tay sau khi xem số đo của bản mới. Hai lệnh dưới là
-  việc plugin `kubectl argo rollouts promote`/`abort` làm (ghi vào status của Rollout, Argo CD không theo dõi phần status nên không
-  trả lại); **chưa thử trên cluster của lab**:
+- **Canary dừng vì `Inconclusive` (4)**: quyết promote hay abort bằng tay sau khi xem số đo của bản mới. Lab không ghim plugin
+  `kubectl argo rollouts`; các lệnh dưới ghi đúng patch mà plugin v1.10.1 (bản controller của lab, `base/argo-rollouts.yaml`)
+  ghi vào subresource `status` của Rollout (`getPatches` của `pkg/kubectl-argo-rollouts/cmd/promote/promote.go`,
+  `pkg/kubectl-argo-rollouts/cmd/abort/abort.go`). Argo CD không so phần `status` nên không trả lại. Không cần `spec.paused`:
+  controller dừng canary vì `Inconclusive` bằng `status.pauseConditions` (lý do `InconclusiveAnalysisRun`) và
+  `status.controllerPause`, không bao giờ đặt `spec.paused`. Đối chiếu với nguồn, chưa chạy trên cluster của lab (cùng cách
+  patch subresource `status` mà `deploy/k8s/drills/web-canary.sh` dùng cho `promoteFull`).
 
 ```sh
-kubectl --context k3d-svp -n svp patch rollout <gateway|web> --type merge -p '{"status":{"pauseConditions":null}}' --subresource status   # đi tiếp
-kubectl --context k3d-svp -n svp patch rollout <gateway|web> --type merge -p '{"status":{"abort":true}}' --subresource status             # về stable
+# ca nào: "<trạng thái phân tích của bước> <controllerPause> <bước hiện tại>"
+kubectl --context k3d-svp -n svp get rollout <gateway|web> \
+  -o jsonpath='{.status.canary.currentStepAnalysisRunStatus.status}{" "}{.status.controllerPause}{" "}{.status.currentStepIndex}{"\n"}'
+# đi tiếp, khi dòng trên là "Inconclusive true <i>" (phân tích của bước gate trước 100 %, i = 4): bỏ dừng và qua bước đó,
+# <i+1> là i cộng 1; chỉ xoá pauseConditions ở ca này thì Rollout vẫn kẹt
+kubectl --context k3d-svp -n svp patch rollout <gateway|web> --subresource status --type merge \
+  -p '{"status":{"pauseConditions":null,"controllerPause":false,"currentStepIndex":<i+1>}}'
+# đi tiếp, mọi ca khác (phân tích nền Inconclusive): chỉ bỏ dừng
+kubectl --context k3d-svp -n svp patch rollout <gateway|web> --subresource status --type merge \
+  -p '{"status":{"pauseConditions":null}}'
+# về stable: route về 100/0, Rollout Degraded
+kubectl --context k3d-svp -n svp patch rollout <gateway|web> --subresource status --type merge \
+  -p '{"status":{"abort":true}}'
 ```
 
+  Sau abort, Rollout ở `Degraded` (Application `Degraded`, cảnh báo page cháy tiếp) tới khi template trở về bản stable: revert
+  commit promote trong `svp-gitops` như ca 1 ở trên; Argo CD áp bản revert thì Rollout về `Healthy` không qua canary.
 - **Manifest sai (5)**: revert như trên, rồi sửa bằng PR mới.
 
 ## Khôi phục và xác nhận

@@ -47,7 +47,9 @@
 #      of that render, the seven service images included, must be exactly those of the base render.
 #   5. deploy/ci/values-check.sh --gitops on the image files changed from commit BASE to HEAD of GITOPS_DIR (every one
 #      without BASE): signed release, vuln attestation, and the build provenance the environment's policy asks for.
-#      For a release whose provenance was checked, image.tag must be the 12 hex of the commit the provenance names.
+#      For a release whose provenance was checked, image.tag must be the 12 hex of the commit the provenance names
+#      (tag_provenance_mismatch of common.sh); in an environment that requires provenance, a check of a release that
+#      names no provenance commit fails too.
 #      When it fails on a set that matched a record of stg (step 1b, a rollback), prints the rescan of that record's
 #      commit.
 #
@@ -691,21 +693,17 @@ else
     [ -z "$record_ref" ] || echo "The set of envs/prd/ is that of a record of stg at ${record_ref:0:12}: refresh its vuln attestations with $(ci_dispatch_hint images.yml main rescan=true "values_ref=$record_ref")" >&2
     fail "the release images (above)"
   fi
-  # The provenance names the commit a release was built from, and image.tag is what the rule "no image newer than its
-  # charts" (step 1) reads: they must agree, or a tag edited by hand would pass that rule for a newer build.
-  mismatch=$(awk -v tree="$tree" '
-    /^check / { file = $2; next }
-    /^ok / && file != "" && match($0, /provenance of [0-9a-f]+ by /) {
-      commit = substr($0, RSTART + 14, RLENGTH - 18)
-      tag = ""
-      while ((getline l < (tree "/" file)) > 0) if (l ~ /^  tag:/) { tag = l; gsub(/^  tag: *"?|"?$/, "", tag) }
-      close(tree "/" file)
-      if (tag != commit) print file ": image.tag is " tag ", but its provenance says it was built from " commit
-      file = ""
-    }' "$tmp/values-check.out")
+  # Each release checked in an environment that requires provenance must carry image.tag = the commit it names. Step 1
+  # left envs/ holding exactly these environments.
+  prov_envs=
+  for e in $envs; do
+    required=$(provenance_required "" "$e" "$tree") || fail "read whether $e requires provenance"
+    [ "$required" != true ] || prov_envs="$prov_envs $e"
+  done
+  mismatch=$(tag_provenance_mismatch "$tree" "$tmp/values-check.out" "$prov_envs")
   if [ -n "$mismatch" ]; then
-    printf 'FAIL  %s\n' "$mismatch" >&2
-    fail "the release images: image.tag must be the commit the release's provenance names"
+    sed 's/^/FAIL  /' <<<"$mismatch" >&2
+    fail "the release images: image.tag must be the commit the release's provenance names, read from its check"
   fi
   echo "ok    every release with provenance checked has the image.tag of the commit its provenance names"
 fi

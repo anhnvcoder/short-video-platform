@@ -1598,6 +1598,33 @@ tests:
         alertname: ArgoCDApplicationDegraded
         exp_alerts: []
 
+  # Degraded for 8 minutes, then the Application is gone (removed from components.json): its series ends, never fires.
+  - interval: 1m
+    input_series:
+      - series: 'argocd_app_info{job="svp-obs/argocd-application-controller",namespace="argocd",name="media-worker",dest_namespace="svp",sync_status="Synced",health_status="Degraded",operation=""}'
+        values: '1x7 stale'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ArgoCDApplicationDegraded
+        exp_alerts: []
+
+  # Removed from components.json while Degraded: its finalizer deletes what it deployed for 20 minutes (operation
+  # delete, Missing once nothing is left), then the Application is gone. A deletion on purpose: no page while it runs,
+  # and under 30 minutes no ticket either.
+  - interval: 1m
+    input_series:
+      - series: 'argocd_app_info{job="svp-obs/argocd-application-controller",namespace="argocd",name="media-worker",dest_namespace="svp",sync_status="OutOfSync",health_status="Degraded",operation="delete"}'
+        values: '1x14 stale'
+      - series: 'argocd_app_info{job="svp-obs/argocd-application-controller",namespace="argocd",name="media-worker",dest_namespace="svp",sync_status="OutOfSync",health_status="Missing",operation="delete"}'
+        values: '_x15 1x4 stale'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: ArgoCDApplicationDegraded
+        exp_alerts: []
+      - eval_time: 18m
+        alertname: ArgoCDApplicationNotConverged
+        exp_alerts: []
+
   # OutOfSync for good (the automated sync keeps failing) while what runs stays Healthy: a ticket after 30 minutes.
   - interval: 1m
     input_series:

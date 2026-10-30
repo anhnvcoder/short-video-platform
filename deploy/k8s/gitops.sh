@@ -3,8 +3,8 @@
 # svp-gitops (root chart argocd/apps, base/, envs/stg/), the charts of this repository (deploy/helm/*) at the commit
 # envs/stg/charts.yaml there pins. This script installs only what git cannot hold or what must exist before Argo CD:
 #   1. the release images, before anything is created:
-#      image.repository and image.digest of the seven files envs/stg/images/ of svp-gitops at the revision Argo CD will
-#      follow, which the promote pull request writes; each must be a release of
+#      image.repository and image.digest of the seven files envs/stg/images/ of svp-gitops at the commit the cluster is
+#      built at, which the promote pull request writes; each must be a release of
 #      ghcr.io/anhnvcoder/short-video-platform/<service> that GHCR serves to an anonymous pull (the nodes pull without
 #      credentials), signed by images.yml on main, with a vuln attestation that is clean and at most 48 hours old
 #      (Kyverno refuses new pods at 72), and with a build provenance attestation when chart svp-policy checks provenance
@@ -16,20 +16,25 @@
 #      which External Secrets Operator (component external-secrets) builds every Secret once Argo CD has installed it;
 #   4. Argo CD (argocd/bootstrap.json: chart, version and values file base/argo-cd.yaml) in namespace argocd with Pod
 #      Security "restricted", AppProject svp and the emptied AppProject default (argocd/project.yaml) and root
-#      Application svp-root (chart argocd/apps at the same revision, told the architecture of the nodes and the
+#      Application svp-root (chart argocd/apps at that same commit, told the architecture of the nodes and the
 #      environment, stg: this cluster runs as staging). No repository Secret: both repositories are public and Argo CD
 #      reads them over HTTPS without credentials, so this path holds no key or token; a repository that turned private
 #      again would need a read-only credential here;
 #   5. a bounded wait until every Application is Synced and Healthy with its last sync Succeeded, with GlitchTip's DSN
 #      put into Secret svp/sentry once GlitchTip is up (deploy/k8s/glitchtip-init.sh), so the services report errors
-#      on this path too. An error Argo CD keeps reporting for 180 s stops the wait early.
-# The release images, Argo CD's install and the list of Applications come from git at the revision, never from a
-# working tree: what this script checks is what Argo CD deploys.
+#      on this path too. An error Argo CD keeps reporting for 180 s stops the wait early;
+#   6. with GITOPS_REV a branch, only then the root follows the branch (follow_branch below), so that the cluster takes
+#      every later release as staging does.
+# The release images, Argo CD's install and the list of Applications come from git at that one commit, never from a
+# working tree, and Argo CD builds the cluster at that commit too, not at the branch: what this script checks is what
+# Argo CD deploys, even when a release reaches the branch meanwhile (that release would go out as a canary, which no
+# traffic promotes while the cluster is being built, and the restarts of step 5 wait for Rollouts to be Healthy).
 #
 # Environment (set by `make k8s-gitops-up`):
-#   GITOPS_REV         the revision of svp-gitops Argo CD follows: a branch of the clone's origin (default main; read
-#                      from refs/remotes/origin/<branch> as fetched last, without a fetch; Argo CD gets
-#                      refs/heads/<branch>) or a full commit SHA of the clone.
+#   GITOPS_REV         the revision of svp-gitops: a branch of the clone's origin (default main; read from
+#                      refs/remotes/origin/<branch> as fetched last, without a fetch), whose commit the cluster is built
+#                      at, then follows the branch (Argo CD gets refs/heads/<branch>); or a full commit SHA of the
+#                      clone, at which the cluster is built and stays.
 #   SVP_GITOPS_DIR     the clone of svp-gitops (deploy/k8s/lib.sh, gitops_dir; CI's make gitops-clone sets it).
 #   SVP_ATTEST_MAX_AGE drills only (never in .env): a shorter limit than 48h for the age of the vuln attestations.
 #
@@ -45,6 +50,10 @@
 #   for r in gateway web; do kubectl --context k3d-svp -n svp patch rollout "$r" --type merge \
 #     -p "{\"spec\":{\"restartAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}}"; done
 # `make k8s-up` does the same on the dev path and refuses a cluster Argo CD manages.
+#
+# deploy/k8s/gitops.sh follow BRANCH: step 6 alone, on the cluster this script made: the root follows refs/heads/BRANCH
+# of svp-gitops from then on. For a cluster built at a commit (the verification run builds at one, and follows main
+# only once its checks are over).
 set -euo pipefail
 
 # shellcheck source=deploy/k8s/lib.sh
@@ -58,15 +67,50 @@ chart_repo_url=https://github.com/anhnvcoder/short-video-platform.git
 rev=${GITOPS_REV:-main}
 
 command -v jq >/dev/null || fail "jq is not installed (brew install jq): it reads components.json and Argo CD's status"
+
+# follow_branch BRANCH: points root svp-root at refs/heads/BRANCH of svp-gitops (Argo CD gets the full name: a short one
+# may resolve to a tag of that name), for its own source and for the values source of every Application it makes, and
+# waits up to 180 s for Argo CD to compare it there. When the branch is still at the commit the root ran (the
+# cluster's), nothing is rolled out: the children get the new name with the same commit, so only the root syncs, and
+# the wait goes on until it is Synced. When the branch has moved, Argo CD now deploys its newer commit as any release
+# that reaches the branch, which this says on a line of its own with both full commits (the verification run reads
+# them) and does not wait for: a gateway or web that changes goes out as a canary, which promotes only under traffic.
+follow_branch() {
+  local target=refs/heads/$1 app=applications.argoproj.io/svp-root from now patch
+  git check-ref-format "$target" || fail "'$1' is not a branch name"
+  from=$(kc -n argocd get "$app" -o jsonpath='{.status.sync.revision}') || fail "read Application argocd/svp-root"
+  patch=$(jq -cn --arg t "$target" '{spec: {source: {targetRevision: $t, helm: {valuesObject: {targetRevision: $t}}}}}')
+  kc -n argocd patch "$app" --type merge -p "$patch" >/dev/null || fail "point Application svp-root at $target"
+  wait_until 180 "Application svp-root compared at $target of svp-gitops" \
+    test_output "$target" kc -n argocd get "$app" -o jsonpath='{.status.sync.comparedTo.source.targetRevision}'
+  now=$(kc -n argocd get "$app" -o jsonpath='{.status.sync.revision}') || fail "read Application argocd/svp-root"
+  if [ "$now" = "$from" ]; then
+    wait_until 180 "Application svp-root Synced at $target" \
+      test_output Synced kc -n argocd get "$app" -o jsonpath='{.status.sync.status}'
+    ok "Application svp-root follows $target of svp-gitops, still at ${now:0:12}: nothing new to roll out"
+  else
+    echo "note  Application svp-root follows $target of svp-gitops, which moved from $from (the commit the cluster runs) to $now: Argo CD deploys it now, a release like any other; a changed gateway or web goes out as a canary, whose analysis promotes it only under traffic (make k8s-traffic-start)"
+  fi
+}
+
+if [ "${1:-}" = follow ]; then
+  [ $# = 2 ] && [ -n "$2" ] || fail "usage: deploy/k8s/gitops.sh follow BRANCH"
+  kc -n argocd get applications.argoproj.io svp-root >/dev/null 2>&1 ||
+    fail "cluster svp has no Application argocd/svp-root: it was not made by make k8s-gitops-up"
+  follow_branch "$2"
+  exit 0
+fi
+[ $# = 0 ] || fail "usage: deploy/k8s/gitops.sh, or deploy/k8s/gitops.sh follow BRANCH"
+
 gitops=$(gitops_dir) || exit 1
 
 # --- the revision of svp-gitops and its release images, before anything is created.
 if sha=$(git -C "$gitops" rev-parse --verify --quiet "refs/remotes/origin/$rev^{commit}"); then
-  target_rev=refs/heads/$rev
-  echo "revision: origin/$rev of svp-gitops = $sha (as last fetched in $gitops; this script does not fetch)"
+  branch=$rev
+  echo "revision: origin/$rev of svp-gitops = $sha (as last fetched in $gitops; this script does not fetch): the cluster is built at this commit, then follows refs/heads/$rev"
 elif [[ $rev =~ ^[0-9a-f]{40}$ ]] && sha=$(git -C "$gitops" rev-parse --verify --quiet "$rev^{commit}"); then
-  target_rev=$sha
-  echo "revision: commit $sha of svp-gitops"
+  branch=
+  echo "revision: commit $sha of svp-gitops: the cluster is built at this commit and stays at it"
 else
   fail "GITOPS_REV=$rev is neither a branch of origin (refs/remotes/origin/$rev) nor a full commit SHA of the clone $gitops"
 fi
@@ -201,15 +245,16 @@ at argocd/project.yaml | kc apply --server-side --field-manager=svp-gitops --for
   fail "apply AppProjects svp and default"
 ok "AppProject svp, AppProject default emptied"
 
-# The root follows $target_rev of svp-gitops, and hands the same revision to every Application it makes for its values
-# files (value targetRevision of chart argocd/apps), so the releases checked above are the ones deployed.
+# The root reads commit $sha of svp-gitops, and hands the same commit to every Application it makes for its values
+# files (value targetRevision of chart argocd/apps), so the releases checked above are the ones deployed, whatever
+# reaches the branch meanwhile; it follows the branch only once the cluster is built (follow_branch, at the end).
 # argocd_root_app (lib.sh) writes the revision and the environment as strings whatever they look like; the nodes'
 # architecture joins them in the root's values, a string too.
-argocd_root_app "$gitops_url" "$target_rev" "$env" "$chart_repo_url" |
+argocd_root_app "$gitops_url" "$sha" "$env" "$chart_repo_url" |
   jq --arg arch "$node_arch" '.spec.source.helm.valuesObject.nodeArch = $arch' |
   kc apply --server-side --field-manager=svp-gitops -f - >/dev/null ||
   fail "apply Application svp-root"
-ok "Application svp-root follows $target_rev of $gitops_url (HTTPS, no credentials), charts of ${chart_rev:0:12}, nodeArch $node_arch, env $env"
+ok "Application svp-root reads ${sha:0:12} of $gitops_url (HTTPS, no credentials), charts of ${chart_rev:0:12}, nodeArch $node_arch, env $env"
 
 # app_report: reads the Applications of namespace argocd and prints one line per name of $want_apps:
 #   ready NAME             Synced, Healthy and its last sync Succeeded: the criterion of the health check for
@@ -289,6 +334,7 @@ while :; do
   sleep 10
 done
 ok "$want Applications Synced and Healthy, their syncs Succeeded, at ${sha:0:12} of svp-gitops"
+[ -z "$branch" ] || follow_branch "$branch"
 export_ca
 
 echo
