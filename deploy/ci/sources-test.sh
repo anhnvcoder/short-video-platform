@@ -9,7 +9,8 @@
 #   - two sources with one name, or one promoter;
 #   - a file that is not JSON;
 #   - an imagePrefix that does not end in /, a provenanceRef that is not a refs/... ref.
-# The table of the working tree passes both. Each case renders a copy of the chart with its own table, under Helm
+# The table of the working tree passes both, and its render selects exactly two globs per published name
+# (matchImageReferences). Each case renders a copy of the chart with its own table, under Helm
 # homes in a temporary directory, so no cache or repository of the machine is read or written.
 # Needs bash, jq and helm: no network, no cluster.
 #
@@ -74,6 +75,16 @@ if render "$table" && grep -q 'kind: ImageValidatingPolicy' "$work/out"; then
   ok "the table of the working tree renders the policy"
 else
   fail "the table of the working tree: helm template fails: $(tail -n 3 "$work/out")"
+fi
+# matchImageReferences: exactly <imagePrefix><name>@* and <imagePrefix><name>:* for every name of every source, no glob
+# of a whole prefix (an image under a prefix with a name nobody publishes would make Kyverno ask the registry first).
+want=$(jq -r '.sources[] | .imagePrefix as $p | (.services + .drillImages)[] | ($p + . + "@*"), ($p + . + ":*")' \
+  "$table" | sort)
+got=$(sed -n '/^  matchImageReferences:$/,/^  [^ ]/p' "$work/out" | sed -n 's/^    - glob: "\(.*\)"$/\1/p' | sort)
+if [ -n "$got" ] && [ "$got" = "$want" ] && ! grep -q '/\*$' <<<"$got"; then
+  ok "matchImageReferences is one @* and one :* glob per published name ($(grep -c . <<<"$got") globs), none of a whole prefix"
+else
+  fail "matchImageReferences: want $(tr '\n' ' ' <<<"$want")got $(tr '\n' ' ' <<<"$got")"
 fi
 if check "$table" && [ "$(cat "$work/out")" = "$(jq -c . "$table")" ]; then
   ok "_release_sources_check accepts the table of the working tree and prints it"
