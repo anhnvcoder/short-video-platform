@@ -9,10 +9,15 @@
 #   3. scan-gate.sh on the report, then grype on the SBOM syft writes of the same tar and scan-gate.sh --grype on its
 #      report. A blocked image (by either gate: both always run, so the summary shows both) exits non-zero and nothing
 #      after it runs.
-# IMAGE is one of the seven services, or drill-vulnerable / drill-unsigned (images built only to drill admission, never
-# run). The web image builds from the context web/ (build_context of deploy/k8s/lib.sh) with SVP_BUILD_ID set to the
-# first 12 hex digits of the commit, the image's tag: both architectures of a commit get the same id, which Next uses
-# as its deploymentId and the server as its release name.
+# IMAGE is one of the services or drill images (built only to drill admission, never run) of the release source this
+# run builds for (use_build_source of common.sh: the source whose repository runs the job), so an image no source of
+# this run publishes is refused before anything is built. The code is that of code_root: this checkout, or the
+# checkout of another release source's repository named by SVP_CODE_ROOT, whose CI runs this script from a pinned
+# checkout of this one; its HEAD must be the commit of the run (check_code_tree). In this checkout the web image builds
+# from the context web/ (build_context of deploy/k8s/lib.sh); in another repository's tree, the image builds from its
+# top with the Dockerfile there, and its Dockerfile, pnpm-lock.yaml and .trivyignore.yaml must be there. The web image
+# gets SVP_BUILD_ID set to the first 12 hex digits of the commit, the image's tag: both architectures of a commit get
+# the same id, which Next uses as its deploymentId and the server as its release name.
 # trivy then reads the package.json of every package in the image's node_modules, so npm packages go
 # through the same CRITICAL and secret gate, and syft lists them in the SBOM. ARCH (amd64, arm64) must be this host's
 # architecture. OUT receives:
@@ -81,18 +86,25 @@ fi
 
 [ $# -eq 3 ] || fail "usage: build-image.sh IMAGE ARCH OUT"
 image=$1 arch=$2 out=$3
-rev=$(git -C "$repo_root" rev-parse HEAD)
+use_build_source "$image"
+check_code_tree
+rev=$(git -C "$code_root" rev-parse HEAD)
 build_args=()
-context=.
+context=$code_root
 case $image in
-drill-vulnerable) file=deploy/ci/drill/vulnerable.Dockerfile ;;
+drill-vulnerable) file=$script_root/deploy/ci/drill/vulnerable.Dockerfile ;;
 # Built exactly like a clean service (the gateway's code) so the only difference with a release is the missing
 # signature.
-drill-unsigned) file=$(dockerfile gateway) build_args=(--build-arg SERVICE=gateway) ;;
+drill-unsigned) file=$script_root/$(dockerfile gateway) build_args=(--build-arg SERVICE=gateway) ;;
 *)
-  printf '%s\n' "${svp_services[@]}" | grep -qxF -- "$image" || fail "$image is not an image of this repository"
-  file=$(dockerfile "$image")
-  context=$(build_context "$image")
+  if [ "$code_root" = "$script_root" ]; then
+    file=$code_root/$(dockerfile "$image")
+    context=$code_root/$(build_context "$image")
+  else
+    # Another repository's tree is one image: its Dockerfile at the top, the whole tree its context.
+    require_code_files Dockerfile pnpm-lock.yaml .trivyignore.yaml
+    file=$code_root/Dockerfile
+  fi
   case $image in
   media-worker) ;;
   web) build_args=(--build-arg "SVP_BUILD_ID=${rev:0:12}") ;;
@@ -105,21 +117,21 @@ mkdir -p "$out" || fail "create $out"
 out=$(cd "$out" && pwd)
 
 labels=()
-while IFS= read -r label; do labels+=(--label "$label"); done < <(oci_labels)
+while IFS= read -r label; do labels+=(--label "$label"); done < <(oci_labels "$build_source_name")
 tag="${SVP_LOCAL_REPO:-svp-ci}/$image:${rev:0:12}-$arch"
 
 echo "build $image for linux/$arch from $file, context $context"
-docker_ buildx build --load --provenance=false --sbom=false --file "$repo_root/$file" \
+docker_ buildx build --load --provenance=false --sbom=false --file "$file" \
   ${build_args[@]+"${build_args[@]}"} \
-  "${labels[@]}" --tag "$tag" "$repo_root/$context" || fail "build $image"
+  "${labels[@]}" --tag "$tag" "$context" || fail "build $image"
 echo "$tag" >"$out/local-tag"
 echo "linux/$arch" >"$out/platform"
 
 if [ "$image" = web ]; then
   echo "export stage sourcemaps of $file, same context and build argument, from the build cache of the image"
   rm -rf "$out/sourcemaps"
-  docker_ buildx build --provenance=false --sbom=false --file "$repo_root/$file" --target sourcemaps \
-    "${build_args[@]}" --output "type=local,dest=$out/sourcemaps" "$repo_root/$context" ||
+  docker_ buildx build --provenance=false --sbom=false --file "$file" --target sourcemaps \
+    "${build_args[@]}" --output "type=local,dest=$out/sourcemaps" "$context" ||
     fail "export the source maps of $image"
   check_sourcemaps "$out/sourcemaps"
   built=$(find "$out/sourcemaps" -type f -name '*.js' -exec sed -n 's|^//# debugId=||p' {} + | LC_ALL=C sort -u)

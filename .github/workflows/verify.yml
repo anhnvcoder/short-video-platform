@@ -5,6 +5,7 @@
 # ruleset requires it, and nothing but the dispatch and the weekly schedule triggers it.
 #
 #   gh workflow run verify.yml --ref <main or feat/stage6b-...> -f scenario=<scenario> [-f targets='<name> ...']
+#     [-f web_ref=<branch or full commit SHA of svp-web>]
 #
 # Scenarios (deploy/ci/verify/<scenario>.sh lists the targets of each): compose-obs (job compose), dev-k3d, web-canary,
 # k6-cloud-mini, chaos and velero (job k3d, the k3d cluster of the dev path), gitops (job gitops, the cluster Argo CD
@@ -19,9 +20,13 @@
 #   deploy/ci/record-stg.sh of main, has environment promote (deployment branch main only) for a token of the app on
 #   svp-gitops with deployments write alone;
 # - every action is GitHub's own and pinned to a full commit SHA; checkout never leaves the token in .git/config;
-# - the inputs reach the scripts only through env (SCENARIO, SVP_VERIFY_TARGETS) and deploy/ci/verify-run.sh checks
-#   them again with a case; if: compares the scenario as an expression, never in a shell. A scheduled run has no
-#   inputs: each job's SCENARIO falls back to its own scenario, and the targets are empty (every one);
+# - the inputs reach the scripts only through env (SCENARIO, SVP_VERIFY_TARGETS, SVP_VERIFY_WEB_REF) and
+#   deploy/ci/verify-run.sh checks them again with a case; if: compares the scenario as an expression, never in a
+#   shell. A scheduled run has no inputs: each job's SCENARIO falls back to its own scenario, the targets are empty
+#   (every one) and so is web_ref (the web client's code as without it);
+# - web_ref, checked in each job's first step, is a branch or a full commit SHA of svp-web, the web client's repository;
+#   verify-run.sh clones it from github.com/anhnvcoder/svp-web only (make web-clone), so a fork's code never runs here,
+#   and only for the scenarios that build or test the web (dev-k3d, web-canary, gitops);
 # - make env writes a .env of fresh random secrets that lives on this runner until the job ends; the cluster makes more
 #   (GlitchTip's tokens, its CA). deploy/ci/verify-mask.sh masks them in the log as soon as they exist, every target's
 #   output goes to a file on the runner instead of the log, and deploy/ci/verify-collect.sh copies into the artifact
@@ -52,6 +57,11 @@ on:
           - velero
       targets:
         description: Targets to run, separated by spaces; empty runs every one, the build target always runs (deploy/ci/verify-run.sh)
+        type: string
+        required: false
+        default: ""
+      web_ref:
+        description: "dev-k3d, web-canary, gitops: the web client's code from svp-web (github.com/anhnvcoder/svp-web), main, another of its branches or a full commit SHA; empty keeps the web as without it (deploy/ci/verify-run.sh)"
         type: string
         required: false
         default: ""
@@ -92,6 +102,7 @@ jobs:
     env:
       SCENARIO: ${{ inputs.scenario || 'compose-obs' }}
       SVP_VERIFY_TARGETS: ${{ inputs.targets }}
+      SVP_VERIFY_WEB_REF: ${{ inputs.web_ref }}
       SVP_VERIFY_JOB_MINUTES: 120
       SVP_VERIFY_STEP_MINUTES: 75
     services:
@@ -123,7 +134,8 @@ jobs:
     steps:
       # Before anything else: a dispatch of another branch (an old one without the fixes of this stage) stops here, and
       # so does a scheduled run anywhere but main (GitHub runs it on the default branch, which is main). An accident
-      # guard, not a security boundary: whoever can dispatch can also push a branch of that name.
+      # guard, not a security boundary: whoever can dispatch can also push a branch of that name. So does a web_ref that
+      # names no branch or commit; verify-run.sh refuses it for a scenario that takes none (compose-obs among them).
       - name: Check the ref and note the job's start
         id: ref
         run: |
@@ -131,6 +143,11 @@ jobs:
             schedule:refs/heads/main | workflow_dispatch:refs/heads/main | workflow_dispatch:refs/heads/feat/stage6b-*) ;;
             *) echo "::error::verify runs on main, or dispatched on a feat/stage6b-* branch, not $GITHUB_EVENT_NAME on $GITHUB_REF"; exit 1 ;;
           esac
+          # web_ref: empty, a full commit SHA or a branch name (not printed back: a line starting with :: is a command).
+          if [ -n "$SVP_VERIFY_WEB_REF" ] && ! [[ $SVP_VERIFY_WEB_REF =~ ^[0-9a-f]{40}$ ]] &&
+            ! { [[ $SVP_VERIFY_WEB_REF =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] && git check-ref-format "refs/heads/$SVP_VERIFY_WEB_REF"; }; then
+            echo "::error::web_ref is neither a full commit SHA nor a branch name of svp-web"; exit 1
+          fi
           echo "SVP_VERIFY_OUT=$RUNNER_TEMP/verify" >>"$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/verify"
           date +%s >"$RUNNER_TEMP/verify/job-start"
@@ -210,6 +227,7 @@ jobs:
     env:
       SCENARIO: ${{ inputs.scenario || 'dev-k3d' }}
       SVP_VERIFY_TARGETS: ${{ inputs.targets }}
+      SVP_VERIFY_WEB_REF: ${{ inputs.web_ref }}
       SVP_VERIFY_JOB_MINUTES: 330
       SVP_VERIFY_STEP_MINUTES: 285
     steps:
@@ -221,6 +239,11 @@ jobs:
             schedule:refs/heads/main | workflow_dispatch:refs/heads/main | workflow_dispatch:refs/heads/feat/stage6b-*) ;;
             *) echo "::error::verify runs on main, or dispatched on a feat/stage6b-* branch, not $GITHUB_EVENT_NAME on $GITHUB_REF"; exit 1 ;;
           esac
+          # web_ref: empty, a full commit SHA or a branch name (not printed back: a line starting with :: is a command).
+          if [ -n "$SVP_VERIFY_WEB_REF" ] && ! [[ $SVP_VERIFY_WEB_REF =~ ^[0-9a-f]{40}$ ]] &&
+            ! { [[ $SVP_VERIFY_WEB_REF =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] && git check-ref-format "refs/heads/$SVP_VERIFY_WEB_REF"; }; then
+            echo "::error::web_ref is neither a full commit SHA nor a branch name of svp-web"; exit 1
+          fi
           echo "SVP_VERIFY_OUT=$RUNNER_TEMP/verify" >>"$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/verify"
           date +%s >"$RUNNER_TEMP/verify/job-start"
@@ -316,6 +339,7 @@ jobs:
     env:
       SCENARIO: gitops
       SVP_VERIFY_TARGETS: ${{ inputs.targets }}
+      SVP_VERIFY_WEB_REF: ${{ inputs.web_ref }}
       SVP_VERIFY_JOB_MINUTES: 330
       SVP_VERIFY_STEP_MINUTES: 175
     steps:
@@ -327,6 +351,11 @@ jobs:
             schedule:refs/heads/main | workflow_dispatch:refs/heads/main | workflow_dispatch:refs/heads/feat/stage6b-*) ;;
             *) echo "::error::verify runs on main, or dispatched on a feat/stage6b-* branch, not $GITHUB_EVENT_NAME on $GITHUB_REF"; exit 1 ;;
           esac
+          # web_ref: empty, a full commit SHA or a branch name (not printed back: a line starting with :: is a command).
+          if [ -n "$SVP_VERIFY_WEB_REF" ] && ! [[ $SVP_VERIFY_WEB_REF =~ ^[0-9a-f]{40}$ ]] &&
+            ! { [[ $SVP_VERIFY_WEB_REF =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] && git check-ref-format "refs/heads/$SVP_VERIFY_WEB_REF"; }; then
+            echo "::error::web_ref is neither a full commit SHA nor a branch name of svp-web"; exit 1
+          fi
           echo "SVP_VERIFY_OUT=$RUNNER_TEMP/verify" >>"$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/verify"
           date +%s >"$RUNNER_TEMP/verify/job-start"
@@ -434,11 +463,12 @@ jobs:
   # becomes a deployment record of environment stg in svp-gitops (deploy/ci/record-stg.sh), which a pull request to
   # envs/prd/ there must match whole and which promote prd of images.yml copies. A dispatch or the weekly run alike;
   # a red wait for a release after the scenario does not keep it from being recorded. Skipped on a branch (the
-  # environment takes main only), on a cancelled run, and without that output. The token is the app's, for svp-gitops
-  # alone and deployments write alone; the job's own token only reads this repository.
+  # environment takes main only), on a cancelled run, on a run with web_ref (job gitops then ran code of an svp-web
+  # branch), and without that output. The token is the app's, for svp-gitops alone and deployments write alone; the job's
+  # own token only reads this repository.
   record-stg:
     needs: gitops
-    if: ${{ !cancelled() && needs.gitops.outputs.recorded == 'true' && github.ref == 'refs/heads/main' }}
+    if: ${{ !cancelled() && needs.gitops.outputs.recorded == 'true' && github.ref == 'refs/heads/main' && inputs.web_ref == '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: promote

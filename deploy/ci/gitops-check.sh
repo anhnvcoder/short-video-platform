@@ -13,9 +13,32 @@
 #      this repository on origin/main), podSecurityVersion and collectorConfigSha256, both equal to what that commit
 #      gives (podSecurityVersion of deploy/helm/svp-cluster/values.yaml, the sha256 of
 #      deploy/observability/otelcol/k8s-config.yaml). envs/<env>/images/ holds exactly one file per service, each the
-#      image block alone (repository of that service on GHCR, tag, digest), and the commit each tag names is revision
-#      or one of its ancestors: an image never runs with charts older than its code (a new environment variable the
-#      chart does not set yet).
+#      image block alone (repository, tag, digest), the repository that service's image of a release source of the
+#      table chart svp-policy reads at revision (release_source_of of deploy/k8s/lib.sh: what the policy of <env>
+#      admits). A release of source backend, this repository, which also holds the charts: the commit its tag names is
+#      revision or one of its ancestors, so an image never runs with charts older than its code (a new environment
+#      variable the chart does not set yet). A release of another source: its tag is the 12 hex of a commit on main of
+#      that source's repository, read from a clone of it with its whole history: SVP_SOURCE_DIR_<NAME> (the source's
+#      name in upper case, SVP_SOURCE_DIR_WEB) when set, a clone whose origin is that repository; otherwise an
+#      anonymous clone (--filter=blob:none) into the temporary directory, made only when a file names such a release.
+#      Its configuration reaches it through base/ and the overlays of svp-gitops, not through the charts, so it is not
+#      compared with revision. gitops-check.sh --tree GITOPS_DIR [BASE] runs this step and step 1c alone (their test).
+#   1c. With BASE, on a pull request opened by the bot of a release source (ci_change_request_author of platform.sh,
+#      read from the platform's event; <promoter>[bot] of the table of release sources): each file changed from BASE
+#      to HEAD is judged with the table at the revision the environment holding it pins at HEAD (the revision after
+#      the change). The bot of source N changes only envs/stg/images/<svc>.yaml with <svc> in N's services, the image
+#      after the change a release of N (<imagePrefix><svc> of N), and the image before a release of N or of backend,
+#      the source whose repository holds the charts: a takeover goes one way, from backend; a person moves a service
+#      back. The bot of backend also changes envs/stg/charts.yaml, envs/prd/charts.yaml and envs/prd/images/<svc>.yaml
+#      (prd's content is step 1b's rule). No bot of a source deletes a file under envs/, and no bot of a source
+#      changes a file outside envs/. A bot whose login is no promoter of the table changes nothing under envs/. A pull
+#      request of a person is not limited here. The author does not name who pushed onto the pull request's branch, so
+#      the event's sender (ci_change_request_sender: who opened it, or who pushed the commit checked) counts too: a bot
+#      other than the author fails, whoever the author is (the bot of svp-web pushing onto the pull request of the bot
+#      of backend would otherwise pass as backend's); a person pushing onto a bot's pull request is judged by the
+#      author's rule as before. A pull request whose author or sender cannot be read fails; without BASE, or for a run
+#      of no pull request (a push, a dispatch, a machine without SVP_CHANGE_REQUEST_AUTHOR), the step prints one skip
+#      line; on a machine, SVP_CHANGE_REQUEST_SENDER names the sender, none when unset.
 #   1b. With BASE, when envs/prd/images/ or envs/prd/charts.yaml changed from BASE to HEAD: the seven releases
 #      (repository, tag, digest) and the charts (revision, podSecurityVersion, collectorConfigSha256) of envs/prd/
 #      together are exactly the payload of one record of stg that counts (deploy/ci/release-set.sh records: state
@@ -40,8 +63,9 @@
 #      fields (image:, imageName:, ...), and image references inside args, env and config files (an operator's
 #      --xxx-image=... flag, an env value it starts pods from). A setting whose name says it holds an image (an env
 #      name or upper-case key with the word IMAGE, a flag with "image") counts even without a registry, as busybox:1.37
-#      or alpine. The seven service images are left out: CI signs them and Kyverno verifies them, and Kyverno checks
-#      nothing else at admission, so the images of the platform namespaces are held to their digests here instead: a
+#      or alpine. The service images (a service's image of any release source) are left out: the CI of their source
+#      signs them and Kyverno verifies them, and Kyverno checks nothing else at admission, so the images of the
+#      platform namespaces are held to their digests here instead: a
 #      tag can be pushed again to other content, a digest cannot. Every environment runs the images built once for the
 #      base: each component with an overlay in envs/<env>/ is rendered again with it after its values, and the images
 #      of that render, the seven service images included, must be exactly those of the base render.
@@ -62,7 +86,7 @@ set -euo pipefail
 # shellcheck source=deploy/ci/common.sh
 . "$(dirname "$0")/common.sh"
 
-worktree= records_only=
+worktree= records_only= tree_only=
 if [ "${1:-}" = --worktree ]; then
   worktree=1
   shift
@@ -71,18 +95,24 @@ elif [ "${1:-}" = --records ]; then
   records_only=1
   shift
   [ $# -eq 2 ] || fail "usage: gitops-check.sh --records GITOPS_DIR BASE"
+elif [ "${1:-}" = --tree ]; then
+  tree_only=1
+  shift
+  [ $# -ge 1 ] && [ $# -le 2 ] || fail "usage: gitops-check.sh --tree GITOPS_DIR [BASE]"
 fi
 [ $# -ge 1 ] && [ $# -le 2 ] ||
-  fail "usage: gitops-check.sh GITOPS_DIR [BASE] | gitops-check.sh --worktree GITOPS_DIR | gitops-check.sh --records GITOPS_DIR BASE"
+  fail "usage: gitops-check.sh GITOPS_DIR [BASE] | gitops-check.sh --worktree GITOPS_DIR | gitops-check.sh --records GITOPS_DIR BASE | gitops-check.sh --tree GITOPS_DIR [BASE]"
 tree=$(cd "$1" 2>/dev/null && pwd -P) || fail "$1 is not a directory"
 base=${2:-}
 tools="git jq helm docker"
-[ -z "$records_only" ] || tools="git jq"
+[ -z "$records_only$tree_only" ] || tools="git jq"
 for tool in $tools; do
   command -v "$tool" >/dev/null || fail "$tool is not installed"
 done
 main=origin/main
 envs="prd stg"
+# The release source whose repository holds the charts (this one): its bot also promotes charts.yaml and envs/prd/.
+chart_source=backend
 service_chart=deploy/helm/svp-service
 zero_digest=sha256:0000000000000000000000000000000000000000000000000000000000000000
 
@@ -222,6 +252,169 @@ if [ -n "$records_only" ]; then
   exit 0
 fi
 
+# source_clone NAME REPOSITORY: prints a folder holding the history of REPOSITORY (release source NAME) with its
+# origin/main: SVP_SOURCE_DIR_<NAME in upper case> when set, which must be a clone whose origin is REPOSITORY;
+# otherwise an anonymous clone into the temporary directory, made once (blobs left out: only commits are read).
+source_clone() {
+  local var dir url
+  var=SVP_SOURCE_DIR_$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')
+  dir=${!var:-}
+  if [ -n "$dir" ]; then
+    url=$(git -C "$dir" remote get-url origin 2>/dev/null) || url=
+    [ "${url%.git}" = "$2" ] || {
+      # Without its userinfo: an origin may carry a credential (https://user:token@host/...).
+      [[ $url =~ ^([A-Za-z][A-Za-z0-9+.-]*://)[^/]*@(.*)$ ]] && url=${BASH_REMATCH[1]}${BASH_REMATCH[2]}
+      echo "FAIL  $var=$dir is not a clone of $2 (its origin is '${url:-none}')" >&2
+      return 1
+    }
+    echo "$dir"
+    return 0
+  fi
+  dir=$tmp/sources/$1
+  if [ ! -d "$dir" ]; then
+    mkdir -p "$tmp/sources" || return 1
+    GIT_TERMINAL_PROMPT=0 git -c credential.helper= clone -q --no-checkout --filter=blob:none "$2.git" "$dir" || {
+      rm -rf "$dir"
+      echo "FAIL  clone $2 anonymously to read its history (or set $var to a clone of it)" >&2
+      return 1
+    }
+  fi
+  echo "$dir"
+}
+
+# author_rule: step 1c (see the header).
+author_rule() {
+  local author sender login changed status path env rev src name svc prefix after before bsrc bname promoters bad=0 n=0 who
+  local chart_files='^envs/(stg|prd)/charts\.yaml$|^envs/prd/images/[a-z0-9-]+\.yaml$'
+  if [ -z "$base" ]; then
+    echo "skip  the author of a pull request: no base, so no change of a pull request to check"
+    return 0
+  fi
+  if ! author=$(ci_change_request_author); then
+    problem "the author of the pull request cannot be read (above): the files a bot may change depend on which bot it is"
+    return 0
+  fi
+  if [ -z "$author" ]; then
+    echo "skip  the author of a pull request: this run checks no pull request (on a machine, SVP_CHANGE_REQUEST_AUTHOR names the author of one)"
+    return 0
+  fi
+  if ! sender=$(ci_change_request_sender); then
+    problem "the sender of the pull request's event cannot be read (above): a bot other than the author may have pushed onto it"
+    return 0
+  fi
+  if [[ $sender == *'[bot]' ]] && [ "$sender" != "$author" ]; then
+    problem "the commit checked was pushed by $sender onto the pull request of $author: a bot pushes onto its own pull requests only, since the files allowed are the author's"
+    return 0
+  fi
+  if [[ $author != *'[bot]' ]]; then
+    echo "ok    the pull request is by $author, a person: the files it changes are not limited by release source"
+    return 0
+  fi
+  [ "$(git -C "$tree" rev-parse --show-toplevel 2>/dev/null)" = "$tree" ] || {
+    problem "$tree is not the top of a git repository, so the files $author changed since $base cannot be listed"
+    return 0
+  }
+  changed=$(git -C "$tree" diff --name-status --no-renames "$base" HEAD) || {
+    problem "list the files $author changed since $base"
+    return 0
+  }
+  login=${author%'[bot]'}
+  # The table of release sources of each environment, at the revision it pins after the change.
+  mkdir -p "$tmp/author"
+  for env in $envs; do
+    rev=$(charts_field "$env" revision 2>/dev/null) || rev=
+    if ! [[ $rev =~ ^[0-9a-f]{40}$ ]] || ! src=$(release_sources "$rev"); then
+      problem "the release sources of the charts of envs/$env cannot be read (above), so neither can which files $author may change"
+      return 0
+    fi
+    echo "$src" >"$tmp/author/$env.json"
+  done
+  promoters=$(jq -r '.sources[].promoter' "$tmp"/author/*.json | sort -u)
+  while IFS=$'\t' read -r status path; do
+    [ -n "$path" ] || continue
+    n=$((n + 1))
+    case $path in
+    envs/stg/* | envs/prd/*) env=${path:5:3} ;;
+    envs/*)
+      problem "$path: changed by $author, a bot: envs/ holds the environments stg and prd only"
+      bad=1
+      continue
+      ;;
+    *)
+      if grep -qxF -- "$login" <<<"$promoters"; then
+        problem "$path: changed by $author, the promoter of a release source, which changes nothing outside envs/"
+        bad=1
+      fi
+      continue
+      ;;
+    esac
+    rev=$(charts_field "$env" revision)
+    src=$(jq -c --arg p "$login" '.sources[] | select(.promoter == $p)' "$tmp/author/$env.json")
+    if [ -z "$src" ]; then
+      problem "$path: changed by $author, which promotes no release source of the charts envs/$env runs (${rev:0:12}): only the promoters of those sources change envs/, each the files of its own source"
+      bad=1
+      continue
+    fi
+    name=$(jq -r .name <<<"$src")
+    who="$author, the bot of release source $name"
+    case $path in
+    envs/stg/images/*)
+      svc=${path#envs/stg/images/}
+      svc=${svc%.yaml}
+      prefix=$(jq -r .imagePrefix <<<"$src")
+      if ! [[ $path =~ ^envs/stg/images/[a-z0-9-]+\.yaml$ ]] ||
+        ! jq -e --arg s "$svc" '.services | index($s)' <<<"$src" >/dev/null; then
+        problem "$path: changed by $who, which publishes $(jq -r '.services | join(" ")' <<<"$src"): it changes the image files of those services only"
+        bad=1
+      elif [ "$status" = D ]; then
+        problem "$path: deleted by $who: a bot changes the image file of a service, never deletes it"
+        bad=1
+      elif ! after=$(values_field repository <"$tree/$path" 2>/dev/null) || [ "$after" != "$prefix$svc" ]; then
+        problem "$path: $who, wrote image '${after:-?}': it writes releases of its own source only, $prefix$svc"
+        bad=1
+      elif [ "$status" = A ]; then
+        echo "ok    $path: $who, added a release of $svc of its own source"
+      elif ! before=$(git -C "$tree" show "$base:$path" 2>/dev/null | values_field repository 2>/dev/null) ||
+        ! bsrc=$(release_source_of "$svc" "$before" "$rev"); then
+        problem "$path: the image before (${before:-unreadable} at ${base:0:12}) is no release of $svc of a source of the charts of $env (${rev:0:12}): $who, may not replace it (a person may)"
+        bad=1
+      else
+        bname=$(jq -r .name <<<"$bsrc")
+        if [ "$bname" = "$name" ]; then
+          echo "ok    $path: $who, moved $svc to another release of its own source"
+        elif [ "$bname" = "$chart_source" ]; then
+          echo "ok    $path: $who, takes $svc over from release source $chart_source, whose repository holds the charts"
+        else
+          problem "$path: the image before ($before) is a release of source $bname: $who, takes a service over only from $chart_source, whose repository holds the charts (a person moves it back)"
+          bad=1
+        fi
+      fi
+      ;;
+    envs/stg/charts.yaml | envs/prd/charts.yaml | envs/prd/images/*)
+      if [ "$name" != "$chart_source" ]; then
+        problem "$path: changed by $who: only the bot of $chart_source, whose repository holds the charts, changes envs/stg/charts.yaml and envs/prd/; $name's changes the image files of its services in envs/stg/images/ only"
+        bad=1
+      elif [ "$status" = D ] || ! [[ $path =~ $chart_files ]]; then
+        problem "$path: $([ "$status" = D ] && echo deleted || echo changed) by $who: it changes charts.yaml and the image files of envs/prd/images/, never deletes one"
+        bad=1
+      else
+        echo "ok    $path: $who, promotes the charts or the set of prd (the content of prd is the records' rule)"
+      fi
+      ;;
+    *)
+      problem "$path: changed by $who: a bot changes the image files of its services in envs/stg/images/ only (the bot of $chart_source also envs/stg/charts.yaml and envs/prd/images/, envs/prd/charts.yaml)"
+      bad=1
+      ;;
+    esac
+  done <<<"$changed"
+  [ "$bad" -eq 0 ] || return 0
+  if grep -qxF -- "$login" <<<"$promoters"; then
+    echo "ok    the pull request of $author, the promoter of a release source: its $n changed files are all files its source may change"
+  else
+    echo "ok    the pull request of $author, a bot that promotes no release source: none of its $n changed files is under envs/"
+  fi
+}
+
 # --- 1. the tree
 components=$tree/argocd/apps/components.json
 for f in argocd/apps/Chart.yaml argocd/apps/values.yaml argocd/apps/templates/applications.yaml \
@@ -313,25 +506,44 @@ for env in $envs; do
       problem "$file: image.repository, tag and digest must each be one plain line in the image block"
       continue
     fi
-    if [ "$repo" != "$ghcr_prefix/$svc" ] || [ -z "$tag" ] || [ -z "$digest" ]; then
-      problem "$file: the image must be a release of $ghcr_prefix/$svc with its tag and digest, not '$repo' '$tag' '$digest'"
+    # The table of release sources of the charts env runs (the working tree's with --worktree).
+    table_rev=$rev
+    [ -z "$worktree" ] || table_rev=
+    if ! src=$(release_source_of "$svc" "$repo" "$table_rev") || [ -z "$tag" ] || [ -z "$digest" ]; then
+      problem "$file: the image must be a release of $(release_repositories "$svc" "$table_rev") with its tag and digest, not '$repo' '$tag' '$digest'"
       continue
     fi
     [ -z "$worktree" ] || continue
-    if ! commit=$(git -C "$repo_root" rev-parse --verify --quiet "$tag^{commit}"); then
-      problem "$file: tag $tag names no commit of this clone of the code repository"
+    name=$(jq -r .name <<<"$src")
+    if [ "$name" = backend ]; then
+      if ! commit=$(git -C "$repo_root" rev-parse --verify --quiet "$tag^{commit}"); then
+        problem "$file: tag $tag names no commit of this clone of the code repository"
+        continue
+      fi
+      git -C "$repo_root" merge-base --is-ancestor "$commit" "$rev" ||
+        problem "$file: tag $tag is no ancestor of revision ${rev:0:12} of envs/$env/charts.yaml: the image would run with charts older than its code"
       continue
     fi
-    git -C "$repo_root" merge-base --is-ancestor "$commit" "$rev" ||
-      problem "$file: tag $tag is no ancestor of revision ${rev:0:12} of envs/$env/charts.yaml: the image would run with charts older than its code"
+    url=$(jq -r .repository <<<"$src")
+    if ! [[ $tag =~ ^[0-9a-f]{12}$ ]]; then
+      problem "$file: tag '$tag' is not the 12 hex of a commit of $url (release source $name)"
+    elif ! history=$(source_clone "$name" "$url"); then
+      problem "$file: the history of $url (release source $name) cannot be read (above)"
+    elif ! commit=$(git -C "$history" rev-parse --verify --quiet "$tag^{commit}") || [[ $commit != "$tag"* ]] ||
+      ! git -C "$history" merge-base --is-ancestor "$commit" refs/remotes/origin/main 2>/dev/null; then
+      problem "$file: tag $tag is no commit on main of $url (release source $name)"
+    fi
   done
   if [ -n "$worktree" ]; then
-    echo "ok    envs/$env/images/: seven releases of $ghcr_prefix"
+    echo "ok    envs/$env/images/: seven releases, each of a release source the policy admits"
   else
-    echo "ok    envs/$env/images/: seven releases of $ghcr_prefix, each built at or before ${rev:0:12}"
+    echo "ok    envs/$env/images/: seven releases, each of a release source the policy of ${rev:0:12} admits; those of backend built at or before ${rev:0:12}, the others on main of their repository"
   fi
 done
+# --- 1c. the author of a pull request
+author_rule
 step "the tree $tree"
+[ -z "$tree_only" ] || exit 0
 
 # --- 1b. envs/prd/ against the records of stg
 if [ -z "$worktree" ]; then
@@ -642,11 +854,16 @@ for rev in $(for env in $envs; do revision_of "$env"; done | sort -u); do
 
   total=0 pinned=0 excepted=0 services=0
   missing=
+  # Every repository a service's release may come from in the table of these charts.
+  table_rev=$rev
+  [ "$rev" != worktree ] || table_rev=
+  service_repos=$(release_sources "$table_rev" | jq -r '.sources[] | .imagePrefix + .services[]') ||
+    fail "read the release sources of $label"
   while IFS=$'\t' read -r name ref; do
     service=
-    for svc in "${svp_services[@]}"; do
-      case $ref in "$ghcr_prefix/$svc:"* | "$ghcr_prefix/$svc@"*) service=1 ;; esac
-    done
+    while IFS= read -r r; do
+      case $ref in "$r:"* | "$r@"*) service=1 ;; esac
+    done <<<"$service_repos"
     if [ -n "$service" ]; then
       services=$((services + 1))
       continue

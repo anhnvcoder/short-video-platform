@@ -1,6 +1,7 @@
 # Checks of every pull request and of every push to main: the whole check list of CLAUDE.md (make check-go, the web
-# client, generated code, buf breaking, compose, Collector, Prometheus rules, charts) plus the secret scan of the whole
-# git history and the misconfiguration scan. Job ci-ok is the only check the ruleset of main requires from this
+# client, generated code, buf breaking, the version rule of the API contract, compose, Collector, Prometheus rules,
+# charts) plus the secret scan of the whole git history and the misconfiguration scan. Job ci-ok is the only check the
+# ruleset of main requires from this
 # workflow, so the other jobs can be renamed or added without touching it. Job stack runs the whole compose stack end to
 # end as a report outside ci-ok, so a flaky run on a shared runner never blocks a merge.
 #
@@ -259,6 +260,35 @@ jobs:
           echo "buf breaking against $base"
           "$(go env GOPATH)/bin/buf" breaking --against ".git#ref=$base"
 
+  # The version rule of the gateway's REST contract (services/gateway/openapi.yaml), which clients in other repositories
+  # pin by version: the file changed means info.version went up, and enough (oasdiff, pinned in the Makefile, no
+  # network). Then the tests of deploy/ci/contract.sh, its publishing included, against a fake registry and cosign.
+  api-contract:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      # The whole history, so the base commit below is there to compare against.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # The base as for buf breaking: a pull request, the merge base with its base branch; a push to main, main as it
+      # was before the push (all zeros when the branch did not exist: the script then has nothing to compare and
+      # says so); a manual run, the merge base with main.
+      - name: make api-contract-check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          case "$EVENT_NAME" in
+            pull_request) base=$(git merge-base HEAD "origin/$GITHUB_BASE_REF") ;;
+            push) base=$BEFORE ;;
+            *) base=$(git merge-base HEAD origin/main) ;;
+          esac
+          make api-contract-check BASE="$base"
+      - run: deploy/ci/contract-test.sh
+
   # The configuration that no Go test covers: the rules of .trivyignore.yaml and deploy/ci/trivy-config-ignore.yaml,
   # Prometheus rules and their tests, the three Collector configs, the compose file of every profile, every chart of the
   # repository, the digests of third-party images, the k6 scripts with each profile and the cloud cluster's manifests.
@@ -336,6 +366,10 @@ jobs:
       # The working tree's charts with main of svp-gitops (deploy/ci/gitops-check.sh --worktree), every third-party
       # image pinned by digest among them; needs network: chart repositories.
       - run: make helm-check
+      # The rules on the table of release sources, written in the template of chart svp-policy and in deploy/k8s/lib.sh:
+      # every broken table must fail both, so a rule changed on one side only fails here. helm from the PATH set above,
+      # bash and jq; no network.
+      - run: deploy/ci/sources-test.sh
       # The check that svp-gitops runs from a pinned commit of this repository, on the clone above: each negative case
       # (a missing image file, an image newer than the charts, a set of prd that matches no record of stg, ...) must
       # fail with its own message, and gitops_dir of deploy/k8s/lib.sh finds the clone of a draft workspace. Every case
@@ -640,10 +674,10 @@ jobs:
 
   # The required check. It runs whatever happened before it (always()) and fails unless every check job succeeded:
   # GitHub counts a skipped required check as passed, and a job that failed or was cancelled does not fail the jobs
-  # that need it by itself. None of the seven has a condition, so skipped here can only mean a wrong if: and is red too.
+  # that need it by itself. None of the eight has a condition, so skipped here can only mean a wrong if: and is red too.
   # No condition may ever skip ci-ok itself.
   ci-ok:
-    needs: [check, web, generate, buf, config, gitleaks, trivy-config]
+    needs: [check, web, generate, buf, api-contract, config, gitleaks, trivy-config]
     if: always()
     runs-on: ubuntu-24.04
     permissions: {}
@@ -653,4 +687,4 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
         run: |
           jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$NEEDS"
-          jq -e 'length == 7 and all(.[]; .result == "success")' <<< "$NEEDS" > /dev/null
+          jq -e 'length == 8 and all(.[]; .result == "success")' <<< "$NEEDS" > /dev/null

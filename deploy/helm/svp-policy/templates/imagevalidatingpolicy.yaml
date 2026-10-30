@@ -1,29 +1,48 @@
 {{- /*
-Kyverno v1.19.1 ImageValidatingPolicy. The checks run in
-order and stop at the first that fails, each with its own message naming the images it refused:
-  1. every image of the pod is <imagePrefix><name>@sha256:<64 hex>. Kyverno verifies only the images that
-     matchImageReferences selects and lets every other one through, so this check alone refuses an image of the local
-     registry or of Docker Hub; it reads the pod only, so such a pod is refused without any registry being asked. An
-     image under the prefix without a digest is refused earlier still, by verifyDigest ("does not have a digest"),
-     before Kyverno would look its tag up;
-  2. a keyless cosign signature by the workflow identity (issuer + subject);
+Kyverno v1.19.1 ImageValidatingPolicy. Every release source of files/sources.json (one per repository that builds and
+signs images: name, repository, imagePrefix, services, drillImages, issuer, subject, provenanceRef, promoter) has its
+own image prefix and its own attestor, and each image is checked against the source whose prefix it is under, never
+another's: an identity of one source cannot sign an image under another's prefix. The checks run in order and stop at
+the first that fails, each with its own message naming the images it refused and, from check 2 on, the source each
+belongs to:
+  1. every image of the pod is <imagePrefix><name>@sha256:<64 hex>, <name> one of the services or drill images of the
+     source with that prefix. Kyverno verifies only the images that matchImageReferences selects (one glob per
+     prefix) and lets every other one through, so this check alone refuses an image of the local registry or of Docker
+     Hub; it reads the pod only, so such a pod is refused without any registry being asked. An image under a prefix
+     without a digest is refused earlier still, by verifyDigest ("does not have a digest"), before Kyverno would look
+     its tag up;
+  2. a keyless cosign signature by the workflow identity (issuer + subject) of its source;
   3. a vuln attestation (https://cosign.sigstore.dev/attestation/vuln/v1) signed by the same identity;
   4. its predicate covers exactly linux/amd64 and linux/arm64 (scanner.result.platforms, the contract of
      deploy/ci/vuln-predicate.sh);
   5. no CRITICAL vulnerability on either platform;
   6. metadata.scanFinishedOn at most maxAttestationAge ago.
-With requireProvenance (off by default, so the policy renders as without these), four more, after the six: an image
-without provenance is refused only once it passes every other check, so the message of a missing provenance never
-hides another fault:
+With requireProvenance (off by default, so the policy renders as without these), four more, after the six, for every
+source alike: an image without provenance is refused only once it passes every other check, so the message of a
+missing provenance never hides another fault:
   7. a build provenance attestation (https://slsa.dev/provenance/v1, which cosign attest --type slsaprovenance1 writes)
      signed by the same identity;
   8. its runDetails.builder.id is the subject of that identity;
-  9. its buildDefinition.externalParameters.workflow.repository is provenanceRepository;
- 10. its buildDefinition.externalParameters.workflow.ref is provenanceRef.
+  9. its buildDefinition.externalParameters.workflow.repository is the repository of its source;
+ 10. its buildDefinition.externalParameters.workflow.ref is the provenanceRef of its source.
+An image's source is picked in CEL by the prefix it starts with: the prefixes are checked here never to nest, so at
+most one matches, and every image Kyverno verifies matches one (matchImageReferences). Each verification names the
+attestor of that source alone; Kyverno calls it only for an image under that prefix (&& and ?: do not evaluate the
+side they skip, and when they did, a count of 0 from the wrong attestor would still not count).
 The payload of an attestation is the whole in-toto statement, so its paths start at .predicate; extractPayload reads it
 only once verifyAttestationSignatures has verified it in the same evaluation (check 3 comes first for vuln, check 7 for
 provenance). Each image then costs a third verification when Kyverno has not cached it.
 */}}
+{{- /* svp-policy.pick: a CEL expression, the string KEY of the source whose imagePrefix image VAR starts with ('' for
+none), from a dict of sources (the validated list), key and var. */}}
+{{- define "svp-policy.pick" -}}
+{{- range .sources }}({{ $.var }}.startsWith('{{ .imagePrefix }}') ? '{{ get . $.key }}' : {{ end }}''{{ range .sources }}){{ end }}
+{{- end }}
+{{- /* svp-policy.any: a CEL expression, true when image i is under the prefix of a source and EXPR (a template of the
+verification, with ATTESTOR standing for that source's attestor) is true for it. */}}
+{{- define "svp-policy.any" -}}
+{{- range $n, $s := .sources }}{{ if $n }} || {{ end }}(i.startsWith('{{ $s.imagePrefix }}') && {{ replace "ATTESTOR" (printf "attestors.%s" $s.name) $.expr }}){{ end }}
+{{- end }}
 {{- $iv := .Values.imageVerification }}
 {{- if not (has $iv.mode (list "Enforce" "Audit")) }}
 {{- fail (printf "imageVerification.mode must be Enforce or Audit, not %q" $iv.mode) }}
@@ -31,18 +50,87 @@ provenance). Each image then costs a third verification when Kyverno has not cac
 {{- if not (kindIs "bool" $iv.requireProvenance) }}
 {{- fail "imageVerification.requireProvenance must be true or false" }}
 {{- end }}
-{{- $keys := list "imagePrefix" "issuer" "subject" "maxAttestationAge" }}
-{{- if $iv.requireProvenance }}
-{{- $keys = concat $keys (list "provenanceRepository" "provenanceRef") }}
-{{- end }}
-{{- range $key := $keys }}
-{{- $value := required (printf "imageVerification.%s is required" $key) (get $iv $key) }}
+{{- $value := required "imageVerification.maxAttestationAge is required" $iv.maxAttestationAge }}
 {{- if regexMatch "['\\\\\n]" $value }}
-{{- fail (printf "imageVerification.%s goes into CEL string literals: no quote, backslash or newline" $key) }}
+{{- fail "imageVerification.maxAttestationAge goes into CEL string literals: no quote, backslash or newline" }}
+{{- end }}
+{{- /* The table of release sources, checked as deploy/k8s/lib.sh checks it for the scripts: a table the policy would
+render wrong (a value breaking out of a CEL string, two sources one image could belong to) fails here. */}}
+{{- $table := fromJson (.Files.Get "files/sources.json") }}
+{{- if or (hasKey $table "Error") (not (kindIs "slice" $table.sources)) (empty $table.sources) }}
+{{- fail "files/sources.json must be a JSON object whose key sources lists at least one release source" }}
+{{- end }}
+{{- $sources := $table.sources }}
+{{- $names := list }}
+{{- $promoters := list }}
+{{- $perService := dict }}
+{{- range $s := $sources }}
+{{- if not (kindIs "map" $s) }}
+{{- fail "files/sources.json: every entry of sources is an object" }}
+{{- end }}
+{{- range $key := list "name" "repository" "imagePrefix" "issuer" "subject" "provenanceRef" "promoter" }}
+{{- $v := get $s $key }}
+{{- if not (and (kindIs "string" $v) $v) }}
+{{- fail (printf "files/sources.json: source %v has no %s string" $s.name $key) }}
+{{- end }}
+{{- if regexMatch `['"\\\s]` $v }}
+{{- fail (printf "files/sources.json: %s of source %v goes into CEL string literals: no quote, backslash or white space" $key $s.name) }}
 {{- end }}
 {{- end }}
-{{- if not (hasSuffix "/" $iv.imagePrefix) }}
-{{- fail "imageVerification.imagePrefix must end in /: it is the repository prefix of every allowed image" }}
+{{- if not (regexMatch "^[a-z][a-z0-9]*$" $s.name) }}
+{{- fail (printf "files/sources.json: source name %q must be a lowercase letter then letters and digits: it names its attestor in CEL" $s.name) }}
+{{- end }}
+{{- range $key := list "repository" "issuer" "subject" }}
+{{- if not (hasPrefix "https://" (get $s $key)) }}
+{{- fail (printf "files/sources.json: %s of source %s must be an https:// URL" $key $s.name) }}
+{{- end }}
+{{- end }}
+{{- if not (hasPrefix "refs/" $s.provenanceRef) }}
+{{- fail (printf "files/sources.json: provenanceRef of source %s must be a refs/... ref" $s.name) }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9.:_/-]+/$" $s.imagePrefix) }}
+{{- fail (printf "files/sources.json: imagePrefix of source %s must end in /: it is the repository prefix of its images" $s.name) }}
+{{- end }}
+{{- if has $s.name $names }}
+{{- fail (printf "files/sources.json: two sources are named %s" $s.name) }}
+{{- end }}
+{{- $names = append $names $s.name }}
+{{- if has $s.promoter $promoters }}
+{{- fail (printf "files/sources.json: two sources are promoted by %s" $s.promoter) }}
+{{- end }}
+{{- $promoters = append $promoters $s.promoter }}
+{{- if not (and (kindIs "slice" $s.services) $s.services (kindIs "slice" $s.drillImages)) }}
+{{- fail (printf "files/sources.json: source %s needs a non-empty list services and a list drillImages" $s.name) }}
+{{- end }}
+{{- range $img := concat $s.services $s.drillImages }}
+{{- if not (and (kindIs "string" $img) (regexMatch "^[a-z0-9][a-z0-9._-]*$" $img)) }}
+{{- fail (printf "files/sources.json: source %s lists %v, not an image name" $s.name $img) }}
+{{- end }}
+{{- end }}
+{{- range $svc := $s.services }}
+{{- $count := add1 (get $perService $svc | default 0) }}
+{{- if gt $count 2 }}
+{{- fail (printf "files/sources.json: service %s is in more than two sources (two only while it moves from one to the other)" $svc) }}
+{{- end }}
+{{- $_ := set $perService $svc $count }}
+{{- end }}
+{{- end }}
+{{- range $a := $sources }}
+{{- range $b := $sources }}
+{{- if and (ne $a.name $b.name) (hasPrefix $a.imagePrefix $b.imagePrefix) }}
+{{- fail (printf "files/sources.json: imagePrefix %s of source %s starts with %s of source %s: an image under both could not be told apart" $b.imagePrefix $b.name $a.imagePrefix $a.name) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $allowed := list }}
+{{- $allowedText := list }}
+{{- range $s := $sources }}
+{{- $quoted := list }}
+{{- range $img := concat $s.services $s.drillImages }}
+{{- $quoted = append $quoted (regexQuoteMeta $img) }}
+{{- end }}
+{{- $allowed = append $allowed (printf "%s(%s)" (regexQuoteMeta $s.imagePrefix) (join "|" $quoted)) }}
+{{- $allowedText = append $allowedText (printf "%s%s{%s}" $s.imagePrefix "" (join ", " (concat $s.services $s.drillImages))) }}
 {{- end }}
 apiVersion: policies.kyverno.io/v1
 kind: ImageValidatingPolicy
@@ -98,20 +186,25 @@ spec:
         operations: [CREATE, UPDATE]
         resources: [pods, pods/ephemeralcontainers]
   matchImageReferences:
-    - glob: {{ printf "%s*" $iv.imagePrefix | quote }}
+    {{- range $sources }}
+    - glob: {{ printf "%s*" .imagePrefix | quote }}
+    {{- end }}
   validationConfigurations:
     # Images are never rewritten (the default would pin a tag to its digest through a mutating webhook): the digest is
     # in git already, and Argo CD would see the live pod differ from it.
     mutateDigest: false
     verifyDigest: true
     required: true
+  # One attestor per release source, named after it: the keyless identity of its repository's workflow on main.
   attestors:
-    - name: images
+    {{- range $sources }}
+    - name: {{ .name }}
       cosign:
         keyless:
           identities:
-            - issuer: {{ $iv.issuer | quote }}
-              subject: {{ $iv.subject | quote }}
+            - issuer: {{ .issuer | quote }}
+              subject: {{ .subject | quote }}
+    {{- end }}
   attestations:
     - name: vuln
       intoto:
@@ -130,14 +223,16 @@ spec:
         object.spec.?ephemeralContainers.orValue([]).map(c, c.image)
     - name: foreign
       expression: >-
-        variables.podImages.filter(i, !i.matches({{ printf "r'^%s[a-z0-9._/-]+(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$'" (regexQuoteMeta $iv.imagePrefix) }}))
-    # The images under the prefix (matchImageReferences), the ones Kyverno verifies.
+        variables.podImages.filter(i, !i.matches({{ printf "r'^(%s)(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$'" (join "|" $allowed) }}))
+    # The images under a prefix (matchImageReferences), the ones Kyverno verifies.
     - name: matched
       expression: images.containers + images.initContainers + images.ephemeralContainers
     - name: unsigned
-      expression: variables.matched.filter(i, verifyImageSignatures(i, [attestors.images]) == 0)
+      expression: >-
+        variables.matched.filter(i, {{ include "svp-policy.any" (dict "sources" $sources "expr" "verifyImageSignatures(i, [ATTESTOR]) == 0") }})
     - name: unattested
-      expression: variables.matched.filter(i, verifyAttestationSignatures(i, attestations.vuln, [attestors.images]) == 0)
+      expression: >-
+        variables.matched.filter(i, {{ include "svp-policy.any" (dict "sources" $sources "expr" "verifyAttestationSignatures(i, attestations.vuln, [ATTESTOR]) == 0") }})
     # Exactly two entries, one linux/amd64 and one linux/arm64 (the payload is read again for each part; Kyverno keeps
     # it in memory for the request).
     - name: wrongPlatforms
@@ -158,30 +253,36 @@ spec:
           time.now() - timestamp(extractPayload(i, attestations.vuln).predicate.metadata.scanFinishedOn) > duration('{{ $iv.maxAttestationAge }}'))
     {{- if $iv.requireProvenance }}
     - name: unproven
-      expression: variables.matched.filter(i, verifyAttestationSignatures(i, attestations.provenance, [attestors.images]) == 0)
+      expression: >-
+        variables.matched.filter(i, {{ include "svp-policy.any" (dict "sources" $sources "expr" "verifyAttestationSignatures(i, attestations.provenance, [ATTESTOR]) == 0") }})
     - name: wrongBuilder
       expression: >-
         variables.matched.filter(i,
-          extractPayload(i, attestations.provenance).?predicate.?runDetails.?builder.?id.orValue('') != '{{ $iv.subject }}')
+          extractPayload(i, attestations.provenance).?predicate.?runDetails.?builder.?id.orValue('') != {{ include "svp-policy.pick" (dict "sources" $sources "key" "subject" "var" "i") }})
     - name: wrongRepository
       expression: >-
         variables.matched.filter(i,
-          extractPayload(i, attestations.provenance).?predicate.?buildDefinition.?externalParameters.?workflow.?repository.orValue('') != '{{ $iv.provenanceRepository }}')
+          extractPayload(i, attestations.provenance).?predicate.?buildDefinition.?externalParameters.?workflow.?repository.orValue('') != {{ include "svp-policy.pick" (dict "sources" $sources "key" "repository" "var" "i") }})
     - name: wrongRef
       expression: >-
         variables.matched.filter(i,
-          extractPayload(i, attestations.provenance).?predicate.?buildDefinition.?externalParameters.?workflow.?ref.orValue('') != '{{ $iv.provenanceRef }}')
+          extractPayload(i, attestations.provenance).?predicate.?buildDefinition.?externalParameters.?workflow.?ref.orValue('') != {{ include "svp-policy.pick" (dict "sources" $sources "key" "provenanceRef" "var" "i") }})
     {{- end }}
   validations:
     - expression: size(variables.foreign) == 0
       messageExpression: >-
-        'image not allowed in namespace {{ $iv.namespace }}, which runs only {{ $iv.imagePrefix }}<service>@sha256:<digest>: ' + variables.foreign.join(', ')
+        'image not allowed in namespace {{ $iv.namespace }}, which runs only <name>@sha256:<digest> of a release source, <name> one of {{ join "; " $allowedText }}: ' + variables.foreign.join(', ')
     - expression: size(variables.unsigned) == 0
       messageExpression: >-
-        'image without a keyless signature by {{ $iv.subject }} (issuer {{ $iv.issuer }}): ' + variables.unsigned.join(', ')
+        'image without a keyless signature by the workflow of its source: ' + variables.unsigned.map(i, i + ' (source ' +
+        {{ include "svp-policy.pick" (dict "sources" $sources "key" "name" "var" "i") }} + ', subject ' +
+        {{ include "svp-policy.pick" (dict "sources" $sources "key" "subject" "var" "i") }} + ', issuer ' +
+        {{ include "svp-policy.pick" (dict "sources" $sources "key" "issuer" "var" "i") }} + ')').join(', ')
     - expression: size(variables.unattested) == 0
       messageExpression: >-
-        'image without a vuln attestation signed by {{ $iv.subject }}: ' + variables.unattested.join(', ')
+        'image without a vuln attestation signed by the workflow of its source: ' + variables.unattested.map(i, i + ' (source ' +
+        {{ include "svp-policy.pick" (dict "sources" $sources "key" "name" "var" "i") }} + ', subject ' +
+        {{ include "svp-policy.pick" (dict "sources" $sources "key" "subject" "var" "i") }} + ')').join(', ')
     - expression: size(variables.wrongPlatforms) == 0
       messageExpression: >-
         'vuln attestation does not cover exactly linux/amd64 and linux/arm64: ' + variables.wrongPlatforms.join(', ')
@@ -194,14 +295,19 @@ spec:
     {{- if $iv.requireProvenance }}
     - expression: size(variables.unproven) == 0
       messageExpression: >-
-        'image without a provenance attestation signed by {{ $iv.subject }}: ' + variables.unproven.join(', ')
+        'image without a provenance attestation signed by the workflow of its source: ' + variables.unproven.map(i, i + ' (source ' +
+        {{ include "svp-policy.pick" (dict "sources" $sources "key" "name" "var" "i") }} + ', subject ' +
+        {{ include "svp-policy.pick" (dict "sources" $sources "key" "subject" "var" "i") }} + ')').join(', ')
     - expression: size(variables.wrongBuilder) == 0
       messageExpression: >-
-        'provenance builder.id is not {{ $iv.subject }}: ' + variables.wrongBuilder.join(', ')
+        'provenance builder.id is not the workflow of its source: ' + variables.wrongBuilder.map(i, i + ' (want ' +
+        {{ include "svp-policy.pick" (dict "sources" $sources "key" "subject" "var" "i") }} + ')').join(', ')
     - expression: size(variables.wrongRepository) == 0
       messageExpression: >-
-        'provenance workflow repository is not {{ $iv.provenanceRepository }}: ' + variables.wrongRepository.join(', ')
+        'provenance workflow repository is not the repository of its source: ' + variables.wrongRepository.map(i, i + ' (want ' +
+        {{ include "svp-policy.pick" (dict "sources" $sources "key" "repository" "var" "i") }} + ')').join(', ')
     - expression: size(variables.wrongRef) == 0
       messageExpression: >-
-        'provenance workflow ref is not {{ $iv.provenanceRef }}: ' + variables.wrongRef.join(', ')
+        'provenance workflow ref is not the ref of its source: ' + variables.wrongRef.map(i, i + ' (want ' +
+        {{ include "svp-policy.pick" (dict "sources" $sources "key" "provenanceRef" "var" "i") }} + ')').join(', ')
     {{- end }}

@@ -15,32 +15,98 @@ ci_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=deploy/ci/platform.sh
 . "$ci_dir/platform.sh"
 
-# Every image of the project lives under ghcr_prefix (deploy/k8s/lib.sh).
-# The images built only to drill admission: never run by any chart.
+# Two roots, the same folder unless this repository's scripts build another repository's code:
+#   script_root  the checkout of this repository whose deploy/ci/ runs: deploy/k8s/lib.sh, the Makefile's pinned
+#                tools and the table of release sources are read there;
+#   code_root    the tree whose code is built and released: SVP_CODE_ROOT when set (a checkout of another release
+#                source's repository, whose CI runs these scripts from a pinned checkout of this one), this checkout
+#                otherwise.
+# shellcheck disable=SC2034 # read by the scripts that source this file
+script_root=$repo_root
+if [ -n "${SVP_CODE_ROOT:-}" ]; then
+  code_root=$(cd "$SVP_CODE_ROOT" 2>/dev/null && pwd) || fail "SVP_CODE_ROOT=$SVP_CODE_ROOT is not a folder"
+else
+  code_root=$repo_root
+fi
+
+# require_code_files PATH...: in the tree of another repository (code_root is not script_root), fails naming the first
+# PATH, relative to code_root, that is no file there: a checkout of the wrong tree, or one missing what its build reads
+# (its Dockerfile, the lockfile, its own .trivyignore.yaml), stops before anything is built or scanned, instead of
+# building what is there. In this repository the files are where they always were, and their absence is left to the
+# step that reads them, as before.
+require_code_files() {
+  local path
+  [ "$code_root" != "$script_root" ] || return 0
+  for path in "$@"; do
+    [ -f "$code_root/$path" ] || fail "$code_root has no file $path: SVP_CODE_ROOT must be the checkout whose code is built"
+  done
+}
+
+# use_build_source [IMAGE]: sets, for the release source this CI run builds for, build_source (compact JSON),
+# build_source_name and build_prefix (its imagePrefix, ending in /). That source is the one whose repository is the
+# repository of this run (ci_repo_url of platform.sh: the job's own on CI, the repository of code_root on a machine),
+# read from the table of this checkout, so a run of a repository the table does not name builds, pushes and signs
+# nothing. With IMAGE, also fails unless IMAGE is one of the services or drillImages of that source: its image can only
+# go under that source's prefix, where the policy admits it with that source's identity.
+use_build_source() {
+  local url table found
+  url=$(ci_repo_url) || fail "read the repository of this run"
+  table=$(release_sources) || exit 1
+  found=$(jq -c --arg u "$url" '[.sources[] | select(.repository == $u)]' <<<"$table")
+  [ "$(jq length <<<"$found")" = 1 ] ||
+    fail "this run is of $url, which is the repository of $(jq length <<<"$found") release sources of $release_sources_file, not one: nothing of it is built, pushed or signed"
+  build_source=$(jq -c '.[0]' <<<"$found")
+  build_source_name=$(jq -r .name <<<"$build_source")
+  build_prefix=$(jq -r .imagePrefix <<<"$build_source")
+  if [ -n "${1:-}" ]; then
+    jq -e --arg i "$1" '.services + .drillImages | index($i)' <<<"$build_source" >/dev/null ||
+      fail "$1 is not an image of release source $build_source_name ($(jq -r '.services + .drillImages | join(" ")' <<<"$build_source")): nothing is built, pushed or signed under $build_prefix"
+  fi
+}
+
+# check_code_tree: fails unless HEAD of code_root is the commit this run builds (ci_commit): a job of another
+# repository that forgot SVP_CODE_ROOT would otherwise build, tag and label this checkout as that repository's commit.
+check_code_tree() {
+  local commit head
+  commit=$(ci_commit) || fail "read the commit of this run"
+  head=$(git -C "$code_root" rev-parse --verify HEAD) || fail "read the commit at HEAD of $code_root"
+  [ "$head" = "$commit" ] ||
+    fail "HEAD of $code_root is $head, but this run builds $commit of $(ci_repo_url): set SVP_CODE_ROOT to the checkout of that commit"
+}
+
+# The images of this repository live under ghcr_prefix (deploy/k8s/lib.sh), those of every release source under its
+# imagePrefix (release_sources of deploy/k8s/lib.sh).
+# The images built only to drill admission: never run by any chart. The same list is drillImages of release source
+# backend, which the policy admits under its prefix (deploy/ci/platform-test.sh checks the two agree).
 # shellcheck disable=SC2034 # read by the scripts that source this file
 drill_images=(drill-vulnerable drill-unsigned)
-# sign_identity: sets sign_issuer and sign_subject, the keyless identity every signature and attestation must carry
-# (the OIDC issuer of the CI platform, and the workflow that signs releases on main). Kyverno checks the same two
-# values, so both are read from imageVerification.issuer and .subject of deploy/helm/svp-policy/values.yaml, the one
-# place to change them when CI moves to another platform. Read when a check needs them, not when this file is sourced:
-# most scripts never verify a signature. Fails unless each is one https:// URL.
+# use_release_source SOURCE: sets, from SOURCE (one release source as compact JSON, release_source of
+# deploy/k8s/lib.sh), source_name, sign_issuer and sign_subject (the keyless identity every signature and attestation
+# of its images must carry: the OIDC issuer of the CI platform, and the workflow that signs its releases on main) and
+# provenance_repository and provenance_ref (what the workflow of its build provenance must name). Kyverno checks the
+# same values; files/sources.json of chart svp-policy is the one place to change them. Fails unless the identity and
+# the repository are each one https:// URL and the ref one refs/... without a space.
+use_release_source() {
+  local fields
+  fields=$(jq -r '[.name, .issuer, .subject, .repository, .provenanceRef] | map(. // "") | join("\t")' <<<"$1") ||
+    fail "read the release source $1"
+  IFS=$'\t' read -r source_name sign_issuer sign_subject provenance_repository provenance_ref <<<"$fields"
+  [[ ${sign_issuer:-} =~ ^https://[^[:space:]]+$ && ${sign_subject:-} =~ ^https://[^[:space:]]+$ ]] ||
+    fail "issuer and subject of release source ${source_name:-?} must each be one plain https:// URL"
+  [[ ${provenance_repository:-} =~ ^https://[^[:space:]]+$ && ${provenance_ref:-} =~ ^refs/[^[:space:]]+$ ]] ||
+    fail "repository and provenanceRef of release source ${source_name:-?} must be one https:// URL and one refs/... each"
+}
+# sign_identity [SOURCE]: sets sign_issuer and sign_subject (use_release_source) of release source SOURCE, backend
+# when empty, as the working tree writes it. Read when a check needs them, not when this file is sourced: most scripts
+# never verify a signature.
 sign_identity() {
-  local values=$repo_root/deploy/helm/svp-policy/values.yaml
-  sign_issuer=$(sed -n 's/^  issuer: *//p' "$values") && sign_subject=$(sed -n 's/^  subject: *//p' "$values") ||
-    fail "read $values"
-  [[ $sign_issuer =~ ^https://[^[:space:]]+$ && $sign_subject =~ ^https://[^[:space:]]+$ ]] ||
-    fail "imageVerification.issuer and subject of $values must each be one plain https:// URL"
+  local src
+  src=$(release_source "${1:-backend}") || exit 1
+  use_release_source "$src"
 }
-# provenance_source: sets provenance_repository and provenance_ref, what the workflow of a release's build provenance
-# must name, read from imageVerification.provenanceRepository and .provenanceRef of the same values file (Kyverno
-# checks the same two). Fails unless the first is one https:// URL and the second one refs/... without a space.
-provenance_source() {
-  local values=$repo_root/deploy/helm/svp-policy/values.yaml
-  provenance_repository=$(sed -n 's/^  provenanceRepository: *//p' "$values") &&
-    provenance_ref=$(sed -n 's/^  provenanceRef: *//p' "$values") || fail "read $values"
-  [[ $provenance_repository =~ ^https://[^[:space:]]+$ && $provenance_ref =~ ^refs/[^[:space:]]+$ ]] ||
-    fail "imageVerification.provenanceRepository and provenanceRef of $values must be one https:// URL and one refs/... each"
-}
+# provenance_source [SOURCE]: sets provenance_repository and provenance_ref (use_release_source) of release source
+# SOURCE, backend when empty, as the working tree writes it.
+provenance_source() { sign_identity "$@"; }
 
 # _config_file DIR REV PATH: prints file PATH of the configuration tree DIR (a clone of svp-gitops, or any folder laid
 # out as one) at its commit REV, or as it is on disk when REV is empty; status 1 when there is no such file.
@@ -137,6 +203,51 @@ provenance_required() {
   echo false
 }
 
+# release_source_in REPOSITORY [REV [ENV [DIR]]]: prints, as compact JSON, the release source REPOSITORY is a release
+# of (<imagePrefix><service> of a source whose services name <service>: release_source_of of deploy/k8s/lib.sh) in
+# the table chart svp-policy reads where provenance_required reads its values: in environment ENV of DIR at REV, the
+# table of this repository at the commit envs/ENV/charts.yaml pins (release_sources, which reads a commit from before
+# the table as its one source backend). Without ENV every environment of envs/, which must all admit REPOSITORY with
+# the same source and identity; the working tree's table when DIR has no environment. Fails, printing nothing on
+# stdout, otherwise.
+release_source_in() {
+  local repo=$1 rev=${2:-} env=${3:-} dir=${4:-} at=${2:+ at ${2:0:12}} svc=${1##*/} envs e charts src found= first= key
+  if [ -z "$dir" ]; then
+    dir=$(gitops_dir) || return 1
+  fi
+  if [ -n "$env" ]; then
+    envs=$env
+  elif [ -n "$rev" ]; then
+    envs=$(git -C "$dir" ls-tree --name-only "$rev:envs" 2>/dev/null) || envs=
+  else
+    envs=$(cd "$dir/envs" 2>/dev/null && for e in */; do [ -d "$e" ] && echo "${e%/}"; done) || envs=
+  fi
+  if [ -z "$envs" ]; then
+    release_source_of "$svc" "$repo" && return 0
+    echo "FAIL  $repo is not a release of $svc of any release source (the policy admits $(release_repositories "$svc"))" >&2
+    return 1
+  fi
+  for e in $envs; do
+    charts=$(_config_file "$dir" "$rev" "envs/$e/charts.yaml" | sed -n 's/^revision: *//p')
+    if ! [[ $charts =~ ^[0-9a-f]{40}$ ]]; then
+      echo "FAIL  envs/$e/charts.yaml$at names no commit of this repository (got '$charts')" >&2
+      return 1
+    fi
+    if ! src=$(release_source_of "$svc" "$repo" "$charts"); then
+      echo "FAIL  $repo is not a release of $svc that the policy of $e admits (at ${charts:0:12}: $(release_repositories "$svc" "$charts"))" >&2
+      return 1
+    fi
+    key=$(jq -c '{name, imagePrefix, issuer, subject, repository, provenanceRef}' <<<"$src")
+    if [ -z "$found" ]; then
+      found=$src first=$key
+    elif [ "$key" != "$first" ]; then
+      echo "FAIL  the environments of $dir$at give $repo different release sources or identities: check it with --env" >&2
+      return 1
+    fi
+  done
+  echo "$found"
+}
+
 # tag_provenance_mismatch TREE CHECKED PROVENANCE_ENVS: prints one problem per line, nothing when every release
 # agrees. CHECKED is the output of values-check.sh --gitops on TREE (a tree of svp-gitops): a line "check <file>" per
 # image file it verified, then that release's "ok" line from verify-release.sh. PROVENANCE_ENVS lists the environments
@@ -199,7 +310,8 @@ provenance_absent() {
 # stdin and checks what Kyverno checks when requireProvenance is on: predicate type SLSA v1, subject DIGEST,
 # runDetails.builder.id the signing subject, buildDefinition.externalParameters.workflow the repository and ref of
 # provenance_source; and that resolvedDependencies names exactly one source commit (40 hex). Prints that commit when
-# all hold, the first problem otherwise (status 1). Needs sign_identity and provenance_source first.
+# all hold, the first problem otherwise (status 1). Needs the release source of the image set first (sign_identity
+# and provenance_source with its name, or use_release_source), as Kyverno checks each image against its own source.
 check_provenance_statement() {
   local verdict
   verdict=$(jq -r --arg d "${1#sha256:}" --arg builder "$sign_subject" --arg repo "$provenance_repository" \
@@ -225,7 +337,8 @@ check_provenance_statement() {
 # Where trivy looks for its vulnerability DB, in this order (its default for v0.76.0, written out so the attestation
 # can name it): mirror.gcr.io first, GHCR on 429 or 5xx.
 trivy_db_repository=mirror.gcr.io/aquasec/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2
-trivyignore=$repo_root/.trivyignore.yaml
+# The accepted risks of the tree being built: its own file, so each repository keeps the list of its own packages.
+trivyignore=$code_root/.trivyignore.yaml
 
 # tool_image NAME: prints the pinned image reference NAME (TRIVY_IMAGE, SYFT_IMAGE, COSIGN_IMAGE): from the
 # environment when set, otherwise from the line `NAME := ...` of the Makefile, so the machine and CI run the very same
@@ -411,14 +524,16 @@ grype_check() {
   "$ci_dir/scan-gate.sh" --grype "$label" "$tmp/grype.json"
 }
 
-# oci_labels: prints the OCI labels of the commit at HEAD as key=value lines: the source
-# repository, the commit, and the commit time in UTC, so the same commit always gets the same labels whatever the build time.
+# oci_labels [SOURCE]: prints the OCI labels of the commit at HEAD of code_root as key=value lines: the repository of
+# release source SOURCE (backend when empty), the commit, and the commit time in UTC, so the same commit always gets
+# the same labels whatever the build time.
 oci_labels() {
-  local rev created
-  rev=$(git -C "$repo_root" rev-parse HEAD) || fail "read the commit at HEAD"
-  created=$(TZ=UTC git -C "$repo_root" log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ HEAD) ||
+  local rev created src
+  src=$(release_source "${1:-backend}") || exit 1
+  rev=$(git -C "$code_root" rev-parse HEAD) || fail "read the commit at HEAD"
+  created=$(TZ=UTC git -C "$code_root" log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ HEAD) ||
     fail "read the commit time of HEAD"
-  echo "org.opencontainers.image.source=https://github.com/anhnvcoder/short-video-platform"
+  echo "org.opencontainers.image.source=$(jq -r .repository <<<"$src")"
   echo "org.opencontainers.image.revision=$rev"
   echo "org.opencontainers.image.created=$created"
 }
@@ -449,9 +564,12 @@ cosign_() {
   fi
 }
 
-# verify_signature REPOSITORY DIGEST: true when REPOSITORY@DIGEST carries a signature of the identity above.
+# verify_signature REPOSITORY DIGEST: true when REPOSITORY@DIGEST carries a signature of the identity of the release
+# source whose prefix REPOSITORY lies under (source_of_repository; sign_issuer and sign_subject are left set to it).
 verify_signature() {
-  sign_identity
+  local name
+  name=$(source_of_repository "$1") || return 1
+  sign_identity "$name"
   cosign_ verify --certificate-oidc-issuer "$sign_issuer" --certificate-identity "$sign_subject" "$1@$2" >/dev/null
 }
 

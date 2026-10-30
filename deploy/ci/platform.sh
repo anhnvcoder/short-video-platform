@@ -37,6 +37,11 @@
 #   ci_workflow_path/_ref CI_CONFIG_PATH, and the ref of the ci_config_ref_uri claim
 #   ci_dispatch_input     no variable holds a pipeline's inputs (they are written into the configuration as
 #                         $[[ inputs.NAME ]]), so the pipeline hands each one to the job in a variable of its own
+#   ci_change_request_author  author.username of the merge request (CI_MERGE_REQUEST_IID of a merge request
+#                         pipeline) from the merge requests API; GITLAB_USER_LOGIN names who started the pipeline, not
+#                         who opened the merge request
+#   ci_change_request_sender  GITLAB_USER_LOGIN of a merge request pipeline: who started it, by a push to the source
+#                         branch or by hand
 #   ci_bot_name/_email   the bot user of the project access token the promote job pushes with
 #   ci_git_auth           a credential helper that answers with that token (username any non-empty name, password the
 #                         token) for HTTPS pushes to the configuration project
@@ -195,13 +200,39 @@ ci_temp_dir() {
 # promote releases. Change it here when the repository moves.
 _ci_code_repo=anhnvcoder/short-video-platform
 
-# ci_repo: owner/name of the repository on its host. On a machine, the code repository's.
+# _ci_local_repo: on a machine, owner/name of the repository whose code is built: the code repository's, or, when
+# SVP_CODE_ROOT names the checkout of another repository (whose CI runs these scripts from a pinned checkout of this
+# one), that checkout's, read from its remote origin on github.com, as a job of that repository would see it. Fails
+# when that checkout has no such origin: its repository cannot be named without a guess. The error shows the origin
+# without its userinfo: a URL may carry a credential (https://user:token@host/...).
+_ci_local_repo() {
+  local url repo shown
+  if [ -z "${SVP_CODE_ROOT:-}" ]; then
+    echo "$_ci_code_repo"
+    return 0
+  fi
+  url=$(git -C "$SVP_CODE_ROOT" remote get-url origin 2>/dev/null) || url=
+  if [[ $url =~ ^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$ ]]; then
+    repo=${BASH_REMATCH[2]}
+    echo "${repo%.git}"
+    return 0
+  fi
+  shown=$url
+  if [[ $url =~ ^([A-Za-z][A-Za-z0-9+.-]*://)[^/]*@(.*)$ ]]; then
+    shown=${BASH_REMATCH[1]}${BASH_REMATCH[2]}
+  fi
+  _ci_fail "SVP_CODE_ROOT=$SVP_CODE_ROOT has no remote origin on github.com (got '${shown:-none}'): its repository cannot be named"
+  return 1
+}
+
+# ci_repo: owner/name of the repository on its host. On a machine, the repository whose code is built
+# (_ci_local_repo).
 ci_repo() {
   local platform
   platform=$(ci_platform) || return 1
   case $platform in
   github) _ci_need GITHUB_REPOSITORY ;;
-  local) echo "$_ci_code_repo" ;;
+  local) _ci_local_repo ;;
   esac
 }
 
@@ -258,7 +289,7 @@ ci_builder_id() {
   esac
 }
 
-# ci_repo_url: the web address of the repository on its host. On a machine, this repository's on GitHub.
+# ci_repo_url: the web address of the repository on its host. On a machine, that of ci_repo on GitHub.
 ci_repo_url() {
   local platform server repo
   platform=$(ci_platform) || return 1
@@ -267,7 +298,10 @@ ci_repo_url() {
     server=$(_ci_need GITHUB_SERVER_URL) && repo=$(_ci_need GITHUB_REPOSITORY) || return 1
     echo "$server/$repo"
     ;;
-  local) echo "https://github.com/$(ci_repo)" ;;
+  local)
+    repo=$(ci_repo) || return 1
+    echo "https://github.com/$repo"
+    ;;
   esac
 }
 
@@ -282,14 +316,14 @@ ci_ref() {
   esac
 }
 
-# ci_commit: the full SHA of the commit this run checked out and builds. On a machine, HEAD of the checkout this file
-# is in, which is what a build there starts from.
+# ci_commit: the full SHA of the commit this run checked out and builds. On a machine, HEAD of the checkout whose code
+# is built, which is what a build there starts from: SVP_CODE_ROOT when set, otherwise the checkout this file is in.
 ci_commit() {
   local platform
   platform=$(ci_platform) || return 1
   case $platform in
   github) _ci_need GITHUB_SHA ;;
-  local) git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --verify HEAD ;;
+  local) git -C "${SVP_CODE_ROOT:-$(dirname "${BASH_SOURCE[0]}")}" rev-parse --verify HEAD ;;
   esac
 }
 
@@ -357,6 +391,46 @@ ci_dispatch_input() {
   local) ;;
   esac
 }
+
+# _ci_pr_event_login FIELD VARIABLE WHO: a login from the pull request this run checks, as the host names a user (an
+# app's bot is <app>[bot]), read from the event the platform wrote (the jq path FIELD of it on GitHub), never from a
+# branch name or a variable a step could set; nothing for a run that checks no pull request (a push, a dispatch, a
+# schedule). On a machine, the variable VARIABLE when set (a test playing a pull request), otherwise nothing. Fails,
+# naming WHO, when the run checks a pull request whose login cannot be read or is no login: a caller that limits what
+# a bot may change must then fail too, not take the run for one of no pull request.
+_ci_pr_event_login() {
+  local platform event file login
+  platform=$(ci_platform) || return 1
+  case $platform in
+  github)
+    event=$(_ci_need GITHUB_EVENT_NAME) || return 1
+    case $event in pull_request*) ;; *) return 0 ;; esac
+    file=$(_ci_need GITHUB_EVENT_PATH) || return 1
+    login=$(jq -r "$1"' // "" | tostring' "$file" 2>/dev/null) || {
+      _ci_fail "the $event event in $file cannot be read"
+      return 1
+    }
+    ;;
+  local)
+    login=${!2:-}
+    [ -n "$login" ] || return 0
+    ;;
+  esac
+  [[ $login =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\[bot\])?$ ]] || {
+    _ci_fail "the $3 of the pull request is '$login', not a login of the host"
+    return 1
+  }
+  echo "$login"
+}
+
+# ci_change_request_author: the login of whoever opened the pull request this run checks (pull_request.user.login of
+# the event on GitHub; SVP_CHANGE_REQUEST_AUTHOR on a machine), as _ci_pr_event_login reads it.
+ci_change_request_author() { _ci_pr_event_login .pull_request.user.login SVP_CHANGE_REQUEST_AUTHOR author; }
+
+# ci_change_request_sender: the login of whoever caused the event of the pull request this run checks: who opened it,
+# or who pushed the commit a synchronize event checks (sender.login of the event on GitHub; SVP_CHANGE_REQUEST_SENDER
+# on a machine), as _ci_pr_event_login reads it. A pull request's author does not name who pushed onto its branch.
+ci_change_request_sender() { _ci_pr_event_login .sender.login SVP_CHANGE_REQUEST_SENDER sender; }
 
 # ci_bot_name [APP], ci_bot_email [APP]: the author of the commits CI makes (the promote branch), as the host shows
 # it: the platform's own bot, or the bot user of app APP (a GitHub App, whose token the commits are pushed with). The

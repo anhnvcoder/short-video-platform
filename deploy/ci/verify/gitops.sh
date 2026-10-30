@@ -78,7 +78,10 @@
 #                          (images.yml -f drill=true). Nobody dispatches either before a scheduled run, so there
 #                          gitops_stale leaves out the image of c or l whose vuln attestation is past the policy's
 #                          maximum age (its case SKIPs, failing nothing), with a NOTE line naming the case, its age and
-#                          that dispatch; every other case must pass as on a dispatch, which keeps both and fails them
+#                          that dispatch; every other case must pass as on a dispatch, which keeps both and fails them.
+#                          Case m (the release sources apart) needs no image of its own: it moves the releases the
+#                          cluster runs and the image of case l under the other source's prefix, and SKIPs its
+#                          identity part until a release of svp-web runs here
 #   gitops-sourcemaps      make k8s-web-sourcemaps SOURCEMAPS_DIR=<maps/ the step before found>, which checks them
 #                          against the chunks the web serves before the upload; fails with the reason when that step
 #                          failed or left nothing. When it found none on a branch other than main (status skipped: the
@@ -90,6 +93,9 @@
 build=k8s-gitops-up
 job_minutes_default=330
 k3d=1
+# The web's source maps are uploaded with the Sentry CLI of the web client's code: web_ref of the dispatch names the
+# commit of svp-web that is (verify-run.sh).
+web=1
 
 # The repository: verify-run.sh's when sourced, this file's own when run as a script.
 gitops_repo=${repo:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}
@@ -248,7 +254,8 @@ gitops_external_secrets() {
 # gitops_no_provenance: prints REPOSITORY@DIGEST (values of <commit>) of the newest web release named in the history of
 # this repository's deploy/k8s/values/services/web.yaml (from HEAD), where the releases were promoted before svp-gitops
 # held them (every release svp-gitops names has a provenance attestation), that carries a signature of images.yml on
-# main and no provenance attestation of it, read anonymously with cosign. Every release since CI attests provenance has
+# main and no provenance attestation of it, read anonymously with cosign. Those releases are all of release source
+# backend, built by this repository, so they are read with its identity. Every release since CI attests provenance has
 # one, so the search passes over, without asking GHCR, a release whose tag (the commit it was built from) already holds
 # deploy/ci/provenance-predicate.sh: it stays a couple of cosign calls however many releases came since. Status 1, the
 # reason on stderr, when the history has none (case l SKIPs); 2 when cosign could not answer for a release (the registry
@@ -256,7 +263,7 @@ gitops_external_secrets() {
 gitops_no_provenance() (
   # shellcheck source=deploy/ci/common.sh
   . "$here/common.sh" || exit 1
-  sign_identity
+  sign_identity backend
   file=deploy/k8s/values/services/web.yaml
   seen=" "
   for c in $(git -C "$repo" log --format=%H -- "$file"); do
@@ -296,14 +303,16 @@ gitops_no_provenance() (
 # gitops_stale CASE IMAGE [VALUES_COMMIT]: status 0, after printing a NOTE line that names the case, the age and the
 # dispatch that makes it pass again, when the vuln attestation of IMAGE (REPOSITORY@DIGEST) was scanned longer ago than
 # the policy's maximum age (imageVerification.maxAttestationAge of chart svp-policy) less an hour, read as
-# drill-k8s-supplychain reads it: the oldest scanFinishedOn of the attestations cosign verifies, anonymously. CASE c is
+# drill-k8s-supplychain reads it: the oldest scanFinishedOn of the attestations cosign verifies, anonymously, with the
+# identity of the release source whose prefix IMAGE is under. CASE c is
 # drill-vulnerable, which only a new build of the drill images scans again; CASE l is the release without provenance,
 # rescanned with VALUES_COMMIT as values_ref. Status 1 otherwise, also when cosign or the time cannot be read: the drill then reads it
 # again and fails the case with what it got.
 gitops_stale() (
   # shellcheck source=deploy/ci/common.sh
   . "$here/common.sh" || exit 1
-  sign_identity
+  source=$(source_of_repository "${2%@*}") || exit 1
+  sign_identity "$source"
   max_age=$(sed -n 's/^  maxAttestationAge: *//p' "$repo_root/deploy/helm/svp-policy/values.yaml")
   [[ $max_age =~ ^[0-9]+[hms]$ ]] || exit 1
   case $max_age in

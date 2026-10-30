@@ -54,7 +54,24 @@
 #      release workflow; identity from docs/src/security.md of cloudnative-pg/cloudnative-pg and the certificate of
 #      its signature): two temporary policies, one with the right subject, one with a wrong one, each for its own drill
 #      label: admitted by the first, refused by the second. Runs only while svp-images is in Audit (the dev path,
-#      before the Enforce cases), since Enforce refuses that image by its prefix.
+#      before the Enforce cases), since Enforce refuses that image by its prefix;
+#   m  the release sources apart, for every ordered pair of sources A and B of the table:
+#      - names: an image under A's prefix whose name only B publishes (a service or drill image of B, not of A), by a
+#        digest: refused by the prefix rule (the first check), whatever the digest; SKIP when every name of B is also
+#        A's (web, while backend is still a source of it);
+#      - identities: a release of A (one a pod of svp runs, or SUPPLYCHAIN_NO_PROVENANCE, which case l shows signed),
+#        its digest under B's prefix, for a name B publishes too: refused by the signature rule naming source B, since
+#        Kyverno verifies an image with the attestor of the source whose prefix it is under, never with the one that
+#        signed it (the signature of A lives under A's prefix); SKIP while no release of B runs in svp (B's repository
+#        on GHCR may not exist yet, and a registry error is not the rule's answer), or when no release of A at hand
+#        has a name B publishes;
+#      - a release of each source other than backend that a pod of svp runs: admitted (case a is backend's); SKIP
+#        while none runs (before that source's first release reaches the cluster).
+# The policy admits the images of every release source of its chart (files/sources.json), each under its own prefix
+# and verified with its own identity. Case a and f send an image of source backend (this repository) that a pod of svp
+# runs, e an image of that prefix by tag; the images of b, c and l may be any service or drill image of a source under
+# that source's prefix (the names the first check admits), and whatever the drill reads of them with cosign it reads
+# with the identity of that source, as Kyverno does.
 # "Unsigned" in h and i is SUPPLYCHAIN_UNSIGNED when set (the signature rule's message), otherwise the dev image of the
 # local registry (the prefix rule's message). A case whose image is not available is printed SKIP with the reason:
 # b without SUPPLYCHAIN_UNSIGNED, c without SUPPLYCHAIN_VULNERABLE, l without SUPPLYCHAIN_NO_PROVENANCE, a, f and the
@@ -88,13 +105,22 @@ source "$repo_root/deploy/ci/common.sh"
 
 policy=svp-images
 policy_values=$repo_root/deploy/helm/svp-policy/values.yaml
-prefix=$(sed -n 's/^  imagePrefix: *//p' "$policy_values")
-[[ $prefix == */ ]] || fail "read imageVerification.imagePrefix of deploy/helm/svp-policy/values.yaml (got '$prefix')"
-# The identity and the maximum age the policy checks, for case c's own reading of the drill image's attestation.
-policy_issuer=$(sed -n 's/^  issuer: *//p' "$policy_values")
-policy_subject=$(sed -n 's/^  subject: *//p' "$policy_values")
-[[ $policy_issuer == https://* && $policy_subject == https://* ]] ||
-  fail "read imageVerification.issuer and subject of deploy/helm/svp-policy/values.yaml (got '$policy_issuer', '$policy_subject')"
+# The release sources the policy admits (files/sources.json of its chart): this repository's own, backend, holds the
+# drill images and the images of cases a, e and f; every image a case reads with cosign is read with the identity of
+# the source whose prefix it is under (image_identity), as Kyverno picks its attestor.
+sources=$(release_sources) || exit 1
+prefix=$(jq -r '.sources[] | select(.name == "backend") | .imagePrefix' <<<"$sources")
+[[ $prefix == */ ]] || fail "read the imagePrefix of release source backend (got '$prefix')"
+# image_identity IMAGE: sets policy_issuer and policy_subject to the identity of the release source of IMAGE
+# (REPOSITORY@DIGEST, or with a tag), what the policy verifies it with.
+image_identity() {
+  local repo=${1%@*} name
+  [[ $repo == */*:* ]] && repo=${repo%:*}
+  name=$(source_of_repository "$repo") || exit 1
+  sign_identity "$name"
+  policy_issuer=$sign_issuer policy_subject=$sign_subject
+}
+# The maximum age the policy checks, for case c's own reading of the drill image's attestation.
 max_age=$(sed -n 's/^  maxAttestationAge: *//p' "$policy_values")
 [[ $max_age =~ ^[0-9]+[hms]$ ]] ||
   fail "read imageVerification.maxAttestationAge of deploy/helm/svp-policy/values.yaml as <number>h, m or s (got '$max_age')"
@@ -105,9 +131,13 @@ case $max_age in
 esac
 psa_version=$(sed -n 's/^podSecurityVersion: *//p' "$repo_root/deploy/helm/svp-cluster/values.yaml")
 [[ $psa_version =~ ^v1\.[0-9]+$ ]] || fail "read podSecurityVersion of deploy/helm/svp-cluster/values.yaml (got '$psa_version')"
+# Every <imagePrefix><name> the policy's first check admits: a service or drill image of a source, under its prefix.
+admitted_names=$(jq -r '.sources[] | .imagePrefix as $p | (.services + .drillImages)[] | $p + .' <<<"$sources")
 for v in SUPPLYCHAIN_UNSIGNED SUPPLYCHAIN_UNSIGNED_FALLBACK SUPPLYCHAIN_VULNERABLE SUPPLYCHAIN_NO_PROVENANCE; do
-  [[ -z ${!v:-} || ${!v} =~ ^${prefix//./\\.}[a-z0-9._/-]+(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$ ]] ||
-    fail "$v must be ${prefix}<name>@sha256:<64 hex> (got '${!v}')"
+  [ -n "${!v:-}" ] || continue
+  [[ ${!v} =~ ^([a-z0-9._/-]+)(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$ ]] &&
+    grep -qxF -- "${BASH_REMATCH[1]}" <<<"$admitted_names" ||
+    fail "$v must be <imagePrefix of a release source><one of its services or drill images>@sha256:<64 hex>, one of: $(tr "\n" " " <<<"$admitted_names")(got '${!v}')"
 done
 unsigned=${SUPPLYCHAIN_UNSIGNED:-}
 unsigned_fallback=${SUPPLYCHAIN_UNSIGNED_FALLBACK:-}
@@ -466,7 +496,8 @@ checks_provenance=$(policy_checks_provenance "$policy") || fail "read the attest
 webhooks_start=$(webhooks) || fail "read Kyverno's webhook configuration kyverno-resource-validating-webhook-cfg"
 ok "cluster on the $path_name path, policy $policy in ${mode:-?}, provenance checked: $checks_provenance; its webhooks: $(jq -r 'map("\(.name) \(.failurePolicy) \(.namespaceSelector | tostring)") | join("; ")' <<<"$webhooks_start")"
 
-# A running pod of svp and its images: the GHCR release (case a) and the dev image (d, h, i) when there is one.
+# A running pod of svp and its images: a GHCR release of source backend (case a) and the dev image (d, h, i) when there
+# is one.
 target=$(kc -n svp get pods -l app.kubernetes.io/component=server --field-selector=status.phase=Running \
   -o jsonpath='{.items[0].metadata.name}') || target=
 [[ -n $target ]] || fail "a Running pod of svp (app.kubernetes.io/component=server) to patch in cases h and i"
@@ -634,6 +665,7 @@ fi
 
 # --- c: CRITICAL, once the drill image's attestation is shown to be within the maximum age (the header says why).
 if [[ -n $vulnerable ]]; then
+  image_identity "$vulnerable"
   envelopes=$(cosign_ verify-attestation --type vuln --certificate-oidc-issuer "$policy_issuer" \
     --certificate-identity "$policy_subject" "$vulnerable" 2>"$work/cosign.err") || envelopes=
   # The oldest when there are several: Kyverno may read any one of them.
@@ -666,6 +698,7 @@ elif [[ -z $no_provenance ]]; then
 else
   rescan=$(ci_dispatch_hint images.yml main rescan=true \
     "values_ref=$(values_commit "${no_provenance#*@}" || echo '<a full commit of this repository whose deploy/k8s/values/services/ names it>')") || exit 1
+  image_identity "$no_provenance"
   envelopes=$(cosign_ verify-attestation --type vuln --certificate-oidc-issuer "$policy_issuer" \
     --certificate-identity "$policy_subject" "$no_provenance" 2>"$work/cosign.err") || envelopes=
   if ! cosign_ verify --certificate-oidc-issuer "$policy_issuer" --certificate-identity "$policy_subject" \
@@ -701,6 +734,7 @@ refused e "does not have a digest" "${prefix}gateway:latest (tag, no digest)" 10
 
 # --- f: an attestation older than the limit, through a temporary copy of the policy (the header says why 5 seconds).
 stale_age=5s
+[[ -z $signed ]] || image_identity "$signed"
 if [[ -z $signed ]]; then
   result f SKIP "no signed image of GHCR runs in svp to send under the temporary policy"
 elif ! cosign_ verify-attestation --type vuln --certificate-oidc-issuer "$policy_issuer" \
@@ -752,6 +786,55 @@ fi
 timed kc -n svp patch pod "$target" --type=strategic --dry-run=server \
   -p "{\"spec\":{\"containers\":[{\"name\":\"$target_container\",\"image\":\"$bad\"}]}}"
 refused i "$bad_rule" "pod svp/$target with container $target_container set to $bad (UPDATE)"
+
+# --- m: the release sources apart (the header says what each part shows).
+pods_json=$(kc -n svp get pods -o json) || fail "read the pods of svp"
+# The releases at hand, by digest: those the pods of svp run, and the one of case l.
+releases=$(jq -c --arg l "$no_provenance" '[.items[].spec.containers[].image | select(test("@sha256:[0-9a-f]{64}$"))]
+  + (if $l == "" then [] else [$l] end) | unique' <<<"$pods_json")
+# A digest the names part sends: the prefix rule refuses by the name alone, before any registry is asked.
+name_digest=sha256:$(printf '0%.0s' $(seq 64))
+for a in $(jq -r '.sources[].name' <<<"$sources"); do
+  for b in $(jq -r '.sources[].name' <<<"$sources"); do
+    [[ $a != "$b" ]] || continue
+    pair=$(jq -c --arg a "$a" --arg b "$b" '{a: (.sources[] | select(.name == $a)), b: (.sources[] | select(.name == $b))}' \
+      <<<"$sources")
+    only_b=$(jq -r '(.b.services + .b.drillImages) - (.a.services + .a.drillImages) | first // empty' <<<"$pair")
+    pa=$(jq -r .a.imagePrefix <<<"$pair")
+    pb=$(jq -r .b.imagePrefix <<<"$pair")
+    if [[ -n $only_b ]]; then
+      dry_run drill-supplychain-m svp "$pa$only_b@$name_digest"
+      refused m "image not allowed in namespace svp" "$pa$only_b@… under source $a's prefix, a name only source $b publishes"
+    else
+      result m SKIP "names, $a's prefix: source $b publishes no name that $a does not"
+    fi
+    # The first release at hand under A's prefix whose name B publishes, moved under B's prefix.
+    cross=$(jq -r --argjson p "$pair" '[.[] | select(startswith($p.a.imagePrefix))
+      | (ltrimstr($p.a.imagePrefix) | split("@")[0] | split(":")[0]) as $n
+      | select(($p.b.services + $p.b.drillImages) | index($n))
+      | $p.b.imagePrefix + $n + "@" + (split("@")[1])] | first // empty' <<<"$releases")
+    if ! jq -e --arg p "$pb" 'any(.[]; startswith($p))' <<<"$releases" >/dev/null; then
+      result m SKIP "identities, under $b's prefix: no release of source $b runs in svp (its first release has not reached this cluster)"
+    elif [[ -n $cross ]]; then
+      dry_run drill-supplychain-m svp "$cross"
+      refused m "image without a keyless signature by the workflow of its source: $cross (source $b," \
+        "$cross: a release of source $a, signed by $a's workflow, under source $b's prefix"
+    else
+      result m SKIP "identities, $a's release under $b's prefix: no release of source $a at hand has a name source $b publishes"
+    fi
+  done
+done
+for s in $(jq -r '.sources[] | select(.name != "backend") | .name' <<<"$sources"); do
+  ps=$(jq -r --arg s "$s" '.sources[] | select(.name == $s) | .imagePrefix' <<<"$sources")
+  own=$(jq -r --arg p "$ps" '[.items[].spec.containers[].image | select(startswith($p) and test("@sha256:[0-9a-f]{64}$"))]
+    | first // empty' <<<"$pods_json")
+  if [[ -n $own ]]; then
+    dry_run drill-supplychain-m svp "$own"
+    admitted m "$own, a release of source $s, verified with $s's identity"
+  else
+    result m SKIP "admitted, source $s: no pod of svp runs a release of it (its first release has not reached this cluster)"
+  fi
+done
 
 # --- g: the admission controller down. Last of the cases: it changes the most and the exit trap undoes it.
 before=$(webhooks)

@@ -6,7 +6,9 @@
 # a set stg ran with it. Rollback is the same promote with an older record.
 #
 # Clones svp-gitops, rebuilds the branch bot/promote-prd from its main with envs/prd/images/<service>.yaml of the seven
-# releases of the record (repository, tag, digest; every other line of main's file kept) and envs/prd/charts.yaml with
+# releases of the record (repository, tag, digest; every other line of main's file kept, but for the first sentence of
+# its comment when the release is of another release source than main's: that of the new source, from
+# deploy/ci/promote.sh --header, which names its repository and workflow) and envs/prd/charts.yaml with
 # its revision, podSecurityVersion and collectorConfigSha256, pushes it, opens or updates its pull request there. No
 # auto-merge: envs/prd/ has a code owner, who must approve, and the check of svp-gitops (deploy/ci/gitops-check.sh)
 # compares the set at the head of the pull request with the records again. The record's ref (the commit of svp-gitops
@@ -97,12 +99,17 @@ changed=()
 for svc in "${svp_services[@]}"; do
   file=$images_dir/$svc.yaml
   IFS="|" read -r r t d <<<"$(jq -r --arg s "$svc" '.payload.images[$s] | "\(.repository)|\(.tag)|\(.digest)"' <<<"$record")"
-  blob=$(gg show "$gmain:$file" | values_set_image "$r" "$t" "$d" | gg hash-object -w --stdin) ||
+  # The release sources of main's release and of the record's: their comment changes with them.
+  was=$(gg show "$gmain:$file" | values_field repository) && was=$(source_of_repository "$was") &&
+    now=$(source_of_repository "$r") || fail "$svc: the release of main's $file or of the record is of no release source"
+  header=(cat)
+  [ "$was" = "$now" ] || header=("$ci_dir/promote.sh" --header "$svc" prd "$now")
+  blob=$(gg show "$gmain:$file" | values_set_image "$r" "$t" "$d" | "${header[@]}" | gg hash-object -w --stdin) ||
     fail "write the release of $svc into $file of main of svp-gitops"
   gg update-index --cacheinfo "100644,$blob,$file" || fail "stage $file in the temporary index"
   if [ "$blob" != "$(gg rev-parse "$gmain:$file")" ]; then
     changed+=("$svc")
-    echo "ok    $svc: $r:$t@$d"
+    echo "ok    $svc: $r:$t@$d${header[1]:+ (release source $was → $now)}"
   else
     echo "ok    $svc: prd runs it already"
   fi

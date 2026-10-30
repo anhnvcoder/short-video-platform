@@ -11,6 +11,23 @@
 #     parent), so the image's tag is no ancestor of it;
 #   - a wrong collectorConfigSha256;
 #   - a short targetRevision (main, not refs/heads/main) for the sources of svp-gitops in argocd/apps/values.yaml;
+#   - the release sources of the image files (gitops-check.sh --tree, on a throwaway copy of this repository with a
+#     commit from before the table of release sources and one with it, and a throwaway clone of svp-web): stg pinning
+#     the commit with the table runs web of svp-web while prd pins the commit before it, in one tree, and passes; the
+#     same tree without any release of svp-web passes with no clone of svp-web at all; a web tag that is no commit on
+#     main of svp-web, a release of svp-web where the charts' table knows no such source, and SVP_SOURCE_DIR_WEB
+#     naming a clone of another repository each fail with their own message; values-check.sh refuses an image file
+#     naming the repository of another service before it verifies any release;
+#   - the author of a pull request (gitops-check.sh --tree TREE BASE on the same throwaway repositories, the author in
+#     SVP_CHANGE_REQUEST_AUTHOR): the bot of svp-web takes web.yaml over from backend and moves it to another release
+#     of its own; it writing a release of backend, changing gateway.yaml, charts.yaml, envs/prd/ (whose charts, from
+#     before the table, know no such bot), an overlay of stg or base/, deleting web.yaml and adding the image file of
+#     a service it does not publish each fail; the bot of backend promotes stg with charts.yaml and prd, but changing
+#     the workflow of the check or taking web back from svp-web fails; a person is not limited; a bot that promotes no
+#     source fails on envs/ and passes on base/; an author that is no login fails, a run of no pull request skips;
+#     the sender of the event (SVP_CHANGE_REQUEST_SENDER): the bot of svp-web pushing onto the pull request of the bot
+#     of backend and a bot pushing onto a person's fail, a person pushing onto a bot's pull request and the author
+#     itself pass, a sender that is no login fails;
 #   - envs/prd/ against the records of stg (gitops-check.sh --records, a fake gh listing the records): exactly the set
 #     of one record passes; a set mixed from two records, the seven releases of a record with other charts, and a set
 #     merged into envs/stg/images/ of main that no record holds each fail with their own message; a record whose
@@ -212,6 +229,260 @@ sed -i.bak 's|^targetRevision: .*|targetRevision: main|' "$t/argocd/apps/values.
 check "a short targetRevision" "$t" \
   "every source of https://github.com/anhnvcoder/svp-gitops.git must name a full ref (refs/heads/<branch>) or a commit as targetRevision, not main"
 
+# --- the release sources of the image files (step 1 alone: gitops-check.sh --tree). A throwaway copy of this
+# repository: k0 holds the policy's values as they were before the table of release sources (its one source backend
+# is read from them), k1 the table; origin/main is k1. A throwaway clone of svp-web: w0 on its main, w1 on a branch.
+services=(gateway user-service video-service engagement-service feed-service media-worker web)
+code=$work/code
+mkdir -p "$code/deploy/k8s" "$code/deploy/helm/svp-policy" "$code/deploy/helm/svp-cluster" "$code/deploy/observability/otelcol"
+cp -R "$here" "$code/deploy/ci"
+cp "$repo_root/deploy/k8s/lib.sh" "$code/deploy/k8s/"
+printf 'podSecurityVersion: v1.36\n' >"$code/deploy/helm/svp-cluster/values.yaml"
+echo "receivers: {}" >"$code/deploy/observability/otelcol/k8s-config.yaml"
+cat >"$code/deploy/helm/svp-policy/values.yaml" <<'VALUES'
+imageVerification:
+  imagePrefix: ghcr.io/anhnvcoder/short-video-platform/
+  issuer: https://token.actions.githubusercontent.com
+  subject: https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main
+  provenanceRepository: https://github.com/anhnvcoder/short-video-platform
+  provenanceRef: refs/heads/main
+  requireProvenance: false
+VALUES
+cg() { git -C "$code" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false "$@"; }
+cg init -q && cg add -A && cg commit -q -m "before the table"
+k0=$(cg rev-parse HEAD)
+cp "$repo_root/deploy/helm/svp-policy/values.yaml" "$code/deploy/helm/svp-policy/values.yaml"
+cp -R "$repo_root/deploy/helm/svp-policy/files" "$code/deploy/helm/svp-policy/"
+cg add -A && cg commit -q -m "the table of release sources"
+k1=$(cg rev-parse HEAD)
+cg update-ref refs/remotes/origin/main "$k1"
+web=$work/svp-web
+git init -q "$web"
+wg() { git -C "$web" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false "$@"; }
+wg remote add origin https://github.com/anhnvcoder/svp-web
+wg commit -q --allow-empty -m w0 && w0=$(wg rev-parse HEAD)
+wg commit -q --allow-empty -m w1 && w1=$(wg rev-parse HEAD)
+wg update-ref refs/remotes/origin/main "$w0"
+other=$work/other
+git init -q "$other"
+git -C "$other" remote add origin https://github.com/someone/svp-web
+# sources_tree WEB_STG: a copy of the tree with stg at k1 and prd at k0 of the throwaway repository, every release of
+# backend built at k0, web of stg WEB_STG ("repository tag"), of prd backend's.
+sources_tree() {
+  local t env rev svc repo tag
+  t=$(copy)
+  for env in stg prd; do
+    rev=$k1
+    [ "$env" = stg ] || rev=$k0
+    printf 'revision: %s\npodSecurityVersion: v1.36\ncollectorConfigSha256: %s\n' "$rev" \
+      "$(shasum -a 256 <"$code/deploy/observability/otelcol/k8s-config.yaml" | cut -d' ' -f1)" >"$t/envs/$env/charts.yaml"
+    for svc in "${services[@]}"; do
+      repo=ghcr.io/anhnvcoder/short-video-platform/$svc tag=${k0:0:12}
+      if [ "$env/$svc" = stg/web ]; then read -r repo tag <<<"$1"; fi
+      printf 'image:\n  repository: %s\n  tag: "%s"\n  digest: "sha256:%064d"\n' "$repo" "$tag" 0 \
+        >"$t/envs/$env/images/$svc.yaml"
+    done
+  done
+  echo "$t"
+}
+# tree_check NAME WANT_RC MESSAGE DIR [VAR=VALUE...]: gitops-check.sh --tree of the throwaway repository on DIR, with
+# no network (git may use local paths only); MESSAGE on its output.
+tree_check() {
+  local name=$1 want=$2 msg=$3 dir=$4 out rc=0
+  shift 4
+  out=$(env -u SVP_SOURCE_DIR_WEB GIT_ALLOW_PROTOCOL=file "$@" "$code/deploy/ci/gitops-check.sh" --tree "$dir" 2>&1) || rc=$?
+  if [ "$want" = 0 ] && [ "$rc" != 0 ]; then
+    fail "$name: gitops-check.sh --tree failed:"$'\n'"$(sed 's/^/      /' <<<"$out")"
+  elif [ "$want" != 0 ] && [ "$rc" = 0 ]; then
+    fail "$name: gitops-check.sh --tree passed"
+  elif [[ $out == *"$msg"* ]]; then
+    ok "$name"
+  else
+    fail "$name: no '$msg' in:"$'\n'"$(sed 's/^/      /' <<<"$out")"
+  fi
+}
+t=$(sources_tree "ghcr.io/anhnvcoder/svp-web/web ${w0:0:12}")
+tree_check "sources: web of svp-web in stg (charts with the table), backend's in prd (charts before it)" 0 \
+  "ok    envs/stg/images/: seven releases, each of a release source the policy of ${k1:0:12} admits" "$t" \
+  SVP_SOURCE_DIR_WEB="$web"
+t=$(sources_tree "ghcr.io/anhnvcoder/short-video-platform/web ${k0:0:12}")
+tree_check "sources: no release of svp-web, no clone of svp-web needed" 0 \
+  "ok    envs/prd/images/: seven releases, each of a release source the policy of ${k0:0:12} admits" "$t"
+t=$(sources_tree "ghcr.io/anhnvcoder/svp-web/web ${w1:0:12}")
+tree_check "sources: a web tag that is no commit on main of svp-web" 1 \
+  "envs/stg/images/web.yaml: tag ${w1:0:12} is no commit on main of https://github.com/anhnvcoder/svp-web (release source web)" \
+  "$t" SVP_SOURCE_DIR_WEB="$web"
+t=$(sources_tree "ghcr.io/anhnvcoder/svp-web/web ${w0:0:12}")
+cp "$t/envs/stg/images/web.yaml" "$t/envs/prd/images/web.yaml"
+tree_check "sources: a release of svp-web where the charts know no such source" 1 \
+  "envs/prd/images/web.yaml: the image must be a release of ghcr.io/anhnvcoder/short-video-platform/web with its tag and digest" \
+  "$t" SVP_SOURCE_DIR_WEB="$web"
+t=$(sources_tree "ghcr.io/anhnvcoder/svp-web/web ${w0:0:12}")
+tree_check "sources: SVP_SOURCE_DIR_WEB names a clone of another repository" 1 \
+  "SVP_SOURCE_DIR_WEB=$other is not a clone of https://github.com/anhnvcoder/svp-web (its origin is 'https://github.com/someone/svp-web')" \
+  "$t" SVP_SOURCE_DIR_WEB="$other"
+# values-check.sh on such a tree, as a machine runs it (env -i: no CI job's variables): the gateway's file naming the
+# repository of user-service is refused before any release is verified (no other file carries a digest, so cosign is
+# never asked).
+t=$(sources_tree "ghcr.io/anhnvcoder/short-video-platform/web ${k0:0:12}")
+for f in "$t"/envs/*/images/*.yaml; do sed -i.bak 's/^  digest: .*/  digest: ""/' "$f" && rm "$f.bak"; done
+printf 'image:\n  repository: ghcr.io/anhnvcoder/short-video-platform/user-service\n  tag: "%s"\n  digest: "sha256:%064d"\n' \
+  "${k0:0:12}" 0 >"$t/envs/stg/images/gateway.yaml"
+rc=0
+out=$(env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" "$code/deploy/ci/values-check.sh" --gitops "$t" "" 2>&1) ||
+  rc=$?
+want="FAIL  envs/stg/images/gateway.yaml: image.repository is ghcr.io/anhnvcoder/short-video-platform/user-service, a repository of user-service, not of gateway"
+if [ "$rc" = 1 ] && [[ $out == *"$want"* ]] && [[ $out != *"check envs/"* ]]; then
+  ok "values-check: an image file naming the repository of another service"
+else
+  fail "values-check: an image file naming the repository of another service (exit $rc, want 1, '$want', no release verified):"$'\n'"$(sed 's/^/      /' <<<"$out")"
+fi
+
+# --- step 1c, the author of a pull request (gitops-check.sh --tree DIR BASE of the throwaway repository, as a machine
+# runs it: env -i, so no CI job's variables, the author in SVP_CHANGE_REQUEST_AUTHOR). The tree becomes a git
+# repository: a0 runs web of backend in stg (before the takeover), a1 web of svp-web; each case commits one change on
+# top of one of them. stg pins k1 (the table, which knows the bot of svp-web), prd k0 (one source backend, read from
+# the values).
+at=$(sources_tree "ghcr.io/anhnvcoder/short-video-platform/web ${k0:0:12}")
+ag() { git -C "$at" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false "$@"; }
+ag init -q && ag add -A && ag commit -q -m "web of backend"
+a0=$(ag rev-parse HEAD)
+# image FILE REPOSITORY TAG DIGEST_SEED: writes the image block of FILE in the tree.
+image() {
+  printf 'image:\n  repository: %s\n  tag: "%s"\n  digest: "sha256:%s"\n' "$2" "$3" \
+    "$(printf '%s' "$4" | shasum -a 256 | cut -c1-64)" >"$at/$1"
+}
+image envs/stg/images/web.yaml ghcr.io/anhnvcoder/svp-web/web "${w0:0:12}" a1
+ag commit -q -am "web of svp-web"
+a1=$(ag rev-parse HEAD)
+web_bot=svp-web-promoter[bot] backend_bot=svp-gitops-promoter[bot]
+# from BASE: the tree back at BASE, on a branch of its own, for the next case's change.
+from() { ag checkout -q -f -B "case" "$1"; }
+# author_case NAME WANT_RC MESSAGE AUTHOR [BASE] [SENDER]: the change of the tree committed, then gitops-check.sh
+# --tree against BASE (a0 by default) as a pull request of AUTHOR whose event SENDER caused (none by default); MESSAGE
+# on its output.
+author_case() {
+  local name=$1 want=$2 msg=$3 out rc=0 sender=()
+  [ -z "${6:-}" ] || sender=(SVP_CHANGE_REQUEST_SENDER="$6")
+  ag add -A && ag commit -q -m "$name" --allow-empty
+  out=$(env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" GIT_ALLOW_PROTOCOL=file SVP_SOURCE_DIR_WEB="$web" \
+    SVP_CHANGE_REQUEST_AUTHOR="$4" ${sender[@]+"${sender[@]}"} "$code/deploy/ci/gitops-check.sh" --tree "$at" \
+    "${5:-$a0}" 2>&1) || rc=$?
+  if [ "$want" = 0 ] && [ "$rc" != 0 ]; then
+    fail "author: $name: gitops-check.sh --tree failed:"$'\n'"$(sed 's/^/      /' <<<"$out")"
+  elif [ "$want" != 0 ] && [ "$rc" = 0 ]; then
+    fail "author: $name: gitops-check.sh --tree passed"
+  elif [[ $out == *"$msg"* ]]; then
+    ok "author: $name"
+  else
+    fail "author: $name: no '$msg' in:"$'\n'"$(sed 's/^/      /' <<<"$out")"
+  fi
+}
+from "$a0"
+image envs/stg/images/web.yaml ghcr.io/anhnvcoder/svp-web/web "${w0:0:12}" t1
+author_case "the bot of svp-web takes web over from backend" 0 \
+  "ok    envs/stg/images/web.yaml: $web_bot, the bot of release source web, takes web over from release source backend" \
+  "$web_bot"
+from "$a1"
+image envs/stg/images/web.yaml ghcr.io/anhnvcoder/svp-web/web "${w0:0:12}" t2
+author_case "the bot of svp-web moves web to another of its releases" 0 \
+  "ok    the pull request of $web_bot, the promoter of a release source: its 1 changed files are all files its source may change" \
+  "$web_bot" "$a1"
+from "$a0"
+image envs/stg/images/web.yaml ghcr.io/anhnvcoder/short-video-platform/web "${k0:0:12}" t3
+author_case "the bot of svp-web writes a release of backend" 1 \
+  "envs/stg/images/web.yaml: $web_bot, the bot of release source web, wrote image 'ghcr.io/anhnvcoder/short-video-platform/web': it writes releases of its own source only, ghcr.io/anhnvcoder/svp-web/web" \
+  "$web_bot"
+from "$a0"
+image envs/stg/images/gateway.yaml ghcr.io/anhnvcoder/short-video-platform/gateway "${k0:0:12}" t4
+author_case "the bot of svp-web changes gateway.yaml" 1 \
+  "envs/stg/images/gateway.yaml: changed by $web_bot, the bot of release source web, which publishes web" "$web_bot"
+from "$a0"
+echo '# changed' >>"$at/envs/stg/charts.yaml"
+author_case "the bot of svp-web changes charts.yaml" 1 \
+  "envs/stg/charts.yaml: changed by $web_bot, the bot of release source web: only the bot of backend" "$web_bot"
+from "$a0"
+echo '# changed' >>"$at/envs/prd/images/web.yaml"
+author_case "the bot of svp-web changes envs/prd/, whose charts know no such bot" 1 \
+  "envs/prd/images/web.yaml: changed by $web_bot, which promotes no release source of the charts envs/prd runs (${k0:0:12})" \
+  "$web_bot"
+from "$a0"
+echo '# changed' >>"$at/envs/stg/svp-cluster.yaml"
+author_case "the bot of svp-web changes an overlay of stg" 1 \
+  "envs/stg/svp-cluster.yaml: changed by $web_bot, the bot of release source web: a bot changes the image files of its services in envs/stg/images/ only" \
+  "$web_bot"
+from "$a0"
+rm "$at/envs/stg/images/web.yaml"
+author_case "the bot of svp-web deletes web.yaml" 1 \
+  "envs/stg/images/web.yaml: deleted by $web_bot, the bot of release source web: a bot changes the image file of a service, never deletes it" \
+  "$web_bot"
+from "$a0"
+image envs/stg/images/search.yaml ghcr.io/anhnvcoder/svp-web/search "${w0:0:12}" t5
+author_case "the bot of svp-web adds the image file of a service it does not publish" 1 \
+  "envs/stg/images/search.yaml: changed by $web_bot, the bot of release source web, which publishes web" "$web_bot"
+from "$a0"
+echo '# changed' >>"$at/base/tempo.yaml"
+author_case "the bot of svp-web changes base/" 1 \
+  "base/tempo.yaml: changed by $web_bot, the promoter of a release source, which changes nothing outside envs/" "$web_bot"
+from "$a0"
+echo '# changed' >>"$at/.github/workflows/check.yml"
+author_case "the bot of backend changes the workflow of the check" 1 \
+  ".github/workflows/check.yml: changed by $backend_bot, the promoter of a release source, which changes nothing outside envs/" \
+  "$backend_bot"
+from "$a0"
+echo '# changed' >>"$at/envs/stg/charts.yaml"
+echo '# changed' >>"$at/envs/prd/images/gateway.yaml"
+echo '# changed' >>"$at/envs/prd/charts.yaml"
+image envs/stg/images/gateway.yaml ghcr.io/anhnvcoder/short-video-platform/gateway "${k0:0:12}" t6
+author_case "the bot of backend promotes stg with charts.yaml and prd (prd's charts from before the table)" 0 \
+  "ok    the pull request of $backend_bot, the promoter of a release source: its 4 changed files are all files its source may change" \
+  "$backend_bot"
+from "$a1"
+image envs/stg/images/web.yaml ghcr.io/anhnvcoder/short-video-platform/web "${k0:0:12}" t7
+author_case "the bot of backend takes web back from svp-web" 1 \
+  "envs/stg/images/web.yaml: the image before (ghcr.io/anhnvcoder/svp-web/web) is a release of source web: $backend_bot, the bot of release source backend, takes a service over only from backend" \
+  "$backend_bot" "$a1"
+from "$a1"
+image envs/stg/images/web.yaml ghcr.io/anhnvcoder/short-video-platform/web "${k0:0:12}" t8
+echo '# changed' >>"$at/base/tempo.yaml"
+author_case "a person moves web back and changes base/" 0 \
+  "ok    the pull request is by anhnvcoder, a person: the files it changes are not limited by release source" anhnvcoder "$a1"
+from "$a0"
+image envs/stg/images/gateway.yaml ghcr.io/anhnvcoder/short-video-platform/gateway "${k0:0:12}" t9
+author_case "a bot that promotes no release source changes envs/" 1 \
+  "envs/stg/images/gateway.yaml: changed by renovate[bot], which promotes no release source of the charts envs/stg runs (${k1:0:12})" \
+  "renovate[bot]"
+from "$a0"
+echo '# changed' >>"$at/base/tempo.yaml"
+author_case "a bot that promotes no release source changes base/" 0 \
+  "ok    the pull request of renovate[bot], a bot that promotes no release source: none of its 1 changed files is under envs/" \
+  "renovate[bot]"
+from "$a0"
+image envs/stg/images/web.yaml ghcr.io/anhnvcoder/svp-web/web "${w0:0:12}" t10
+author_case "an author that is no login fails closed" 1 \
+  "the author of the pull request cannot be read (above): the files a bot may change depend on which bot it is" "not a login"
+author_case "a run of no pull request skips the rule" 0 \
+  "skip  the author of a pull request: this run checks no pull request" ""
+# The sender of the event: the bot of svp-web pushing onto the pull request of the bot of backend fails, though the
+# files are ones backend's bot may change; so does a bot pushing onto a person's; a person pushing onto a bot's pull
+# request, or the author itself, is judged by the author's rule.
+from "$a0"
+image envs/stg/images/gateway.yaml ghcr.io/anhnvcoder/short-video-platform/gateway "${k0:0:12}" t11
+author_case "the bot of svp-web pushes onto the pull request of the bot of backend" 1 \
+  "the commit checked was pushed by $web_bot onto the pull request of $backend_bot: a bot pushes onto its own pull requests only" \
+  "$backend_bot" "$a0" "$web_bot"
+author_case "a person pushes onto the pull request of the bot of backend" 0 \
+  "ok    the pull request of $backend_bot, the promoter of a release source: its 1 changed files are all files its source may change" \
+  "$backend_bot" "$a0" anhnvcoder
+author_case "the bot of backend pushes onto its own pull request" 0 \
+  "ok    the pull request of $backend_bot, the promoter of a release source: its 1 changed files are all files its source may change" \
+  "$backend_bot" "$a0" "$backend_bot"
+author_case "a bot pushes onto the pull request of a person" 1 \
+  "the commit checked was pushed by renovate[bot] onto the pull request of anhnvcoder" anhnvcoder "$a0" "renovate[bot]"
+author_case "a sender that is no login fails closed" 1 \
+  "the sender of the pull request's event cannot be read (above)" "$backend_bot" "$a0" "not a login"
+from "$a0"
+
 # --- envs/prd/ against the records of stg (step 1b), with a fake gh first on PATH that lists the records and their
 # states as the host would, each run a run of verify.yml on main. The copy becomes a git repository whose first commit is the base and origin/main; each
 # case commits a change of envs/prd/ on top of it.
@@ -233,7 +504,6 @@ case "$1 $2" in
 esac
 FAKE
 chmod 755 "$work/bin/gh"
-services=(gateway user-service video-service engagement-service feed-service media-worker web)
 rt=$(copy)
 rg() { git -C "$rt" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false "$@"; }
 rg init -q && rg add -A && rg commit -q -m base
@@ -315,10 +585,12 @@ prd_case "$set_z"
 records "prd: a set only in the history of envs/stg/" 1 \
   "envs/prd/images/ is the set of envs/stg/images/ at ${b1:0:12} of svp-gitops, but no record of stg holds it" "$b1"
 rg update-ref refs/remotes/origin/main "$b0"
-# The same step in the whole check, before anything reaches the network.
+# The same step in the whole check, before anything reaches the network. As a machine runs it (env -i): in a CI job
+# of a pull request, step 1c would judge the files by that pull request's author.
 prd_case "$mixed"
 rc=0
-out=$(PATH="$work/bin:$PATH" FAKE_GH_DIR="$work/gh" "$here/gitops-check.sh" "$rt" "$b0" 2>&1) || rc=$?
+out=$(env -i PATH="$work/bin:$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" FAKE_GH_DIR="$work/gh" \
+  "$here/gitops-check.sh" "$rt" "$b0" 2>&1) || rc=$?
 if [ "$rc" != 0 ] && [[ $out == *"mixes releases of several records of stg"* ]] &&
   [[ $out == *"FAIL  envs/prd/ against the records of stg: the problems above"* ]]; then
   ok "prd: the whole check stops at the records"

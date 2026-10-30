@@ -8,6 +8,9 @@
 build=k8s-up
 job_minutes_default=330
 k3d=1
+# make k8s-up builds the web image and make k8s-web-sourcemaps its source maps: web_ref of the dispatch names the
+# commit of svp-web they build (verify-run.sh).
+web=1
 
 scenario_targets() {
   step k8s-up 60 make k8s-up

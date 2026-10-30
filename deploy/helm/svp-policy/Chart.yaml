@@ -2,7 +2,8 @@ apiVersion: v2
 name: svp-policy
 description: >-
   Admission policy of the short-video platform on k3d: Kyverno ImageValidatingPolicy svp-images, which lets a pod of
-  namespace svp run only the project's release images on GHCR, by digest, signed by images.yml on main, with a vuln
-  attestation that covers both platforms, reports no CRITICAL and is at most 72 hours old.
+  namespace svp run only the release images on GHCR of the project's release sources (files/sources.json), by digest,
+  each signed by images.yml on main of its own source's repository, with a vuln attestation that covers both
+  platforms, reports no CRITICAL and is at most 72 hours old.
 type: application
 version: 0.1.0

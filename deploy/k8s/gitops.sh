@@ -4,12 +4,14 @@
 # envs/stg/charts.yaml there pins. This script installs only what git cannot hold or what must exist before Argo CD:
 #   1. the release images, before anything is created:
 #      image.repository and image.digest of the seven files envs/stg/images/ of svp-gitops at the commit the cluster is
-#      built at, which the promote pull request writes; each must be a release of
-#      ghcr.io/anhnvcoder/short-video-platform/<service> that GHCR serves to an anonymous pull (the nodes pull without
-#      credentials), signed by images.yml on main, with a vuln attestation that is clean and at most 48 hours old
-#      (Kyverno refuses new pods at 72), and with a build provenance attestation when chart svp-policy checks provenance
-#      in stg at that revision (its values at the commit of envs/stg/charts.yaml, then envs/stg/svp-policy.yaml:
-#      deploy/ci/values-check.sh --gitops);
+#      built at, which the promote pull requests write (one per release source); each must be a release of
+#      <imagePrefix><service> of a release source of chart svp-policy that publishes that service
+#      (deploy/helm/svp-policy/files/sources.json: ghcr.io/anhnvcoder/short-video-platform/ for every service of this
+#      repository, ghcr.io/anhnvcoder/svp-web/ for web) that GHCR serves to an anonymous pull (the nodes pull without
+#      credentials), signed by images.yml on main of that source's repository, with a vuln attestation that is clean
+#      and at most 48 hours old (Kyverno refuses new pods at 72), and with a build provenance attestation when chart
+#      svp-policy checks provenance in stg at that revision (its values at the commit of envs/stg/charts.yaml, then
+#      envs/stg/svp-policy.yaml: deploy/ci/values-check.sh --gitops);
 #   2. the registry and the cluster (as `make k8s-up`); nothing is built here, the images come from GHCR;
 #   3. the Secrets from .env (deploy/k8s/secrets.sh), which never go to git: with externalSecrets of chart svp-cluster
 #      on in envs/stg (every revision of svp-gitops), only their source, the Secrets of namespace svp-secrets, from
@@ -158,7 +160,7 @@ if ! "$repo_root/deploy/ci/values-check.sh" --gitops "$work/release" ""; then
   refresh=$(ci_dispatch_hint images.yml main rescan=true) || exit 1
   fail "a release at ${sha:0:12} of svp-gitops is not signed, its vuln attestation is not clean and fresh, or the provenance the policy requires is missing or wrong (above); nothing was created. Refresh the vuln attestations of the releases: $refresh, then run this again once that run is green (a missing provenance needs a new release instead, as named above)"
 fi
-ok "release images at ${sha:0:12} of svp-gitops: GHCR serves all seven anonymously, each signed with a fresh, clean vuln attestation"
+ok "release images at ${sha:0:12} of svp-gitops: GHCR serves all seven anonymously, each signed by its release source with a fresh, clean vuln attestation"
 # The Applications to wait for: the root and one per component of components.json at the revision, the copy the root
 # renders.
 want_apps=$(at argocd/apps/components.json | jq -r '.components[].name') && [ -n "$want_apps" ] ||

@@ -12,6 +12,8 @@
 #     run is of another workflow or of a branch, one whose run the host does not answer for) are named and left out,
 #     and naming one fails; a record whose commit is not on main of svp-gitops fails;
 #   - main already running the record's set: no push, no pull request;
+#   - a record whose web is a release of svp-web (another release source): prd's web.yaml gets its repository and the
+#     first sentence of its comment that of svp-web; the rollback to a record of backend's web puts backend's back;
 #   - a machine refuses an address of svp-gitops off its disk, and with PROMOTE_DRY_RUN=1 prints the push instead.
 # Every run is a machine's (env -i: no variable of a CI job running this test). Runs on macOS and Linux: no network.
 #
@@ -149,8 +151,10 @@ bot="svp-gitops-promoter[bot]"
   record 10 "$r2" "$bot" "$(payload "$r2" "$charts_b" v1.37 "$sum_b" B)"
   record 9 "$r2" someone "$(payload "$r2" "$charts_b" v1.37 "$sum_b" B)"
   record 8 "$side" "$bot" "$(payload "$side" "$charts_b" v1.37 "$sum_b" B)"
+  record 7 "$r2" "$bot" "$(payload "$r2" "$charts_b" v1.37 "$sum_b" B |
+    jq -c --arg d "$(digest W-web)" '.images.web.repository = "ghcr.io/anhnvcoder/svp-web/web" | .images.web.digest = $d')"
 } | jq -s . >"$work/gh/deployments.json"
-for id in 16 15 14 13 12 11 9 8; do echo '[{"state": "success"}]' >"$work/gh/statuses-$id.json"; done
+for id in 16 15 14 13 12 11 9 8 7; do echo '[{"state": "success"}]' >"$work/gh/statuses-$id.json"; done
 # Run 77 is of verify.yml on main, 78 of images.yml on main, 79 of verify.yml on a branch; the host knows no run 80.
 echo '{"path": ".github/workflows/verify.yml", "head_branch": "main"}' >"$work/gh/run-77.json"
 echo '{"path": ".github/workflows/images.yml", "head_branch": "main"}' >"$work/gh/run-78.json"
@@ -240,6 +244,28 @@ same "main runs it: exit 0" 0 "$rc"
 expect "main runs it: says so" "$work/promote.out" "prd on main of svp-gitops already runs the set of record #11: no push, no pull request."
 same "main runs it: the branch did not move" "$before" "$(remote rev-parse refs/heads/bot/promote-prd)"
 lacks "$work/promote.out" "pr create" && ok "main runs it: no pull request" || fail "main runs it: no pull request"
+remote update-ref refs/heads/main "$r2"
+
+# --- 4b. A record whose web is a release of svp-web, then the rollback to one of backend's web.
+promote -- 7
+same "web of svp-web: exit 0" 0 "$rc"
+head=$(remote rev-parse refs/heads/bot/promote-prd)
+same "web of svp-web: its release" "ghcr.io/anhnvcoder/svp-web/web $tag $(digest W-web)" "$(prd_at "$head" web)"
+same "web of svp-web: the first comment sentence is svp-web's" \
+  "# The release image of web in prd, nothing else: the release on GHCR that CI of https://github.com/anhnvcoder/svp-web
+# built, scanned and signed (.github/workflows/images.yml there)." \
+  "$(remote show "$head:envs/prd/images/web.yaml" | grep '^#')"
+same "web of svp-web: the gateway's comment untouched" "# The release image of gateway in prd." \
+  "$(remote show "$head:envs/prd/images/gateway.yaml" | head -n 1)"
+expect "web of svp-web: says the source changed" "$work/promote.out" "(release source backend → web)"
+remote update-ref refs/heads/main "$head"
+promote -- 12
+head=$(remote rev-parse refs/heads/bot/promote-prd)
+same "back to backend's web: its release" "$prefix/web $tag $(digest A-web)" "$(prd_at "$head" web)"
+same "back to backend's web: backend's sentence" \
+  "# The release image of web in prd, nothing else: the release on GHCR that CI of
+# https://github.com/anhnvcoder/short-video-platform built, scanned and signed (.github/workflows/images.yml there)." \
+  "$(remote show "$head:envs/prd/images/web.yaml" | grep '^#')"
 remote update-ref refs/heads/main "$r2"
 
 # --- 5. An address off the disk.

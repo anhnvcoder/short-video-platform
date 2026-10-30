@@ -13,9 +13,12 @@
 #   - cosign attest --type vuln of the predicate on the index digest;
 #   - cosign attest --type slsaprovenance1 of the build provenance (provenance-predicate.sh: workflow, ref, commit and
 #     run of this CI run) on the index digest. Not for the drill images: they are no release.
-# The provenance names the workflow at its ref as its builder; it is attested only when that builder is the identity
-# this job signs as (the subject of the keyless certificate), so a predicate made on a machine ("local") or by another
-# workflow is never signed. Both predicates are written before anything is signed: a run that cannot write one signs
+# The image must lie under the prefix of the release source this run builds for (use_build_source of common.sh: the
+# source whose repository runs the job) and be one of its services or drill images: a run of one repository never
+# signs under another source's prefix, where the policy expects that source's identity. The provenance names the
+# workflow at its ref as its builder; it is attested only when that builder is the identity of that source (the
+# subject the policy checks, and the one of the keyless certificate this job gets), so a predicate made on a machine
+# ("local"), by another workflow or by another source's repository is never signed. Both predicates are written before anything is signed: a run that cannot write one signs
 # nothing.
 # Every command uses cosign's older format (.sig/.att images) with --replace: in that format a new vuln attestation
 # replaces the previous one, so the index always carries exactly one, which Kyverno v1.19.1 needs (it keeps one
@@ -37,15 +40,17 @@ fi
 [ $# -eq 3 ] || fail "usage: sign-image.sh [--allow-critical] INDEX DIR DIR"
 index=$1 a=$2 b=$3
 repo=$(cat "$index/repository") digest=$(cat "$index/digest")
-case $repo in "$ghcr_prefix"/*) ;; *) fail "$repo is not an image of this repository" ;; esac
+use_build_source
+case $repo in "$build_prefix"*) ;; *) fail "$repo is not under $build_prefix, the prefix of release source $build_source_name this run builds for" ;; esac
+image=${repo#"$build_prefix"}
+use_build_source "$image"
 is_digest "$digest" || fail "$index has no index digest"
-if [ ${#predicate_flags[@]} -gt 0 ] && [ "$repo" != "$ghcr_prefix/drill-vulnerable" ]; then
+release=true
+jq -e --arg i "$image" '.drillImages | index($i)' <<<"$build_source" >/dev/null && release=false
+if [ ${#predicate_flags[@]} -gt 0 ] && { [ "$image" != drill-vulnerable ] || [ "$release" = true ]; }; then
   fail "--allow-critical is only for the drill image drill-vulnerable"
 fi
 check_index "$repo" "$digest" "$a" "$b" || fail "$repo@$digest is not an index of exactly the two scanned manifests"
-
-release=true
-for drill in "${drill_images[@]}"; do [ "$repo" != "$ghcr_prefix/$drill" ] || release=false; done
 
 work=$(mktemp -d) || fail "create a temporary directory"
 trap 'rm -rf "$work"' EXIT
@@ -53,10 +58,10 @@ predicate=$work/vuln.json provenance=$work/provenance.json
 "$ci_dir/vuln-predicate.sh" ${predicate_flags[@]+"${predicate_flags[@]}"} "$predicate" "$a" "$b" ||
   fail "build the vuln predicate of $repo@$digest"
 if [ "$release" = true ]; then
-  sign_identity
+  sign_identity "$build_source_name"
   builder=$(ci_builder_id) || fail "read the builder of this run"
   [ "$builder" = "$sign_subject" ] ||
-    fail "the provenance would name builder '$builder', but releases are signed only as $sign_subject"
+    fail "the provenance would name builder '$builder', but releases of source $build_source_name are signed only as $sign_subject"
   "$ci_dir/provenance-predicate.sh" "$provenance" || fail "build the provenance predicate of $repo@$digest"
 fi
 

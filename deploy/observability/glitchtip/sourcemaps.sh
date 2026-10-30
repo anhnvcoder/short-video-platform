@@ -16,14 +16,16 @@
 #      never run.
 #   2. GlitchTip answers, the token is there, the web answers: otherwise stop, naming the command to run first,
 #      before anything is built or sent.
-#   3. Without MAPS_DIR: build stage `sourcemaps` of deploy/docker/web.Dockerfile from the working tree with the build
-#      argument the running image got (SVP_BUILD_ID: empty in compose, web_build_id of deploy/k8s/lib.sh on k3d), into
-#      a private temporary directory. The build cache gives the stage of that very build, so the maps of the bundle
-#      served.
+#   3. Without MAPS_DIR: build stage `sourcemaps` of the web's Dockerfile from its source (web_dir and web_dockerfile
+#      of deploy/k8s/lib.sh, as make up and make k8s-up build it) with the build argument the running image got
+#      (SVP_BUILD_ID: empty in compose, web_build_id of deploy/k8s/lib.sh on k3d), into a private temporary directory.
+#      The build cache gives the stage of that very build, so the maps of the bundle served. A web that runs a
+#      release (WEB_FROM=stg|image) was built by CI with a build id of its own, from no tree here: refused, naming
+#      the release; on k3d its maps can still be given as MAPS_DIR.
 #   4. Every chunk the web serves on /login must carry a debug id found in those chunks: otherwise the web runs
 #      another build (the image was built from another tree, or the cache was pruned since; or MAPS_DIR holds another
 #      build's), and nothing is sent.
-#   5. `sentry sourcemap upload` (the Sentry CLI of web/package.json, through pnpm) sends chunks and maps as an
+#   5. `sentry sourcemap upload` (the Sentry CLI of the web's package.json, through pnpm) sends chunks and maps as an
 #      artifact bundle of organization and project svp that GlitchTip matches to an event by debug id. Without
 #      --no-rewrite on purpose: the CLI then reads the debug id Turbopack already wrote (`//# debugId=`, the file is left
 #      as it is) and puts it in the bundle's manifest as each file's `debug-id` header. With --no-rewrite the CLI sends
@@ -35,7 +37,8 @@
 #      say it was sent; the check that the stack maps is e2e/glitchtip.e2e.ts (SVP_E2E_GLITCHTIP=1).
 # The temporary directory and the port-forward go away when the script ends, however it ends.
 #
-# Usage: sourcemaps.sh compose|k3d [MAPS_DIR] (run from the Makefile, which puts Node and pnpm of web/ first on PATH).
+# Usage: sourcemaps.sh compose|k3d [MAPS_DIR] (run from the Makefile, which puts Node and pnpm of the web first on
+# PATH).
 set -euo pipefail
 
 # shellcheck source=deploy/k8s/lib.sh
@@ -45,6 +48,9 @@ set -euo pipefail
 
 stack=${1:-}
 maps_dir=${2:-}
+# The web client's source: the build below and the Sentry CLI of its package.json.
+web_src=$(web_dir) || exit 1
+dockerfile=$(web_dockerfile "$web_src")
 glitchtip=http://127.0.0.1:8000
 tmp=
 forward_pid=
@@ -80,6 +86,12 @@ compose)
   web=http://localhost:3001
   curl_web=(curl -fsS --max-time 10)
   build_id=
+  running=$(docker_ ps --filter label=com.docker.compose.project=svp --filter label=com.docker.compose.service=web \
+    --format '{{.Image}}') || fail "read the image of the web container"
+  [ -n "$maps_dir" ] || case $running in "" | svp/web:dev) ;; *)
+    fail "the web of the stack runs release $running, built by CI with a build id of its own: its maps are not built here (make web-sourcemaps applies to a web that make up built)"
+    ;;
+  esac
   glitchtip_up || fail "GlitchTip does not answer at $glitchtip; run make up OBS=lgtm first"
   [ -f "$repo_root/.env" ] || fail ".env not found; run make env, then make up OBS=lgtm"
   token=$(dotenv_value "$repo_root/.env" SENTRY_SOURCEMAPS_TOKEN) || fail "read .env"
@@ -102,7 +114,15 @@ k3d)
   forward_pid=$!
   wait_until 30 "GlitchTip through the port-forward on 127.0.0.1:8000" glitchtip_up
   # The build id names the build made below; a folder given holds a build already.
-  [ -n "$maps_dir" ] || build_id=$(web_build_id) || fail "compute the build id of web/"
+  if [ -z "$maps_dir" ]; then
+    running=$(kc -n svp get "$(workload_kind svp web)" web \
+      -o jsonpath='{.spec.template.spec.containers[?(@.name=="web")].image}') || fail "read the image of svp/web"
+    case $running in "" | k3d-svp-registry:5111/*) ;; *)
+      fail "the web of cluster svp runs release $running, built by CI with a build id of its own: give its maps as SOURCEMAPS_DIR (CI exports them beside the image)"
+      ;;
+    esac
+    build_id=$(web_build_id) || fail "compute the build id of the web"
+  fi
   ;;
 esac
 
@@ -118,9 +138,9 @@ if [ -n "$maps_dir" ]; then
 else
   maps=$tmp/maps
   build="build ${build_id:-<empty>}"
-  echo "build stage sourcemaps of deploy/docker/web.Dockerfile (SVP_BUILD_ID=${build_id:-<empty>})"
-  docker_ build --file "$repo_root/deploy/docker/web.Dockerfile" --target sourcemaps \
-    --build-arg "SVP_BUILD_ID=$build_id" --output "type=local,dest=$maps" "$repo_root/web" ||
+  echo "build stage sourcemaps of $dockerfile (SVP_BUILD_ID=${build_id:-<empty>})"
+  docker_ build --file "$dockerfile" --target sourcemaps \
+    --build-arg "SVP_BUILD_ID=$build_id" --output "type=local,dest=$maps" "$web_src" ||
     fail "build stage sourcemaps of the web image"
   built=$(debug_ids "$maps")
   [ -n "$built" ] || fail "stage sourcemaps holds no chunk with a debug id"
@@ -145,7 +165,7 @@ ok "the $checked chunks of $web/login with a debug id are chunks of $build"
   mkdir "$tmp/config"
   export SENTRY_URL=$glitchtip SENTRY_ORG=svp SENTRY_PROJECT=svp SENTRY_AUTH_TOKEN=$token \
     SENTRY_CONFIG_DIR=$tmp/config SENTRY_CLI_NO_TELEMETRY=1 SENTRY_CLI_NO_UPDATE_CHECK=1
-  pnpm --dir "$repo_root/web" exec sentry sourcemap upload "$maps"
+  pnpm --dir "$web_src" exec sentry sourcemap upload "$maps"
 ) || fail "upload the source maps to GlitchTip at $glitchtip"
 token=
 ok "source maps of $build sent to GlitchTip (organization svp, project svp)"

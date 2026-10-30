@@ -74,6 +74,13 @@ SCHEMATHESIS_IMAGE := schemathesis/schemathesis:4.32.4@sha256:b501f25d00fa6e2b39
 # into schemas, so no Python is needed. It runs as root unless docker run gets --user.
 # renovate: datasource=docker depName=ghcr.io/yannh/kubeconform
 KUBECONFORM_IMAGE := ghcr.io/yannh/kubeconform:v0.8.0@sha256:faffaf43f95aa6425306e1ab8d6fcad72acb9049158f38e574c085ea1ec0f64e
+# The REST contract of the gateway as a versioned release (deploy/ci/contract.sh): oasdiff compares the spec of a pull
+# request with its base (make api-contract-check), ORAS pushes a new version to GHCR as an OCI artifact on main. Both from
+# their official images pinned by digest, run on a dev machine as in CI; no GitHub Action of either is used.
+# renovate: datasource=docker depName=tufin/oasdiff
+OASDIFF_IMAGE := tufin/oasdiff:v1.34.1@sha256:67a23cfea7d251e2ae34ee703ac8733c5d96bc2e7b90fd0f4d475ec99367b85f
+# renovate: datasource=docker depName=ghcr.io/oras-project/oras
+ORAS_IMAGE := ghcr.io/oras-project/oras:v1.3.6@sha256:9cfb578be975b762fd898b9d004243d8003aeb807a3e15b2ed212cdd1326c9eb
 
 # Tools installed by `go install` land here; the PATH of the caller is not assumed to contain it.
 GOBIN ?= $(shell go env GOPATH)/bin
@@ -95,7 +102,7 @@ SVP_TEST_REDIS_URL ?= redis://127.0.0.1:6379/15
 .DEFAULT_GOAL := help
 
 .PHONY: help tools ci-tools generate generate-go generate-check slo otelcol-validate fmt-check vet lint actionlint buf-lint vulncheck test fuzz \
-	cover check check-go helm-check trivy-config web-lockfile-scan grype renovate-check hooks web-install web-dev web-generate web-generate-check \
+	cover check check-go helm-check trivy-config web-lockfile-scan grype renovate-check api-contract-check hooks web-install web-dev web-generate web-generate-check \
 	web-check web-e2e measure-web measure-upload web-lighthouse web-sourcemaps
 
 help: ## List the targets
@@ -332,6 +339,13 @@ RENOVATE_IMAGE := ghcr.io/renovatebot/renovate:44.165.1@sha256:455f4169a364a4c8b
 renovate-check: ## Validate renovate.json with the pinned Renovate (renovate-config-validator --strict, no network)
 	env -u DOCKER_DEFAULT_PLATFORM docker run --rm --network none -v "$(CURDIR):/repo:ro" --workdir /repo \
 		$(RENOVATE_IMAGE) renovate-config-validator --strict --no-global renovate.json
+
+# The version rule of services/gateway/openapi.yaml (written at the top of that file) against the spec at commit BASE:
+# the file changed means info.version went up, a breaking change from 1.0.0 on means the major did, any entry in
+# oasdiff's changelog means at least the minor did. CI passes the base of the pull request, as for buf breaking.
+BASE ?= origin/main
+api-contract-check: ## Check the version rule of the gateway's OpenAPI spec against BASE (default origin/main) with the pinned oasdiff
+	deploy/ci/contract.sh check "$(BASE)"
 
 hooks: ## Point git at .githooks (run once per clone)
 	git config core.hooksPath .githooks

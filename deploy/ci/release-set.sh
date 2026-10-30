@@ -39,15 +39,21 @@
 #
 #   release-set.sh records
 #     Prints, as a JSON array, newest first, the records of stg in svp-gitops that count (ci_deployment_list of
-#     platform.sh): state success, made by the bot of the app that writes there, run_url a run of verify.yml on main
-#     of the code repository (as the host knows the run: ci_run_workflow), and a payload of the form above (seven
-#     services, each a release of its repository on GHCR with a tag of 12 hex and a digest; charts with its three
-#     keys) whose ref is the record's commit. Each {id, ref, created_at, payload}. Every record left out is named on
-#     stderr with why, a run the host does not answer for too. Whether ref is on main of svp-gitops is the caller's to
-#     check, in its own clone.
+#     platform.sh): state success, made by the bot of the app of this repository that writes there (the promoter of
+#     another release source never records: only this repository's verify.yml checks a set), run_url a run of verify.yml
+#     on main of the code repository (as the host knows the run: ci_run_workflow), and a payload of the form above
+#     (seven services, each a release on GHCR with a tag of 12 hex and a digest, its repository that service's image of
+#     a release source of the working tree's table: a record from before another source took a service over still names
+#     the old source's repository, which the table keeps while it moves; charts with its three keys) whose ref is the
+#     record's commit. Each {id, ref, created_at, payload}. Every record left out is named on stderr with why, a run the
+#     host does not answer for too. Whether ref is on main of svp-gitops is the caller's to check, in its own clone.
 #
-#   release-set.sh check FILE
-#     Exit 0 when FILE is a payload of that form; 1 naming what is wrong otherwise.
+#   release-set.sh check [--at-charts] FILE
+#     Exit 0 when FILE is a payload of that form; 1 naming what is wrong otherwise. With --at-charts its repositories
+#     are judged by the table at the payload's own charts revision (release_sources REV, a commit of this clone), the
+#     one the policy of stg applied while it ran the set, instead of the working tree's: a record from before a service
+#     moved to another source stays a record of what stg ran once the old source no longer publishes it (the history
+#     dora.sh reads).
 #
 # Needs bash, git, jq; snapshot needs kubectl and the cluster; records a token that reads svp-gitops (GH_TOKEN on
 # GitHub) or a machine's gh login, and reads the runs of the code repository (public). Writes nothing but FILE and
@@ -62,23 +68,32 @@ stg_charts=envs/stg/charts.yaml
 # The workflow whose scenario gitops checks a set: a record counts only when its run is one of it on main.
 record_workflow=.github/workflows/verify.yml
 services_json=$(printf '%s\n' "${svp_services[@]}" | jq -R . | jq -s -c .)
+# repos_json [REV]: service → the repositories its releases may come from, <imagePrefix><service> of each release
+# source that publishes it in the working tree's table, or in that of commit REV (release_sources of deploy/k8s/lib.sh,
+# which reads a commit from before the table as its one source backend). Read when a payload is judged.
+repos_json() {
+  release_sources "${1:-}" | jq -c '[.sources[] | .imagePrefix as $p | .services[] | {s: ., r: ($p + .)}]
+    | group_by(.s) | map({key: .[0].s, value: map(.r)}) | from_entries'
+}
 # payload_problem: a jq function of a payload (the object verify writes), "" when it has the form a record holds,
-# otherwise why not. Needs $prefix (ghcr_prefix) and $svcs (the seven services) bound.
+# otherwise why not. Needs $repos (repos_json) and $svcs (the seven services) bound. The charts come first: the table
+# the releases are judged by may be that of their revision (check --at-charts).
 payload_jq='
   def hex($n): type == "string" and test("^[0-9a-f]{\($n)}$");
-  def release($s): type == "object" and (keys == ["digest", "repository", "tag"]) and .repository == "\($prefix)/\($s)"
+  def release($s): type == "object" and (keys == ["digest", "repository", "tag"])
+    and (.repository as $r | $repos[$s] // [] | index($r) != null)
     and (.tag | hex(12)) and (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"));
   def payload_problem: . as $p |
     if type != "object" then "it is no JSON object"
     elif .environment != "stg" then "it is not of environment stg"
     elif (.ref | hex(40) | not) then "its ref is no full commit"
-    elif (.images | type) != "object" or (.images | keys) != ($svcs | sort)
-      or any($svcs[]; . as $s | $p.images[$s] | release($s) | not) then
-      "it does not name one release on GHCR (repository, tag of 12 hex, digest) of each of the seven services"
     elif (.charts | type) != "object" or (.charts | keys) != ["collectorConfigSha256", "podSecurityVersion", "revision"]
       or (.charts.revision | hex(40) | not) or (.charts.collectorConfigSha256 | hex(64) | not)
       or (.charts.podSecurityVersion | type == "string" and test("^v1\\.[0-9]+$") | not) then
       "its charts are not revision (40 hex), podSecurityVersion and collectorConfigSha256"
+    elif (.images | type) != "object" or (.images | keys) != ($svcs | sort)
+      or any($svcs[]; . as $s | $p.images[$s] | release($s) | not) then
+      "it does not name one release on GHCR (repository of a release source of the service, tag of 12 hex, digest) of each of the seven services"
     elif (.run_url | type) != "string" or (.deployed_at | type) != "string" then "it has no run_url or deployed_at"
     else "" end;'
 
@@ -308,9 +323,10 @@ verify() {
 
 # records: see the top of this file.
 records() {
-  local list kept='[]' id run reason wf
+  local list kept='[]' id run reason wf repos
   list=$(ci_deployment_list "$gitops_repo" stg) || fail "list the deployment records of stg in $gitops_repo"
-  list=$(jq -c --arg bot "$gitops_app[bot]" --arg prefix "$ghcr_prefix" --argjson svcs "$services_json" "$payload_jq"'
+  repos=$(repos_json) || fail "read the release sources"
+  list=$(jq -c --arg bot "$gitops_app[bot]" --argjson repos "$repos" --argjson svcs "$services_json" "$payload_jq"'
     .[] | . as $d | . + {reason: (
       if .state != "success" then "its state is \(.state | if . == "" then "none" else . end), not success"
       elif .creator != $bot then "made by \(.creator), not \($bot)"
@@ -339,10 +355,30 @@ records() {
   echo "$kept"
 }
 
-# check FILE: see the top of this file.
+# check [--at-charts] FILE: see the top of this file.
 check() {
-  local problem
-  problem=$(jq -r --arg prefix "$ghcr_prefix" --argjson svcs "$services_json" "$payload_jq"'
+  local at= problem repos rev err
+  if [ "$1" = --at-charts ]; then
+    at=yes
+    shift
+  fi
+  if [ -z "$at" ]; then
+    repos=$(repos_json) || fail "read the release sources"
+  else
+    # A revision that is no full commit fails on the charts whatever the table: none is read then.
+    repos='{}'
+    rev=$(jq -r 'try (.charts.revision | strings) catch empty' "$1" 2>/dev/null) || rev=
+    if [[ $rev =~ ^[0-9a-f]{40}$ ]]; then
+      err=$(mktemp) || fail "create a temporary file"
+      repos=$(repos_json "$rev" 2>"$err") || {
+        problem=$(sed -n 's/^FAIL  //p' "$err" | head -n 1)
+        rm -f "$err"
+        fail "$1 is no payload of a record of stg: the release sources of its charts' revision cannot be read: ${problem:-unknown error}"
+      }
+      rm -f "$err"
+    fi
+  fi
+  problem=$(jq -r --argjson repos "$repos" --argjson svcs "$services_json" "$payload_jq"'
     payload_problem' "$1" 2>/dev/null) || problem="it is no JSON"
   [ -z "$problem" ] || fail "$1 is no payload of a record of stg: $problem"
 }
@@ -372,8 +408,10 @@ records)
   records
   ;;
 check)
-  [ $# -eq 2 ] || fail "usage: release-set.sh check FILE"
-  check "$2"
+  { [ $# -eq 2 ] && [ "$2" != --at-charts ]; } || { [ $# -eq 3 ] && [ "$2" = --at-charts ]; } ||
+    fail "usage: release-set.sh check [--at-charts] FILE"
+  shift
+  check "$@"
   ;;
-*) fail "usage: release-set.sh snapshot [--settle] FILE | verify BEFORE AFTER OUT [RESULTS] | records | check FILE" ;;
+*) fail "usage: release-set.sh snapshot [--settle] FILE | verify BEFORE AFTER OUT [RESULTS] | records | check [--at-charts] FILE" ;;
 esac
