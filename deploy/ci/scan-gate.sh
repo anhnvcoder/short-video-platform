@@ -33,10 +33,15 @@
 #
 # Prints counts and, for findings that block, rule or vulnerability ID, package or file, line: never the matched
 # text (trivy masks secrets in its findings anyway; the raw report is never printed).
+#
+# .trivyignore.yaml is that of the tree being scanned (code_root of common.sh): this checkout's, or that of the
+# checkout of another repository named by SVP_CODE_ROOT (its CI runs this script from a pinned checkout of this one),
+# where it must exist: a tree without it is the wrong tree, not one without exceptions.
 set -euo pipefail
 
 # shellcheck source=deploy/ci/common.sh
 . "$(dirname "$0")/common.sh"
+require_code_files .trivyignore.yaml
 config_ignore=$ci_dir/trivy-config-ignore.yaml
 
 allow_critical=false

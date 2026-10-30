@@ -15,9 +15,12 @@
 # No token, no other variable of the run, no time: nothing checks them and each one more is one more to keep honest.
 # The subject (the index digest) is added by cosign attest.
 #
-# On a machine every value of the run is "local" (the commit is HEAD of the checkout), so the predicate is still
-# complete and can be tested; it is never signed: only the sign job of CI attests, and sign-image.sh first checks that
-# the builder is the identity it signs as.
+# The repository, ref and commit are those of the run, whichever repository it is: a job of another release source's
+# repository running this script from a pinned checkout of this one records its own repository and commit, never
+# this one's. On a machine every value of the run is "local" but the repository and the commit, those of the checkout
+# whose code is built (SVP_CODE_ROOT, or this checkout: ci_repo_url and ci_commit), so the predicate is still complete
+# and can be tested; it is never signed: only the sign job of CI attests, and sign-image.sh first checks that the
+# builder is the identity of the release source it signs for.
 #
 # Exit 0: OUT written. Exit 1: the CI context is missing or malformed; nothing written. Exit 2: usage.
 set -euo pipefail

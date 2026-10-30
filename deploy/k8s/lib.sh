@@ -357,6 +357,104 @@ gitops_clone() {
   ok "svp-gitops at ${sha:0:12} ($ref) in ${dir#"$repo_root"/}"
 }
 
+# The web client's source lives in its own repository, svp-web. web/ of this repository is its copy until the web
+# moves there for good; a folder of the workspace takes precedence over it as soon as one is there.
+web_url=https://github.com/anhnvcoder/svp-web.git
+# The clone CI jobs build and test from (make web-clone), inside the checkout and gitignored. A machine reads its own
+# (web_dir).
+web_ci_clone=$repo_root/.web/svp-web
+# Repository of the web releases svp-web's CI pushes; the tag of such a release names a commit of svp-web.
+web_release_repository=ghcr.io/anhnvcoder/svp-web/web
+
+# web_is_clone DIR: true when DIR is the top of a git work tree whose remote origin is svp-web, as gitops_is_clone.
+web_is_clone() {
+  local top url
+  [ -d "$1" ] || return 1
+  top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) && [ "$top" = "$(cd "$1" && pwd -P)" ] || return 1
+  url=$(git -C "$1" remote get-url origin 2>/dev/null) || return 1
+  [[ $url =~ ^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)anhnvcoder/svp-web(\.git)?$ ]]
+}
+
+# web_dir: prints the absolute path of the web client's source that images are built from. SVP_WEB_DIR when set (CI
+# sets it to the clone of make web-clone; on a machine it may name another clone), which must be a clone of svp-web;
+# otherwise <workspace>/frontend (the workspace as for gitops_dir) when it exists, which must be one too; otherwise
+# web/ of this repository, the copy kept until the web has moved. The working tree is read as it is, uncommitted
+# changes included; nothing is cloned, fetched or switched. A folder that is there but no clone of svp-web fails,
+# printing the command that makes the clone, instead of building something else in its place.
+web_dir() {
+  local dir common
+  if [ -n "${SVP_WEB_DIR:-}" ]; then
+    dir=$SVP_WEB_DIR
+    web_is_clone "$dir" ||
+      fail "SVP_WEB_DIR=$dir is not a clone of svp-web: clone it there (git clone $web_url '$dir'), or in CI run make web-clone first and set SVP_WEB_DIR to its folder"
+    (cd "$dir" && pwd -P)
+    return
+  fi
+  if common=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
+    dir=$(dirname "$(dirname "$common")")/frontend
+    if [ -e "$dir" ]; then
+      web_is_clone "$dir" ||
+        fail "$dir is not a clone of svp-web, the web client's source: git clone $web_url '$dir' in its place (or set SVP_WEB_DIR to a clone)"
+      (cd "$dir" && pwd -P)
+      return
+    fi
+  fi
+  [ -d "$repo_root/web" ] ||
+    fail "no source of the web client: neither SVP_WEB_DIR, nor <workspace>/frontend, nor web/ of this repository; git clone $web_url <workspace>/frontend (or set SVP_WEB_DIR to a clone)"
+  echo "$repo_root/web"
+}
+
+# web_dockerfile DIR: the Dockerfile that builds the web image from DIR (printed by web_dir): web/ of this repository
+# has its own under deploy/docker/, a clone of svp-web has its own at its top.
+web_dockerfile() {
+  if [ "$1" = "$repo_root/web" ]; then echo "$repo_root/deploy/docker/web.Dockerfile"; else echo "$1/Dockerfile"; fi
+}
+
+# web_clone: CI's copy of the web client's source (make web-clone), as gitops_clone: clones svp-web anonymously into
+# $web_ci_clone (the whole history), or fetches it when it is there, then checks out WEB_REF detached and exports
+# SVP_WEB_DIR to that folder for what this shell runs next. WEB_REF is a branch (as origin/<branch>) or a full commit
+# SHA; unset, it is the commit of the web release staging runs (image.tag of envs/stg/images/web.yaml in the
+# clone of svp-gitops, gitops_dir), so the tests run the code of the image that runs there; a release of
+# another repository there has no commit of svp-web, and WEB_REF must then be given. Refuses a clone there with
+# uncommitted changes, or a folder that is no clone of svp-web. Touches nothing outside .web/ of this checkout.
+web_clone() {
+  local dir=$web_ci_clone ref=${WEB_REF:-} target sha gitops file repo tag=
+  local git_=(env GIT_TERMINAL_PROMPT=0 git -c credential.helper=)
+  if [ -z "$ref" ]; then
+    gitops=$(gitops_dir) || exit 1
+    file=$gitops/envs/stg/images/web.yaml
+    [ -f "$file" ] || fail "$file not found; set WEB_REF to a branch or a full commit SHA of svp-web"
+    repo=$(values_field repository <"$file") || fail "cannot read image.repository in $file (above)"
+    [ "$repo" = "$web_release_repository" ] ||
+      fail "staging runs web from $repo (envs/stg/images/web.yaml), not a release of svp-web: set WEB_REF to a branch or a full commit SHA of svp-web"
+    tag=$(values_field tag <"$file") || fail "cannot read image.tag in $file (above)"
+    [ -n "$tag" ] || fail "image.tag is empty in $file; set WEB_REF to a branch or a full commit SHA of svp-web"
+    ref=$tag
+  fi
+  if [ -e "$dir" ]; then
+    web_is_clone "$dir" ||
+      fail "$dir is not a clone of svp-web; remove it (rm -rf .web) and run make web-clone again"
+    [ ! -e "$(git -C "$dir" rev-parse --path-format=absolute --git-path index)" ] ||
+      [ -z "$(git -C "$dir" status --porcelain)" ] ||
+      fail "$dir has uncommitted changes, which make web-clone does not overwrite; commit or remove them first"
+    "${git_[@]}" -C "$dir" fetch -q --prune origin || fail "git fetch of $web_url into $dir"
+  else
+    mkdir -p "$(dirname "$dir")" || fail "create $(dirname "$dir")"
+    "${git_[@]}" clone -q --no-checkout "$web_url" "$dir" || fail "git clone $web_url into $dir"
+  fi
+  # A release's tag is the first 12 hex digits of its commit; WEB_REF itself is a branch or a full SHA.
+  if [ -n "$tag" ] || [[ $ref =~ ^[0-9a-f]{40}$ ]]; then
+    target=$ref
+  else
+    target=refs/remotes/origin/$ref
+  fi
+  sha=$(git -C "$dir" rev-parse --verify --quiet "$target^{commit}") ||
+    fail "WEB_REF=$ref is neither a branch of $web_url nor a commit of it"
+  git -C "$dir" checkout -q --detach "$sha" || fail "check out $ref ($sha) in $dir"
+  export SVP_WEB_DIR=$dir
+  ok "svp-web at ${sha:0:12} ($ref) in ${dir#"$repo_root"/}"
+}
+
 # argocd_root_app REPO_URL REVISION ENV CHART_REPO_URL: prints the root Application svp-root of the GitOps path, as
 # JSON for `kc apply -f -`: chart argocd/apps of svp-gitops (REPO_URL) at REVISION, which hands the same revision to
 # every Application it makes for its values files (its value targetRevision), reads the charts of this repository from
@@ -783,20 +881,28 @@ build_context() {
 
 # web_build_id: prints the build id of the web image on the dev path (SVP_BUILD_ID, which Next uses as its
 # deploymentId and the server as its release name): dev- and the first 12 hex digits of the SHA-256 of the list
-# "<SHA-256 of the content> <path>", sorted by path, of every file the build context web/ sends (by web/.dockerignore,
-# not by git: a .DS_Store git ignores counts, a tracked file .dockerignore leaves out does not) plus the Dockerfile.
-# The same context gives the same id, so the build cache gives the same image ID and `make k8s-up` starts no new
-# ReplicaSet (or canary); any change of the context gives a new id, so two different builds never share one
-# deploymentId through a file git does not see. A symlink counts by the path it points to (the context sends it as it
-# is); file modes do not count.
+# "<SHA-256 of the content> <path>", sorted by path, of every file the build context web_dir sends (by its
+# .dockerignore, not by git: a .DS_Store git ignores counts, a tracked file .dockerignore leaves out does not) plus the
+# Dockerfile (web_dockerfile). Paths are relative to the repository for web/ of this repository (web/<name>,
+# deploy/docker/web.Dockerfile) and to the clone for a clone of svp-web. The same context gives the same id, so the
+# build cache gives the same image ID and `make k8s-up` starts no new ReplicaSet (or canary); any change of the
+# context gives a new id, so two different builds never share one deploymentId through a file git does not see. A
+# symlink counts by the path it points to (the context sends it as it is); file modes do not count.
 #
 # Only the form web/.dockerignore has is understood: each line (blank lines and # comments aside) is a one-level name
 # pattern of letters, digits, . _ - * and ?, which, as in Docker, matches a name at the root of the context only and
 # leaves out its whole tree. Any other line fails, naming it, instead of drifting from what Docker sends unnoticed;
 # a new form means teaching this function the same rule in the same change.
 web_build_id() {
-  local ignore=$repo_root/web/.dockerignore line path name pattern list kept
-  local patterns=() entries=()
+  local dir base prefix dockerfile ignore line path name pattern list kept entry
+  local patterns=() entries=() files=()
+  dir=$(web_dir) || return 1
+  if [ "$dir" = "$repo_root/web" ]; then
+    base=$repo_root prefix=web/ dockerfile=deploy/docker/web.Dockerfile
+  else
+    base=$dir prefix= dockerfile=Dockerfile
+  fi
+  ignore=$dir/.dockerignore
   [ -f "$ignore" ] || {
     echo "web_build_id: $ignore is missing" >&2
     return 1
@@ -805,7 +911,7 @@ web_build_id() {
     case $line in '' | '#'*) continue ;; esac
     case $line in
     *[!A-Za-z0-9._*?-]* | *'**'*)
-      echo "web_build_id: web/.dockerignore line '$line' is not a one-level name pattern (letters, digits, . _ - * ?); teach web_build_id of deploy/k8s/lib.sh this form first" >&2
+      echo "web_build_id: $ignore line '$line' is not a one-level name pattern (letters, digits, . _ - * ?); teach web_build_id of deploy/k8s/lib.sh this form first" >&2
       return 1
       ;;
     esac
@@ -822,59 +928,71 @@ web_build_id() {
         break
       fi
     done
-    [ -z "$kept" ] || entries+=("web/$name")
-  done < <(find "$repo_root/web" -mindepth 1 -maxdepth 1 -print0)
+    [ -z "$kept" ] || entries+=("$prefix$name")
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -print0)
   [ ${#entries[@]} -gt 0 ] || {
-    echo "web_build_id: web/.dockerignore leaves nothing of web/ in the build context" >&2
+    echo "web_build_id: $ignore leaves nothing of $dir in the build context" >&2
     return 1
   }
+  # The Dockerfile counts once: a clone's own is usually in its context already.
+  files=("${entries[@]}" "$dockerfile")
+  for entry in "${entries[@]}"; do
+    if [ "$entry" = "$dockerfile" ]; then
+      files=("${entries[@]}")
+      break
+    fi
+  done
   # In a subshell with pipefail, so a failed find or shasum fails the whole list. shasum prints "<hash>  <path>"; the
   # two spaces become one. find does not follow symlinks, so a symlink is hashed by its target path, never its content.
   list=$(
     set -o pipefail
-    cd "$repo_root" || exit 1
+    cd "$base" || exit 1
     {
-      find "${entries[@]}" deploy/docker/web.Dockerfile -type f -print0 | xargs -0 shasum -a 256 -- |
+      find "${files[@]}" -type f -print0 | xargs -0 shasum -a 256 -- |
         sed 's/^\([0-9a-f]\{64\}\)  /\1 /' || exit 1
       find "${entries[@]}" -type l -print0 | while IFS= read -r -d '' path; do
         printf '%s %s\n' "$(readlink "$path" | tr -d '\n' | shasum -a 256 | cut -d' ' -f1)" "$path"
       done || exit 1
     } | LC_ALL=C sort -k2
   ) || {
-    echo "web_build_id: cannot hash the files of the build context web/" >&2
+    echo "web_build_id: cannot hash the files of the build context $dir" >&2
     return 1
   }
   echo "dev-$(printf '%s\n' "$list" | shasum -a 256 | cut -c1-12)"
 }
 
 # build_image SERVICE CONTEXT [WEB_BUILD_ID]: builds SERVICE's image from the source tree CONTEXT (native architecture,
-# the Dockerfiles compose uses) and sets image_id to its ID, without the sha256: prefix. The web image gets SVP_BUILD_ID
-# from web_build_id, which reads the working tree: build_dev_images passes that tree as CONTEXT. WEB_BUILD_ID replaces
-# it for a second build of the same source (make drill-k8s-web-canary): next build runs again with that id, so the
-# image is another build, with its own deploymentId and Server Action ids.
+# the Dockerfiles compose uses) and sets image_id to its ID, without the sha256: prefix. The web image is built from
+# web_dir with web_dockerfile instead, whatever CONTEXT is, and gets SVP_BUILD_ID from web_build_id, which reads the
+# same folder. WEB_BUILD_ID replaces it for a second build of the same source (make drill-k8s-web-canary): next build
+# runs again with that id, so the image is another build, with its own deploymentId and Server Action ids.
 build_image() {
-  local args=(--file "$2/$(dockerfile "$1")") id
+  local args=(--file "$2/$(dockerfile "$1")") context=$2/$(build_context "$1") id dir
   case $1 in
   media-worker) ;;
   web)
+    dir=$(web_dir) || return 1
     id=${3:-$(web_build_id)} || return 1
-    args+=(--build-arg "SVP_BUILD_ID=$id")
+    args=(--file "$(web_dockerfile "$dir")" --build-arg "SVP_BUILD_ID=$id")
+    context=$dir
     ;;
   *) args+=(--build-arg "SERVICE=$1") ;;
   esac
   # --quiet prints only the image ID; a failed build still prints its error.
-  image_id=$(docker_ build --quiet "${args[@]}" "$2/$(build_context "$1")") || return 1
+  image_id=$(docker_ build --quiet "${args[@]}" "$context") || return 1
   image_id=${image_id#sha256:}
 }
 
-# build_dev_images: builds the seven images from the working tree, pushes each to the registry as
+# build_dev_images [SERVICE...]: builds the images of SERVICE... (default: the seven of svp_services) from the working
+# tree, pushes each to the registry as
 # 127.0.0.1:5111/svp/<service>:dev-<first 12 hex digits of its image ID>, and sets dev_tag_<service with _ for -> to
 # that tag. The build cache gives the same image ID for the same inputs, so a run with no code
 # change yields the same tags, the pod templates do not change, and no new ReplicaSet (later: no canary) starts. Run
 # after ensure_registry.
 build_dev_images() {
-  local svc id tag ref
-  for svc in "${svp_services[@]}"; do
+  local svc id tag ref services=("$@")
+  [ $# -gt 0 ] || services=("${svp_services[@]}")
+  for svc in "${services[@]}"; do
     echo "build $svc"
     build_image "$svc" "$repo_root" || fail "build the image of $svc"
     id=$image_id
@@ -905,8 +1023,127 @@ image_paths() {
 # a release's repository, tag (first 12 hex digits of its commit, for people) and digest (what pods run) into
 # envs/<env>/images/<service>.yaml of svp-gitops; the GitOps cluster pulls them anonymously by digest. The dev path
 # never reads them: `make k8s-up` passes its own registry, tag and an empty digest (deploy/k8s/install.sh).
+# This is the prefix of this repository's own releases; the release sources below name every prefix the cluster runs.
 # shellcheck disable=SC2034 # read by the scripts that source this file
 ghcr_prefix=ghcr.io/anhnvcoder/short-video-platform
+
+# Release sources: every repository whose CI builds, signs and publishes images the GitOps path runs. Each has a name,
+# its repository URL, the prefix its images live under on GHCR (ending in /), the services it publishes there (a
+# service is in two sources only while it moves from one to the other), the drill images it may push there, the
+# keyless identity of its images.yml on main (issuer, subject), the ref its build provenance names, and the GitHub App
+# that promotes its releases (promoter). They are written once, in this file of chart svp-policy, whose policy admits
+# exactly these images with these identities; the scripts read the same file, so what they check is what admission
+# checks.
+release_sources_file=deploy/helm/svp-policy/files/sources.json
+
+# _release_sources_check WHERE: reads a table of release sources on stdin and prints it as compact JSON when it holds
+# what the template of chart svp-policy accepts: at least one source; every field a non-empty string without a quote,
+# backslash or white space (they go into CEL string literals); a name of a lowercase letter then letters and digits;
+# repository, issuer and subject https:// URLs, provenanceRef a refs/... ref, imagePrefix ending in /; no two sources
+# with one name or one promoter; services a non-empty list and drillImages a list of image names; no service in more
+# than two sources; no prefix the start of another's (an image under both could not be told apart). Fails naming WHERE
+# and the first problem otherwise.
+# The jq program of _release_sources_check, kept out of $(...), which bash 3.2 misreads with these quotes inside.
+_release_sources_jq='
+    def plain: type == "string" and test("^[^\u0027\"\\\\\\s]+$");
+    def names: type == "array" and all(.[]; type == "string" and test("^[a-z0-9][a-z0-9._-]*$"));
+    if (.sources | type) != "array" or (.sources | length) == 0 then "sources lists no release source"
+    else .sources as $s
+    | ([$s[] | select(type != "object"
+        or ([.name, .repository, .imagePrefix, .issuer, .subject, .provenanceRef, .promoter] | all(plain) | not))
+        | (.name? // "?" | tostring)] | first) as $bad
+    | if $bad != null then
+        "source \($bad): name, repository, imagePrefix, issuer, subject, provenanceRef and promoter must each be a string without quote, backslash or white space"
+      elif any($s[]; .name | test("^[a-z][a-z0-9]*$") | not) then "a source name is not a lowercase letter then letters and digits"
+      elif any($s[]; [.repository, .issuer, .subject] | all(startswith("https://")) | not)
+        then "repository, issuer and subject of every source must be https:// URLs"
+      elif any($s[]; .provenanceRef | startswith("refs/") | not) then "provenanceRef of every source must be a refs/... ref"
+      elif any($s[]; .imagePrefix | test("^[a-z0-9.:_/-]+/$") | not) then "imagePrefix of every source must end in /"
+      elif ([$s[].name] | unique | length) != ($s | length) then "two sources share a name"
+      elif ([$s[].promoter] | unique | length) != ($s | length) then "two sources share a promoter"
+      elif any($s[]; ((.services | names) and (.services | length) > 0 and (.drillImages | names)) | not)
+        then "every source needs a non-empty list services and a list drillImages, of image names"
+      elif ([$s[].services[]] | group_by(.) | any(length > 2)) then "a service is in more than two sources"
+      elif any($s[] as $a | $s[] as $b | $a.name != $b.name and ($b.imagePrefix | startswith($a.imagePrefix)); .)
+        then "the imagePrefix of one source starts with the imagePrefix of another"
+      else "ok" end end'
+_release_sources_check() {
+  local table verdict
+  table=$(cat)
+  verdict=$(jq -r "$_release_sources_jq" <<<"$table" 2>/dev/null) || verdict="is not readable JSON"
+  [ "$verdict" = ok ] || fail "release sources of $1: $verdict"
+  jq -c . <<<"$table"
+}
+
+# release_sources [REV]: prints the table of release sources ({"sources": [...]}, compact JSON, checked by
+# _release_sources_check) of this repository at commit REV, or of the working tree when REV is empty. A commit from
+# before the table (an environment of svp-gitops may still pin one, and a rollback of prd may go back to one) gets the
+# one source its policy knew, read from that commit as the scripts read it then: name backend; imagePrefix, issuer,
+# subject, repository and provenanceRef from the lines imagePrefix, issuer, subject, provenanceRepository and
+# provenanceRef of the policy's values.yaml; services from svp_services of deploy/k8s/lib.sh; drillImages from
+# drill_images of deploy/ci/common.sh; promoter svp-gitops-promoter. Fails when REV is no commit of this clone, or
+# when neither form can be read.
+release_sources() {
+  local rev=${1:-} table values services drills
+  if [ -z "$rev" ]; then
+    table=$(cat "$repo_root/$release_sources_file") || fail "read $release_sources_file"
+  elif ! git -C "$repo_root" cat-file -e "$rev^{commit}" 2>/dev/null; then
+    fail "$rev is not a commit of this clone, so its release sources cannot be read"
+  elif ! table=$(git -C "$repo_root" show "$rev:$release_sources_file" 2>/dev/null); then
+    values=$(git -C "$repo_root" show "$rev:deploy/helm/svp-policy/values.yaml" 2>/dev/null) || values=
+    services=$(git -C "$repo_root" show "$rev:deploy/k8s/lib.sh" 2>/dev/null | sed -n 's/^svp_services=(\(.*\))$/\1/p')
+    drills=$(git -C "$repo_root" show "$rev:deploy/ci/common.sh" 2>/dev/null | sed -n 's/^drill_images=(\(.*\))$/\1/p')
+    table=$(jq -n --arg values "$values" --arg services "$services" --arg drills "$drills" '
+      def line($k): [$values | split("\n")[] | select(startswith("  \($k): ")) | ltrimstr("  \($k): ")] | first // "";
+      def words: split(" ") | map(select(length > 0));
+      {sources: [{name: "backend", repository: line("provenanceRepository"), imagePrefix: line("imagePrefix"),
+        services: ($services | words), drillImages: ($drills | words), issuer: line("issuer"), subject: line("subject"),
+        provenanceRef: line("provenanceRef"), promoter: "svp-gitops-promoter"}]}') ||
+      fail "build the release source of ${rev:0:12}, which has no $release_sources_file"
+  fi
+  _release_sources_check "${rev:+${rev:0:12} }${rev:-the working tree}" <<<"$table"
+}
+
+# release_source NAME [REV]: prints source NAME of the table at REV (release_sources) as compact JSON; fails without
+# one.
+release_source() {
+  local table src
+  table=$(release_sources "${2:-}") || exit 1
+  src=$(jq -c --arg n "$1" '.sources[] | select(.name == $n)' <<<"$table")
+  [ -n "$src" ] || fail "no release source named $1 in $release_sources_file${2:+ at ${2:0:12}}"
+  echo "$src"
+}
+
+# source_of_repository REPOSITORY [REV]: prints the name of the release source whose imagePrefix REPOSITORY lies
+# under, in the table at REV (at most one: no prefix starts another); fails without one.
+source_of_repository() {
+  local table name
+  table=$(release_sources "${2:-}") || exit 1
+  name=$(jq -r --arg r "$1" '.sources[] | .imagePrefix as $p | select($r | startswith($p)) | .name' <<<"$table")
+  [ -n "$name" ] || fail "$1 is under the prefix of no release source of $release_sources_file${2:+ at ${2:0:12}}"
+  echo "$name"
+}
+
+# release_source_of SERVICE REPOSITORY [REV]: prints, as compact JSON, the release source in the table at REV of
+# which REPOSITORY is SERVICE's image: <imagePrefix>SERVICE of a source whose services name SERVICE, what the policy
+# admits for that service. Status 1, printing nothing, when REPOSITORY is none of them (release_repositories names
+# what would be).
+release_source_of() {
+  local table src
+  table=$(release_sources "${3:-}") || exit 1
+  src=$(jq -c --arg s "$1" --arg r "$2" '.sources[] | select((.services | index($s)) and .imagePrefix + $s == $r)' \
+    <<<"$table")
+  [ -n "$src" ] || return 1
+  echo "$src"
+}
+
+# release_repositories SERVICE [REV]: prints the repositories SERVICE's releases may come from in the table at REV,
+# joined by " or " (empty when no source publishes SERVICE).
+release_repositories() {
+  local table
+  table=$(release_sources "${2:-}") || exit 1
+  jq -r --arg s "$1" '[.sources[] | select(.services | index($s)) | .imagePrefix + $s] | join(" or ")' <<<"$table"
+}
 
 # values_field FIELD: reads a service's values file on stdin and prints image.FIELD (repository, tag or digest)
 # without quotes, "" when empty. Only the shape these files have is read: exactly one line `  FIELD: <value>` inside
@@ -1009,7 +1246,8 @@ ghcr_manifest_status() {
 # release_image SERVICE WHERE: reads SERVICE's image file on stdin (WHERE names it in messages, such as
 # "envs/stg/images/gateway.yaml at 1a2b3c4d5e6f") and prints REPOSITORY@DIGEST of the release it names
 # once the GitOps cluster can pull it: image.digest set (the promote pull request writes it), image.repository
-# exactly $ghcr_prefix/SERVICE, and that manifest served to an anonymous pull by GHCR. Fails naming the cause
+# SERVICE's image of a release source that publishes SERVICE (release_source_of, the working tree's table), and that
+# manifest served to an anonymous pull by GHCR. Fails naming the cause
 # otherwise; creates nothing. Whether the release carries a signature and a fresh vuln attestation is
 # deploy/ci/verify-release.sh's check.
 release_image() {
@@ -1020,8 +1258,8 @@ release_image() {
   [ -n "$digest" ] ||
     fail "$svc: image.digest is empty in $where: $svc has no release there yet; once the promote pull request of svp-gitops is merged, fetch the clone and run again"
   repo=$(values_field repository <<<"$values") || fail "$svc: cannot read image.repository in $where (above)"
-  [ "$repo" = "$ghcr_prefix/$svc" ] ||
-    fail "$svc: image.repository is '$repo' in $where; the GitOps path runs only releases of $ghcr_prefix/$svc"
+  release_source_of "$svc" "$repo" >/dev/null ||
+    fail "$svc: image.repository is '$repo' in $where; the GitOps path runs only releases of $(release_repositories "$svc")"
   code=$(ghcr_manifest_status "${repo#ghcr.io/}" "$digest")
   case $code in
   200) ;;
@@ -1031,4 +1269,119 @@ release_image() {
   *) fail "$svc: GHCR did not answer for $repo@$digest (HTTP ${code:-none}); check the network and run again" ;;
   esac
   echo "$repo@$digest"
+}
+
+# stg_release SERVICE: prints REPOSITORY@DIGEST of SERVICE's release in staging: envs/stg/images/SERVICE.yaml in the
+# working tree of the clone of svp-gitops (gitops_dir), read as it is (never fetched: pull that clone for the newest),
+# checked by release_image (repository, digest, anonymous pull from GHCR).
+stg_release() {
+  local gitops file
+  gitops=$(gitops_dir) || exit 1
+  file=$gitops/envs/stg/images/$1.yaml
+  [ -f "$file" ] || fail "$1: $file not found, so staging names no release of $1 in that clone"
+  release_image "$1" "envs/stg/images/$1.yaml of svp-gitops at $(gitops_at "$gitops")" <"$file"
+}
+
+# gitops_at DIR: the commit the clone DIR of svp-gitops is at, and whether envs/stg/images/ differs from it there.
+gitops_at() {
+  local sha
+  sha=$(git -C "$1" rev-parse HEAD) || fail "read the commit of $1"
+  if [ -n "$(git -C "$1" status --porcelain -- envs/stg/images)" ]; then
+    echo "$sha with uncommitted changes in envs/stg/images/"
+  else
+    echo "$sha"
+  fi
+}
+
+# web_source: what the web client of `make up` and `make k8s-up` runs, from WEB_FROM: clone (the default when unset)
+# builds its image from web_dir; stg runs the release staging runs (stg_release web); image runs WEB_IMAGE, a release
+# given as ghcr.io/<repository>@sha256:<digest>, which GHCR must serve to an anonymous pull as the nodes and compose
+# pull it. Sets web_release to REPOSITORY@DIGEST of that release, empty when the image is built. A release keeps the
+# SVP_BUILD_ID CI built it with and is never built here, so the targets that build the source maps of the web
+# (make web-sourcemaps, and make k8s-web-sourcemaps without SOURCEMAPS_DIR) do not apply to it.
+web_source() {
+  local repo code
+  web_release=
+  case ${WEB_FROM:-clone} in
+  clone | stg)
+    [ -z "${WEB_IMAGE:-}" ] || fail "WEB_IMAGE is set, but WEB_FROM is ${WEB_FROM:-clone}: set WEB_FROM=image to run it, or unset it"
+    [ "${WEB_FROM:-clone}" = clone ] || web_release=$(stg_release web) || exit 1
+    ;;
+  image)
+    [[ ${WEB_IMAGE:-} =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]] ||
+      fail "WEB_FROM=image needs WEB_IMAGE=ghcr.io/<repository>@sha256:<64 hex digits> (got '${WEB_IMAGE:-}')"
+    repo=${WEB_IMAGE%@*}
+    code=$(ghcr_manifest_status "${repo#ghcr.io/}" "${WEB_IMAGE#*@}")
+    [ "$code" = 200 ] ||
+      fail "GHCR does not serve $WEB_IMAGE to an anonymous pull (HTTP ${code:-none}): no such digest, a package that is not public, or no network"
+    web_release=$WEB_IMAGE
+    ;;
+  *)
+    fail "WEB_FROM='$WEB_FROM' is not valid: clone (default: build from the web client's source), stg (the release staging runs) or image (WEB_IMAGE)"
+    ;;
+  esac
+}
+
+# compose_images: exports what deploy/compose/compose.yaml reads to pick the images of the application for `make up`
+# and `make compose-config`. IMAGES unset: the six backend services are built from the working tree, as they always
+# were; IMAGES=stg: they run their releases in staging (stg_release), their migrations the same images, so a stack of
+# this checkout runs exactly what staging runs, with no Go build. The web client as web_source says: built from
+# web_dir (its folder and Dockerfile), or a release. A release runs as already pulled (compose_up_images): pull policy
+# never, so compose neither pulls nor builds it. Sets compose_releases to every REPOSITORY@DIGEST to pull and
+# compose_notes to one line per choice; prints nothing.
+compose_images() {
+  local svc var ref dir gitops
+  compose_releases=() compose_notes=()
+  case ${IMAGES:-} in
+  '')
+    for svc in "${svp_services[@]}"; do
+      [ "$svc" != web ] || continue
+      var=SVP_$(printf '%s' "$svc" | tr 'a-z-' 'A-Z_')_IMAGE
+      export "$var=svp/$svc:dev"
+    done
+    export SVP_BACKEND_PULL_POLICY=build
+    compose_notes+=("the six backend services built from the working tree")
+    ;;
+  stg)
+    for svc in "${svp_services[@]}"; do
+      [ "$svc" != web ] || continue
+      var=SVP_$(printf '%s' "$svc" | tr 'a-z-' 'A-Z_')_IMAGE
+      ref=$(stg_release "$svc") || exit 1
+      export "$var=$ref"
+      compose_releases+=("$ref")
+    done
+    export SVP_BACKEND_PULL_POLICY=never
+    gitops=$(gitops_dir) || exit 1
+    compose_notes+=("the six backend services and their migrations run the releases of staging, envs/stg/images/ of svp-gitops at $(gitops_at "$gitops")")
+    ;;
+  *)
+    fail "IMAGES='$IMAGES' is not valid: leave it unset (build the six backend services from the working tree) or stg (run their releases in staging)"
+    ;;
+  esac
+  web_source
+  if [ -n "$web_release" ]; then
+    # Never built in this mode, but compose checks that a build context exists: any folder of the checkout will do.
+    export SVP_WEB_IMAGE=$web_release SVP_WEB_PULL_POLICY=never SVP_WEB_CONTEXT=$repo_root/deploy/compose
+    compose_releases+=("$web_release")
+    compose_notes+=("web runs release $web_release, with the build id CI gave it: make web-sourcemaps does not apply")
+  else
+    dir=$(web_dir) || exit 1
+    export SVP_WEB_IMAGE=svp/web:dev SVP_WEB_PULL_POLICY=build SVP_WEB_CONTEXT=$dir
+    export SVP_WEB_DOCKERFILE
+    SVP_WEB_DOCKERFILE=$(web_dockerfile "$dir")
+    compose_notes+=("web built from $dir")
+  fi
+}
+
+# compose_up_images: compose_images, then pulls every release for this machine's own architecture (docker without
+# DOCKER_DEFAULT_PLATFORM picks it from the multi-architecture index), so that a release that cannot be pulled stops
+# `make up` before anything starts, and prints the choices.
+compose_up_images() {
+  local ref note
+  compose_images
+  for ref in ${compose_releases[@]+"${compose_releases[@]}"}; do
+    echo "pull $ref"
+    docker_ pull --quiet "$ref" >/dev/null || fail "pull $ref"
+  done
+  for note in "${compose_notes[@]}"; do ok "$note"; done
 }

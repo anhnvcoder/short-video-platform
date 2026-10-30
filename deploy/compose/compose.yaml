@@ -216,8 +216,9 @@ services:
   user-migrate:
     <<: *host-services
     profiles: [core]
-    image: svp/user-service:dev
-    # Built by user-service; never pull a public image with this name.
+    image: ${SVP_USER_SERVICE_IMAGE:-svp/user-service:dev}
+    # The image of user-service: built by it, or a release `make up IMAGES=stg` has pulled
+    # already. Never pull a public image with the name of a build.
     pull_policy: never
     command: ["migrate"]
     environment:
@@ -227,7 +228,7 @@ services:
   video-migrate:
     <<: *host-services
     profiles: [core]
-    image: svp/video-service:dev
+    image: ${SVP_VIDEO_SERVICE_IMAGE:-svp/video-service:dev}
     pull_policy: never
     command: ["migrate"]
     environment:
@@ -237,7 +238,7 @@ services:
   engagement-migrate:
     <<: *host-services
     profiles: [core]
-    image: svp/engagement-service:dev
+    image: ${SVP_ENGAGEMENT_SERVICE_IMAGE:-svp/engagement-service:dev}
     pull_policy: never
     command: ["migrate"]
     environment:
@@ -247,7 +248,7 @@ services:
   feed-migrate:
     <<: *host-services
     profiles: [core]
-    image: svp/feed-service:dev
+    image: ${SVP_FEED_SERVICE_IMAGE:-svp/feed-service:dev}
     pull_policy: never
     command: ["migrate"]
     environment:
@@ -257,8 +258,11 @@ services:
   user-service:
     <<: *host-services
     profiles: [core]
-    image: svp/user-service:dev
-    pull_policy: build
+    # `make up` sets SVP_<SERVICE>_IMAGE and SVP_BACKEND_PULL_POLICY of the six backend services:
+    # built from the working tree, or with IMAGES=stg their releases in staging, pulled already and
+    # never built (policy never). The defaults build them.
+    image: ${SVP_USER_SERVICE_IMAGE:-svp/user-service:dev}
+    pull_policy: ${SVP_BACKEND_PULL_POLICY:-build}
     build:
       context: ../..
       dockerfile: deploy/docker/service.Dockerfile
@@ -287,8 +291,8 @@ services:
   video-service:
     <<: *host-services
     profiles: [core]
-    image: svp/video-service:dev
-    pull_policy: build
+    image: ${SVP_VIDEO_SERVICE_IMAGE:-svp/video-service:dev}
+    pull_policy: ${SVP_BACKEND_PULL_POLICY:-build}
     build:
       context: ../..
       dockerfile: deploy/docker/service.Dockerfile
@@ -326,8 +330,8 @@ services:
   engagement-service:
     <<: *host-services
     profiles: [core]
-    image: svp/engagement-service:dev
-    pull_policy: build
+    image: ${SVP_ENGAGEMENT_SERVICE_IMAGE:-svp/engagement-service:dev}
+    pull_policy: ${SVP_BACKEND_PULL_POLICY:-build}
     build:
       context: ../..
       dockerfile: deploy/docker/service.Dockerfile
@@ -355,8 +359,8 @@ services:
   feed-service:
     <<: *host-services
     profiles: [core]
-    image: svp/feed-service:dev
-    pull_policy: build
+    image: ${SVP_FEED_SERVICE_IMAGE:-svp/feed-service:dev}
+    pull_policy: ${SVP_BACKEND_PULL_POLICY:-build}
     build:
       context: ../..
       dockerfile: deploy/docker/service.Dockerfile
@@ -387,8 +391,8 @@ services:
   gateway:
     <<: *host-services
     profiles: [core]
-    image: svp/gateway:dev
-    pull_policy: build
+    image: ${SVP_GATEWAY_IMAGE:-svp/gateway:dev}
+    pull_policy: ${SVP_BACKEND_PULL_POLICY:-build}
     build:
       context: ../..
       dockerfile: deploy/docker/service.Dockerfile
@@ -441,13 +445,16 @@ services:
   web:
     <<: *host-services
     profiles: [core]
-    image: svp/web:dev
-    pull_policy: build
+    # `make up` sets the four SVP_WEB_* variables: built from the web client's source (web_dir of
+    # deploy/k8s/lib.sh), or a release it has pulled already (WEB_FROM=stg|image), which compose
+    # neither pulls nor builds then. The defaults build web/ of this repository.
+    image: ${SVP_WEB_IMAGE:-svp/web:dev}
+    pull_policy: ${SVP_WEB_PULL_POLICY:-build}
     build:
       # The web client's own tree, so the six Go images keep the repository's .dockerignore and
-      # build cache; web/.dockerignore leaves out node_modules, build output and .env*.
-      context: ../../web
-      dockerfile: ../deploy/docker/web.Dockerfile
+      # build cache; its .dockerignore leaves out node_modules, build output and .env*.
+      context: ${SVP_WEB_CONTEXT:-../../web}
+      dockerfile: ${SVP_WEB_DOCKERFILE:-../deploy/docker/web.Dockerfile}
     environment:
       # Traces and metrics (web vitals of /rum included) to the Collector of `obs`, on the `web`
       # network; without `obs` the exports fail and are dropped, and OBS=off turns the SDK off.
@@ -504,8 +511,8 @@ services:
 
   media-worker:
     profiles: [core]
-    image: svp/media-worker:dev
-    pull_policy: build
+    image: ${SVP_MEDIA_WORKER_IMAGE:-svp/media-worker:dev}
+    pull_policy: ${SVP_BACKEND_PULL_POLICY:-build}
     build:
       context: ../..
       dockerfile: deploy/docker/media-worker.Dockerfile

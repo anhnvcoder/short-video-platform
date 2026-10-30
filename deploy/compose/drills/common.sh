@@ -30,6 +30,15 @@ load_pid=
 compose() { "${compose_cmd[@]}" "$@"; }
 rpk() { compose exec -T redpanda rpk "$@"; }
 
+# A stack from `make up IMAGES=stg` runs releases pulled from GHCR. A drill starts services again with
+# compose alone, without the image variables make up exported, so compose would build those services from
+# the working tree and the stack would quietly stop running the releases: refuse before anything changes.
+release_services=$(compose ps --format '{{.Service}} {{.Image}}' "${stack_services[@]}") ||
+  fail "list the containers of the stack (compose ps)"
+release_services=$(awk '$2 ~ /^ghcr\.io\// { printf "%s%s", sep, $1; sep = " " }' <<<"$release_services")
+[[ -z $release_services ]] ||
+  fail "the stack runs releases from GHCR ($release_services; make up IMAGES=stg), which a drill would replace with builds of the working tree: make down, then make up without IMAGES, and run the drill again"
+
 # restore_stack: starts every stack service that is not running and recreates every one whose
 # settings differ from compose.yaml (a service a drill recreated with drill-only settings goes
 # back to the defaults, since those variables are never exported); prints ok, or FAIL and

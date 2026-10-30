@@ -17,7 +17,11 @@
 #   - an artifact without image-digest, with one in another form, of two lines, as a link, or with a file beside
 #     _next/ and image-digest is never taken, even when the digest matches;
 #   - GHCR answering the index's digest with other bytes fails; web-amd64 prints the linux/amd64 manifest; newest picks
-#     the tag of the newest commit, past tags that are no commit of the clone.
+#     the tag of the newest commit, past tags that are no commit of the clone;
+#   - web of release source svp-web: the image ghcr.io/anhnvcoder/svp-web/web-sourcemaps:amd64-<hex of the manifest>
+#     is pulled and its _next/ taken, no run of any workflow listed; a tag GHCR does not serve is skipped on a branch
+#     and fails on main; a layer with a link, with a file outside _next/, or with other bytes than its digest fails;
+#     web-amd64 names the release's own repository.
 # Runs on macOS and Linux: no network, no Docker, no cluster.
 #
 # Usage, from anywhere: deploy/ci/gitops-sourcemaps-test.sh
@@ -64,10 +68,14 @@ release=$(g rev-parse HEAD)
 for b in main feat/stage6b-test; do
   g branch -q -f "$b" "$release"
 done
+# The table of release sources the scripts read in the code repository's working tree.
+mkdir -p "$repo/deploy/helm/svp-policy"
+cp -R "$here/../helm/svp-policy/files" "$repo/deploy/helm/svp-policy/"
 
-# web_file TAG DIGEST: an image file of the web release.
+# web_file TAG DIGEST [REPOSITORY]: an image file of the web release (of backend when REPOSITORY is not given).
 web_file() {
-  printf 'image:\n  repository: ghcr.io/anhnvcoder/short-video-platform/web\n  tag: "%s"\n  digest: "%s"\n' "$1" "$2"
+  printf 'image:\n  repository: %s\n  tag: "%s"\n  digest: "%s"\n' \
+    "${3:-ghcr.io/anhnvcoder/short-video-platform/web}" "$1" "$2"
 }
 config=$work/gitops
 c() { git -C "$config" -c user.name=test -c user.email=test@example.invalid "$@"; }
@@ -131,8 +139,13 @@ run_fetch() {
       echo "ghcr_get $1 $2" >>"$calls"
       case $2 in
       "manifests/$index") cp "${FAKE_INDEX:-$work/index.json}" "$3" ;;
+      "manifests/amd64-${child#sha256:}") [ -n "${FAKE_MAPS:-}" ] && cp "$FAKE_MAPS/manifest.json" "$3" ;;
       *) return 1 ;;
       esac
+    }
+    ghcr_blob() {
+      echo "ghcr_blob $1 $2" >>"$calls"
+      cp "${FAKE_LAYER:-$FAKE_MAPS/layer.tgz}" "$3"
     }
     ci_artifact_runs() {
       echo "ci_artifact_runs $*" >>"$calls"
@@ -260,6 +273,70 @@ got=$(cat "$work/reads.out")
 has "web-amd64: the linux/amd64 manifest of the release" "$got" "web-amd64 $child"
 has "newest: the index of the newest commit's tag, by the digest of its bytes" "$got" \
   "newest ghcr.io/anhnvcoder/short-video-platform/drill-vulnerable@sha256:$(sha 'newest index')"
+
+# --- Web of release source svp-web: its maps are an image beside it. maps_image NAME DIR: an image of maps whose layer
+# is DIR packed (gzip), in $work/NAME (manifest.json, layer.tgz).
+maps_image() {
+  local d=$work/$1 layer
+  mkdir -p "$d"
+  tar -czf "$d/layer.tgz" -C "$2" .
+  layer=sha256:$(shasum -a 256 "$d/layer.tgz" | cut -d' ' -f1)
+  jq -nc --arg l "$layer" '{schemaVersion: 2, mediaType: "application/vnd.oci.image.manifest.v1+json",
+    config: {mediaType: "application/vnd.oci.image.config.v1+json", digest: "sha256:0", size: 2},
+    layers: [{mediaType: "application/vnd.oci.image.layer.v1.tar+gzip", digest: $l, size: 1}]}' >"$d/manifest.json"
+}
+mkdir -p "$work/maps-good/_next/static/chunks"
+printf '// svp-web build\n' >"$work/maps-good/_next/static/chunks/a.js"
+echo '{"version":3}' >"$work/maps-good/_next/static/chunks/a.js.map"
+maps_image good "$work/maps-good"
+cp -R "$work/maps-good" "$work/maps-link" && ln -s /etc/hosts "$work/maps-link/_next/static/hosts"
+maps_image link "$work/maps-link"
+cp -R "$work/maps-good" "$work/maps-outside" && echo x >"$work/maps-outside/README"
+maps_image outside "$work/maps-outside"
+c checkout -q -f main
+web_file 0123456789ab "$index" ghcr.io/anhnvcoder/svp-web/web >"$config/envs/stg/images/web.yaml"
+c commit -q -am "web of svp-web"
+c update-ref refs/remotes/origin/main "$(c rev-parse HEAD)"
+
+rc=$(run_fetch svp-web feat/stage6b-test FAKE_MAPS="$work/good")
+same "svp-web: ok, exit 0" "ok 0" "$(status svp-web) $rc"
+same "svp-web: the maps of its image are kept" "// svp-web build" \
+  "$(head -n 1 "$(out_dir svp-web)/maps/_next/static/chunks/a.js" 2>/dev/null)"
+same "svp-web: the folder holds maps, reason and status only" "maps reason status" \
+  "$(cd "$(out_dir svp-web)" && ls | tr '\n' ' ' | sed 's/ $//')"
+has "svp-web: the image of its maps, tagged by the linux/amd64 manifest" "$(cat "$work/svp-web.calls")" \
+  "ghcr_get anhnvcoder/svp-web/web-sourcemaps manifests/amd64-${child#sha256:}"
+has "svp-web: the index read from its own repository" "$(cat "$work/svp-web.calls")" \
+  "ghcr_get anhnvcoder/svp-web/web manifests/$index"
+! grep -q '^ci_artifact' "$work/svp-web.calls" && ok "svp-web: no run of any workflow listed or downloaded" ||
+  fail "svp-web: no run of any workflow listed or downloaded"
+rc=$(run_fetch svp-web-none feat/stage6b-test)
+same "svp-web, no image of its maps, on a branch: skipped" "skipped 0" "$(status svp-web-none) $rc"
+has "svp-web, no image of its maps: the reason names it" "$(reason svp-web-none)" \
+  "GHCR serves no ghcr.io/anhnvcoder/svp-web/web-sourcemaps:amd64-${child#sha256:} to an anonymous pull"
+rc=$(run_fetch svp-web-none-main main)
+same "svp-web, no image of its maps, on main: fail" "fail 1" "$(status svp-web-none-main) $rc"
+rc=$(run_fetch svp-web-link feat/stage6b-test FAKE_MAPS="$work/link")
+same "svp-web, a link in the layer: fail on a branch too" "fail 1" "$(status svp-web-link) $rc"
+has "svp-web, a link in the layer: the reason says so" "$(reason svp-web-link)" \
+  "holds more than regular files and folders under _next/"
+[ ! -e "$(out_dir svp-web-link)/maps" ] && ok "svp-web, a link: no maps left" || fail "svp-web, a link: no maps left"
+rc=$(run_fetch svp-web-outside feat/stage6b-test FAKE_MAPS="$work/outside")
+same "svp-web, a file outside _next/: fail" "fail 1" "$(status svp-web-outside) $rc"
+has "svp-web, a file outside _next/: names it" "$(reason svp-web-outside)" "README"
+rc=$(run_fetch svp-web-bytes feat/stage6b-test FAKE_MAPS="$work/good" FAKE_LAYER="$work/link/layer.tgz")
+same "svp-web, a layer of other bytes: fail" "fail 1" "$(status svp-web-bytes) $rc"
+has "svp-web, a layer of other bytes: says so" "$(reason svp-web-bytes)" "with other bytes"
+(
+  . "$here/gitops-sourcemaps.sh"
+  repo_root=$repo
+  export SVP_GITOPS_DIR=$config
+  ghcr_get() { [ "$2" = "manifests/$index" ] && cp "$work/index.json" "$3"; }
+  web_release
+  echo "web-amd64 $web_repo@$(web_amd64 "$work")"
+) >"$work/svp-web-reads.out" 2>&1 || true
+has "svp-web: web-amd64 names its own repository" "$(cat "$work/svp-web-reads.out")" \
+  "web-amd64 ghcr.io/anhnvcoder/svp-web/web@$child"
 
 if [ "$failures" -gt 0 ]; then
   echo "FAIL  $failures check(s) failed" >&2

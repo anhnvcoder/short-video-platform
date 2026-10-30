@@ -66,6 +66,8 @@ gh api $C/environments/promote -q '{name, deployment_branch_policy, rules: [.pro
 gh api $C/environments/promote/deployment-branch-policies -q '.branch_policies[] | {name, type}'
 gh api $C/environments/promote/variables -q '{total_count, names: [.variables[].name]}'
 gh api $C/environments/promote/secrets -q '{total_count, names: [.secrets[].name]}'
+# Khoá đặt nhầm ở mức repo (không qua environment) đi tới workflow của mọi nhánh
+gh api $C/actions/secrets -q .total_count
 # B. Ruleset (sau khi nhập)
 gh api $G/rulesets -q '.[] | {id, name, target, enforcement}'
 gh api $G/rules/branches/main -q '.[] | .type'
@@ -86,6 +88,7 @@ gh api "$G/tags?per_page=100" -q '.[].name'
 | branch policies | đúng một dòng `{"name":"main","type":"branch"}` |
 | variables | `{"names":["SVP_GITOPS_APP_CLIENT_ID"],"total_count":1}` |
 | secrets | `{"names":["SVP_GITOPS_APP_PRIVATE_KEY"],"total_count":1}` |
+| repo secrets (`$C`) | `0` (khoá đặt ở mức repo chạy được ở workflow của mọi nhánh, bỏ qua rule `main`-only; xoá ở Settings → Secrets and variables → Actions → tab Repository secrets) |
 | rulesets | ba dòng, `main` và `owners` (`"target":"branch"`), `tags` (`"target":"tag"`), cả ba `"enforcement":"active"` |
 | `rules/branches/main` | `deletion`, `non_fast_forward`, `pull_request` (hai lần: một của mỗi ruleset nhắm nhánh), `required_status_checks` |
 | `tags` | không dòng nào (repo không dùng tag; tag lạ xem "Giảm thiểu") |

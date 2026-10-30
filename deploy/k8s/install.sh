@@ -37,14 +37,29 @@ fi
 # The services' images first, so a build that fails stops the run before anything is installed. Each release of
 # chart svp-service then gets its image with --set (never written to a file): the local registry, the service's dev
 # tag and an empty digest (image_sets). The repository, tag and digest in envs/<env>/images/ of svp-gitops name
-# releases on GHCR for the GitOps path; this path neither reads nor pulls them.
+# releases on GHCR for the GitOps path; this path neither reads nor pulls them, except the web client's when WEB_FROM
+# asks for a release (web_source of lib.sh: stg, or image with WEB_IMAGE): then web is not built and its release
+# runs, by digest, pulled by the nodes from GHCR without credentials.
 service_chart=deploy/helm/svp-service
-build_dev_images
+web_source
+if [ -n "$web_release" ]; then
+  built=()
+  for svc in "${svp_services[@]}"; do [ "$svc" = web ] || built+=("$svc"); done
+  build_dev_images "${built[@]}"
+  ok "web runs release $web_release (WEB_FROM=${WEB_FROM:-}), with the build id CI gave it: make k8s-web-sourcemaps needs SOURCEMAPS_DIR with its maps"
+else
+  build_dev_images
+fi
 
-# image_sets SERVICE: sets the array image_sets to the --set flags of SERVICE's dev image. The upgrade and canary_ahead
+# image_sets SERVICE: sets the array image_sets to the --set flags of SERVICE's dev image, or of the web release
+# web_source chose. The upgrade and canary_ahead
 # both use them, so the template canary_ahead compares is the one the upgrade applies: any difference there would be
 # a new revision of the release, a canary of unchanged code.
 image_sets() {
+  if [ "$1" = web ] && [ -n "$web_release" ]; then
+    image_sets=(--set "image.repository=${web_release%@*}" --set "image.tag=" --set "image.digest=${web_release#*@}")
+    return
+  fi
   local tag_var="dev_tag_${1//-/_}"
   [ -n "${!tag_var:-}" ] || fail "no image was built for $1 (not in svp_services of deploy/k8s/lib.sh)"
   image_sets=(--set "image.repository=k3d-svp-registry:5111/svp/$1" --set "image.tag=${!tag_var}" --set "image.digest=")

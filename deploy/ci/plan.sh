@@ -25,6 +25,14 @@
 #                      all seven
 #   pull request       merge-base of HEAD with the PR's base branch
 #   workflow_dispatch  merge-base of HEAD with origin/main; input services (all, or names from the seven) overrides
+#
+# Another repository's tree (SVP_CODE_ROOT, code_root of common.sh, is not this checkout: the CI of another release
+# source runs this script from a pinned checkout of this one): its whole tree is the code of its images, so a build
+# builds every service of the release source the run builds for (use_build_source of common.sh; HEAD of the tree must
+# be the run's commit), with no base and no comparison; input services may name only those services (or all). A drill
+# builds its drillImages and is refused when it has none; the charts are this repository's, so promote_charts stays
+# false. Either tree, the run must be of the repository of one release source and HEAD of the tree its commit: a job
+# of another source that forgot SVP_CODE_ROOT stops here, not with a plan made from the diff of this checkout.
 set -euo pipefail
 
 # shellcheck source=deploy/ci/common.sh
@@ -52,7 +60,33 @@ fi
 base=
 images=()
 promote_charts=false
-case $mode in
+use_build_source
+check_code_tree
+if [ "$code_root" != "$script_root" ]; then
+  case $mode in
+  drill)
+    read -r -a images <<<"$(jq -r '.drillImages | join(" ")' <<<"$build_source")"
+    [ ${#images[@]} -gt 0 ] || fail "release source $build_source_name has no drill image to build"
+    ;;
+  rescan) ;;
+  build)
+    read -r -a published <<<"$(jq -r '.services | join(" ")' <<<"$build_source")"
+    if [ -z "${INPUT_SERVICES:-}" ] || [ "$INPUT_SERVICES" = all ]; then
+      images=("${published[@]}")
+    else
+      read -r -a names <<<"$INPUT_SERVICES"
+      for name in "${names[@]}"; do
+        printf '%s\n' "${published[@]}" | grep -qxF -- "$name" ||
+          fail "services: '$name' is not an image of release source $build_source_name (${published[*]})"
+      done
+      while IFS= read -r name; do images+=("$name"); done < <(printf '%s\n' "${names[@]}" | sort -u)
+    fi
+    ci_summary "Release source $build_source_name: its tree is the code of ${images[*]}, built at every run."
+    ;;
+  esac
+fi
+# This repository's own tree: what changed decides.
+[ "$code_root" != "$script_root" ] || case $mode in
 drill) images=("${drill_images[@]}") ;;
 rescan) ;;
 build)

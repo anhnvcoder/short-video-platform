@@ -31,6 +31,20 @@ OBS_OTHER_elastic := otelcol lgtm alertmanager glitchtip
 OBS_OTHER_ := $(OBS_OTHER_elastic) $(OBS_OTHER_lgtm)
 OBS_OTHER_off := $(OBS_OTHER_)
 SMOKE_URL ?= http://127.0.0.1:8080
+# Which images `make up` runs (compose_images of deploy/k8s/lib.sh, which exports what compose.yaml reads). IMAGES:
+# unset builds the six backend services from the working tree; stg runs their releases in staging (envs/stg/images/
+# of the clone of svp-gitops, read as it is), with no Go build. WEB_FROM: clone (unset) builds the web client from its
+# source (SVP_WEB_DIR, <workspace>/frontend, else web/), stg runs its release in staging, image runs WEB_IMAGE
+# (ghcr.io/<repository>@sha256:<digest>). make k8s-up reads WEB_FROM and WEB_IMAGE as well, not IMAGES.
+IMAGES ?=
+WEB_FROM ?=
+WEB_IMAGE ?=
+# Runs the command after it with the variables compose_images exports; $(1) is compose_images or compose_up_images.
+WITH_IMAGES = IMAGES='$(IMAGES)' WEB_FROM='$(WEB_FROM)' WEB_IMAGE='$(WEB_IMAGE)' \
+	bash -c '. deploy/k8s/lib.sh && $(1) && exec "$$@"' with-images
+# A release runs as pulled: --build would build every service with a build section, the released ones too, under
+# the name of the release. Without it compose still builds the others, whose pull policy is build.
+UP_BUILD = $(if $(filter stg,$(IMAGES))$(filter stg image,$(WEB_FROM)),,--build)
 # Roles whose passwords `make env` generates (deploy/postgres/bootstrap.sql).
 DB_PASSWORD_VARS := SVP_USER_MIGRATOR_DB_PASSWORD SVP_USER_APP_DB_PASSWORD SVP_VIDEO_MIGRATOR_DB_PASSWORD SVP_VIDEO_APP_DB_PASSWORD \
 	SVP_ENGAGEMENT_MIGRATOR_DB_PASSWORD SVP_ENGAGEMENT_APP_DB_PASSWORD SVP_FEED_MIGRATOR_DB_PASSWORD SVP_FEED_APP_DB_PASSWORD \
@@ -142,9 +156,9 @@ GLITCHTIP_INIT = COMPOSE='$(COMPOSE_UP_lgtm)' deploy/observability/glitchtip/ini
 glitchtip-init: env-required db-bootstrap ## Migrate and bootstrap GlitchTip (admin, org/project svp, drill token, source map upload token), add SENTRY_* to .env; idempotent, never changes a set value
 	$(GLITCHTIP_INIT)
 
-up: k3d-exclusive env-required obs-valid obs-exclusive db-bootstrap ## Bootstrap Postgres, build, migrate and start the core stack (web client at http://localhost:3001); OBS=lgtm adds Grafana LGTM (127.0.0.1:3000) and GlitchTip (127.0.0.1:8000), OBS=elastic adds Elasticsearch, Kibana (127.0.0.1:5601) and APM Server instead, OBS=off turns telemetry off (drills keep it off); refuses while a container of a profile not chosen runs (make down first)
+up: k3d-exclusive env-required obs-valid obs-exclusive db-bootstrap ## Bootstrap Postgres, build, migrate and start the core stack (web client at http://localhost:3001); OBS=lgtm adds Grafana LGTM (127.0.0.1:3000) and GlitchTip (127.0.0.1:8000), OBS=elastic adds Elasticsearch, Kibana (127.0.0.1:5601) and APM Server instead, OBS=off turns telemetry off (drills keep it off); IMAGES=stg runs the staging releases of the six backend services instead of building them, WEB_FROM=stg|image (WEB_IMAGE=<ghcr.io/...@sha256:...>) a release of the web client; refuses while a container of a profile not chosen runs (make down first)
 	$(if $(filter lgtm,$(OBS)),$(GLITCHTIP_INIT))
-	$(COMPOSE_UP_$(OBS)) up -d --build --wait
+	$(call WITH_IMAGES,compose_up_images) $(COMPOSE_UP_$(OBS)) up -d $(UP_BUILD) --wait
 
 down: ## Stop and remove the containers of every profile and the network (no volume is touched)
 	$(COMPOSE_ALL) down
@@ -177,12 +191,11 @@ logs: ## Show recent logs of every profile; narrow with SVC=<service>
 	$(COMPOSE_ALL) logs --tail=200 $(SVC)
 
 # Validation only: `config` without --quiet would print the file with the passwords, S3 secrets
-# and JWT signing key from .env filled in.
-compose-config: env-required ## Check the compose file is valid for core, core + obs, core + obs-elastic and OBS=off (prints nothing on success)
-	$(COMPOSE_UP_) config --quiet
-	$(COMPOSE_UP_lgtm) config --quiet
-	$(COMPOSE_UP_elastic) config --quiet
-	$(COMPOSE_UP_off) config --quiet
+# and JWT signing key from .env filled in. With the images IMAGES, WEB_FROM and WEB_IMAGE choose, as make up.
+# compose_images runs once for the four configs: with IMAGES=stg it asks GHCR about every release, the same set each time.
+compose-config: env-required ## Check the compose file is valid for core, core + obs, core + obs-elastic and OBS=off, with the images IMAGES, WEB_FROM, WEB_IMAGE choose as for make up (prints nothing on success)
+	@$(call WITH_IMAGES,compose_images) sh -c '$(COMPOSE_UP_) config --quiet && $(COMPOSE_UP_lgtm) config --quiet && \
+	  $(COMPOSE_UP_elastic) config --quiet && $(COMPOSE_UP_off) config --quiet'
 
 # One line per service with the config hash compose computes from .env (`config --hash`): a sha256
 # of the service's whole resolved config, never a value. OBS= picks the profiles as for make up.

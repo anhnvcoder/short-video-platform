@@ -2,7 +2,8 @@
 # on native amd64 and arm64 runners; scan the local image with trivy, and its SBOM with grype, and block secrets and
 # CRITICAL vulnerabilities BEFORE anything is pushed; push exactly what was scanned; join a multi-arch index; sign it keyless with cosign and
 # attest the SBOM (syft), the scan result and the build provenance; promote the signed digests to stg through a pull request in the
-# deployment repository svp-gitops; rescan released digests daily. The logic lives in deploy/ci/*.sh, which also run on a machine; this file wires jobs, permissions and
+# deployment repository svp-gitops; rescan released digests daily. Also publishes the gateway's API contract
+# (services/gateway/openapi.yaml) as a signed OCI artifact, so the web client builds from a signed version of it. The logic lives in deploy/ci/*.sh, which also run on a machine; this file wires jobs, permissions and
 # artifacts.
 #
 # Security rules of this file:
@@ -448,6 +449,38 @@ jobs:
           RECORD: ${{ inputs.record }}
         run: deploy/ci/promote-prd.sh "$RECORD"
 
+  contract:
+    # Publishes info.version of services/gateway/openapi.yaml as an OCI artifact (deploy/ci/contract.sh publish):
+    # ghcr.io/anhnvcoder/short-video-platform/api/gateway:<version>, signed keyless by this workflow on main, the
+    # identity every verifier of the contract checks. Runs on every build run of main (push, or a dispatch that neither
+    # rescans, drills nor promotes to prd): a version already published with this very file is left alone (signed if
+    # its signature is missing), the same version with other content fails and nothing is overwritten. Those runs share
+    # the concurrency group of builds on main, which never cancels and runs them one after the other, so two runs never
+    # check and push the same tag at once. A version is published at most once: GitHub replaces a run waiting in that
+    # group with a newer one, so a version merged while a build of main runs and followed by another before it starts
+    # is never published; the later version contains it, and publishing every missing version from the history of the
+    # spec would only add releases no client asked for. Needs no image of this run and uses no cache: the job holds
+    # id-token.
+    needs: plan
+    if: >-
+      ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.mode == 'build'
+      && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - *checkout
+      - *cosign
+      - name: Publish and sign the API contract
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          deploy/ci/contract.sh publish
+
   rescan:
     # Daily (and on dispatch rescan=true): every released digest svp-gitops names (envs/*/images/ at its main, at the
     # open promote pull request bot/promote-stg, and at the dispatch input values_ref) is scanned again, manifest by
@@ -624,6 +657,7 @@ jobs:
       - sign
       - promote
       - promote-prd
+      - contract
       - rescan
       - drill-build
       - drill-merge
@@ -655,6 +689,7 @@ jobs:
               [ "$main" != true ] || [ "$MODE" != build ] || { [ "$HAS_IMAGES" != true ] && [ "$PROMOTE_CHARTS" != true ]; }
               ;;
             promote-prd) [ "$main" != true ] || [ "$EVENT" != workflow_dispatch ] || [ "$PROMOTE_PRD" != true ] ;;
+            contract) [ "$main" != true ] || [ "$MODE" != build ] ;;
             rescan) [ "$MODE" != rescan ] ;;
             drill-build | drill-merge | drill-sign) [ "$MODE" != drill ] ;;
             *) false ;;

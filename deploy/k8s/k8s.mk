@@ -8,7 +8,7 @@ K8S_LIB := . deploy/k8s/lib.sh
 	k8s-glitchtip-init k8s-ui-grafana k8s-ui-prometheus k8s-ui-alertmanager k8s-ui-glitchtip k8s-gitops-up \
 	measure-gitops k8s-ui-argocd k8s-traffic-start k8s-traffic-stop drill-k8s-canary measure-canary drill-k8s-threats \
 	drill-k8s-supplychain k8s-web-sourcemaps k8s-web-e2e drill-k8s-web-obs cloud-check drill-k8s-backup \
-	drill-k8s-web-canary gitops-clone
+	drill-k8s-web-canary gitops-clone web-clone
 
 # Compose and k3d never run together on the 16 GB machine (CLAUDE.md): the cluster is not created or started beside a
 # running compose stack. `make up` refuses the other way round (deploy/compose/compose.mk).
@@ -20,9 +20,13 @@ k8s-exclusive:
 # clone of svp-gitops is looked up first (gitops_dir), so a missing one stops the target before anything is created.
 # install.sh refuses a cluster made while the object store was MinIO (StatefulSet svp-data/minio): such a cluster is
 # made again, never upgraded in place.
-k8s-up: k8s-exclusive env-required ## Create (or start) the registry 127.0.0.1:5111 and cluster svp (API 127.0.0.1:6550, HTTPS 127.0.0.1:8443), build and push the seven images, install argocd/apps/components.json of the clone of svp-gitops (../gitops beside the checkout, or SVP_GITOPS_DIR) with its base/ values, with drill traffic while a canary of the gateway or the web client runs; idempotent; refuses a cluster still running MinIO (make k8s-down first) (LOCAL LAB ONLY: a canary's drill traffic resets register rate limit keys in the cluster's Valkey db 10)
-	@bash -c '$(K8S_LIB) && gitops_dir >/dev/null && ensure_registry && ensure_cluster'
-	deploy/k8s/install.sh
+# WEB_FROM and WEB_IMAGE choose the web client as for make up (deploy/compose/compose.mk): built from its source by
+# default, or a release pulled from GHCR (the nodes pull it anonymously; the image policy only audits on this path).
+# The six backend services are always built here: IMAGES is make up's alone.
+k8s-up: k8s-exclusive env-required ## Create (or start) the registry 127.0.0.1:5111 and cluster svp (API 127.0.0.1:6550, HTTPS 127.0.0.1:8443), build and push the seven images (WEB_FROM=stg|image, WEB_IMAGE=<ghcr.io/...@sha256:...>: six, the web client runs that release), install argocd/apps/components.json of the clone of svp-gitops (../gitops beside the checkout, or SVP_GITOPS_DIR) with its base/ values, with drill traffic while a canary of the gateway or the web client runs; idempotent; refuses a cluster still running MinIO (make k8s-down first) (LOCAL LAB ONLY: a canary's drill traffic resets register rate limit keys in the cluster's Valkey db 10)
+	@test -z '$(IMAGES)' || { echo "make k8s-up: IMAGES=$(IMAGES) is a setting of make up only; the cluster of the dev path builds the six backend services" >&2; exit 1; }
+	@WEB_FROM='$(WEB_FROM)' WEB_IMAGE='$(WEB_IMAGE)' bash -c '$(K8S_LIB) && gitops_dir >/dev/null && web_source && ensure_registry && ensure_cluster'
+	WEB_FROM='$(WEB_FROM)' WEB_IMAGE='$(WEB_IMAGE)' deploy/k8s/install.sh
 
 # The deployment configuration is the repository svp-gitops (deploy/k8s/lib.sh, gitops_dir): a machine reads its own
 # clone, ../gitops beside the main checkout or SVP_GITOPS_DIR, which no target clones, fetches or switches. CI clones
@@ -32,6 +36,15 @@ GITOPS_REF ?= main
 
 gitops-clone: ## CI: clone svp-gitops anonymously into .gitops/svp-gitops (gitignored), or fetch it when it is there, and check out GITOPS_REF (default main, or a full commit SHA); refuses a clone there with uncommitted changes. A machine reads its own clone instead (../gitops beside the checkout, or SVP_GITOPS_DIR)
 	@GITOPS_REF='$(GITOPS_REF)' bash -c '$(K8S_LIB) && gitops_clone'
+
+# The web client's source, as the configuration: a machine reads its own clone (<workspace>/frontend, or SVP_WEB_DIR;
+# web/ of this repository while there is none), CI clones it with web-clone into .web/svp-web (gitignored) and sets
+# SVP_WEB_DIR there before any target that builds or tests the web. WEB_REF unset is the commit of the web release in
+# staging (image.tag of envs/stg/images/web.yaml in the clone of svp-gitops), so the tests run the code staging runs.
+WEB_REF ?=
+
+web-clone: ## CI: clone svp-web anonymously into .web/svp-web (gitignored), or fetch it when it is there, and check out WEB_REF (a branch or a full commit SHA; unset: the commit of the web release in staging); refuses a clone there with uncommitted changes. Then set SVP_WEB_DIR to that folder; a machine reads its own clone instead (../frontend beside the checkout, or SVP_WEB_DIR)
+	@WEB_REF='$(WEB_REF)' bash -c '$(K8S_LIB) && web_clone'
 
 # The GitOps path: a new cluster svp that Argo CD builds from GitHub, running the release images of GHCR, as the
 # staging environment: base/ of svp-gitops plus the overlays and release images of its envs/stg, with the charts of this

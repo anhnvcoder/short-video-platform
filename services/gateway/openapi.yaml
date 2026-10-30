@@ -1,10 +1,23 @@
 # REST API of the gateway, written by hand: generating it from code would need an annotation
 # library or a framework.
 # Keep it in step with services/gateway/internal/api.
+#
+# This file is a contract with clients that live in other repositories (the web client builds its types from a
+# published version of it), so info.version follows semver and every change of this file raises it
+# (make api-contract-check, in the required checks of every pull request):
+#   - major: a change that breaks a client (oasdiff reports an ERR: an operation, a field or a value removed, a field
+#     made required...);
+#   - minor: no break, but oasdiff's changelog has an entry (an operation, an optional field, an enum value added...);
+#   - patch: anything else (descriptions, examples, comments).
+# A break goes in three steps: add the new thing (minor), move the clients to it, remove the old one (major) once no
+# client of stg or prd uses it. Each version on main is published at most once and never rewritten: the release takes
+# info.version at the head of main, and a newer run of it replaces one still waiting, so a version merged just before
+# the next may never be published (the next contains it). Two pull requests that raise to the same version cannot both
+# be released, the second raises again.
 openapi: 3.1.0
 info:
   title: Short-video platform API
-  version: 0.1.0
+  version: 1.0.0
   description: |
     JSON fields are snake_case and times are RFC 3339 in UTC.
 

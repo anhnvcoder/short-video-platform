@@ -2,8 +2,10 @@
 # values-check.sh --gitops DIR BASE: the release check of a tree of the deployment repository svp-gitops
 # (gitops-check.sh runs it in that repository's check; the bootstrap of the GitOps path runs it too), whose release
 # images are envs/<env>/images/<service>.yaml. For every such file of DIR's git repository that changed from commit BASE
-# to HEAD, a non-empty image.digest must name a release that may enter that environment: right repository, signed by
-# images.yml on main, one vuln attestation covering both platforms, no CRITICAL, at most 48 hours old, and a build
+# to HEAD, a non-empty image.digest must name a release that may enter that environment: the service's repository of
+# a release source the policy of that environment admits (release_source_in of common.sh: the table of chart
+# svp-policy at the commit envs/<env>/charts.yaml pins), signed by that source's images.yml on main, one vuln
+# attestation covering both platforms, no CRITICAL, at most 48 hours old, and a build
 # provenance attestation when chart svp-policy checks provenance in that environment (verify-release.sh --gitops DIR
 # --env <env>: the chart's values.yaml at the commit envs/<env>/charts.yaml pins, then envs/<env>/svp-policy.yaml of
 # DIR, as Argo CD hands them to the chart). Every image file of an environment whose policy changed since BASE (its
@@ -73,8 +75,14 @@ while IFS= read -r file; do
     echo "ok    $file: no digest, not released yet, nothing to verify"
     continue
   fi
-  if [ "$repo" != "$ghcr_prefix/$svc" ]; then
-    echo "FAIL  $file: image.repository is $repo, a release must come from $ghcr_prefix/$svc" >&2
+  # release_source_in reads the service from the repository: the file's own service must be that one.
+  if [ "${repo##*/}" != "$svc" ]; then
+    echo "FAIL  $file: image.repository is $repo, a repository of ${repo##*/}, not of $svc" >&2
+    failed=1
+    continue
+  fi
+  if ! release_source_in "$repo" "" "$env" "$tree" >/dev/null; then
+    echo "FAIL  $file: image.repository is $repo, not a release of $svc that the policy of $env admits (above)" >&2
     failed=1
     continue
   fi
@@ -87,6 +95,7 @@ if [ "$failed" -ne 0 ]; then
   echo "Refresh the vuln attestations of these releases, then run this check again:" >&2
   echo "  $refresh" >&2
   echo "A missing provenance needs a new release instead, as named above: a rescan does not add one." >&2
+  echo "A release of another source (svp-web) is rescanned by the images.yml of that repository, dispatched there." >&2
   ci_summary "values-check failed: refresh the vuln attestations with \`$refresh\`; a missing provenance needs a new release (above)"
 fi
 exit "$failed"

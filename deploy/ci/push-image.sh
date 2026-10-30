@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # push-image.sh IMAGE ARCH OUT: step 4 of one leg, only in the
 # main job and only after build-image.sh passed the gate on the same OUT. Pushes the local image that was scanned as
-# ghcr.io/anhnvcoder/short-video-platform/IMAGE:<12 hex of the commit>-ARCH, reads the pushed manifest back from GHCR
+# <prefix>IMAGE:<12 hex of the commit>-ARCH, where prefix is the imagePrefix of the release source this run builds for
+# (ghcr.io/anhnvcoder/short-video-platform/ for this repository; use_build_source of common.sh, which refuses an IMAGE
+# that source does not publish before anything is pushed) and the commit HEAD of code_root (check_code_tree), reads
+# the pushed manifest back from GHCR
 # and compares its config digest with the scanned one (Metadata.ImageID of OUT/trivy.json): Docker compresses the
 # layers again on push, so the manifest digest differs from the local one, but the config lists the uncompressed
 # digest of every layer, so the same config digest means the same content that was scanned. Any difference fails the
@@ -14,6 +17,8 @@ set -euo pipefail
 
 [ $# -eq 3 ] || fail "usage: push-image.sh IMAGE ARCH OUT"
 image=$1 arch=$2 out=$3
+use_build_source "$image"
+check_code_tree
 local_tag=$(cat "$out/local-tag") || fail "$out has no local-tag: run build-image.sh first"
 scanned=$(cat "$out/config-digest")
 [ "$(jq -r .Metadata.ImageID "$out/trivy.json")" = "$scanned" ] || fail "$out/config-digest is not the scanned image"
@@ -22,8 +27,8 @@ scanned=$(cat "$out/config-digest")
 [ "$(docker_ image inspect --format '{{.Id}}' "$local_tag")" = "$scanned" ] ||
   fail "$local_tag is no longer the image that was scanned"
 
-repo=$ghcr_prefix/$image
-rev=$(git -C "$repo_root" rev-parse HEAD)
+repo=$build_prefix$image
+rev=$(git -C "$code_root" rev-parse HEAD)
 remote_tag="$repo:${rev:0:12}-$arch"
 docker_ tag "$local_tag" "$remote_tag" || fail "tag $local_tag as $remote_tag"
 docker_ push --quiet "$remote_tag" >/dev/null || fail "push $remote_tag"

@@ -132,6 +132,7 @@ Sự cố đã gặp và quy trình:
 | [jwt-key-rotation.md](jwt-key-rotation.md) | Đổi khoá ký JWT theo `kid` (định kỳ hay khi nghi lộ khoá) |
 | [postgres-restore.md](postgres-restore.md) | Postgres `svp-pg` của k3d mất hay hỏng, cần PITR, hay `make drill-k8s-backup` dừng giữa chừng |
 | [svp-gitops-setup.md](svp-gitops-setup.md) | Dựng hay kiểm cài đặt GitHub của `svp-gitops` (App `svp-gitops-promoter`, environment `promote`, ruleset), promote stg và prd, bản ghi stg, rollback, bump commit chart và checker, xoay khoá App, nghi khoá App bị lộ |
+| [svp-web-setup.md](svp-web-setup.md) | Dựng hay kiểm cài đặt GitHub của repo web `svp-web` (repo rỗng, cài đặt, App `svp-web-promoter`, environment `promote`, package GHCR public, Renovate, CodeQL, ruleset), PR tiếp quản `bot/promote-stg-web`, xoay khoá App web, nghi khoá App web bị lộ |
 
 ## Sau sự cố
 

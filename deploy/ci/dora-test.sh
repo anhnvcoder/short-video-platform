@@ -26,7 +26,14 @@
 #   - prd: "chưa có dữ liệu prd"; below the thresholds "chưa đủ dữ liệu" with n, never a number; a median once there
 #     are 5 samples; no record at all: deployment frequency is insufficient data, not 0;
 #   - records left out are listed with why; 100 records, as many as one list returns: warned about; a bad --days is
-#     refused; the JSON goes into a directory that does not exist yet.
+#     refused; the JSON goes into a directory that does not exist yet;
+#   - release source web: with no record holding a web release of svp-web, --clones names nothing and the run needs
+#     no clone of svp-web (none exists, and web/ of the checkout is no clone); records that do (G7 at wa, G8 at wc of
+#     a throwaway clone of svp-web, after G4 of backend's web): --clones names web, the run without a clone stops
+#     saying why, and with one (SVP_WEB_DIR) the lead time of web counts the commits of svp-web: none at the first
+#     deployment of its web, wb and wc at the next; once a later commit of the code repository drops web from
+#     backend's services in the table, the record whose web is backend's still counts (judged by the table at its
+#     charts revision).
 # Every run is a machine's (env -i: no variable of a CI job running this test). Runs on macOS and Linux: no network.
 #
 # Usage, from anywhere: deploy/ci/dora-test.sh
@@ -88,12 +95,15 @@ esac
 EOF
 chmod 755 "$work/bin/gh"
 
-# --- This repository: deploy/ci/, lib.sh, a file of each service, the charts, the collector config, docs.
+# --- This repository: deploy/ci/, lib.sh, the table of release sources, a file of each service, the charts, the
+# collector config, docs.
 tree=$work/code
 mkdir -p "$tree/deploy/k8s/values/services" "$tree/deploy/helm/svp-cluster" "$tree/deploy/observability/otelcol" \
   "$tree/docs/postmortems" "$tree/web"
 cp -R "$here" "$tree/deploy/ci"
 cp "$src/deploy/k8s/lib.sh" "$tree/deploy/k8s/"
+mkdir -p "$tree/deploy/helm/svp-policy"
+cp -R "$src/deploy/helm/svp-policy/values.yaml" "$src/deploy/helm/svp-policy/files" "$tree/deploy/helm/svp-policy/"
 for svc in "${services[@]}"; do
   [ "$svc" = web ] && continue
   mkdir -p "$tree/services/$svc" && echo "package main // $svc" >"$tree/services/$svc/main.go"
@@ -243,12 +253,16 @@ printf '# No front matter\n' >"$tree/docs/postmortems/261001-draft.md"
 
 # run NAME ARGS...: runs dora.sh of the throwaway tree as a machine; stdout to NAME.out, stderr to NAME.err, prints
 # the exit status.
+# extra: VAR=VALUE words the next runs get too.
+extra=()
 run() {
-  local name=$1 rc=0
+  local name=$1 rc=0 now=(--now 2026-10-30T12:00:00Z)
   shift
+  [ "${1:-}" != --clones ] || now=()
   env -i PATH="$work/bin:$PATH" HOME="$work/home" TMPDIR="${TMPDIR:-/tmp}" GIT_CONFIG_GLOBAL=/dev/null \
     GIT_CONFIG_NOSYSTEM=1 FAKE_GH_LOG="$work/gh.log" FAKE_GH_DIR="$work/gh" SVP_GITOPS_DIR="$config" \
-    "$tree/deploy/ci/dora.sh" --now 2026-10-30T12:00:00Z "$@" >"$work/$name.out" 2>"$work/$name.err" || rc=$?
+    ${extra[@]+"${extra[@]}"} "$tree/deploy/ci/dora.sh" ${now[@]+"${now[@]}"} "$@" >"$work/$name.out" \
+    2>"$work/$name.err" || rc=$?
   echo "$rc"
 }
 j() { jq -r "$1" "$work/dora.json"; }
@@ -321,6 +335,8 @@ expect "the summary: merged, not deployed" "$out" "- \`$prefix/video-service@$(d
 expect "the summary: the deployment with three checks" "$out" "| #26, #27, #28 | 3 |"
 expect "the summary: the record left out" "$out" "- #42: its run"
 refuse "the summary names no level" "$out" "Elite:"
+rc=$(run clones --clones)
+same "--clones: no record holds a release of another source, so no clone is named" "0 " "$rc $(cat "$work/clones.out")"
 
 # --days 60 reaches back past the split: D0 and D1 count too, G0 (which changes envs/stg/images/ and envs/prd/images/)
 # still is no promote. The JSON goes into a directory that does not exist yet.
@@ -361,6 +377,72 @@ for bad in 0 abc 4000; do
   rc=$(run bad --days "$bad" "$work/bad.json")
   if [ "$rc" != 0 ] && [ ! -e "$work/bad.json" ]; then ok "--days $bad is refused"; else fail "--days $bad is refused (exit $rc)"; fi
 done
+
+# --- Release source web. A throwaway clone of svp-web: wa (10-22), wb (10-23), wc (10-24) on its main. svp-gitops:
+# G7 (10-25) runs web of svp-web at wa, G8 (10-26) at wc. Records: G4 (backend's web), G7, G8.
+web=$work/svp-web
+wg() {
+  GIT_DIR=$web/.git GIT_WORK_TREE=$web GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$real_git" -c user.name=test \
+    -c user.email=test@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"
+}
+mkdir -p "$web"
+wg init -q -b main
+wg remote add origin https://github.com/anhnvcoder/svp-web
+for c in wa:2026-10-22 wb:2026-10-23 wc:2026-10-24; do
+  GIT_AUTHOR_DATE=${c#*:}T00:00:00Z GIT_COMMITTER_DATE=${c#*:}T00:00:00Z wg commit -q --allow-empty -m "${c%%:*}"
+done
+wa=$(wg rev-parse HEAD~2) wb=$(wg rev-parse HEAD~1) wc=$(wg rev-parse HEAD)
+wg update-ref refs/remotes/origin/main HEAD
+web_file() { # COMMIT
+  printf '# The release of web.\nimage:\n  repository: ghcr.io/anhnvcoder/svp-web/web\n  tag: "%s"\n  digest: "%s"\n' \
+    "${1:0:12}" "$(digest "W-$1")" >"$config/envs/stg/images/web.yaml"
+}
+web_file "$wa" && r7=$(gc_at 2026-10-25T00:00:00Z "chore(stg): web of svp-web")
+web_file "$wc" && r8=$(gc_at 2026-10-26T00:00:00Z "chore(stg): web of svp-web")
+gw update-ref refs/remotes/origin/main HEAD
+# web_record ID R DEPLOYED_AT RUN COMMIT: a record of R whose web is svp-web's release at COMMIT.
+web_record() {
+  record "$1" "$2" "$3" "$3" "$4" "$bot" B A "$k8" |
+    jq -c --arg t "${5:0:12}" --arg d "$(digest "W-$5")" \
+      '.payload.images.web = {repository: "ghcr.io/anhnvcoder/svp-web/web", tag: $t, digest: $d}'
+}
+{
+  web_record 52 "$r8" 2026-10-27T00:00:00Z 102 "$wc"
+  web_record 51 "$r7" 2026-10-25T01:00:00Z 101 "$wa"
+  record 50 "$r4" 2026-10-17T00:00:00Z 2026-10-17T01:00:00Z 100 "$bot" B A "$k8"
+} | jq -s . >"$work/gh/deployments.json"
+for id in 50 51 52; do echo '[{"state": "success"}]' >"$work/gh/statuses-$id.json"; done
+rc=$(run web-clones --clones)
+same "web: --clones names web" "0 web" "$rc $(cat "$work/web-clones.out")"
+rc=$(run web-none "$work/web-none.json")
+[ "$rc" != 0 ] && [ ! -e "$work/web-none.json" ] && ok "web: no clone of svp-web, the run stops" ||
+  fail "web: no clone of svp-web, the run stops (exit $rc)"
+expect "web: no clone of svp-web, says why" "$work/web-none.err" \
+  "records of stg hold releases of release source web, built from commits of https://github.com/anhnvcoder/svp-web"
+extra=(SVP_WEB_DIR="$web")
+rc=$(run web "$work/web.json")
+same "web: with a clone of svp-web, exits 0" 0 "$rc"
+[ "$rc" = 0 ] || sed 's/^/      /' "$work/web.err" >&2
+same "web: the commits of svp-web after the first deployment of its web, from svp-web" \
+  "$(printf '%s\n' "service web anhnvcoder/svp-web ${wb:0:12} 2026-10-27T00:00:00Z 345600" \
+    "service web anhnvcoder/svp-web ${wc:0:12} 2026-10-27T00:00:00Z 259200" | sort)" \
+  "$(jq -r '.stg.changes[] | select(.service == "web") | "\(.kind) \(.service) \(.repository) \(.sha[0:12]) \(.deployed_at) \(.lead_time)"' \
+    "$work/web.json" | sort)"
+same "web: no sample at the first deployment of its web" 0 "$(jq -r '.stg.deployments[1].changes' "$work/web.json")"
+# A later commit of the code repository drops web from backend's services in the table: the record of G4, whose web is
+# backend's under the charts of k8 (a table where backend still publishes web), still counts.
+jq -c '(.sources[] | select(.name == "backend") | .services) -= ["web"]' \
+  "$tree/deploy/helm/svp-policy/files/sources.json" >"$work/sources.json"
+cp "$work/sources.json" "$tree/deploy/helm/svp-policy/files/sources.json"
+g add -A && GIT_AUTHOR_DATE=2026-10-28T00:00:00Z GIT_COMMITTER_DATE=2026-10-28T00:00:00Z g commit -q -m "feat(policy): web of svp-web alone"
+g update-ref refs/remotes/origin/main HEAD
+rc=$(run moved "$work/moved.json")
+same "web moved off backend: exits 0" 0 "$rc"
+[ "$rc" = 0 ] || sed 's/^/      /' "$work/moved.err" >&2
+same "web moved off backend: G4 with backend's web still a deployment, no record left out" \
+  "${r4:0:12} ${r7:0:12} ${r8:0:12} []" \
+  "$(jq -r '[.stg.deployments[].ref[0:12]] | join(" ")' "$work/moved.json") $(jq -c .stg.records_left_out "$work/moved.json")"
+extra=()
 
 if [ "$failures" -gt 0 ]; then
   echo "FAIL  $failures check(s) failed" >&2

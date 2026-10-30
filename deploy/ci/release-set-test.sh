@@ -15,7 +15,12 @@
 #   - lists as large as a real cluster's (the Applications over 1 MiB with their resources and sync results, the pods
 #     over 128 KiB, the most Linux takes in one argument): recorded all the same;
 #   - snapshot writes its file and exits 1 when the cluster could not be recorded now;
-#   - check takes the release-set.json written and refuses one whose release of web has a tag that is no commit;
+#   - check takes the release-set.json written and refuses one whose release of web has a tag that is no commit; by
+#     the table of release sources it takes web of svp-web too, and refuses web of a repository no source names and
+#     the gateway under the prefix of svp-web, which publishes web alone; check --at-charts judges the releases by the
+#     table at the payload's charts revision (a throwaway copy of this repository): backend's web under charts whose
+#     table still has it passes where the working tree's table no longer does, web of svp-web under charts from before
+#     the table fails, and charts at no commit of the clone or with no revision fail saying why;
 #   - record-stg.sh on a machine prints the deployment of R in stg it would make, and refuses the file of another run.
 # Runs on macOS and Linux: no network, no cluster.
 #
@@ -213,6 +218,71 @@ if rs check "$work/bad.json" >/dev/null 2>"$work/bad.err"; then fail "check: a t
   has "$work/bad.err" "does not name one release on GHCR" && ok "check: a tag that is no commit is refused" ||
     fail "check: a tag that is no commit is refused, saying why"
 fi
+jq '.images.web.repository = "ghcr.io/anhnvcoder/svp-web/web"' "$out" >"$work/web.json"
+rs check "$work/web.json" >/dev/null 2>&1 && ok "check: web of release source svp-web is a release of web" ||
+  fail "check: web of release source svp-web is a release of web"
+for bad in "web ghcr.io/anhnvcoder/elsewhere/web" "gateway ghcr.io/anhnvcoder/svp-web/gateway"; do
+  read -r svc repo <<<"$bad"
+  jq --arg s "$svc" --arg r "$repo" '.images[$s].repository = $r' "$out" >"$work/bad.json"
+  if rs check "$work/bad.json" >/dev/null 2>"$work/bad.err"; then fail "check: $svc of $repo is refused"; else
+    has "$work/bad.err" "does not name one release on GHCR (repository of a release source of the service" &&
+      ok "check: $svc of $repo is refused" || fail "check: $svc of $repo is refused, saying why"
+  fi
+done
+
+# check --at-charts, on a throwaway copy of this repository: k0 from before the table of release sources (its one
+# source backend, web included), k1 with the table (web of both sources), and a working tree whose table has web of
+# svp-web alone, as once the old source of web is dropped.
+code=$work/code
+mkdir -p "$code/deploy/k8s" "$code/deploy/helm/svp-policy"
+cp -R "$here" "$code/deploy/ci"
+cp "$here/../k8s/lib.sh" "$code/deploy/k8s/"
+cat >"$code/deploy/helm/svp-policy/values.yaml" <<'VALUES'
+imageVerification:
+  imagePrefix: ghcr.io/anhnvcoder/short-video-platform/
+  issuer: https://token.actions.githubusercontent.com
+  subject: https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main
+  provenanceRepository: https://github.com/anhnvcoder/short-video-platform
+  provenanceRef: refs/heads/main
+  requireProvenance: false
+VALUES
+cg() { git -C "$code" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false "$@"; }
+cg init -q && cg add -A && cg commit -q -m "before the table"
+k0=$(cg rev-parse HEAD)
+cp "$here/../helm/svp-policy/values.yaml" "$code/deploy/helm/svp-policy/values.yaml"
+cp -R "$here/../helm/svp-policy/files" "$code/deploy/helm/svp-policy/"
+cg add -A && cg commit -q -m "the table of release sources"
+k1=$(cg rev-parse HEAD)
+jq '(.sources[] | select(.name == "backend") | .services) -= ["web"]' "$here/../helm/svp-policy/files/sources.json" \
+  >"$code/deploy/helm/svp-policy/files/sources.json"
+# at_charts NAME WANT_RC MESSAGE REVISION WEB_REPOSITORY [--at-charts]: check of the copy on release-set.json with
+# those charts' revision and web's repository; MESSAGE on stderr when WANT_RC is not 0.
+at_charts() {
+  local name=$1 want=$2 msg=$3 rc=0
+  jq --arg c "$4" --arg r "$5" '.charts.revision = $c | .images.web.repository = $r' "$out" >"$work/at.json"
+  env -i PATH="$PATH" HOME="$work" TMPDIR="${TMPDIR:-/tmp}" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+    "$code/deploy/ci/release-set.sh" check ${6:+"$6"} "$work/at.json" >/dev/null 2>"$work/at.err" || rc=$?
+  if [ "$rc" != "$want" ]; then
+    fail "$name: exit $rc, want $want"$'\n'"$(sed 's/^/      /' "$work/at.err")"
+  elif [ "$want" != 0 ] && ! has "$work/at.err" "$msg"; then
+    fail "$name: no '$msg' in:"$'\n'"$(sed 's/^/      /' "$work/at.err")"
+  else
+    ok "$name"
+  fi
+}
+at_charts "check: backend's web under charts of the table, judged by the working tree's table: refused" 1 \
+  "does not name one release on GHCR" "$k1" "$prefix/web"
+at_charts "check --at-charts: backend's web under charts of the table that still has it" 0 "" "$k1" "$prefix/web" \
+  --at-charts
+at_charts "check --at-charts: web of svp-web under charts of the table" 0 "" "$k1" ghcr.io/anhnvcoder/svp-web/web \
+  --at-charts
+at_charts "check --at-charts: web of svp-web under charts from before the table" 1 "does not name one release on GHCR" \
+  "$k0" ghcr.io/anhnvcoder/svp-web/web --at-charts
+at_charts "check --at-charts: charts at no commit of this clone" 1 \
+  "the release sources of its charts' revision cannot be read: $charts is not a commit of this clone" "$charts" \
+  "$prefix/web" --at-charts
+at_charts "check --at-charts: no charts revision" 1 \
+  "its charts are not revision (40 hex), podSecurityVersion and collectorConfigSha256" "" "$prefix/web" --at-charts
 
 # record-stg.sh on a machine: the requests it would send, nothing sent; a file of another run refused.
 machine record-stg.sh "$out" >"$work/record.out" 2>&1 && ok "record-stg.sh: a machine prints the record" ||

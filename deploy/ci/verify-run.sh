@@ -8,7 +8,8 @@
 # The targets of each scenario, in order, are in a file of their own, deploy/ci/verify/<scenario>.sh, which this script
 # sources (each has its own owner, and seven in one file would be too long to review). A scenario file sets build (the
 # name of its first target, which builds what the others use), job_minutes_default (the job's limit when
-# SVP_VERIFY_JOB_MINUTES is not set) and k3d (1 when its targets run on cluster k3d-svp, 0 otherwise), may define
+# SVP_VERIFY_JOB_MINUTES is not set) and k3d (1 when its targets run on cluster k3d-svp, 0 otherwise), may set web (1
+# when its targets build or test the web client, so it takes SVP_VERIFY_WEB_REF below; unset is 0), may define
 # helpers of its own (exported when a step runs them through bash -c), and defines scenario_targets, its targets in
 # order through step and skip below. It may read names (every target of its list, once listed) and call chosen (below)
 # while its targets run. It sets no other variable of this script, and its own are local to its functions
@@ -31,6 +32,16 @@
 # anonymously into .gitops/svp-gitops of the checkout (base/ and components.json for make k8s-up, all of it for make
 # k8s-gitops-up), and SVP_GITOPS_DIR exported to it for every target (deploy/k8s/lib.sh, gitops_dir). No target can
 # pass without it: when the clone fails nothing starts (exit 1).
+#
+# SVP_VERIFY_WEB_REF (the dispatch's input web_ref; empty: the web client's code as without it, web/ of this checkout
+# or the release the targets run) is a branch or a full commit SHA of svp-web, the web client's repository. Before the
+# first target: make web-clone WEB_REF=<it>, svp-web cloned anonymously from github.com/anhnvcoder/svp-web into
+# .web/svp-web of the checkout and checked out there, so no fork's code can reach the run, and SVP_WEB_DIR exported to
+# it for every target (deploy/k8s/lib.sh, web_dir): every target that builds the web builds that commit, and the
+# source map upload runs the Sentry CLI of that commit's packages, which pnpm installs there first. A scenario
+# whose file does not set web=1, or a value that is neither a full SHA nor a valid branch name of letters, digits, .,
+# _, / and -, stops the script before anything starts (exit 2); a failed clone (no such branch or commit) or install
+# too (exit 1).
 #
 # The first target builds what the others use (the scenario file's build: up for compose-obs, k8s-gitops-up for gitops,
 # k8s-up for the other k3d scenarios). When it is not ok, every later target is skipped at once with the note
@@ -104,7 +115,7 @@ case $scenario in
     ;;
 esac
 scenario_file=$here/verify/$scenario.sh
-build= job_minutes_default= k3d=
+build= job_minutes_default= k3d= web=
 unset -f scenario_targets
 if [ ! -f "$scenario_file" ]; then
   echo "FAIL  verify-run: no file deploy/ci/verify/$scenario.sh for scenario $scenario; nothing started" >&2
@@ -115,9 +126,10 @@ fi
 bad=
 case $job_minutes_default in '' | *[!0-9]*) bad=1 ;; esac
 case $k3d in 0 | 1) ;; *) bad=1 ;; esac
+case $web in '' | 0 | 1) ;; *) bad=1 ;; esac
 if [ -n "$bad" ] || [ -z "$build" ] || ! declare -F scenario_targets >/dev/null; then
   echo "FAIL  verify-run: deploy/ci/verify/$scenario.sh does not set build, job_minutes_default (minutes) and" \
-    "k3d (0 or 1), or does not define scenario_targets; nothing started" >&2
+    "k3d (0 or 1), sets web to other than 0 or 1, or does not define scenario_targets; nothing started" >&2
   exit 2
 fi
 targets=${SVP_VERIFY_TARGETS:-}
@@ -128,6 +140,20 @@ case $targets in
     exit 2
     ;;
 esac
+web_ref=${SVP_VERIFY_WEB_REF:-}
+if [ -n "$web_ref" ]; then
+  # Not printed back unless valid: the job's log reads a line that starts with :: as a command.
+  if ! [[ $web_ref =~ ^[0-9a-f]{40}$ ]] &&
+    ! { [[ $web_ref =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] && git check-ref-format "refs/heads/$web_ref"; }; then
+    echo "FAIL  verify-run: SVP_VERIFY_WEB_REF is neither a full commit SHA nor a branch name; nothing started" >&2
+    exit 2
+  fi
+  if [ "$web" != 1 ]; then
+    echo "FAIL  verify-run: scenario $scenario does not build or test the web client, so it takes no" \
+      "SVP_VERIFY_WEB_REF ($web_ref); nothing started" >&2
+    exit 2
+  fi
+fi
 results=$out/results.tsv
 
 now() { date +%s; }
@@ -380,6 +406,18 @@ if [ "$k3d" = 1 ]; then
   }
   SVP_GITOPS_DIR=$(. "$repo/deploy/k8s/lib.sh" && echo "$gitops_ci_clone") || exit 1
   export SVP_GITOPS_DIR
+fi
+if [ -n "$web_ref" ]; then
+  make -s web-clone WEB_REF="$web_ref" || {
+    echo "FAIL  verify-run: make web-clone WEB_REF=$web_ref (the web client's repository svp-web); nothing started" >&2
+    exit 1
+  }
+  SVP_WEB_DIR=$(. "$repo/deploy/k8s/lib.sh" && echo "$web_ci_clone") || exit 1
+  export SVP_WEB_DIR
+  (cd "$SVP_WEB_DIR" && pnpm install --frozen-lockfile) || {
+    echo "FAIL  verify-run: pnpm install of svp-web at $web_ref; nothing started" >&2
+    exit 1
+  }
 fi
 mkdir -p "$out/logs" || exit 1
 rm -f "$out/run-end"

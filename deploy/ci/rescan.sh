@@ -9,24 +9,28 @@
 #     prove nothing about arm64). Writes OUT/amd64 and OUT/arm64 in the layout vuln-predicate.sh reads and prints the
 #     two manifest digests.
 #
-#   rescan.sh run OUT GITOPS_DIR [VALUES_REF]   (CI only: it attests)
-#     For every release `list` prints: an empty digest is skipped; a repository other than
-#     ghcr.io/anhnvcoder/short-video-platform/<service>, a malformed digest, or a digest without a signature of
-#     images.yml on main is not attested and fails the run, so whatever a ref lists, only digests this workflow signed
-#     on main get a fresh attestation. Each digest left is scanned (scan-index), its predicate built by
-#     vuln-predicate.sh --allow-critical and attested with `cosign attest --replace --type vuln`, so the attestation
-#     always holds the real result: a CRITICAL found today is recorded (Kyverno then refuses new pods because of it,
-#     not because of an old attestation) and fails the run, which mails the owner. A secret found today is never
-#     attested: it fails the run before anything is written, as at build time. SARIF of the digests of main of
+#   rescan.sh run [--source NAME] OUT GITOPS_DIR [VALUES_REF]   (CI only: it attests)
+#     For every release `list` prints: an empty digest is skipped; a repository other than the service's image of
+#     release source NAME (backend, this repository, when not given; deploy/helm/svp-policy/files/sources.json of this
+#     checkout), a malformed digest, or a digest without a signature of that source's images.yml on main is not attested
+#     and fails the run, so whatever a ref lists, only digests the workflow running this signed on main get a fresh
+#     attestation: no repository attests another's releases. Each digest left is scanned (scan-index), its predicate
+#     built by vuln-predicate.sh --allow-critical and attested with `cosign attest --replace --type vuln`, so the
+#     attestation always holds the real result: a CRITICAL found today is recorded (Kyverno then refuses new pods
+#     because of it, not because of an old attestation) and fails the run, which mails the owner. A secret found today
+#     is never attested: it fails the run before anything is written, as at build time. SARIF of the digests of main of
 #     svp-gitops go to OUT/sarif for the Security tab. The drill images are in no image file, so they are never
 #     rescanned.
 #
-#   rescan.sh list GITOPS_DIR [VALUES_REF]
-#     Prints the releases a run rescans, one per line: service, repository, digest (both empty when not released) and
-#     where it was read, separated by tabs. Read as data with `git show`, never run: image.repository and image.digest
-#     of envs/<env>/images/<service>.yaml of every environment of the deployment repository svp-gitops, at its main,
-#     at bot/promote-stg while the promote pull request is open there (the app's own, never a fork's from a branch of
-#     that name), and at VALUES_REF when given (a branch, a full commit or refs/pull/<n>/head of svp-gitops). A
+#   rescan.sh list [--source NAME] GITOPS_DIR [VALUES_REF]
+#     Prints the releases a run of source NAME rescans, one per line: service, repository, digest (both empty when not
+#     released) and where it was read, separated by tabs. Read as data with `git show`, never run: image.repository
+#     and image.digest of envs/<env>/images/<service>.yaml of every environment of the deployment repository
+#     svp-gitops, at its main, at the promote branch of that source (bot/promote-stg for backend,
+#     bot/promote-stg-<NAME> otherwise) while its pull request is open there (the source's promoter app's own, never a
+#     fork's from a branch of that name), and at VALUES_REF when given (a branch, a full commit or refs/pull/<n>/head
+#     of svp-gitops). A file naming a release of another source is left out with a line on stderr (that source's CI
+#     rescans it); one under the prefix of no source is listed, so the run fails on it. For backend only, a
 #     VALUES_REF that svp-gitops has not, and that is a full commit of this repository from before svp-gitops held the
 #     releases, is read there instead, from deploy/k8s/values/services/<service>.yaml: a release only that history
 #     names (a web release from before CI attested provenance, which the supply chain drill needs) gets a fresh
@@ -87,7 +91,41 @@ image_line() {
   printf '%s\t%s\t%s\t%s\n' "$svc" "$repo" "$digest" "$3"
 }
 
-# list GITOPS_DIR [VALUES_REF]: see `list` above.
+# source_args ARGS...: reads an optional --source NAME off ARGS; sets source (backend by default), source_branch and
+# source_app (its promote branch and promoter app), and args to the rest.
+source_args() {
+  local src
+  source=backend
+  if [ "${1:-}" = --source ]; then
+    source=${2:-}
+    shift 2 || fail "--source needs a name"
+  fi
+  src=$(release_source "$source") || exit 1
+  source_app=$(jq -r .promoter <<<"$src")
+  source_branch=$gitops_promote_branch
+  [ "$source" = backend ] || source_branch=$gitops_promote_branch-$source
+  args=("$@")
+}
+
+# keep_own: reads the lines of list on stdin and prints those of source's releases and those of no source; one of
+# another source's is named on stderr instead.
+keep_own() {
+  local line svc repo where owner
+  # Split by hand: read with IFS=<tab> would merge the two tabs around an empty digest.
+  while IFS= read -r line; do
+    svc=${line%%$'\t'*}
+    repo=${line#*$'\t'}
+    repo=${repo%%$'\t'*}
+    where=${line##*$'\t'}
+    if owner=$(source_of_repository "$repo" 2>/dev/null) && [ "$owner" != "$source" ]; then
+      echo "skip  $svc in $where: $repo is a release of source $owner, which its own CI rescans" >&2
+      continue
+    fi
+    printf '%s\n' "$line"
+  done
+}
+
+# list GITOPS_DIR [VALUES_REF]: see `list` above (source_args first).
 list() {
   local dir=$1 values_ref=${2:-} refs=() labels=() prs open i ref e svc file status=0 code=
   [ "$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$dir" 2>/dev/null && pwd -P)" ] ||
@@ -98,20 +136,20 @@ list() {
   refs+=(refs/svp/rescan/main) labels+=("main of svp-gitops")
   # Unanswered, the releases of main and of VALUES_REF are still listed (and rescanned) before the run fails: they are
   # what stg and prd run, whose attestations must not age out because the host did not answer.
-  if ! prs=$(ci_change_request_list "$gitops_promote_branch" main "$gitops_repo"); then
-    echo "FAIL  ask the repository's host whether the promote pull request of $gitops_repo is open; $gitops_promote_branch not read" >&2
+  if ! prs=$(ci_change_request_list "$source_branch" main "$gitops_repo"); then
+    echo "FAIL  ask the repository's host whether the promote pull request of $gitops_repo is open; $source_branch not read" >&2
     status=1
-  elif ! open=$(ci_change_request_pick "$gitops_app" <<<"$prs"); then
-    echo "FAIL  read the open pull requests of $gitops_promote_branch; $gitops_promote_branch not read" >&2
+  elif ! open=$(ci_change_request_pick "$source_app" <<<"$prs"); then
+    echo "FAIL  read the open pull requests of $source_branch; $source_branch not read" >&2
     status=1
   elif [ -n "$open" ]; then
-    gf "+refs/heads/$gitops_promote_branch:refs/svp/rescan/promote" || fail "fetch $gitops_promote_branch of svp-gitops"
-    refs+=(refs/svp/rescan/promote) labels+=("$gitops_promote_branch of svp-gitops (pull request #$open)")
+    gf "+refs/heads/$source_branch:refs/svp/rescan/promote" || fail "fetch $source_branch of svp-gitops"
+    refs+=(refs/svp/rescan/promote) labels+=("$source_branch of svp-gitops (pull request #$open)")
   fi
   if [ -n "$values_ref" ]; then
     if gf "+$values_ref:refs/svp/rescan/values-ref" 2>/dev/null; then
       refs+=(refs/svp/rescan/values-ref) labels+=("$values_ref of svp-gitops")
-    elif [[ $values_ref =~ ^[0-9a-f]{40}$ ]]; then
+    elif [ "$source" = backend ] && [[ $values_ref =~ ^[0-9a-f]{40}$ ]]; then
       # A clone of the code repository may be shallow (CI's checkout): the commit is fetched when it is not there.
       git -C "$repo_root" cat-file -e "$values_ref^{commit}" 2>/dev/null ||
         git -C "$repo_root" fetch --quiet --no-tags --depth 1 origin "$values_ref" 2>/dev/null || true
@@ -127,7 +165,8 @@ list() {
     for e in $(git -C "$dir" ls-tree --name-only "$ref:envs" 2>/dev/null); do
       for svc in "${svp_services[@]}"; do
         file=envs/$e/images/$svc.yaml
-        if ! git -C "$dir" show "$ref:$file" 2>/dev/null | image_line "$file" "${labels[$i]}" "${labels[$i]}, $file"; then
+        if ! git -C "$dir" show "$ref:$file" 2>/dev/null | image_line "$file" "${labels[$i]}" "${labels[$i]}, $file" |
+          keep_own; then
           status=1
         fi
       done
@@ -137,7 +176,7 @@ list() {
     for svc in "${svp_services[@]}"; do
       file=deploy/k8s/values/services/$svc.yaml
       if ! git -C "$repo_root" show "$code:$file" 2>/dev/null |
-        image_line "$file" "${code:0:12}" "commit ${code:0:12} of the code repository, $file"; then
+        image_line "$file" "${code:0:12}" "commit ${code:0:12} of the code repository, $file" | keep_own; then
         status=1
       fi
     done
@@ -150,7 +189,7 @@ list() {
 # digest only.
 rescan_one() {
   local svc=$1 repo=$2 digest=$3 dir=$4 sarif=$5 arch blocked=0 critical
-  verify_signature "$repo" "$digest" || fail "$repo@$digest has no signature of images.yml on main; not attested"
+  verify_signature "$repo" "$digest" || fail "$repo@$digest has no signature of its source's images.yml on main; not attested"
   echo "rescan $repo@$digest"
   scan_index "$repo" "$digest" "$dir"
   # The gate runs before anything is written, with --allow-critical: the rescan's exception covers CRITICAL only. A
@@ -184,8 +223,10 @@ run() {
   local platform
   platform=$(ci_platform) || exit 1
   [ "$platform" != local ] || fail "rescan.sh run attests with the workflow's identity: CI only"
-  [ $# -ge 2 ] && [ $# -le 3 ] || fail "usage: rescan.sh run OUT GITOPS_DIR [VALUES_REF]"
-  local out=$1 lines svc repo digest where key sarif n=0 failed=0 seen=" "
+  source_args "$@"
+  set -- ${args[@]+"${args[@]}"}
+  [ $# -ge 2 ] && [ $# -le 3 ] || fail "usage: rescan.sh run [--source NAME] OUT GITOPS_DIR [VALUES_REF]"
+  local out=$1 lines svc repo digest where key sarif n=0 failed=0 seen=" " own
   mkdir -p "$out/sarif" || fail "create $out"
   out=$(cd "$out" && pwd)
   lines=$(list "$2" "${3:-}") || failed=1
@@ -199,8 +240,8 @@ run() {
     case $seen in *" $key "*) continue ;; esac
     seen="$seen$key "
     n=$((n + 1))
-    if [ "$repo" != "$ghcr_prefix/$svc" ] || ! is_digest "$digest"; then
-      echo "FAIL  $svc in $where: $repo@$digest is not a release of $ghcr_prefix/$svc; not attested" >&2
+    if ! own=$(release_source_of "$svc" "$repo") || [ "$(jq -r .name <<<"$own")" != "$source" ] || ! is_digest "$digest"; then
+      echo "FAIL  $svc in $where: $repo@$digest is not a release of $svc of source $source; not attested" >&2
       failed=1
       continue
     fi
@@ -223,8 +264,11 @@ run)
   run "$@"
   ;;
 list)
-  [ $# -ge 2 ] && [ $# -le 3 ] || fail "usage: rescan.sh list GITOPS_DIR [VALUES_REF]"
-  list "$2" "${3:-}"
+  shift
+  source_args "$@"
+  set -- ${args[@]+"${args[@]}"}
+  [ $# -ge 1 ] && [ $# -le 2 ] || fail "usage: rescan.sh list [--source NAME] GITOPS_DIR [VALUES_REF]"
+  list "$1" "${2:-}"
   ;;
-*) fail "usage: rescan.sh scan-index REPOSITORY DIGEST OUT | rescan.sh run OUT GITOPS_DIR [VALUES_REF] | rescan.sh list GITOPS_DIR [VALUES_REF]" ;;
+*) fail "usage: rescan.sh scan-index REPOSITORY DIGEST OUT | rescan.sh run [--source NAME] OUT GITOPS_DIR [VALUES_REF] | rescan.sh list [--source NAME] GITOPS_DIR [VALUES_REF]" ;;
 esac

@@ -1576,9 +1576,10 @@ cp "$here/../k8s/lib.sh" "$vr/deploy/k8s/"
 cp -R "$here/verify" "$vr/deploy/ci/"
 cp "$here/../observability/glitchtip/dotenv.sh" "$vr/deploy/observability/glitchtip/"
 cp "$repo/.env" "$vr/.env"
+# The fake make logs SVP_WEB_DIR beside its arguments when that is set, and the fake pnpm its arguments and folder.
 cat >"$vb/make" <<'EOF'
 #!/usr/bin/env bash
-echo "$*" >>"$FAKE_MAKE_LOG"
+echo "$*${SVP_WEB_DIR:+ [SVP_WEB_DIR=$SVP_WEB_DIR]}" >>"$FAKE_MAKE_LOG"
 [ "$1" = -s ] && shift
 [ -f "${FAKE_MAKE_DIR:-/nonexistent}/$1.out" ] && cat "$FAKE_MAKE_DIR/$1.out"
 case " ${FAKE_MAKE_FAIL:-} " in *" $1 "*) exit 2 ;; esac
@@ -1607,7 +1608,11 @@ case $* in
   *) exit 2 ;;
 esac
 EOF
-chmod 755 "$vb/make" "$vb/date" "$vb/psql" "$vb/docker"
+printf '#!/bin/sh\necho "pnpm $* in $PWD" >>"$FAKE_MAKE_LOG"\ncase " ${FAKE_MAKE_FAIL:-} " in *" pnpm "*) exit 1 ;; esac\n' \
+  >"$vb/pnpm"
+chmod 755 "$vb/make" "$vb/date" "$vb/psql" "$vb/docker" "$vb/pnpm"
+# Where make web-clone leaves svp-web; the fake make clones nothing, so the folder is made here.
+mkdir -p "$vr/.web/svp-web"
 # run_verify NAME SCENARIO [VAR=VALUE...]: the copy of verify-run.sh (in run_tree, default $vr) for SCENARIO; its
 # output in $work/run-NAME.log,
 # the make calls in $work/run-NAME.make, its results in $work/run-NAME.out; prints its exit status. It runs as on a
@@ -1616,9 +1621,9 @@ run_verify() {
   local name=$1 scenario=$2 rc=0
   shift 2
   : >"$work/run-$name.make"
-  env -u GITHUB_ACTIONS -u CI -u GITLAB_CI -u JENKINS_URL -u TF_BUILD PATH="$vb:$work/bin:$PATH" \
-    SVP_VERIFY_OUT="$work/run-$name.out" \
-    SVP_VERIFY_SECRETS="$work/run-$name.secrets" FAKE_MAKE_LOG="$work/run-$name.make" SVP_VERIFY_TARGETS= "$@" \
+  env -u GITHUB_ACTIONS -u CI -u GITLAB_CI -u JENKINS_URL -u TF_BUILD -u SVP_WEB_DIR PATH="$vb:$work/bin:$PATH" \
+    SVP_VERIFY_OUT="$work/run-$name.out" SVP_VERIFY_SECRETS="$work/run-$name.secrets" \
+    FAKE_MAKE_LOG="$work/run-$name.make" SVP_VERIFY_TARGETS= SVP_VERIFY_WEB_REF= "$@" \
     "${run_tree:-$vr}/deploy/ci/verify-run.sh" "$scenario" >"$work/run-$name.log" 2>&1 </dev/null || rc=$?
   echo "$rc"
 }
@@ -1807,6 +1812,42 @@ if timeout --version 2>/dev/null | grep -q GNU; then
     "$(printf -- '-s gitops-clone\nk8s-gitops-up GITOPS_REV=%s' "$fake_clone_sha")" "$(cat "$work/run-infra-gitops.make")"
   same "verify-run: a k3d scenario of the dev path runs only the clone and make k8s-up when it fails" \
     "$(printf -- '-s gitops-clone\nk8s-up')" "$(cat "$work/run-infra-velero.make")"
+
+  # web_ref (SVP_VERIFY_WEB_REF): the scenarios that build or test the web clone svp-web at it after svp-gitops, install
+  # its packages there and give every target SVP_WEB_DIR; a scenario that takes none, a value that is no branch name or
+  # full SHA, a failed clone and a failed install each start nothing.
+  web_dir_of=$(cd "$vr" && pwd)/.web/svp-web
+  web_sha=$(printf 'c%.0s' $(seq 40))
+  rc=$(run_verify web-ref dev-k3d SVP_VERIFY_TARGETS=drill-k8s-threats SVP_VERIFY_WEB_REF=feat/new-player)
+  same "verify-run: dev-k3d with web_ref passes" 0 "$rc"
+  same "verify-run: dev-k3d with web_ref clones svp-web after svp-gitops, installs it, every target builds from it" \
+    "$(printf -- '-s gitops-clone\n-s web-clone WEB_REF=feat/new-player\npnpm install --frozen-lockfile in %s\nk8s-up [SVP_WEB_DIR=%s]\ndrill-k8s-threats [SVP_WEB_DIR=%s]' \
+      "$web_dir_of" "$web_dir_of" "$web_dir_of")" "$(cat "$work/run-web-ref.make")"
+  for sc in gitops:k8s-gitops-up web-canary:k8s-up; do
+    scn=${sc%%:*}
+    rc=$(run_verify "web-ref-$scn" "$scn" FAKE_MAKE_FAIL="${sc#*:}" SVP_VERIFY_WEB_REF="$web_sha")
+    grep -qxF -- "-s web-clone WEB_REF=$web_sha" "$work/run-web-ref-$scn.make" &&
+      ok "verify-run: $scn takes web_ref, a full commit SHA" || fail "verify-run: $scn takes web_ref, a full commit SHA"
+  done
+  rc=$(run_verify web-ref-compose compose-obs SVP_VERIFY_WEB_REF=main)
+  same "verify-run: compose-obs takes no web_ref" 2 "$rc"
+  [ ! -s "$work/run-web-ref-compose.make" ] && ok "verify-run: a scenario that takes no web_ref starts nothing" ||
+    fail "verify-run: a scenario that takes no web_ref starts nothing"
+  has run-web-ref-compose "the scenario taking no web_ref is named" \
+    "scenario compose-obs does not build or test the web client, so it takes no SVP_VERIFY_WEB_REF (main)"
+  for bad in '::error::x' '-x' 'a..b' 'feat/' 'two words' 'x.lock' "$(printf 'c%.0s' $(seq 39))\$"; do
+    rc=$(run_verify web-ref-bad dev-k3d SVP_VERIFY_WEB_REF="$bad")
+    same "verify-run: web_ref '$bad' stops it" 2 "$rc"
+    [ ! -s "$work/run-web-ref-bad.make" ] && lacks run-web-ref-bad "web_ref '$bad' is not printed back" "$bad" ||
+      fail "verify-run: web_ref '$bad' starts nothing"
+  done
+  for step in web-clone pnpm; do
+    rc=$(run_verify "web-ref-$step-fails" dev-k3d SVP_VERIFY_WEB_REF=main FAKE_MAKE_FAIL="$step")
+    same "verify-run: a failed $step of svp-web makes the run fail" 1 "$rc"
+    [ ! -e "$work/run-web-ref-$step-fails.out/results.tsv" ] && ! grep -q '^k8s-up' "$work/run-web-ref-$step-fails.make" &&
+      ok "verify-run: after a failed $step of svp-web no target starts" ||
+      fail "verify-run: after a failed $step of svp-web no target starts"
+  done
   # gitops with targets that leave out some of its checks: release-set, though chosen, is skipped with the reason and
   # fails the run, so no release-set.json is written for job record-stg to record.
   rc=$(run_verify part-gitops gitops 'SVP_VERIFY_TARGETS=k8s-smoke release-set-before release-set')

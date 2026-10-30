@@ -10,13 +10,19 @@
 # Sources:
 #   - the deployment records of stg in svp-gitops (ci_deployment_list of platform.sh). A record counts when it was
 #     made by the bot of the app that writes there, its payload has the form release-set.sh writes (release-set.sh
-#     check), names its own commit, holds a deployed_at, and its run_url is a run of verify.yml on main of the code
-#     repository (ci_run_workflow), the same filter as the check of a pull request to prd. Its state: success counts;
+#     check --at-charts: its releases judged by the table of release sources at its own charts revision, so a record
+#     from before a service moved to another source still counts once the old source no longer publishes it), names
+#     its own commit, holds a deployed_at, and its run_url is a run of verify.yml on main of the code repository
+#     (ci_run_workflow), the same filter as the check of a pull request to prd. Its state: success counts;
 #     inactive counts with a warning when an earlier status of it was success (a record made before records were kept
 #     active); anything else is left out. Every record left out is listed with why, so a loss shows instead of making
 #     a number quietly smaller.
 #   - git: origin/main of this checkout (full history) and of the clone of svp-gitops (gitops_dir of
-#     deploy/k8s/lib.sh), as last fetched; nothing is fetched here.
+#     deploy/k8s/lib.sh), as last fetched; nothing is fetched here. A release of another release source (the web of
+#     svp-web, deploy/helm/svp-policy/files/sources.json) is a commit of that source's repository: only when a record
+#     that counts holds one, the history of that repository is read too, from its clone (svp-web: web_dir of
+#     deploy/k8s/lib.sh, SVP_WEB_DIR or <workspace>/frontend, with its origin/main; CI: make web-clone WEB_REF=main).
+#     Such a record without that clone stops the run, saying so; without such a record no clone is asked for.
 #   - the front matter of docs/postmortems/*.md (README.md aside): env, deployment, started_at, restored_at,
 #     fix_commits.
 #
@@ -26,11 +32,14 @@
 #     others count as checks. Another R is another deployment, even with the same set (a change of charts or
 #     configuration is deployed too). A set equal to an older one is no rollback by itself.
 #   - A change is a commit of main: of the code repository that changed-services.sh lists a service s for (a change of
-#     s), or that touches the charts (deploy/helm/, and the collector config whose hash envs/<env>/charts.yaml holds);
-#     of svp-gitops that touches what stg deploys besides images and charts (base/, argocd/, envs/stg/ but its
-#     images/ and charts.yaml). Its one lead time sample is taken at the earliest deployment that holds it (the commit
-#     of the image of s, the charts revision, or R is it or a descendant of it): deployed_at minus its committer date.
-#     Changes the first deployment already holds have no sample: when they ran is unknown. Merge commits are no change.
+#     s), of the repository of another release source whose release of s a deployment holds (every commit there is a
+#     change of s: such a repository holds that service alone; the first deployment holding a release of s from that
+#     source takes no sample of it, as the first deployment of all), or that touches the charts (deploy/helm/, and the
+#     collector config whose hash envs/<env>/charts.yaml holds); of svp-gitops that touches what stg deploys besides
+#     images and charts (base/, argocd/, envs/stg/ but its images/ and charts.yaml). Its one lead time sample is taken
+#     at the earliest deployment that holds it (the commit of the image of s, the charts revision, or R is it or a
+#     descendant of it): deployed_at minus its committer date. Changes the first deployment already holds have no
+#     sample: when they ran is unknown. Merge commits are no change.
 #   - A rollback is the first deployment whose R holds a revert commit of svp-gitops (subject "revert: ..." with a
 #     footer "Refs: <sha>", or git revert's 'Revert "..."' with "This reverts commit <sha>."), when the reverted commit
 #     was deployed before: the latest earlier deployment whose R holds it failed. A revert of a commit never deployed
@@ -54,24 +63,34 @@
 # Needs bash, git, jq; a token that reads the deployments of svp-gitops and the runs of the code repository (both
 # public: GH_TOKEN on CI only lifts the rate limit) or a machine's gh login. Writes only JSON (making its directory
 # when missing) and a temporary directory it removes.
+#
+# dora.sh --clones: prints the names of the release sources other than backend whose releases a record that counts
+# holds, one per line (nothing when none), and writes nothing: whether the run needs a clone of another repository
+# (.github/workflows/dora.yml clones svp-web only then).
 set -euo pipefail
 
 # shellcheck source=deploy/ci/common.sh
 . "$(dirname "$0")/common.sh"
 
-usage="usage: dora.sh [--days N] [--now TIME] JSON (N whole days, 1 to 3650; TIME RFC 3339 UTC, e.g. 2026-10-30T09:17:00Z)"
+usage="usage: dora.sh [--days N] [--now TIME] JSON (N whole days, 1 to 3650; TIME RFC 3339 UTC, e.g. 2026-10-30T09:17:00Z) | dora.sh --clones"
 days=30
 now=
-while [ $# -gt 1 ]; do
-  case $1 in
-  --days) days=$2 ;;
-  --now) now=$2 ;;
-  *) fail "$usage" ;;
-  esac
-  shift 2
-done
-[ $# -eq 1 ] && [ -n "$1" ] || fail "$usage"
-out=$1
+clones_only= out=
+if [ "${1:-}" = --clones ]; then
+  [ $# -eq 1 ] || fail "$usage"
+  clones_only=1
+else
+  while [ $# -gt 1 ]; do
+    case $1 in
+    --days) days=$2 ;;
+    --now) now=$2 ;;
+    *) fail "$usage" ;;
+    esac
+    shift 2
+  done
+  [ $# -eq 1 ] && [ -n "$1" ] || fail "$usage"
+  out=$1
+fi
 [[ $days =~ ^[1-9][0-9]{0,3}$ ]] && [ "$days" -le 3650 ] || fail "--days $days: $usage"
 [ -n "$now" ] || now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 [[ $now =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || fail "--now $now: $usage"
@@ -131,7 +150,7 @@ while IFS= read -r rec; do
   fi
   if [ -z "$reason" ]; then
     jq '.payload' <<<"$rec" >"$tmp/payload.json"
-    if ! problem=$("$ci_dir/release-set.sh" check "$tmp/payload.json" 2>&1); then
+    if ! problem=$("$ci_dir/release-set.sh" check --at-charts "$tmp/payload.json" 2>&1); then
       reason="its payload: $(sed -E 's/^FAIL  .* is no payload of a record of stg: //' <<<"$problem" | head -n 1)"
     elif [ "$(jq -r '.payload.ref' <<<"$rec")" != "$(jq -r .sha <<<"$rec")" ]; then
       reason="its payload names $(jq -r '.payload.ref' <<<"$rec"), not its commit"
@@ -157,6 +176,49 @@ while IFS= read -r rec; do
   [ -z "$note" ] || warn "$note"
   kept=$(jq -c --argjson r "$rec" '. + [$r | {id, sha, created_at, payload}]' <<<"$kept")
 done < <(jq -c '.[]' <<<"$list")
+
+# --- The release sources of the releases the records hold, each with the clone of its repository (this checkout for
+# backend) and that repository as the host names it (owner/name); bash 3.2 has no associative arrays.
+others=
+while IFS= read -r r; do
+  [ -n "$r" ] || continue
+  name=$(source_of_repository "$r") || exit 1
+  [ "$name" = backend ] || others=$(printf '%s\n%s' "$others" "$name" | sed '/^$/d' | sort -u)
+done < <(jq -r '[.[].payload.images[].repository] | unique[]' <<<"$kept")
+if [ -n "$clones_only" ]; then
+  [ -z "$others" ] || echo "$others"
+  exit 0
+fi
+src_names=(backend) src_dirs=("$repo_root") src_repos=("$code_repo")
+for name in $others; do
+  url=$(release_source "$name" | jq -r .repository) || exit 1
+  dir=
+  case $name in
+  web)
+    # web_dir falls back to web/ of this checkout, which holds no history of svp-web.
+    dir=$(web_dir 2>/dev/null) && [ "$dir" != "$repo_root/web" ] || dir=
+    ;;
+  esac
+  [ -n "$dir" ] && git -C "$dir" rev-parse --verify -q "$main^{commit}" >/dev/null ||
+    fail "records of stg hold releases of release source $name, built from commits of $url: their lead time needs a clone of it with its whole history and origin/main (svp-web: SVP_WEB_DIR, or <workspace>/frontend; CI: make web-clone WEB_REF=main)"
+  src_names+=("$name") src_dirs+=("$dir") src_repos+=("${url#https://github.com/}")
+done
+# dir_of_repo REPOSITORY: the clone of REPOSITORY (owner/name): of the code repository, of another release source, or
+# of svp-gitops; status 1 for any other.
+dir_of_repo() {
+  local k
+  [ "$1" != "$gitops_repo" ] || {
+    echo "$config"
+    return 0
+  }
+  for k in "${!src_repos[@]}"; do
+    [ "${src_repos[$k]}" != "$1" ] || {
+      echo "${src_dirs[$k]}"
+      return 0
+    }
+  done
+  return 1
+}
 
 # --- Deployments: the records grouped by (R, set), the first record made of each group, oldest deployed first.
 deps=$(jq -c "$jq_lib"'
@@ -192,8 +254,9 @@ reverted_of() {
 }
 
 # The commits each earlier deployment held, as ^<sha> lines that git log --stdin reads: what a deployment holds first
-# is what its own commit reaches and none of these does.
-for svc in "${svp_services[@]}"; do : >"$tmp/prev-$svc"; done
+# is what its own commit reaches and none of these does. One list per service and release source: the commits of
+# two repositories never meet. A deployment's points are "<owner/name> <sha>" lines, what holds reads.
+for svc in "${svp_services[@]}"; do for name in "${src_names[@]}"; do : >"$tmp/prev-$svc-$name"; done; done
 : >"$tmp/prev-charts"
 : >"$tmp/prev-ref"
 refs=()
@@ -204,22 +267,27 @@ for ((i = 0; i < n; i++)); do
   : >"$tmp/points-$i"
   for svc in "${svp_services[@]}"; do
     tag=$(jq -r --arg s "$svc" '.images[$s].tag' <<<"$dep")
-    if ! point=$(cg rev-parse --verify -q "$tag^{commit}"); then
-      warn "deployment of svp-gitops ${ref:0:12}: the image tag $tag of $svc is no commit of the code repository"
+    name=$(source_of_repository "$(jq -r --arg s "$svc" '.images[$s].repository' <<<"$dep")") || exit 1
+    for k in "${!src_names[@]}"; do [ "${src_names[$k]}" != "$name" ] || break; done
+    prev=$tmp/prev-$svc-$name
+    if ! point=$(git -C "${src_dirs[$k]}" rev-parse --verify -q "$tag^{commit}"); then
+      warn "deployment of svp-gitops ${ref:0:12}: the image tag $tag of $svc is no commit of ${src_repos[$k]}"
       continue
     fi
-    echo "code $point" >>"$tmp/points-$i"
-    if [ "$i" -gt 0 ]; then
+    echo "${src_repos[$k]} $point" >>"$tmp/points-$i"
+    if [ -s "$prev" ]; then
       while read -r sha t; do
         [ -n "$sha" ] || continue
-        if services_of "$sha" | grep -qx -- "$svc"; then change service "$svc" "$code_repo" "$sha" "$t"; fi
-      done < <(cg log --no-merges --format='%H %ct' --stdin "$point" -- <"$tmp/prev-$svc")
+        if [ "$name" != backend ] || services_of "$sha" | grep -qx -- "$svc"; then
+          change service "$svc" "${src_repos[$k]}" "$sha" "$t"
+        fi
+      done < <(git -C "${src_dirs[$k]}" log --no-merges --format='%H %ct' --stdin "$point" -- <"$prev")
     fi
-    echo "^$point" >>"$tmp/prev-$svc"
+    echo "^$point" >>"$prev"
   done
   charts=$(jq -r .charts <<<"$dep")
   if cg rev-parse --verify -q "$charts^{commit}" >/dev/null; then
-    echo "code $charts" >>"$tmp/points-$i"
+    echo "$code_repo $charts" >>"$tmp/points-$i"
     if [ "$i" -gt 0 ]; then
       while read -r sha t; do
         [ -z "$sha" ] || change chart "" "$code_repo" "$sha" "$t"
@@ -233,7 +301,7 @@ for ((i = 0; i < n; i++)); do
     warn "deployment of svp-gitops ${ref:0:12}: no such commit in the clone of svp-gitops"
     continue
   fi
-  echo "gitops $ref" >>"$tmp/points-$i"
+  echo "$gitops_repo $ref" >>"$tmp/points-$i"
   if [ "$i" -gt 0 ]; then
     while read -r sha t; do
       [ -z "$sha" ] || change config "" "$gitops_repo" "$sha" "$t"
@@ -264,12 +332,10 @@ done
 # --- Postmortems.
 # holds K REPOSITORY SHA: true when deployment K holds commit SHA of REPOSITORY.
 holds() {
-  local kind point
-  while read -r kind point; do
-    case $kind:$2 in
-    "code:$code_repo") cg merge-base --is-ancestor "$3" "$point" 2>/dev/null && return 0 ;;
-    "gitops:$gitops_repo") gg merge-base --is-ancestor "$3" "$point" 2>/dev/null && return 0 ;;
-    esac
+  local repo point dir
+  while read -r repo point; do
+    [ "$repo" = "$2" ] && dir=$(dir_of_repo "$repo") || continue
+    git -C "$dir" merge-base --is-ancestor "$3" "$point" 2>/dev/null && return 0
   done <"$tmp/points-$1"
   return 1
 }
@@ -318,8 +384,10 @@ for file in "$repo_root"/docs/postmortems/*.md; do
         cg cat-file -e "$sha^{commit}" 2>/dev/null || warn "$name: fix commit $fix is no commit of the code repository"
       elif [ "$repo" = "$gitops_repo" ]; then
         gg cat-file -e "$sha^{commit}" 2>/dev/null || warn "$name: fix commit $fix is no commit of the clone of svp-gitops"
+      elif dir=$(dir_of_repo "$repo"); then
+        git -C "$dir" cat-file -e "$sha^{commit}" 2>/dev/null || warn "$name: fix commit $fix is no commit of the clone of $repo"
       else
-        warn "$name: fix commit $fix is of neither $code_repo nor $gitops_repo"
+        warn "$name: fix commit $fix is of none of ${src_repos[*]} $gitops_repo"
       fi
       if [ "$failed" != null ]; then
         for ((k = failed + 1; k < n; k++)); do

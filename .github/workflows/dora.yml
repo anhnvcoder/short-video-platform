@@ -1,8 +1,9 @@
 # The DORA metrics of stg (deploy/ci/dora.sh): deployment frequency, change lead time, change fail rate, failed
 # deployment recovery time and deployment rework rate, from the deployment records of stg in svp-gitops (evidence that
-# a release ran and passed the checks there, never a merge), the git history of both repositories and the front matter
-# of docs/postmortems/. The table goes to the summary page of the run, the whole result to artifact dora. Nothing is
-# kept between runs: the records stay, so any period is computed again by a dispatch with more days.
+# a release ran and passed the checks there, never a merge), the git history of both repositories (and of svp-web once
+# a record holds a web release it built) and the front matter of docs/postmortems/. The table goes to the summary
+# page of the run, the whole result to artifact dora. Nothing is kept between runs: the records stay, so any period is
+# computed again by a dispatch with more days.
 #
 #   gh workflow run dora.yml --ref main [-f days=<1..3650>]
 #
@@ -10,7 +11,7 @@
 # - schedule (the code of main, no input) and workflow_dispatch (write access to the repository needed), never
 #   pull_request, pull_request_target or workflow_run;
 # - the job has contents: read and actions: read (the run each record names, to check it is one of verify.yml on main)
-#   and no secret, no environment. Both repositories are public: the job's token only lifts the rate limit of the
+#   and no secret, no environment. Every repository read is public: the job's token only lifts the rate limit of the
 #   host's API for the records of svp-gitops and the runs;
 # - every action is GitHub's own and pinned to a full commit SHA; checkout never leaves the token in .git/config;
 # - the input days goes into the script through env, never through ${{ }} in the script.
@@ -52,11 +53,22 @@ jobs:
           fetch-depth: 0
       # Public repository, over HTTPS without credentials: no token, no secret.
       - run: make gitops-clone
+      # The lead time of a web release built by svp-web counts commits of that repository, so its whole history is
+      # cloned (main, anonymously, into .web/svp-web) only when a record of stg that counts holds one: until then the
+      # run needs nothing of svp-web, which may not even have a release yet.
+      - name: Clone svp-web when a record of stg runs its web
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          clones=$(deploy/ci/dora.sh --clones)
+          if grep -qx web <<<"$clones"; then make web-clone WEB_REF=main; fi
       - name: DORA metrics
         env:
           GH_TOKEN: ${{ github.token }}
           DAYS: ${{ inputs.days || '30' }}
-        run: deploy/ci/dora.sh --days "$DAYS" "$RUNNER_TEMP/dora/dora.json"
+        run: |
+          [ ! -d .web/svp-web ] || export SVP_WEB_DIR="$PWD/.web/svp-web"
+          deploy/ci/dora.sh --days "$DAYS" "$RUNNER_TEMP/dora/dora.json"
       - name: Keep the result
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
