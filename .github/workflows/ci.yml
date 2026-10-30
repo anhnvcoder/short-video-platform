@@ -341,6 +341,10 @@ jobs:
       # would use otherwise: a pull request that breaks one of their rules fails here. Fake secrets, kubectl, docker and
       # make in a temporary directory; bash, git, jq and openssl, no network.
       - run: deploy/ci/verify-collect-test.sh
+      # The image of the source maps of another source's web (deploy/ci/sourcemaps-image.sh), pushed only by that
+      # source's CI on its main: refused folders, the tag never written twice, read back by gitops-sourcemaps.sh as
+      # the GitOps run reads it. A fake docker answers the ORAS commands from files; bash, git, jq and tar, no network.
+      - run: deploy/ci/sourcemaps-image-test.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: 1.27.3
