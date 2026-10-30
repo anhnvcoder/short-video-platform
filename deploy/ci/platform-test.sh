@@ -52,8 +52,9 @@
 #   - gitops_no_provenance of deploy/ci/verify/gitops.sh: the newest web release in the history of web.yaml that the
 #     fake cosign finds signed without provenance, passing over without cosign a release built from a commit holding
 #     provenance-predicate.sh; none found and an error of cosign each exit with their own status;
-#   - changed-services.sh builds all seven images for a change of platform.sh, as for common.sh, and none for a change
-#     of this test, of promote-test.sh, of platform-guard.sh, of a scenario file under deploy/ci/verify/, of the
+#   - changed-services.sh builds all seven images for a change of platform.sh, as for common.sh and rescan.sh, and none
+#     for a change of this test, of promote-test.sh, of platform-guard.sh, of sourcemaps-image.sh and its test (another
+#     source's CI pushes that image), of a scenario file under deploy/ci/verify/, of the
 #     scripts of other workflows and of svp-gitops's check (record-stg.sh, gitops-check.sh with values-check.sh and
 #     verify-release.sh, dora.sh and the tests of
 #     these and of release-set.sh, promote-prd.sh), of the policy's values or of docs/; all seven for a change of
@@ -62,6 +63,11 @@
 #   - platform-guard.sh reads the scenario files under deploy/ci/verify/ too; given another repository's tree as ROOT
 #     (svp-web's) it reads every file there but .github/ and .backend/, and a ROOT that is no directory or no git
 #     tree exits 2;
+#   - rescan.sh run attests only the releases of the source of the run's repository, as that source's signing
+#     workflow: a run of svp-web without --source web, a run of backend with --source web, and a run of svp-web from
+#     another workflow fail, naming both sources (or the identity), before the host or cosign is asked anything; the
+#     scheduled run of backend and the run of svp-web with --source web each read their own promote pull request and
+#     ask cosign for their own releases only, leaving the other source's to it; on a machine the run is refused first;
 #   - another repository's tree (SVP_CODE_ROOT, a checkout whose origin is svp-web): on a machine ci_repo, ci_repo_url
 #     and ci_commit are that checkout's (and a checkout with no origin on github.com is refused, an origin's
 #     credential never shown); plan.sh of svp-web's run builds the services of its release source at every run, with
@@ -957,6 +963,87 @@ plan_own "a run of a fork" 1 GITHUB_REPOSITORY=someone/short-video-platform GITH
 check "plan.sh in this checkout: a run of a fork: no release source" has "$work/plan.err" \
   "this run is of https://github.com/someone/short-video-platform, which is the repository of 0 release sources"
 
+# --- rescan.sh run: a run attests only the releases of the source of its own repository, as the identity of that
+# source's signing workflow. A clone of svp-gitops on disk whose main names a gateway of backend and a web of svp-web;
+# gh lists no open promote pull request; the fake cosign refuses every signature, so nothing is ever attested.
+rg=$work/rescan-gitops
+gr() {
+  GIT_DIR=$rg/.git GIT_WORK_TREE=$rg GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=test \
+    -c user.email=test@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"
+}
+mkdir -p "$rg/envs/stg/images"
+for svc in gateway user-service video-service engagement-service feed-service media-worker; do
+  d=
+  [ "$svc" != gateway ] || d=$digest_a
+  printf 'image:\n  repository: ghcr.io/anhnvcoder/short-video-platform/%s\n  tag: "%s"\n  digest: "%s"\n' "$svc" \
+    "${d:+0123456789ab}" "$d" >"$rg/envs/stg/images/$svc.yaml"
+done
+printf 'image:\n  repository: ghcr.io/anhnvcoder/svp-web/web\n  tag: "0123456789ab"\n  digest: "%s"\n' "$digest_b" \
+  >"$rg/envs/stg/images/web.yaml"
+git init -q --bare "$rg.git"
+gr init -q -b main && gr add -A && gr commit -qm release && gr remote add origin "$rg.git" && gr push -q origin main
+web_run=(GITHUB_REPOSITORY=anhnvcoder/svp-web
+  GITHUB_WORKFLOW_REF=anhnvcoder/svp-web/.github/workflows/images.yml@refs/heads/main)
+backend_rescan=("${backend_run[@]}"
+  GITHUB_WORKFLOW_REF=anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main)
+# rescan_run NAME WANT_RC VAR=VALUE... -- [--source NAME]: rescan.sh run in a made-up job on github with the variables,
+# its output in rescan-NAME.out, its OUT rescan-NAME.
+rescan_run() {
+  local name=$1 want=$2 rc=0 vars=()
+  shift 2
+  while [ "$1" != -- ]; do
+    vars+=("$1")
+    shift
+  done
+  shift
+  fresh
+  echo '[]' >"$work/gh/prs.json"
+  on github env GITHUB_SERVER_URL=https://github.com "${vars[@]}" "$tree/deploy/ci/rescan.sh" run "$@" \
+    "$work/rescan-$name" "$rg" >"$work/rescan-$name.out" 2>&1 || rc=$?
+  same "rescan.sh run: $name (exit $want)" "$want" "$rc"
+}
+# nothing_read NAME: neither the host nor cosign was asked, and OUT was not created.
+nothing_read() {
+  if [ ! -s "$work/gh.log" ] && [ ! -s "$work/cosign.log" ] && [ ! -e "$work/rescan-$1" ]; then
+    ok "rescan.sh run: $1: nothing read, nothing attested"
+  else
+    fail "rescan.sh run: $1: something was read: $(cat "$work/gh.log" "$work/cosign.log")"
+  fi
+}
+rescan_run "the scheduled rescan of backend" 1 "${backend_rescan[@]}" --
+check "rescan.sh run: backend: the promote pull request of backend asked for" has "$work/gh.log" "--head bot/promote-stg "
+check "rescan.sh run: backend: the web of svp-web left to its source" has "$work/rescan-the scheduled rescan of backend.out" \
+  "skip  web in main of svp-gitops, envs/stg/images/web.yaml: ghcr.io/anhnvcoder/svp-web/web is a release of source web"
+check "rescan.sh run: backend: the signature of its gateway asked for" has "$work/cosign.log" \
+  "--certificate-identity https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main ghcr.io/anhnvcoder/short-video-platform/gateway@$digest_a"
+check "rescan.sh run: backend: unsigned, so not attested" lacks "$work/cosign.log" "attest"
+rescan_run "svp-web without --source" 1 "${web_run[@]}" --
+check "rescan.sh run: svp-web without --source: names both sources" has "$work/rescan-svp-web without --source.out" \
+  "FAIL  rescan.sh run --source backend in a run of https://github.com/anhnvcoder/svp-web, the repository of release source web: a run attests only the releases of its own source (--source web)"
+nothing_read "svp-web without --source"
+rescan_run "backend with --source web" 1 "${backend_rescan[@]}" -- --source web
+check "rescan.sh run: backend with --source web: names both sources" has "$work/rescan-backend with --source web.out" \
+  "FAIL  rescan.sh run --source web in a run of https://github.com/anhnvcoder/short-video-platform, the repository of release source backend"
+nothing_read "backend with --source web"
+rescan_run "svp-web with --source web, from another workflow" 1 "${web_run[@]}" \
+  GITHUB_WORKFLOW_REF=anhnvcoder/svp-web/.github/workflows/ci.yml@refs/heads/main -- --source web
+check "rescan.sh run: another workflow: names the identity" has \
+  "$work/rescan-svp-web with --source web, from another workflow.out" \
+  "FAIL  this run is https://github.com/anhnvcoder/svp-web/.github/workflows/ci.yml@refs/heads/main, but the releases of source web are attested only as https://github.com/anhnvcoder/svp-web/.github/workflows/images.yml@refs/heads/main"
+nothing_read "svp-web with --source web, from another workflow"
+rescan_run "svp-web with --source web" 1 "${web_run[@]}" -- --source web
+check "rescan.sh run: svp-web: its own promote pull request asked for" has "$work/gh.log" "--head bot/promote-stg-web "
+check "rescan.sh run: svp-web: the gateway of backend left to its source" has "$work/rescan-svp-web with --source web.out" \
+  "skip  gateway in main of svp-gitops, envs/stg/images/gateway.yaml: ghcr.io/anhnvcoder/short-video-platform/gateway is a release of source backend"
+check "rescan.sh run: svp-web: the signature of its web asked for, as its identity" has "$work/cosign.log" \
+  "--certificate-identity https://github.com/anhnvcoder/svp-web/.github/workflows/images.yml@refs/heads/main ghcr.io/anhnvcoder/svp-web/web@$digest_b"
+check "rescan.sh run: svp-web: nothing of backend asked for" lacks "$work/cosign.log" "short-video-platform/"
+fresh
+rc=0
+on local "$tree/deploy/ci/rescan.sh" run "$work/rescan-local" "$rg" >"$work/rescan-local.out" 2>&1 || rc=$?
+same "rescan.sh run on a machine: refused first, as CI only" \
+  "1 FAIL  rescan.sh run attests with the workflow's identity: CI only" "$rc $(cat "$work/rescan-local.out")"
+
 # vuln-predicate.sh: who made the attestation, from the job's variables; local for each on a machine.
 for arch in amd64 arm64; do
   d=$work/leg-$arch
@@ -1192,6 +1279,10 @@ same "changed-services: a change of verify-tempo.sh builds nothing" "" "$(change
 same "changed-services: a change of gitops-sourcemaps.sh builds nothing" "" "$(changed_by deploy/ci/gitops-sourcemaps.sh)"
 same "changed-services: a change of gitops-sourcemaps-test.sh builds nothing" "" \
   "$(changed_by deploy/ci/gitops-sourcemaps-test.sh)"
+for f in sourcemaps-image.sh sourcemaps-image-test.sh; do
+  same "changed-services: a change of $f builds nothing" "" "$(changed_by "deploy/ci/$f")"
+done
+same "changed-services: a change of rescan.sh builds all seven" "$all" "$(changed_by deploy/ci/rescan.sh)"
 for f in record-stg.sh gitops-check.sh gitops-check-test.sh values-check.sh verify-release.sh dora.sh dora-test.sh \
   release-set-test.sh promote-prd-test.sh; do
   same "changed-services: a change of $f builds nothing" "" "$(changed_by "deploy/ci/$f")"

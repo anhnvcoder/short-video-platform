@@ -18,7 +18,9 @@
 # make k8s-gitops-up and the drills run, dora.sh (dora.yml) and the tests gitops-check-test.sh,
 # dora-test.sh, release-set-test.sh and promote-prd-test.sh (job config of ci.yml), contract.sh (the version rule and
 # the publishing of the gateway's API contract: job contract of images.yml runs it, but it builds and promotes no image), contract-test.sh
-# and sources-test.sh (the release source table, job config of ci.yml); release-set.sh and promote-prd.sh
+# and sources-test.sh (the release source table, job config of ci.yml), sourcemaps-image.sh and its test (the image of
+# the source maps of another source's web, pushed by that source's CI; no job of this repository runs it, the test runs
+# in job config of ci.yml); release-set.sh and promote-prd.sh
 # still count, as job promote-prd of images.yml runs them (platform.sh itself counts: common.sh sources it, and so does
 # provenance-predicate.sh: sign-image.sh runs it), the helpers deploy/ci/ sources from deploy/k8s/lib.sh (docker_, values_field,
 # values_set_image, ghcr_prefix), and the lines of the Makefile pinning the images the gate runs (TRIVY_IMAGE,
@@ -82,7 +84,8 @@ while IFS= read -r path; do
     deploy/ci/provenance-predicate-test.sh | deploy/ci/promote-test.sh | deploy/ci/record-stg.sh | \
     deploy/ci/gitops-check.sh | deploy/ci/gitops-check-test.sh | deploy/ci/dora.sh | deploy/ci/dora-test.sh | \
     deploy/ci/values-check.sh | deploy/ci/verify-release.sh | deploy/ci/release-set-test.sh | \
-    deploy/ci/promote-prd-test.sh | deploy/ci/contract.sh | deploy/ci/contract-test.sh | deploy/ci/sources-test.sh)
+    deploy/ci/promote-prd-test.sh | deploy/ci/contract.sh | deploy/ci/contract-test.sh | deploy/ci/sources-test.sh | \
+    deploy/ci/sourcemaps-image.sh | deploy/ci/sourcemaps-image-test.sh)
     continue
     ;;
   esac

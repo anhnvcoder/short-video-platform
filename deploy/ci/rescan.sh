@@ -10,7 +10,11 @@
 #     two manifest digests.
 #
 #   rescan.sh run [--source NAME] OUT GITOPS_DIR [VALUES_REF]   (CI only: it attests)
-#     For every release `list` prints: an empty digest is skipped; a repository other than the service's image of
+#     NAME must be the release source of the repository running the job (use_build_source of common.sh), and the job
+#     the workflow that source signs with (ci_builder_id against its subject): checked before anything is read, as
+#     cosign attest --replace swaps the vuln attestation whoever signed the old one, so a run of one repository naming
+#     another's source (or forgetting --source) would replace that source's attestations with its own identity, and
+#     Kyverno would then refuse every new pod of those releases. For every release `list` prints: an empty digest is skipped; a repository other than the service's image of
 #     release source NAME (backend, this repository, when not given; deploy/helm/svp-policy/files/sources.json of this
 #     checkout), a malformed digest, or a digest without a signature of that source's images.yml on main is not attested
 #     and fails the run, so whatever a ref lists, only digests the workflow running this signed on main get a fresh
@@ -226,6 +230,14 @@ run() {
   source_args "$@"
   set -- ${args[@]+"${args[@]}"}
   [ $# -ge 2 ] && [ $# -le 3 ] || fail "usage: rescan.sh run [--source NAME] OUT GITOPS_DIR [VALUES_REF]"
+  use_build_source
+  [ "$build_source_name" = "$source" ] ||
+    fail "rescan.sh run --source $source in a run of $(ci_repo_url), the repository of release source $build_source_name: a run attests only the releases of its own source (--source $build_source_name)"
+  local builder
+  sign_identity "$source"
+  builder=$(ci_builder_id) || fail "read the workflow of this run"
+  [ "$builder" = "$sign_subject" ] ||
+    fail "this run is $builder, but the releases of source $source are attested only as $sign_subject"
   local out=$1 lines svc repo digest where key sarif n=0 failed=0 seen=" " own
   mkdir -p "$out/sarif" || fail "create $out"
   out=$(cd "$out" && pwd)

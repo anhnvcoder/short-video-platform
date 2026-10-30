@@ -694,7 +694,8 @@ liệt kê target):
     (đủ lịch sử, `make gitops-clone` và `SVP_GITOPS_DIR` ở `env` của job; `deploy/ci/scan-gate.sh --check-ignorefile`,
     `deploy/ci/platform-guard.sh`, `deploy/ci/platform-test.sh`, `deploy/ci/promote-test.sh`, `deploy/ci/promote-prd-test.sh`,
     `deploy/ci/release-set-test.sh`, `deploy/ci/dora-test.sh`, `deploy/ci/provenance-predicate-test.sh`,
-    `deploy/ci/verify-collect-test.sh`, `make slo-check`, `make otelcol-validate`, `make env` rồi `make compose-config`,
+    `deploy/ci/verify-collect-test.sh`, `deploy/ci/sourcemaps-image-test.sh`, `make slo-check`, `make otelcol-validate`, `make env`
+    rồi `make compose-config`,
     `make helm-check`, `deploy/ci/sources-test.sh`, `deploy/ci/gitops-check-test.sh "$SVP_GITOPS_DIR"`, `make k6-check`,
     `make cloud-check`),
     `gitleaks` (toàn lịch sử, `--redact`), `trivy-config` (chỉ báo), `sarif` (chỉ `main`), check tổng `ci-ok` (cần đủ 8 job,
@@ -714,7 +715,8 @@ liệt kê target):
     (`deploy/ci/changed-services.sh`; đổi `images.yml`, `deploy/ci/` (trừ `trivy-config-ignore.yaml`, script và test của
     `verify.yml`, `platform-test.sh`, `platform-guard.sh`, `promote-test.sh`, `record-stg.sh`, `gitops-check.sh` cùng `values-check.sh`, `verify-release.sh` (chỉ check `svp-gitops`,
     `make k8s-gitops-up` và diễn tập chạy hai script này), `dora.sh` và test
-    `gitops-check-test.sh`, `dora-test.sh`, `release-set-test.sh`, `promote-prd-test.sh`, `sources-test.sh`: không job image nào đọc chúng;
+    `gitops-check-test.sh`, `dora-test.sh`, `release-set-test.sh`, `promote-prd-test.sh`, `sources-test.sh`, `sourcemaps-image.sh` cùng test
+    của nó: không job image nào đọc chúng;
     `release-set.sh`, `promote-prd.sh` vẫn tính vì job `promote-prd` chạy chúng), `deploy/k8s/lib.sh` hay dòng
     `TRIVY_IMAGE`/`SYFT_IMAGE`/`GRYPE_IMAGE`/`COSIGN_IMAGE` của `Makefile` thì cả bảy; `web` chỉ build khi đổi file dưới `web/` hay
     `deploy/docker/web.Dockerfile`, context `web/`, `SVP_BUILD_ID` là 12 hex của commit). Base: push `main` so với lượt
@@ -760,7 +762,10 @@ liệt kê target):
     ca (l) của `drill-k8s-supplychain`); đọc PR bot lỗi thì vẫn quét `main` và `values_ref` rồi mới đỏ. Rescan theo nguồn: lượt của
     repo này chỉ quét và attest bản của nguồn `backend` (bảng nguồn của checkout); file ghi bản của nguồn khác bị bỏ khỏi tập, một dòng
     stderr (CI của nguồn đó rescan nó, `rescan.sh run|list --source <tên>`, nhánh bot `bot/promote-stg-<tên>`), file dưới prefix không
-    thuộc nguồn nào vẫn vào tập nên lượt đỏ; không repo nào attest bản của repo khác. `-f drill=true` đẩy hai image
+    thuộc nguồn nào vẫn vào tập nên lượt đỏ; không repo nào attest bản của repo khác. `rescan.sh run` đòi `--source` (mặc định
+    `backend`) bằng nguồn của repo của lượt (`use_build_source`) và `ci_builder_id` bằng `subject` của nguồn đó, kiểm trước khi đọc gì
+    (`cosign attest --replace` thay attestation `vuln` bất kể ai ký bản cũ: CI của `svp-web` quên `--source web` sẽ thay attestation của
+    bản backend bằng identity `svp-web`). `-f drill=true` đẩy hai image
     diễn tập. **Hợp đồng API** ([ADR-0033](docs/adr/0033-svp-web-repo.md) §1): job `contract` (mọi lượt build trên `main`: push, hay
     dispatch không `rescan`, `drill`, `promote_prd`; cùng nhóm concurrency không huỷ của build; quyền `contents: read`,
     `packages: write`, `id-token: write`) chạy `deploy/ci/contract.sh publish`: đẩy spec thành OCI artifact
@@ -934,7 +939,7 @@ liệt kê target):
     `make web-generate-check`, `make web-lockfile-scan`; `make generate-check`;
     `buf breaking --against '.git#ref=<base>'`; `make api-contract-check BASE=<base>`, `deploy/ci/contract-test.sh`;
     `deploy/ci/scan-gate.sh --check-ignorefile`, `deploy/ci/platform-guard.sh`,
-    `deploy/ci/platform-test.sh`, `deploy/ci/provenance-predicate-test.sh`, `make slo-check`,
+    `deploy/ci/platform-test.sh`, `deploy/ci/provenance-predicate-test.sh`, `deploy/ci/sourcemaps-image-test.sh`, `make slo-check`,
     `deploy/ci/promote-test.sh`, `deploy/ci/promote-prd-test.sh`, `deploy/ci/release-set-test.sh`, `deploy/ci/dora-test.sh`,
     `make otelcol-validate`, `make compose-config`, `make helm-check`, `deploy/ci/sources-test.sh`,
     `deploy/ci/gitops-check-test.sh ../gitops`, `make k6-check`,
@@ -957,8 +962,15 @@ liệt kê target):
     phải có `Dockerfile`, `pnpm-lock.yaml`, `.trivyignore.yaml` (cổng quét đọc file của cây đang build); `plan.sh` build mọi service
     của nguồn mỗi lượt, không base, `promote_charts=false`. Trên máy (chế độ `local`), `ci_repo`, `ci_repo_url`, `ci_commit` đọc origin
     github.com và HEAD của `SVP_CODE_ROOT` (không có origin đó thì lỗi). Thử một chân web từ cây khác:
-    `SVP_CODE_ROOT=<checkout svp-web> deploy/ci/build-image.sh web arm64 "$(mktemp -d)"`. Đẩy image `web-sourcemaps` lên GHCR chưa
-    có (chưa script nào làm).
+    `SVP_CODE_ROOT=<checkout svp-web> deploy/ci/build-image.sh web arm64 "$(mktemp -d)"`. Image source map của web nguồn khác
+    (`gitops-sourcemaps.sh` kéo ẩn danh): `deploy/ci/sourcemaps-image.sh push [--dry-run] ARCH DIR`, `DIR` là thư mục
+    `build-image.sh --sourcemaps-artifact` ghi (đúng `_next/` và `image-digest`, không link; sai thì đỏ trước khi đọc registry); đẩy
+    `<imagePrefix>web-sourcemaps:<ARCH>-<64 hex của image-digest>` dưới prefix của nguồn của lượt (nguồn phải phát hành `web`,
+    `web-sourcemaps` không được là tên trong `services`/`drillImages`) bằng ORAS ghim (`ORAS_IMAGE`), một layer tar+gzip của `_next/`,
+    không ký; chỉ workflow ký của nguồn (`ci_builder_id`) đẩy, cần `docker login`. Tag đã có thì kéo layer (có đăng nhập), kiểm như
+    `gitops-sourcemaps.sh`, so cây với `DIR/_next`: giống thì để nguyên, khác thì đỏ, không ghi đè. `--dry-run` đọc ẩn danh, chỉ in.
+    Test `deploy/ci/sourcemaps-image-test.sh` (job `config`; docker giả trả lời ORAS, đọc lại bằng `image_maps` của
+    `gitops-sourcemaps.sh`).
   - `make helm-check` (`deploy/ci/gitops-check.sh --worktree`, cùng script với check của `svp-gitops`; cần bản clone `../gitops`
     hay `SVP_GITOPS_DIR`): `helm lint` và `helm template` mọi chart của working tree với `base/` của bản clone (`HELM_*_HOME` trong
     thư mục tạm), cộng overlay và file image của từng môi trường `envs/<stg|prd>/` ([ADR-0024](docs/adr/0024-multi-environment.md);

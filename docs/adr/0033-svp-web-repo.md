@@ -453,12 +453,13 @@ nguồn phát hành có prefix, identity, credential riêng nhưng được khai
   đặt `WEB_FROM=clone` (diễn tập build từ mã như nay), `compose-obs` và `gitops` dùng image stg; input mới `web_ref` của `verify.yml` đổi
   commit.
 - **Source map:** mỗi chân build web của `svp-web` (amd64, arm64) đẩy stage `sourcemaps` của chính lần build đó (cùng cache nên cùng bundle,
-  ADR-0019 §9) thành image `ghcr.io/anhnvcoder/svp-web/web-sourcemaps`, tag `<arch>-<hex của digest manifest con>`, bằng docker có sẵn, sau
-  khi đẩy image. `gitops-sourcemaps.sh fetch`: web của stg dưới prefix `svp-web` thì kéo ẩn danh image map theo manifest `linux/amd64` của
-  digest đang chạy, lấy `_next/` ra; dưới prefix backend thì đường artifact cũ (bỏ khi không env nào còn chạy web cũ). Kéo không được: trên
-  nhánh `skipped` như nay (kèm `SVP_WEB_OBS_SKIP_ERRORS=<lý do>`), trên `main` `fail`. Không tải artifact chéo repo, không PAT. Lần kiểm
-  thật đầu là bản phát hành đầu của `svp-web` và lượt `gitops` trên `main` sau nó. `web-sourcemaps` không thuộc `services` hay
-  `drillImages` của nguồn nào nên không pod nào chạy được nó.
+  ADR-0019 §9) thành image `ghcr.io/anhnvcoder/svp-web/web-sourcemaps`, tag `<arch>-<hex của digest manifest con>`, bằng ORAS ghim
+  (`ORAS_IMAGE`, công cụ đã thêm cho hợp đồng ở mục 1; OCI artifact một layer tar+gzip của `_next/`, không cần `Dockerfile` hay build), sau
+  khi đẩy image. Tag đã có thì so theo nội dung (cây file), không ghi đè. `gitops-sourcemaps.sh fetch`: web của stg dưới prefix `svp-web`
+  thì kéo ẩn danh image map theo manifest `linux/amd64` của digest đang chạy, lấy `_next/` ra; dưới prefix backend thì đường artifact cũ
+  (bỏ khi không env nào còn chạy web cũ). Kéo không được: trên nhánh `skipped` như nay (kèm `SVP_WEB_OBS_SKIP_ERRORS=<lý do>`), trên
+  `main` `fail`. Không tải artifact chéo repo, không PAT. Lần kiểm thật đầu là bản phát hành đầu của `svp-web` và lượt `gitops` trên `main`
+  sau nó. `web-sourcemaps` không thuộc `services` hay `drillImages` của nguồn nào nên không pod nào chạy được nó.
 
 ### 8. Lịch sử
 
@@ -653,9 +654,16 @@ PR-1 của mục 9 (phần chuẩn bị ở repo này) hiện thực 2026-10-30,
   `<imagePrefix>(services|drillImages)` của bảng nguồn.
 - Cài đặt GitHub do người học làm: [`docs/runbooks/svp-web-setup.md`](../runbooks/svp-web-setup.md).
 
+Sau PR-1, hai script mà CI `svp-web` gọi từ checkout ghim (2026-10-31, chưa merge):
+
+- Rescan (mục 4): `deploy/ci/rescan.sh run` đòi `--source` bằng nguồn của repo của lượt (`use_build_source`) và `ci_builder_id` bằng
+  `subject` của nguồn, trước khi đọc gì; test ở `deploy/ci/platform-test.sh`.
+- Source map (mục 7): `deploy/ci/sourcemaps-image.sh push [--dry-run] ARCH DIR` và test `deploy/ci/sourcemaps-image-test.sh` (job
+  `config` của `.github/workflows/ci.yml`); `deploy/ci/changed-services.sh` (hai file này không làm build lại image).
+
 Chưa hiện thực:
 
-- Của PR-1 theo mục 9 mà PR này chưa có: đẩy image `web-sourcemaps` lúc build (việc của CI `svp-web`); `compose-obs` nhận
+- Của PR-1 theo mục 9 mà PR này chưa có: gọi `sourcemaps-image.sh push` lúc build (việc của CI `svp-web`); `compose-obs` nhận
   `web_ref` (mục 7 xếp nó vào các kịch bản chạy `make web-clone`; file kịch bản chưa khai `web=1`).
 - PR-2: mặc định `WEB_FROM` thành web của stg, target web thành wrapper, xoá `web/`, `deploy/docker/web.Dockerfile`, job `web` của
   `ci.yml`, `web` khỏi `svp_services`, job `stack` với web stg. PR-3: bỏ `web` khỏi `services` của nguồn `backend`.
