@@ -1549,7 +1549,7 @@ if timeout --version 2>/dev/null | grep -q GNU; then
   rc=$(run_verify part-gitops gitops 'SVP_VERIFY_TARGETS=k8s-smoke release-set-before release-set')
   same "verify-run: gitops with part of its checks in targets fails" 1 "$rc"
   same "verify-run: gitops skips release-set when the targets leave out a check of the set" \
-    "release-set skipped targets leave out gitops-env gitops-external-secrets ram-rest-start drill-k8s-supplychain drill-k8s-threats gitops-sourcemaps k8s-web-e2e drill-k8s-web-obs drill-k8s-keda-1 ram-peak-1 drill-k8s-keda-2 ram-peak-2 ram-rest-end: the set of releases stg ran was not checked by every step" \
+    "release-set skipped targets leave out gitops-env gitops-external-secrets gitops-argocd-metrics ram-rest-start drill-k8s-supplychain drill-k8s-threats gitops-sourcemaps k8s-web-e2e drill-k8s-web-obs drill-k8s-keda-1 ram-peak-1 drill-k8s-keda-2 ram-peak-2 ram-rest-end: the set of releases stg ran was not checked by every step" \
     "$(results part-gitops | awk '$2 == "release-set" { $1 = ""; print substr($0, 2) }')"
   [ ! -e "$work/run-part-gitops.out/release-set.json" ] && ok "verify-run: gitops with part of its checks writes no release-set.json" ||
     fail "verify-run: gitops with part of its checks writes no release-set.json"

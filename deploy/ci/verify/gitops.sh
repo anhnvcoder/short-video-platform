@@ -38,6 +38,12 @@
 #                          the type and exactly the keys
 #                          its ExternalSecret names (those of its template, or of its data without one): one line per
 #                          Secret. Only the names of the keys leave kubectl's pipe, never a value
+#   gitops-argocd-metrics  Prometheus scrapes Argo CD's view of the Applications (PodMonitor argocd-application-controller
+#                          of chart svp-observability): within 180 s, argocd_app_info has one series per Application of
+#                          namespace argocd and every one is Synced and Healthy, and no ArgoCDApplication* alert fires.
+#                          Read through a port-forward of Prometheus on 127.0.0.1:19091. When the charts stg runs
+#                          (envs/stg/charts.yaml of svp-gitops) predate that PodMonitor, it says so and passes: the
+#                          check starts with the first promote that brings it
 #   release-set-before     deploy/ci/release-set.sh snapshot --settle: first waits, for up to 300 s, until every Application
 #                          is Synced and Healthy on two reads in a row (a service's autoscaler is briefly Degraded
 #                          until metrics-server has a sample of its new pods), then records what stg runs right before k8s-smoke (the revision of
@@ -137,6 +143,47 @@ gitops_env() {
     return 1
   fi
   echo "ok    the staging overlay is applied"
+}
+
+# gitops_argocd_metrics: see gitops-argocd-metrics in the header.
+gitops_argocd_metrics() {
+  local file=deploy/helm/svp-observability/templates/argocd.yaml port=19091 rev apps pid deadline got healthy firing
+  rev=$(gitops_charts_rev) && [[ $rev =~ ^[0-9a-f]{40}$ ]] || {
+    echo "FAIL  gitops-argocd-metrics: read the commit envs/stg/charts.yaml of svp-gitops pins"
+    return 1
+  }
+  if ! git -C "$repo" cat-file -e "$rev:$file" 2>/dev/null; then
+    echo "skipped: the charts stg runs (${rev:0:12}) have no $file yet; checked from the first promote that brings it"
+    return 0
+  fi
+  apps=$(kc -n argocd get applications.argoproj.io -o name | grep -c .) || {
+    echo "FAIL  gitops-argocd-metrics: list the Applications of namespace argocd"
+    return 1
+  }
+  kc -n svp-obs port-forward --address 127.0.0.1 service/kps-prometheus "$port:9090" >/dev/null 2>&1 &
+  pid=$!
+  # q QUERY: the value of the first sample of QUERY, 0 when it has none or Prometheus did not answer.
+  q() {
+    curl -sf --max-time 10 "http://127.0.0.1:$port/api/v1/query" --data-urlencode "query=$1" |
+      jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo 0
+  }
+  deadline=$((SECONDS + 180))
+  while :; do
+    got=$(q 'count(argocd_app_info)')
+    healthy=$(q 'count(argocd_app_info{sync_status="Synced",health_status="Healthy"})')
+    [ "$got" = "$apps" ] && [ "$healthy" = "$apps" ] && break
+    [ "$SECONDS" -lt "$deadline" ] || break
+    sleep 10
+  done
+  firing=$(q 'count(ALERTS{alertname=~"ArgoCDApplication.*",alertstate="firing"})')
+  kill "$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null
+  echo "Applications: $apps; argocd_app_info series: $got, Synced and Healthy: $healthy; ArgoCDApplication* firing: $firing"
+  if [ "$got" != "$apps" ] || [ "$healthy" != "$apps" ] || [ "$firing" != 0 ]; then
+    echo "FAIL  gitops-argocd-metrics: Prometheus must see every Application Synced and Healthy within 180 s, with no ArgoCDApplication* alert firing"
+    return 1
+  fi
+  echo "ok    Prometheus sees every Application of Argo CD, all Synced and Healthy"
 }
 
 # gitops_external_secrets: see gitops-external-secrets in the header.
@@ -323,8 +370,8 @@ gitops_sourcemaps() {
     ;;
   esac
 }
-export -f gitops_up gitops_charts_rev gitops_env gitops_external_secrets gitops_no_provenance gitops_stale \
-  gitops_supplychain gitops_sourcemaps
+export -f gitops_up gitops_charts_rev gitops_env gitops_external_secrets gitops_argocd_metrics gitops_no_provenance \
+  gitops_stale gitops_supplychain gitops_sourcemaps
 
 scenario_targets() {
   local round maps maps_status maps_reason no_maps before_status smoke_status listed unchecked=
@@ -339,6 +386,7 @@ scenario_targets() {
   # leaves the script time to name the Application that did not settle before the step is cut.
   step release-set-before 8 "$here/release-set.sh" snapshot --settle "$SVP_VERIFY_OUT/release-set/before.json"
   before_status=$last_status
+  step gitops-argocd-metrics 5 bash -c gitops_argocd_metrics
   step k8s-smoke 15 make k8s-smoke
   smoke_status=$last_status
   step ram-rest-start 15 bash -c 'ram_rest start'

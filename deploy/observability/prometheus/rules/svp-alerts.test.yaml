@@ -1538,3 +1538,110 @@ tests:
       - eval_time: 3h
         alertname: PostgresWALArchivingFailing
         exp_alerts: []
+
+  # Argo CD: series scraped from the application controller end with `stale` (a scrape staleness marker) when the
+  # Application's status changes; the next status is a new series.
+  # gateway turns Degraded at 5m: pending until 15m, fires after; healthy before, never ArgoCDApplicationNotConverged.
+  - interval: 1m
+    input_series:
+      - series: 'argocd_app_info{job="svp-obs/argocd-application-controller",namespace="argocd",name="gateway",dest_namespace="svp",sync_status="Synced",health_status="Healthy"}'
+        values: '1x4 stale'
+      - series: 'argocd_app_info{job="svp-obs/argocd-application-controller",namespace="argocd",name="gateway",dest_namespace="svp",sync_status="Synced",health_status="Degraded"}'
+        values: '_x5 1x20'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: ArgoCDApplicationDegraded
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: ArgoCDApplicationDegraded
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              name: gateway
+              dest_namespace: svp
+            exp_annotations:
+              summary: "Argo CD Application gateway (svp): Degraded, Missing or Unknown for 10 minutes"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/argocd-application-degraded.md"
+      - eval_time: 16m
+        alertname: ArgoCDApplicationNotConverged
+        exp_alerts: []
+
+  # Degraded for 5 minutes, then Missing: one Application across the change of label, so it fires 10 minutes after
+  # the first, not after the second.
+  - interval: 1m
+    input_series:
+      - series: 'argocd_app_info{job="svp-obs/argocd-application-controller",namespace="argocd",name="gateway",dest_namespace="svp",sync_status="Synced",health_status="Degraded"}'
+        values: '1x4 stale'
+      - series: 'argocd_app_info{job="svp-obs/argocd-application-controller",namespace="argocd",name="gateway",dest_namespace="svp",sync_status="OutOfSync",health_status="Missing"}'
+        values: '_x5 1x20'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ArgoCDApplicationDegraded
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              name: gateway
+              dest_namespace: svp
+            exp_annotations:
+              summary: "Argo CD Application gateway (svp): Degraded, Missing or Unknown for 10 minutes"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/argocd-application-degraded.md"
+
+  # Degraded for 8 minutes, then Healthy again (a pod that crashed while its node restarted): never fires.
+  - interval: 1m
+    input_series:
+      - series: 'argocd_app_info{job="svp-obs/argocd-application-controller",namespace="argocd",name="gateway",dest_namespace="svp",sync_status="Synced",health_status="Degraded"}'
+        values: '1x7 stale'
+      - series: 'argocd_app_info{job="svp-obs/argocd-application-controller",namespace="argocd",name="gateway",dest_namespace="svp",sync_status="Synced",health_status="Healthy"}'
+        values: '_x8 1x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ArgoCDApplicationDegraded
+        exp_alerts: []
+
+  # OutOfSync for good (the automated sync keeps failing) while what runs stays Healthy: a ticket after 30 minutes.
+  - interval: 1m
+    input_series:
+      - series: 'argocd_app_info{job="svp-obs/argocd-application-controller",namespace="argocd",name="gateway",dest_namespace="svp",sync_status="OutOfSync",health_status="Healthy"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 29m
+        alertname: ArgoCDApplicationNotConverged
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: ArgoCDApplicationNotConverged
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              name: gateway
+              dest_namespace: svp
+            exp_annotations:
+              summary: "Argo CD Application gateway (svp): not Synced and Healthy for 30 minutes"
+              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/argocd-application-degraded.md"
+      - eval_time: 31m
+        alertname: ArgoCDApplicationDegraded
+        exp_alerts: []
+
+  # A canary paused (Suspended) for 20 minutes, then Healthy: under 30 minutes, no ticket.
+  - interval: 1m
+    input_series:
+      - series: 'argocd_app_info{job="svp-obs/argocd-application-controller",namespace="argocd",name="gateway",dest_namespace="svp",sync_status="Synced",health_status="Suspended"}'
+        values: '1x19 stale'
+      - series: 'argocd_app_info{job="svp-obs/argocd-application-controller",namespace="argocd",name="gateway",dest_namespace="svp",sync_status="Synced",health_status="Healthy"}'
+        values: '_x20 1x20'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: ArgoCDApplicationNotConverged
+        exp_alerts: []
+
+  # No Argo CD (compose, the dev path): no series, neither alert.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="svp-obs/svp-pg"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 1h
+        alertname: ArgoCDApplicationDegraded
+        exp_alerts: []
+      - eval_time: 1h
+        alertname: ArgoCDApplicationNotConverged
+        exp_alerts: []
