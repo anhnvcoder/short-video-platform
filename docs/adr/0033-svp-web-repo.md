@@ -446,8 +446,9 @@ nguồn phát hành có prefix, identity, credential riêng nhưng được khai
   một bản cho sẵn. Mặc định đổi ở PR-2 (trước đó không đặt `WEB_FROM` là `clone`, và `web_dir` lùi về `web/` của repo này khi không có
   bản clone).
 - Target cần mã web (`web-e2e`, `measure-web`, `measure-upload`, `web-lighthouse`, `web-sourcemaps`, `k8s-web-e2e`, `k8s-web-sourcemaps`,
-  `drill-k8s-web-canary`) giữ tên trong `Makefile` backend để bước của `verify.yml` không đổi, và thành wrapper gọi target của `svp-web`
-  trong `web_dir`. Mã test và đo (spec e2e, `lighthouse/run.sh`, client canary, `measure-upload.e2e.ts`) ở `svp-web`; harness (stack,
+  `drill-k8s-web-canary`) giữ tên trong `Makefile` backend để bước của `verify.yml` không đổi; bảy target đầu thành wrapper gọi target của
+  `svp-web` trong `web_dir`, còn `drill-k8s-web-canary` vẫn là drill của backend (`svp-web` không có target canary), chạy client
+  `e2e/canary/clients.ts` của `web_dir` bằng Node theo `.nvmrc` của nó. Mã test và đo (spec e2e, `lighthouse/run.sh`, client canary, `measure-upload.e2e.ts`) ở `svp-web`; harness (stack,
   cluster, `deploy/compose/lib.sh`, `deploy/k8s/lib.sh`, xoá khoá rate limit) ở backend. `svp-web` tìm backend qua `SVP_BACKEND_DIR`
   (mặc định `<workspace>/backend`; CI: checkout của bước đó). Không target nào chép giữa hai repo.
 - Kịch bản `verify.yml`: `compose-obs`, `dev-k3d`, `web-canary`, `gitops` chạy `make web-clone` trước bước dựng (bước riêng
