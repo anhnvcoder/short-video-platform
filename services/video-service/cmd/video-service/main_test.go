@@ -18,7 +18,8 @@ import (
 func setStorageEnv(t *testing.T, env map[string]string) {
 	t.Helper()
 	for _, name := range []string{"S3_ENDPOINT", "S3_PUBLIC_ENDPOINT", "S3_REGION", "S3_ACCESS_KEY_ID",
-		"S3_SECRET_ACCESS_KEY", "S3_UPLOADS_BUCKET", "S3_MEDIA_BUCKET"} {
+		"S3_SECRET_ACCESS_KEY", "S3_UPLOADS_BUCKET", "S3_MEDIA_BUCKET", "S3_CREDENTIALS", "S3_PATH_STYLE",
+		"AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE"} {
 		t.Setenv(name, env[name])
 	}
 }
@@ -159,6 +160,7 @@ func TestStorageConfigDefaults(t *testing.T) {
 		Endpoint:        "http://s3:9000",
 		PublicEndpoint:  "http://s3:9000",
 		Region:          "us-east-1",
+		Credentials:     objstore.CredentialsStatic,
 		AccessKeyID:     "svp-video-service",
 		SecretAccessKey: "secret-value",
 		UploadsBucket:   "uploads",
@@ -189,6 +191,30 @@ func TestStorageConfigSetValues(t *testing.T) {
 	}
 }
 
+// On EKS: the credential of Pod Identity, the bucket in the host name.
+func TestStorageConfigContainerCredentials(t *testing.T) {
+	setStorageEnv(t, map[string]string{ //nolint:gosec // variable names and a path, not a secret
+		"S3_ENDPOINT":                            "https://s3.ap-southeast-1.amazonaws.com",
+		"S3_REGION":                              "ap-southeast-1",
+		"S3_CREDENTIALS":                         "container",
+		"S3_PATH_STYLE":                          "false",
+		"AWS_CONTAINER_CREDENTIALS_FULL_URI":     "http://169.254.170.23/v1/credentials",
+		"AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE": "/var/run/secrets/pods.eks.amazonaws.com/serviceaccount/eks-pod-identity-token",
+	})
+	got, err := storageConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Credentials != objstore.CredentialsContainer || !got.VirtualHosted || got.AccessKeyID != "" ||
+		got.ContainerCredentialsURI != "http://169.254.170.23/v1/credentials" ||
+		got.PublicEndpoint != "https://s3.ap-southeast-1.amazonaws.com" {
+		t.Errorf("storageConfig() = %+v", got)
+	}
+	if _, err := objstore.New(got); err != nil {
+		t.Errorf("objstore.New() of the container config: %v", err)
+	}
+}
+
 func TestStorageConfigErrorsNameTheVariable(t *testing.T) {
 	valid := map[string]string{
 		"S3_ENDPOINT":          "http://s3:9000",
@@ -203,6 +229,9 @@ func TestStorageConfigErrorsNameTheVariable(t *testing.T) {
 		{"bad public endpoint", "S3_PUBLIC_ENDPOINT", "127.0.0.1:9000"},
 		{"missing access key", "S3_ACCESS_KEY_ID", ""},
 		{"missing secret key", "S3_SECRET_ACCESS_KEY", ""},
+		{"unknown credential mode", "S3_CREDENTIALS", "env"},
+		{"container with a static key", "S3_CREDENTIALS", "container"},
+		{"bad path style", "S3_PATH_STYLE", "yes"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := map[string]string{}

@@ -3,7 +3,11 @@ The object store s3 (RustFS) in place of compose's (threat model UP-4, UP-5, UP-
 users, policies and per-bucket CORS rules, made by the same deploy/s3/init.sh. Services reach it at s3.svp-data:9000;
 the host reaches it at https://s3.svp.localhost:8443 through Gateway svp (presigned POST uploads, HLS playback). No
 web console: it is turned off, so no port of the pod serves one.
+
+None of it with s3.mode external: the managed store's buckets, CORS rules, users and policies are made outside the
+cluster.
 */}}
+{{- if not (include "svp-data.s3External" .) }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -198,3 +202,4 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 16Mi
+{{- end }}

@@ -1,0 +1,12 @@
+# Example values of an EKS cluster whose Postgres is Amazon RDS and whose object store is Amazon S3, to render and check
+# the egress by address (helm template -f this file, over a release's own values). Placeholders only: the real CIDRs
+# (the database subnets, the S3 ranges of the region) come from the cluster's Terraform outputs; the S3 ones here are
+# documentation addresses.
+externalPeers:
+  postgres:
+    - {cidr: 10.0.48.0/24, ports: [5432]}
+    - {cidr: 10.0.49.0/24, ports: [5432]}
+  s3:
+    - {cidr: 198.51.100.0/24, ports: [443]}
+    - {cidr: 203.0.113.0/24, ports: [443]}
+    - {cidr: 169.254.170.23/32, ports: [80]}

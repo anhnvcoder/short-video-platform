@@ -91,10 +91,11 @@
 #   PSA-platform every namespace but kube-system, kube-public, kube-node-lease and default (the platform charts'
 #              included: cert-manager, envoy-gateway-system, cnpg-system, keda, argo-rollouts, kyverno, argocd on the
 #              GitOps path) enforces PSA restricted at the podSecurityVersion of chart svp-cluster, and every namespace
-#              of argocd/apps/components.json of svp-gitops exists; default, kube-public and kube-node-lease carry no
-#              PSA label and the cluster default (deploy/k8s/pod-security-admission.yaml) refuses a privileged pod with
-#              the node's / as hostPath there, restricted at that version (server-side dry run). Control: a restricted
-#              pod is admitted in each. kube-system, exempt from the default, is printed as info with its reason;
+#              of argocd/apps/components.json of svp-gitops that runs on k3d exists; default, kube-public and
+#              kube-node-lease carry no PSA label and the cluster default (deploy/k8s/pod-security-admission.yaml)
+#              refuses a privileged pod with the node's / as hostPath there, restricted at that version (server-side
+#              dry run). Control: a restricted pod is admitted in each. kube-system, exempt from the default, is
+#              printed as info with its reason;
 #   WEB-7      a drill user registers through the web client's /register form at https://svp.localhost:8443 (posted as a
 #              browser without JavaScript posts it: the form's hidden Server Action fields, read from the page, then the
 #              user's fields; the session cookie __Host-Http-svp_sid stays in a private cookie jar). With that session,
@@ -1684,7 +1685,9 @@ rl1() {
 # the namespace itself, visible there and independent of the API server's configuration, and the default is only the
 # net for a namespace whose label is missing. Every namespace counts, not a list kept here: one that a new chart
 # brings without the label fails. Each namespace of argocd/apps/components.json of svp-gitops (the clone gitops_dir of
-# deploy/k8s/lib.sh names, the file the cluster was installed from) must be among them.
+# deploy/k8s/lib.sh names, the file the cluster was installed from) must be among them, but those of a component that
+# names its platforms without k3d (field platforms; absent: every platform): this drill runs on k3d only, and such a
+# component (an EKS controller, say) is never installed here.
 # default, kube-public and kube-node-lease have no label: there the cluster default of the API server
 # (deploy/k8s/pod-security-admission.yaml) holds, shown by a privileged pod it refuses at the same level and version;
 # a label on one of them (privileged, say) would override the default, so they must have none.
@@ -1700,12 +1703,13 @@ psa_platform() {
     [[ $level == restricted && $got == "$version" ]] && ok "PSA-platform: namespace $ns enforces PSA restricted $version" ||
       miss "PSA-platform: namespace $ns enforces PSA restricted $version (got enforce '$level', version '$got')"
   done <"$work/psa-namespaces"
-  # A component of the GitOps path only (gitopsOnly: External Secrets Operator) has its namespace there only.
+  # A component of the GitOps path only (gitopsOnly: External Secrets Operator) has its namespace there only, one of
+  # another platform (platforms without k3d) none at all.
   local gitops=false
   if kc get namespace argocd >/dev/null 2>&1; then gitops=true; fi
   components=$(gitops_dir)/argocd/apps/components.json || fail "PSA-platform: the clone of svp-gitops (above)"
-  for ns in $(jq -r --argjson gitops "$gitops" '.components[] | select($gitops or .gitopsOnly != true) | .namespace' \
-    "$components" | sort -u); do
+  for ns in $(jq -r --argjson gitops "$gitops" '.components[] | select($gitops or .gitopsOnly != true)
+    | select((has("platforms") | not) or (.platforms | index("k3d")) != null) | .namespace' "$components" | sort -u); do
     awk -F '\t' -v ns="$ns" '$1 == ns { found = 1 } END { exit !found }' "$work/psa-namespaces" ||
       miss "PSA-platform: namespace $ns of argocd/apps/components.json of svp-gitops exists"
   done

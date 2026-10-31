@@ -47,6 +47,9 @@ spec:
   policyTypes: [Ingress, Egress]
   ingress: []
   egress:
+    {{- with .Values.externalPeers.postgres }}
+    {{- include "svp-service.externalEgress" (dict "name" "postgres" "entries" .) | trim | nindent 4 }}
+    {{- else }}
     - to:
         {{- include "svp-service.peerSelector" .Values.peers.postgres | nindent 8 }}
       ports:
@@ -54,6 +57,7 @@ spec:
         - protocol: TCP
           port: {{ . }}
         {{- end }}
+    {{- end }}
 ---
 apiVersion: batch/v1
 kind: Job

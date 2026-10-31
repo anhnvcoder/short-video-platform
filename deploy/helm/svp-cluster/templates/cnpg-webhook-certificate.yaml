@@ -19,6 +19,7 @@ are refused meanwhile (failurePolicy Fail) and retried by whoever made them, as 
 deploy/k8s/install.sh waits for this certificate before installing the operator, so the operator never starts without
 it and makes one of its own; on the GitOps path Argo CD's health check of Certificates does the same between waves.
 */}}
+{{- if .Values.cloudnativePG.enabled }}
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
@@ -44,3 +45,4 @@ spec:
     group: cert-manager.io
     kind: Issuer
     name: cnpg-selfsigned
+{{- end }}

@@ -4,6 +4,17 @@
 # services. Every Secret it reads is written by deploy/k8s/secrets.sh from .env before this release; none is in git.
 
 postgres:
+  # cluster: Postgres svp-pg run by CloudNativePG in this namespace, with its WAL and base backups in the object store s3
+  # (templates/postgres.yaml, backup.yaml). external: a managed Postgres outside the cluster (Amazon RDS), which keeps
+  # its own backups: no Cluster, no backup, and Service svp-pg-rw becomes an ExternalName for external.host, so every
+  # connection string (svp-pg-rw.svp-data:5432) is the same on every platform. The pg-bootstrap Job still makes the
+  # roles and databases there, as the login of Secret pg-superuser (on RDS its master user, postgres).
+  mode: cluster
+  external:
+    # DNS name of the managed Postgres (an RDS endpoint), and the CIDRs its addresses are in (the database subnets),
+    # the only addresses the pg-bootstrap Job may reach on 5432.
+    host: ""
+    cidrs: []
   # Major 15 like the host's Postgres the tests run on; minimal: no extension is needed.
   image: ghcr.io/cloudnative-pg/postgresql:15.19-minimal-trixie@sha256:f6091200bc5e1926efea8babe8a511d091e9a253d8f33fe4e920d0e89a67b57e
   storage: 2Gi
@@ -44,6 +55,10 @@ valkey:
     limits: {cpu: "1", memory: 128Mi}
 
 s3:
+  # cluster: the object store s3 below, with its init Job and route. external: a managed object store outside the
+  # cluster (Amazon S3, served through CloudFront), whose buckets, CORS rules and policies are made by Terraform:
+  # nothing of the store is rendered here. Postgres archives into s3, so external needs postgres.mode external too.
+  mode: cluster
   # The object store, the same image as compose's s3 (RustFS), pinned by the digest of its multi-arch index.
   image: docker.io/rustfs/rustfs:1.0.4@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2
   storage: 5Gi

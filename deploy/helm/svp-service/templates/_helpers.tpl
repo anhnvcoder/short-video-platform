@@ -66,6 +66,26 @@ A peer of .Values.peers as one entry of a NetworkPolicy's `from` or `to`: its na
 {{- end }}
 
 {{- /*
+The egress rules to a peer of .Values.externalPeers (dict: name, entries): one rule per entry, its ipBlock and ports.
+An entry for every address is refused: a service reaches its managed peer's own ranges, never the internet.
+*/}}
+{{- define "svp-service.externalEgress" -}}
+{{- range .entries }}
+{{- if not (and .cidr .ports) }}{{ fail (printf "externalPeers.%s: every entry needs a cidr and ports" $.name) }}{{ end }}
+{{- range $key, $_ := . }}{{ if not (has $key (list "cidr" "ports")) }}{{ fail (printf "externalPeers.%s: unknown key %q (an entry has cidr and ports only)" $.name $key) }}{{ end }}{{ end }}
+{{- if has .cidr (list "0.0.0.0/0" "::/0") }}{{ fail (printf "externalPeers.%s: %s is every address; list the service's own ranges" $.name .cidr) }}{{ end }}
+- to:
+    - ipBlock:
+        cidr: {{ .cidr }}
+  ports:
+    {{- range .ports }}
+    - protocol: TCP
+      port: {{ . }}
+    {{- end }}
+{{- end }}
+{{- end }}
+
+{{- /*
 Name of the release's HTTPRoute: httpRoute.name, or the release's name. The gateway keeps the name api it always had,
 which the drills, measure-canary and Argo CD's ignoreDifferences read.
 */}}

@@ -5,12 +5,13 @@
 //
 //	serve  run the worker (default when no subcommand is given)
 //
-// Configuration comes from the environment: KAFKA_BROKERS, S3_ENDPOINT,
-// S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY (required), S3_REGION (default us-east-1),
-// S3_UPLOADS_BUCKET (default uploads), S3_MEDIA_BUCKET (default media) and WORK_DIR (default
-// /work). The OTEL_* variables send traces, metrics and logs to the Collector; the worker has no
-// profiler and no error tracker, since its network reaches only Redpanda, the object store and the
-// Collector, and ffmpeg runs as a child process the profiler would not see.
+// Configuration comes from the environment: KAFKA_BROKERS and S3_ENDPOINT (required), the
+// credential (S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY by default) and S3_PATH_STYLE as
+// objstore.Config.ReadAccessEnv reads them, S3_REGION (default us-east-1), S3_UPLOADS_BUCKET
+// (default uploads), S3_MEDIA_BUCKET (default media) and WORK_DIR (default /work). The OTEL_*
+// variables send traces, metrics and logs to the Collector; the worker has no profiler and no
+// error tracker, since its network reaches only Redpanda, the object store and the Collector, and
+// ffmpeg runs as a child process the profiler would not see.
 package main
 
 import (
@@ -86,8 +87,6 @@ func loadConfig() (config, error) {
 	}{
 		{"KAFKA_BROKERS", &cfg.brokers},
 		{"S3_ENDPOINT", &cfg.store.Endpoint},
-		{"S3_ACCESS_KEY_ID", &cfg.store.AccessKeyID},
-		{"S3_SECRET_ACCESS_KEY", &cfg.store.SecretAccessKey},
 	}
 	for _, r := range required {
 		v, err := envcfg.Required(r.name)
@@ -99,6 +98,9 @@ func loadConfig() (config, error) {
 	// A malformed endpoint would fail every request at run time, and after the retries every
 	// video as RETRIES_EXHAUSTED: stop at startup instead.
 	if err := checkEndpoint("S3_ENDPOINT", cfg.store.Endpoint); err != nil {
+		return config{}, err
+	}
+	if err := cfg.store.ReadAccessEnv(); err != nil {
 		return config{}, err
 	}
 	return cfg, nil

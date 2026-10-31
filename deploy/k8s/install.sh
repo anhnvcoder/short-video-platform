@@ -8,8 +8,10 @@
 # A component is an upstream chart (repo + chart + version; a Helm OCI repository is written oci://...) or a chart in
 # this repository (path, read from this working tree), with an optional values file relative to the top of the clone
 # of svp-gitops. A component with gitopsOnly (External Secrets Operator) belongs to the GitOps path alone and is
-# skipped here: the dev path's Secrets come from .env through deploy/k8s/secrets.sh. Run by `make k8s-up` after the
-# registry and the cluster exist; running it again only upgrades what changed.
+# skipped here: the dev path's Secrets come from .env through deploy/k8s/secrets.sh. So is a component whose platforms
+# leave out k3d (a controller of the cloud, such as AWS Load Balancer Controller): the dev path's cluster is k3d, and no
+# platforms means every platform. Run by `make k8s-up` after the registry and the cluster exist; running it again only
+# upgrades what changed.
 set -euo pipefail
 
 # shellcheck source=deploy/k8s/lib.sh
@@ -17,7 +19,17 @@ set -euo pipefail
 
 gitops=$(gitops_dir) || exit 1
 components="$gitops/argocd/apps/components.json"
+# The components the dev path installs, a jq filter on an entry of components.json (see the header).
+dev_path='.gitopsOnly != true and ((has("platforms") | not) or (.platforms | index("k3d")) != null)'
 command -v jq >/dev/null || fail "jq not found (brew install jq)"
+# The GitOps root gives a component on k3d the values of platforms/k3d/ too (a file, and what it renders from a
+# template on the values of the root, which only the root has); this path reads base/ alone. base/ is written for
+# k3d, the dev path's cluster, so a value of k3d goes there, read by both paths: a file under platforms/k3d/ would
+# make this path install something other than what Argo CD runs on k3d, without a word.
+for f in "$gitops"/platforms/k3d/*; do
+  [ -e "$f" ] && [ "$(basename "$f")" != README.md ] || continue
+  fail "${f#"$gitops"/} is read on k3d by the GitOps root but not by the dev path: put values of k3d into base/, which both paths read"
+done
 kc get --raw /readyz >/dev/null 2>&1 || fail "cluster svp is not reachable (context k3d-svp); run make k8s-up"
 # A cluster made by `make k8s-gitops-up` belongs to Argo CD: Helm releases installed over its Applications would be
 # reverted by its self-heal, or fight it on every sync. It changes through git (deploy/k8s/gitops.sh says how a
@@ -263,7 +275,7 @@ pg_backup_sets() {
 # the same release built for amd64. Both files must name one release, so a new release cannot update one pin and leave
 # the other behind: each holds exactly one plugin location, and the locations differ only in the asset's name.
 rollouts_plugin_check() {
-  local file loc release= all
+  local file loc release='' all
   all=$(jq -r '.components[] | select(.name == "argo-rollouts") | .values, ((.archValues // {})[])' "$components") ||
     fail "read the values files of argo-rollouts in $components"
   for file in $all; do
@@ -471,7 +483,7 @@ test_ge() {
 # The project's namespaces (namespaces of svp-cluster's values, with the same labels too) are made here as well: Envoy
 # Gateway, of wave 0, binds a Role in each namespace it watches (base/envoy-gateway.yaml), and Helm
 # cannot create a Role in a namespace that does not exist yet. svp-cluster takes them over (--take-ownership below).
-wave0=$(jq -c '[.components[] | select(.wave == 0 and .gitopsOnly != true) | {name: .namespace}] | unique' "$components") ||
+wave0=$(jq -c "[.components[] | select(.wave == 0 and $dev_path) | {name: .namespace}] | unique" "$components") ||
   fail "read the namespaces of wave 0 in $components"
 hc template svp-cluster "$repo_root/deploy/helm/svp-cluster" --show-only templates/namespaces.yaml \
   --set-json "platformNamespaces=$wave0" |
@@ -492,7 +504,7 @@ esac
 # One line per component, fields separated by the ASCII unit separator: empty fields (no path, no values) must survive
 # `read`, which collapses runs of whitespace separators such as tabs.
 sep=$'\x1f'
-lines=$(jq -r --arg arch "$node_arch" '.components | sort_by(.wave) | .[] | select(.gitopsOnly != true)
+lines=$(jq -r --arg arch "$node_arch" '.components | sort_by(.wave) | .[] | select('"$dev_path"')
   | [.name, .namespace, (.wave | tostring), (.path // ""), (.repo // ""), (.chart // ""), (.version // ""),
      (.values // ""), (.canaryRoute // ""), ((.archValues // {})[$arch] // "")] | join("\u001f")' "$components") ||
   fail "read $components"

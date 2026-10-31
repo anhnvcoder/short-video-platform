@@ -91,6 +91,12 @@ argocd:
 # Postgres svp-pg in svp-data, the only peer outside svp-obs that GlitchTip and its init Job call; Prometheus scrapes its
 # instance's exporter on metricsPort (PodMonitor svp-pg), the port CloudNativePG names metrics.
 postgres:
+  # cluster: CloudNativePG runs svp-pg in namespace, its pods chosen by labels. external: a managed Postgres outside the
+  # cluster (Amazon RDS; postgres.mode of chart svp-data, which keeps the host svp-pg-rw.svp-data): GlitchTip reaches it
+  # at the addresses of external.cidrs on port, and nothing scrapes it (no PodMonitor, no egress to metricsPort).
+  mode: cluster
+  external:
+    cidrs: []
   namespace: svp-data
   labels: {cnpg.io/cluster: svp-pg}
   port: 5432

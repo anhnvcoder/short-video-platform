@@ -157,6 +157,17 @@ peers:
     labels: {app.kubernetes.io/name: glitchtip, app.kubernetes.io/component: server}
     ports: [8000]
 
+# Peers that are not pods of the cluster where the cluster uses a managed service instead (EKS: Postgres on Amazon RDS,
+# objects on Amazon S3), by address: name of a peer above -> list of {cidr, ports}, each one rule of the egress of
+# every release whose egressTo names that peer, and of the migrate Job for postgres. Such an entry takes the place of
+# the peer's pods. Empty: every peer is the pods above. On EKS, postgres is the database subnets' CIDRs on 5432; s3 is
+# TCP 443 to each IPv4 range AWS publishes for S3 in the cluster's region (the addresses the VPC's gateway endpoint
+# routes; they change over time, so the list is read when the cluster's Terraform is applied), never 0.0.0.0/0:
+# media-worker runs ffmpeg on uploaded files, and a worker taken over by a crafted file must not reach any other host.
+# s3 also holds the EKS Pod Identity Agent, 169.254.170.23/32 TCP 80, where the pods that reach S3 (the only ones with
+# an AWS role) get their credentials. An entry of 0.0.0.0/0 or ::/0 fails the render.
+externalPeers: {}
+
 # HTTPRoute on Gateway svp (svp-edge) to this release's Service, for a release that sets a host (the gateway, the web
 # client); no other service is reached from outside the cluster. name: the route's name, empty for the release's name
 # (the canary's Envoy cluster and the Rollout's traffic routing follow it). sectionName: the listener of Gateway svp it

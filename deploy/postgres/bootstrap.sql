@@ -1,6 +1,7 @@
 -- Roles and database of one service: a migrator that owns the schema and an app role limited to DML, so a running
--- service that is compromised cannot change its schema. Idempotent: run it as the local superuser any number of
--- times. bootstrap.sh runs it once per service with
+-- service that is compromised cannot change its schema. Idempotent: run it any number of times, as a superuser (the
+-- local Postgres, CloudNativePG's svp-pg) or as a role with only CREATEROLE and CREATEDB (the master user of Amazon
+-- RDS, a member of rds_superuser, which is no superuser). bootstrap.sh runs it once per service with
 --   psql -v db=<database> -v migrator=<role> -v app=<role>
 -- and the two role passwords in the environment variables SVP_MIGRATOR_PASSWORD and
 -- SVP_APP_PASSWORD, so they never appear on a command line.
@@ -15,10 +16,27 @@ SELECT format('CREATE ROLE %I', :'migrator')
 WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'migrator') \gexec
 SELECT format('CREATE ROLE %I', :'app')
 WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'app') \gexec
+-- Only a superuser may name SUPERUSER, REPLICATION or BYPASSRLS in ALTER ROLE, even to clear them. A superuser clears
+-- them; any other role cannot have given them, so it checks instead that neither role has one (a superuser gave it) and
+-- stops if so.
+SELECT rolsuper AS is_superuser FROM pg_roles WHERE rolname = current_user \gset
+\if :is_superuser
 ALTER ROLE :"migrator" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
     PASSWORD :'migrator_password';
 ALTER ROLE :"app" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
     PASSWORD :'app_password';
+\else
+ALTER ROLE :"migrator" WITH LOGIN NOCREATEDB NOCREATEROLE PASSWORD :'migrator_password';
+ALTER ROLE :"app" WITH LOGIN NOCREATEDB NOCREATEROLE PASSWORD :'app_password';
+SELECT format('DO $$BEGIN RAISE EXCEPTION %L; END$$',
+    format('role %s has SUPERUSER, REPLICATION or BYPASSRLS, which only a superuser can clear', rolname))
+FROM pg_roles
+WHERE rolname IN (:'migrator', :'app') AND (rolsuper OR rolreplication OR rolbypassrls) \gexec
+-- CREATE DATABASE ... OWNER, ALTER DATABASE ... OWNER TO and ALTER DEFAULT PRIVILEGES FOR ROLE need the running role
+-- to be a member of the migrator (a superuser is taken as a member of every role). Granted again on every run, which
+-- only notes it is there already.
+GRANT :"migrator" TO CURRENT_USER;
+\endif
 
 -- Database owned by the migrator. Only the owner (implicitly) and the app role may connect:
 -- roles of other services cannot.

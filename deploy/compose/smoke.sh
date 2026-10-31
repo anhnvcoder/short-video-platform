@@ -25,7 +25,10 @@
 # The same steps run against the local k3d cluster svp with `make k8s-smoke`: base
 # https://api.svp.localhost:8443, CURL_CA_BUNDLE=.k8s/ca.crt so curl trusts the cluster's CA for
 # the API and the storage alike, and SVP_STACK=k3d so lib.sh resets the limit in the cluster's
-# Valkey (kubectl, context k3d-svp) instead of the host's Redis.
+# Valkey (kubectl, context k3d-svp) instead of the host's Redis. Against an EKS cluster of the
+# project with `make eks-smoke`: base https://api.<domain>, whose certificates are public ones (no
+# CURL_CA_BUNDLE), and SVP_STACK=eks with SVP_KUBE_CONTEXT svp-stg or svp-prd, the cluster whose
+# Valkey lib.sh resets the limit in.
 set -euo pipefail
 
 base=${1:-http://127.0.0.1:8080}
@@ -192,11 +195,16 @@ cache_control() {
 }
 uuid_re='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
 immutable='max-age=31536000, immutable'
-playlist_key=${playlist_url#*/media/}
+# playlist_url is <media base>/<key> and every key starts with media/<video_id>/. The media base is the bucket's URL
+# on a path-style store (<store>/media) and the CDN's origin on a cloud (https://<cdn domain>, whose paths are keys).
+# A URL without media/<video_id>/ leaves media_base equal to it and the key test below fails on the whole URL.
+media_base=${playlist_url%/media/"$clip_id"/*}
+playlist_key=${playlist_url#"$media_base"/}
+thumbnail_key=${thumbnail_url#"$media_base"/}
 if [[ $playlist_key =~ ^media/$clip_id/$uuid_re/master\.m3u8$ ]]; then
   variant_ref=$(first_uri "$work/master.m3u8")
-  [[ $variant_ref =~ ^$uuid_re/[a-z0-9]+/index\.m3u8$ && ${thumbnail_url#*/media/} == "${playlist_key%/*}/${variant_ref%%/*}/thumbnail.jpg" ]] ||
-    fail "master names <attempt>/<rendition>/index.m3u8 and the thumbnail is in that attempt directory (variant $variant_ref, thumbnail key ${thumbnail_url#*/media/})"
+  [[ $variant_ref =~ ^$uuid_re/[a-z0-9]+/index\.m3u8$ && $thumbnail_key == "${playlist_key%/*}/${variant_ref%%/*}/thumbnail.jpg" ]] ||
+    fail "master names <attempt>/<rendition>/index.m3u8 and the thumbnail is in that attempt directory (variant $variant_ref, thumbnail key $thumbnail_key)"
   # One "<name>|<url>" per object: the names have blanks, the URLs none.
   for object in "master|$playlist_url" "variant playlist|$variant_url" "segment|$(resolve "$variant_url" "$segment_ref")" \
     "thumbnail|$thumbnail_url"; do
@@ -216,10 +224,13 @@ status=$(fetch "$(upload_url clip)/$(upload_key clip)" "$work/original")
 ok "anonymous GET of the uploaded original: 403"
 
 # The media bucket can be read object by object but not listed, so video ids are not enumerable
-# (UP-6). playlist_url is <storage>/media/<key>, so the bucket URL is the part before the key.
-media_bucket_url="${playlist_url%%/media/*}/media"
+# (UP-6). A listing goes to the media base: the bucket's URL on a path-style store, the CDN's origin root on a cloud,
+# which signs the request to the bucket, so the bucket's own policy (no s3:ListBucket) refuses it. A base without a
+# path gets "/" so the request names the root.
+media_listing_url=$media_base
+[[ $media_listing_url == *://*/* ]] || media_listing_url+=/
 for query in "list-type=2" "list-type=2&prefix=media/"; do
-  status=$(fetch "$media_bucket_url?$query" "$work/listing")
+  status=$(fetch "$media_listing_url?$query" "$work/listing")
   [[ $status == 403 ]] || fail "anonymous listing of the media bucket ($query) is 403 (status $status)"
 done
 ok "anonymous listing of the media bucket: 403"

@@ -37,6 +37,7 @@ chart's release deletes its ClusterRole and ClusterRoleBinding at its next upgra
 Written in wave 1 for an operator of wave 2: a RoleBinding may name a ServiceAccount that does not exist yet, and the
 policy names its user by string.
 */}}
+{{- if .Values.cloudnativePG.enabled }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -226,3 +227,4 @@ metadata:
 spec:
   policyName: svp-cnpg-operator-secrets
   validationActions: [Deny]
+{{- end }}

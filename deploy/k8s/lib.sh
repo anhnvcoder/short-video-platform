@@ -4,8 +4,9 @@
 # Written for bash 3.2 (the macOS /bin/bash). Sourcing it only defines things and exports the variables below.
 #
 # Rules every helper keeps: docker and k3d run without DOCKER_DEFAULT_PLATFORM (the global shell sets linux/amd64 for
-# another project; the nodes must run native arm64), kubectl and helm always name the context k3d-svp (the current
-# context may be another cluster), every wait has a deadline, no Secret value is ever printed.
+# another project; the nodes must run native arm64), kubectl and helm always name their context, k3d-svp unless
+# SVP_KUBE_CONTEXT names a cloud cluster (below; the current context may be another cluster), every wait has a
+# deadline, no Secret value is ever printed.
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 
@@ -36,10 +37,44 @@ fail() {
   exit 1
 }
 
+# The context of every kubectl and helm call (kc, hc): k3d-svp, the local cluster, when SVP_KUBE_CONTEXT is unset;
+# otherwise SVP_KUBE_CONTEXT, which may only name the local cluster or an EKS cluster of the project by the alias
+# `aws eks update-kubeconfig --alias` gives it (svp-stg, svp-prd), never an ARN or another cluster of the kubeconfig.
+# Checked as this file is sourced, before any command. A cloud cluster is reached only by the scripts written for it
+# (deploy/k8s/gitops.sh, secrets.sh, glitchtip-init.sh), each of which sets kube_cloud_ok=1: kc and hc of any other
+# script refuse it (the dev path, the drills, which build, reset or measure a local cluster), and so do the helpers of
+# the local cluster alone (k3d_, ensure_registry, ensure_cluster, export_ca), whoever calls them.
+kube_context=${SVP_KUBE_CONTEXT-k3d-svp}
+if ! [[ $kube_context =~ ^(k3d-svp|svp-(stg|prd))$ ]]; then
+  printf "FAIL  SVP_KUBE_CONTEXT is %q: it must be k3d-svp (the local cluster, also when unset) or svp-stg or svp-prd (an EKS cluster, by the alias aws eks update-kubeconfig --alias gives it)\n" "$kube_context" >&2
+  exit 1
+fi
+# cloud_context: true when kube_context names an EKS cluster.
+cloud_context() { [ "$kube_context" != k3d-svp ]; }
+# require_k3d WHAT: fails, naming WHAT, unless kube_context is the local cluster.
+require_k3d() {
+  ! cloud_context || fail "$1 is for the local cluster k3d-svp only, not context $kube_context"
+}
+# require_kube_context: fails unless kube_context is the local cluster or the calling script was written for a cloud
+# cluster too (kube_cloud_ok=1).
+require_kube_context() {
+  ! cloud_context || [ "${kube_cloud_ok:-}" = 1 ] ||
+    fail "context $kube_context is an EKS cluster, which this script does not run against: only the eks-* targets of the Makefile reach one"
+}
+
 docker_() { env -u DOCKER_DEFAULT_PLATFORM docker "$@"; }
-k3d_() { env -u DOCKER_DEFAULT_PLATFORM k3d "$@"; }
-kc() { kubectl --context k3d-svp "$@"; }
-hc() { helm --kube-context k3d-svp "$@"; }
+k3d_() {
+  require_k3d k3d
+  env -u DOCKER_DEFAULT_PLATFORM k3d "$@"
+}
+kc() {
+  require_kube_context
+  kubectl --context "$kube_context" "$@"
+}
+hc() {
+  require_kube_context
+  helm --kube-context "$kube_context" "$@"
+}
 
 # wait_until SECONDS DESCRIPTION COMMAND...: runs COMMAND every 2 s until it succeeds; fails naming DESCRIPTION once
 # SECONDS have passed. For conditions `kubectl wait` cannot express, such as a resource that does not exist yet.
@@ -60,6 +95,7 @@ port_free() { ! nc -z -w 1 127.0.0.1 "$1" >/dev/null 2>&1; }
 # leaves it alone when it runs. Shared by every target that pushes images or creates the cluster.
 ensure_registry() {
   local state
+  require_k3d "the registry k3d-svp-registry"
   state=$(docker_ inspect --format '{{.State.Running}}' k3d-svp-registry 2>/dev/null || true)
   case $state in
     true) ok "registry k3d-svp-registry already running (127.0.0.1:5111)" ;;
@@ -84,6 +120,7 @@ ensure_cluster() {
   local all running on_net port want archs node binds bind src psa psa_versions exists= recreate=
   # Where k3d.yaml mounts deploy/k8s/pod-security-admission.yaml in the server node, and the API server reads it.
   local psa_in_node=/etc/rancher/k3s/pod-security-admission.yaml
+  require_k3d "creating or starting cluster svp"
   if k3d_ cluster get svp >/dev/null 2>&1; then
     exists=1
     # An existing cluster mounts the file and its API server reads it again each time the node starts, which Docker
@@ -201,6 +238,7 @@ ensure_cluster() {
 # old one.
 export_ca() {
   local tmp
+  require_k3d "the CA of the cluster's self-signed certificates"
   mkdir -p "$repo_root/.k8s"
   tmp=$(mktemp "$repo_root/.k8s/ca.crt.XXXXXX")
   if ! kc -n cert-manager get secret svp-local-ca -o jsonpath='{.data.ca\.crt}' | base64 -d >"$tmp" ||
@@ -568,7 +606,7 @@ rollout_not_canary() {
     fail "rollout $ns/$name runs a canary ($why): an aborted Rollout stays Degraded until its pod template goes back to the stable one, so its restart is not waited for. Revert the release (a pull request reverting its promote in svp-gitops on the GitOps path; make k8s-up on the dev path), then run this again"
     ;;
   esac
-  fail "rollout $ns/$name runs a canary ($why): it turns Healthy only once the canary is over, so its restart is not waited for. Let the canary finish (its analysis promotes it only under traffic: make k8s-traffic-start) or abort it (kubectl --context k3d-svp -n $ns patch rollout $name --subresource status --type merge -p '{\"status\":{\"abort\":true}}'), then run this again"
+  fail "rollout $ns/$name runs a canary ($why): it turns Healthy only once the canary is over, so its restart is not waited for. Let the canary finish (its analysis promotes it only under traffic: make k8s-traffic-start) or abort it (kubectl --context $kube_context -n $ns patch rollout $name --subresource status --type merge -p '{\"status\":{\"abort\":true}}'), then run this again"
 }
 
 # test_output WANT COMMAND...: true when COMMAND prints exactly WANT.

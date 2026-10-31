@@ -10,8 +10,9 @@
 //
 // Configuration comes from the environment: LISTEN_ADDR (default 127.0.0.1:9102) and
 // DATABASE_URL (required for serve and migrate); serve also needs KAFKA_BROKERS and the S3_*
-// variables read by storageConfig (S3_ENDPOINT, S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY
-// required; S3_PUBLIC_ENDPOINT, S3_REGION, S3_UPLOADS_BUCKET, S3_MEDIA_BUCKET optional).
+// variables read by storageConfig (S3_ENDPOINT required; S3_PUBLIC_ENDPOINT, S3_REGION,
+// S3_UPLOADS_BUCKET, S3_MEDIA_BUCKET optional; the credential, S3_ACCESS_KEY_ID and
+// S3_SECRET_ACCESS_KEY by default, and S3_PATH_STYLE as objstore.Config.ReadAccessEnv reads them).
 // UPLOAD_ABANDON_AFTER (default 1h) and UPLOAD_SWEEP_INTERVAL (default 5m) set when an upload
 // counts as abandoned and how often they are swept. serve also reads the OTEL_*,
 // PYROSCOPE_SERVER_ADDRESS and SENTRY_* variables; telemetry and error reporting stay off
@@ -250,23 +251,17 @@ func storageConfig() (objstore.Config, error) {
 	if err := checkEndpoint("S3_PUBLIC_ENDPOINT", public); err != nil {
 		return objstore.Config{}, err
 	}
-	accessKey, err := envcfg.Required("S3_ACCESS_KEY_ID")
-	if err != nil {
+	cfg := objstore.Config{
+		Endpoint:       endpoint,
+		PublicEndpoint: public,
+		Region:         envcfg.String("S3_REGION", "us-east-1"),
+		UploadsBucket:  envcfg.String("S3_UPLOADS_BUCKET", "uploads"),
+		MediaBucket:    envcfg.String("S3_MEDIA_BUCKET", "media"),
+	}
+	if err := cfg.ReadAccessEnv(); err != nil {
 		return objstore.Config{}, err
 	}
-	secretKey, err := envcfg.Required("S3_SECRET_ACCESS_KEY")
-	if err != nil {
-		return objstore.Config{}, err
-	}
-	return objstore.Config{
-		Endpoint:        endpoint,
-		PublicEndpoint:  public,
-		Region:          envcfg.String("S3_REGION", "us-east-1"),
-		AccessKeyID:     accessKey,
-		SecretAccessKey: secretKey,
-		UploadsBucket:   envcfg.String("S3_UPLOADS_BUCKET", "uploads"),
-		MediaBucket:     envcfg.String("S3_MEDIA_BUCKET", "media"),
-	}, nil
+	return cfg, nil
 }
 
 // positiveDuration reads the variable name as a time.Duration such as 90s or 1h, def when it is

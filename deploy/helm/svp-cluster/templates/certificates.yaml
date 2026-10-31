@@ -4,7 +4,43 @@ CA issuer signs the two certificates Envoy serves (the wildcard one, and svp-ape
 templates/gateway.yaml says why two). Clients trust the CA alone (`make k8s-ca` writes it to
 .k8s/ca.crt), nothing is installed into the machine's trust store, and cert-manager renews both certificates as it
 would on a cloud cluster.
+
+With tls.issuer acme (a cluster on the internet), Let's Encrypt signs both instead, through ClusterIssuer svp-acme:
+cert-manager proves control of the names with a TXT record in the Route 53 hosted zone (DNS-01, the one challenge that
+covers a wildcard), with the AWS credentials of its own pod. No local CA is made then.
 */}}
+{{- $tls := .Values.tls }}
+{{- $issuer := "svp-ca" }}
+{{- if eq $tls.issuer "acme" }}
+{{- $issuer = "svp-acme" }}
+{{- $servers := dict "production" "https://acme-v02.api.letsencrypt.org/directory" "staging" "https://acme-staging-v02.api.letsencrypt.org/directory" }}
+{{- if not (hasKey $servers $tls.acme.server) }}
+{{- fail (printf "tls.acme.server: %q is neither production nor staging" $tls.acme.server) }}
+{{- end }}
+{{- range $key := list "email" "hostedZoneId" "region" }}
+{{- if not (index $tls.acme $key) }}
+{{- fail (printf "tls.acme.%s: required with tls.issuer acme" $key) }}
+{{- end }}
+{{- end }}
+# The ACME account's key lives in cert-manager's namespace (the cluster resource namespace), made on first use.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: svp-acme
+spec:
+  acme:
+    server: {{ index $servers $tls.acme.server }}
+    email: {{ $tls.acme.email | quote }}
+    privateKeySecretRef:
+      name: svp-acme-account
+    solvers:
+      - dns01:
+          # No credentials here: cert-manager's controller has them from EKS Pod Identity, for a role that may change
+          # records of this zone only.
+          route53:
+            region: {{ $tls.acme.region | quote }}
+            hostedZoneID: {{ $tls.acme.hostedZoneId | quote }}
+{{- else if eq $tls.issuer "selfSigned" }}
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
@@ -38,6 +74,9 @@ metadata:
 spec:
   ca:
     secretName: svp-local-ca
+{{- else }}
+{{- fail (printf "tls.issuer: %q is neither selfSigned nor acme" $tls.issuer) }}
+{{- end }}
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -54,7 +93,7 @@ spec:
   issuerRef:
     group: cert-manager.io
     kind: ClusterIssuer
-    name: svp-ca
+    name: {{ $issuer }}
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -71,4 +110,4 @@ spec:
   issuerRef:
     group: cert-manager.io
     kind: ClusterIssuer
-    name: svp-ca
+    name: {{ $issuer }}

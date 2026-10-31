@@ -16,7 +16,8 @@
 > ([ADR-0021](adr/0021-deferred-verification-stage6b.md)); phần 4 (2026-10-29 đến 2026-10-30) tách cấu hình triển khai sang repo
 > `svp-gitops` ([§5.5](#55-hai-repo-code-và-cấu-hình-triển-khai-giai-đoạn-6b-phần-4)), phần 4b (2026-10-30 đến 2026-10-31) tách web
 > client sang repo `svp-frontend` với hợp đồng REST có version ([§5.6](#56-ba-repo-và-hợp-đồng-api-giai-đoạn-6b-phần-4b)); ngày 2026-10-31 repo code
-> đổi tên `svp-backend`, repo web `svp-frontend` ([ADR-0036](adr/0036-repo-rename.md)). ADR 0001–0020, contract ở [`proto/`](../proto/)
+> đổi tên `svp-backend`, repo web `svp-frontend` ([ADR-0036](adr/0036-repo-rename.md)). Giai đoạn 7 (biến thể AWS,
+> [ADR-0034](adr/0034-aws-stage7.md), [§5.7](#57-biến-thể-aws-giai-đoạn-7)) thiết kế ngày 2026-10-31, chưa dựng. ADR 0001–0020, contract ở [`proto/`](../proto/)
 > ([§8](#8-contract)), threat model ở [`threat-model.md`](threat-model.md). `make up` chạy luồng đồng bộ (đăng ký, đăng
 > nhập, tạo và đọc video, follow), luồng upload bất đồng bộ (presigned POST lên object store, outbox → Redpanda, media-worker
 > transcode ra HLS, video `READY` hoặc `FAILED`, job dọn upload bỏ dở), luồng feed (follow qua outbox, feed-service
@@ -694,6 +695,92 @@ flowchart LR
   kịch bản `gitops` trên `main` [41112757906](https://github.com/anhnvcoder/svp-backend/actions/runs/41112757906): Kyverno
   Enforce nhận web mới, từ chối chéo identity, source map từ image `web-sourcemaps`, bản ghi stg. **Kiểm sau push:** promote prd
   hai nguồn, rescan của `svp-frontend`, Renovate nâng hợp đồng.
+
+### 5.7 Biến thể AWS (giai đoạn 7)
+
+[ADR-0034](adr/0034-aws-stage7.md) (nền tảng, lý do và bảng đầy đủ), hạ tầng ở repo `svp-infra` (cài đặt GitHub:
+[`runbooks/svp-infra-setup.md`](runbooks/svp-infra-setup.md)). Thiết kế cho 7a: một cluster stg ở `ap-southeast-1`, dựng và xoá trong
+mỗi buổi; prd (cluster thứ hai, chuẩn production) ở 7b. **Chưa dựng** (2026-10-31).
+
+Sơ đồ triển khai stg với icon AWS (đúng subnet của module Terraform; trang prd và trang luồng ở
+[`svp-aws.pdf`](https://github.com/anhnvcoder/svp-infra/blob/main/docs/diagrams/svp-aws.pdf)), sinh từ spec của repo `svp-infra` nên
+ảnh nằm ở đó, không chép vào repo này:
+
+![Sơ đồ AWS stg](https://raw.githubusercontent.com/anhnvcoder/svp-infra/main/docs/diagrams/svp-aws-stg.png)
+
+Sơ đồ khối bên dưới là cùng hệ thống ở mức thành phần:
+
+```mermaid
+flowchart LR
+    browser["Trình duyệt"]
+    client["Client ngoài<br/>curl, smoke"]
+    gh["GitHub, GHCR<br/>svp-gitops, chart, image đã ký"]
+    subgraph aws["AWS ap-southeast-1, account sandbox"]
+        r53["Route 53<br/>zone aws.svp.example"]
+        cf["CloudFront<br/>*.cloudfront.net, OAC"]
+        subgraph s3["S3"]
+            up[("uploads<br/>riêng tư, CORS POST")]
+            media[("media<br/>riêng tư, chỉ CloudFront đọc")]
+        end
+        subgraph vpc["VPC, 2 AZ"]
+            nlb["NLB L4<br/>target ip, giữ IP client"]
+            nat["NAT gateway"]
+            rds[("RDS PostgreSQL 15<br/>subnet private")]
+            subgraph eks["EKS svp-stg, node Graviton Spot"]
+                envoy["Envoy Gateway<br/>TLS Let's Encrypt"]
+                app["svp: web, gateway,<br/>4 service gRPC, media-worker"]
+                data["svp-data: Redpanda, Valkey"]
+                obs["svp-obs: Prometheus, Loki,<br/>Tempo, Pyroscope, GlitchTip"]
+                ctl["Argo CD, LBC, ExternalDNS,<br/>cert-manager, ESO, KEDA"]
+            end
+        end
+    end
+    browser -->|"HTTPS web, api"| nlb
+    client -->|"HTTPS api"| nlb
+    nlb --> envoy
+    envoy --> app
+    app --> data
+    app -->|"5432, TLS"| rds
+    obs -->|"svp_glitchtip"| rds
+    app -->|"Pod Identity,<br/>S3 gateway endpoint"| up
+    app -->|"ghi HLS"| media
+    browser -->|"POST presigned"| up
+    browser -->|"GET HLS"| cf
+    cf -->|"OAC"| media
+    ctl -->|"bản ghi, DNS-01"| r53
+    ctl -->|"tạo NLB"| nlb
+    ctl -->|"git, image qua NAT"| nat
+    nat --> gh
+```
+
+| Thành phần | Local (compose, k3d) | AWS (7a) |
+| --- | --- | --- |
+| Cluster | k3d, k3s v1.36.5, 2 node | EKS 1.36, managed node group 3 × `m7g.large` Spot |
+| Postgres | Native (compose), CloudNativePG (k3d) | RDS PostgreSQL 15 single-AZ; Service `ExternalName` `svp-pg-rw` giữ chuỗi kết nối |
+| Object store | RustFS `s3` | S3 `uploads`, `media`; credential Pod Identity |
+| CDN | Không có | CloudFront trước `media` (OAC) |
+| Redis, Kafka | Native Redis (compose), Valkey; Redpanda | Valkey, Redpanda trong cluster |
+| Vào hệ thống | Loopback, Envoy với CA tự ký | NLB L4 giữ IP client, Envoy với chứng chỉ Let's Encrypt, DNS Route 53 do ExternalDNS ghi |
+| NetworkPolicy | network policy controller của k3s | Network policy agent của VPC CNI |
+| StorageClass, metrics-server | `local-path`, metrics-server của k3s | `gp3` do chart `svp-cluster` tạo, addon `metrics-server` |
+| Secret | `.env` (compose), ESO provider `kubernetes` (k3d GitOps) | ESO provider `kubernetes` (7a); Secrets Manager + Pod Identity (7b) |
+| Hạ tầng | `make up`, `make k8s-up`, `make k8s-gitops-up` | Terraform `aws/envs/stg` của `svp-infra`, rồi `make eks-gitops-up` |
+
+Bảng đủ (kể cả thứ k3s có sẵn mà EKS không) ở ADR-0034 mục Quyết định 8. Khác biệt k3d/EKS nằm ở lớp `platforms/<platform>/` của
+`svp-gitops` cùng giá trị theo cluster `cluster.*` mà bootstrap đặt từ output Terraform; `envs/stg` dùng chung cho k3d stg và EKS stg.
+
+**Luồng upload → `READY` → feed → phát trên AWS:**
+
+1. Web (trình duyệt → NLB → Envoy → `web` → `gateway`) gọi `POST /videos`; video-service ký form POST bằng credential tạm của Pod Identity
+   (role chỉ ghi `uploads/<video_id>`), URL là endpoint vùng của bucket (`https://<bucket uploads>.s3.ap-southeast-1.amazonaws.com`,
+   virtual-hosted).
+2. Trình duyệt POST file thẳng lên S3 (CORS chỉ nhận origin web, hạn form 15 phút); `CompleteUpload`: video-service `HEAD` object qua S3
+   gateway endpoint (không qua NAT), outbox phát `video.uploaded` vào Redpanda.
+3. media-worker (KEDA theo lag) tải file gốc từ `uploads`, chạy ffmpeg, ghi HLS bất biến vào bucket `media` (master chỉ tạo một lần bằng
+   `If-None-Match: *`); `transcode.completed` → video-service chuyển `READY`, phát `video.ready` → feed-service fan-out vào timeline (RDS).
+4. Feed: gateway → feed-service (cache khám phá ở Valkey); URL HLS trong response là `https://<tên CloudFront>/` + khoá của object.
+5. Phát: trình duyệt GET master, playlist, segment từ CloudFront (cache theo `Cache-Control: … immutable`); CloudFront đọc `media` bằng
+   OAC, đọc thẳng bucket bị từ chối (threat model AWS-2).
 
 ## 6. Sở hữu dữ liệu và event
 

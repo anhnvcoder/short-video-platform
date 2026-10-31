@@ -38,6 +38,11 @@ fail() {
 # With SVP_STACK=k3d (make k8s-smoke) the gateway runs in the local k3d cluster svp, behind Envoy,
 # and counts in the cluster's Valkey db 10 instead: the same SCAN + DEL of the same keys runs
 # there through `kubectl exec` (context k3d-svp only), since Valkey has no address on the host.
+# With SVP_STACK=eks (make eks-smoke, eks-seed, eks-rl-reset) the same runs in the Valkey of the
+# EKS cluster that SVP_KUBE_CONTEXT names, svp-stg or svp-prd and nothing else: a lab cluster of
+# this project, never a shared one. Its load balancer keeps the client's address, so the runs from
+# one machine share one address there too, and pods of a load test may get the addresses of
+# earlier ones.
 reset_register_limit() {
   local key n=0 cli where
   case ${SVP_STACK:-compose} in
@@ -50,7 +55,13 @@ reset_register_limit() {
       cli=(kubectl --context k3d-svp -n svp-data exec deploy/valkey -c valkey -- valkey-cli -n 10)
       where="Valkey db 10 of cluster svp"
       ;;
-    *) fail "SVP_STACK must be compose or k3d (got ${SVP_STACK})" ;;
+    eks)
+      [[ ${SVP_KUBE_CONTEXT:-} =~ ^svp-(stg|prd)$ ]] ||
+        fail "SVP_STACK=eks needs SVP_KUBE_CONTEXT svp-stg or svp-prd, the alias of an EKS cluster of the project (got '${SVP_KUBE_CONTEXT:-}')"
+      cli=(kubectl --context "$SVP_KUBE_CONTEXT" -n svp-data exec deploy/valkey -c valkey -- valkey-cli -n 10)
+      where="Valkey db 10 of cluster $SVP_KUBE_CONTEXT"
+      ;;
+    *) fail "SVP_STACK must be compose, k3d or eks (got ${SVP_STACK})" ;;
   esac
   "${cli[@]}" --scan --pattern 'svp:gw:rl:register:*' >"$work/register-keys" ||
     fail "scan the register rate limit keys in $where"

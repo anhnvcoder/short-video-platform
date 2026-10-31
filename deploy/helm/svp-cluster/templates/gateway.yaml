@@ -6,7 +6,33 @@ certificate naming its own hostnames only. One certificate for both names would 
 connection opened to svp.localhost, at the same address, so a browser could send its HLS requests over that HTTP/2
 connection (RFC 9113 section 9.1.1), where Envoy picked the apex listener by SNI and no route of it matches s3. No route
 for any operations UI is ever attached (OPS-2): those are reached through kubectl port-forward and their own login.
+On EKS the Envoy Service's annotations (values: envoy.service) make AWS Load Balancer Controller put an NLB in front of
+it, TCP only: Envoy still terminates TLS. The NLB must hand Envoy the client's own address, the one hop the gateway trusts
+in X-Forwarded-For, so the checks below fail any annotations of that controller that would hand it the NLB's: a
+target type other than ip goes through a node port of kube-proxy (with externalTrafficPolicy Cluster, the node's
+address), and with target type ip the NLB keeps the client's address only with preserve_client_ip.enabled=true.
 */}}
+{{- $annotations := .Values.envoy.service.annotations }}
+{{- $lbc := "service.beta.kubernetes.io/aws-load-balancer-" }}
+{{- $nlb := "" }}
+{{- range $key, $_ := $annotations }}
+{{- if hasPrefix $lbc $key }}{{ $nlb = $key }}{{ end }}
+{{- end }}
+{{- if $nlb }}
+{{- if ne (index $annotations (print $lbc "type") | default "") "external" }}
+{{- fail (printf "envoy.service.annotations: %stype must be external with any annotation of AWS Load Balancer Controller (%s)" $lbc $nlb) }}
+{{- end }}
+{{- if ne (index $annotations (print $lbc "nlb-target-type") | default "") "ip" }}
+{{- fail (printf "envoy.service.annotations: %snlb-target-type must be ip: an instance target reaches Envoy through a node port, from the node's address instead of the client's" $lbc) }}
+{{- end }}
+{{- $attributes := list }}
+{{- range splitList "," (index $annotations (print $lbc "target-group-attributes") | default "") }}
+{{- $attributes = append $attributes (trim .) }}
+{{- end }}
+{{- if not (has "preserve_client_ip.enabled=true" $attributes) }}
+{{- fail (printf "envoy.service.annotations: %starget-group-attributes must hold preserve_client_ip.enabled=true: without it the NLB hands Envoy its own address instead of the client's" $lbc) }}
+{{- end }}
+{{- end }}
 # Settings of the Envoy proxy fleet of this class. externalTrafficPolicy Cluster instead of Envoy Gateway's default
 # Local: k3d's load balancer spreads connections over both nodes, and with Local the servicelb pod of the node without an
 # Envoy pod would have nowhere to send them. The client address is lost on the way anyway (k3d's load balancer and
@@ -21,7 +47,11 @@ spec:
     type: Kubernetes
     kubernetes:
       envoyService:
-        externalTrafficPolicy: Cluster
+        externalTrafficPolicy: {{ .Values.envoy.service.externalTrafficPolicy }}
+        {{- with $annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
       envoyDeployment:
         container:
           resources:

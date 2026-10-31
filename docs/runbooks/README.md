@@ -133,6 +133,7 @@ Sự cố đã gặp và quy trình:
 | [postgres-restore.md](postgres-restore.md) | Postgres `svp-pg` của k3d mất hay hỏng, cần PITR, hay `make drill-k8s-backup` dừng giữa chừng |
 | [svp-gitops-setup.md](svp-gitops-setup.md) | Dựng hay kiểm cài đặt GitHub của `svp-gitops` (App `svp-gitops-promoter`, environment `promote`, ruleset), promote stg và prd, bản ghi stg, rollback, bump commit chart và checker, việc tay khi đổi tên repo code và repo web (C6), xoay khoá App, nghi khoá App bị lộ |
 | [svp-frontend-setup.md](svp-frontend-setup.md) | Dựng hay kiểm cài đặt GitHub của repo web `svp-frontend` (repo rỗng, cài đặt, App `svp-web-promoter`, environment `promote`, package GHCR public, Renovate, CodeQL, ruleset), PR tiếp quản `bot/promote-stg-web`, 12 package GHCR mới public sau đổi tên repo (E1), xoay khoá App web, nghi khoá App web bị lộ |
+| [svp-infra-setup.md](svp-infra-setup.md) | Dựng hay kiểm cài đặt GitHub của repo hạ tầng `svp-infra` (cài đặt repo, không credential ở 7a, push đầu lên `main`, Renovate, ruleset `main` với check `infra-ok`), PR không merge được vì check bắt buộc, nghi khoá hay thông tin tài khoản AWS đã vào repo |
 
 ## Sau sự cố
 
