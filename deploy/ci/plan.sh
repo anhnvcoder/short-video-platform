@@ -22,9 +22,10 @@
 # guessed. Base of the build (never github.event.before, which loses the changes of a queued run that was
 # replaced and of a run that failed):
 #   push to main       head_sha of the newest successful push run of images.yml on main (last-success.sh); none →
-#                      all seven
+#                      all six
 #   pull request       merge-base of HEAD with the PR's base branch
-#   workflow_dispatch  merge-base of HEAD with origin/main; input services (all, or names from the seven) overrides
+#   workflow_dispatch  merge-base of HEAD with origin/main; input services (all, or names from the six this repository
+#                      builds: built_services of deploy/k8s/lib.sh, never web, which svp-web builds) overrides
 #
 # Another repository's tree (SVP_CODE_ROOT, code_root of common.sh, is not this checkout: the CI of another release
 # source runs this script from a pinned checkout of this one): its whole tree is the code of its images, so a build
@@ -101,12 +102,13 @@ build)
   fi
   if [ -n "${INPUT_SERVICES:-}" ]; then
     if [ "$INPUT_SERVICES" = all ]; then
-      images=("${svp_services[@]}")
+      images=("${built_services[@]}")
     else
-      # read -a splits on blanks without expanding wildcards; every name must be one of the seven.
+      # read -a splits on blanks without expanding wildcards; every name must be one of the six.
       read -r -a names <<<"$INPUT_SERVICES"
       for name in "${names[@]}"; do
-        printf '%s\n' "${svp_services[@]}" | grep -qxF -- "$name" || fail "services: '$name' is not one of the seven"
+        printf '%s\n' "${built_services[@]}" | grep -qxF -- "$name" ||
+          fail "services: '$name' is not an image this repository builds (${built_services[*]})"
       done
       while IFS= read -r name; do images+=("$name"); done < <(printf '%s\n' "${names[@]}" | sort -u)
     fi

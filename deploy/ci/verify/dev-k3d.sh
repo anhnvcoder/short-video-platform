@@ -8,12 +8,13 @@
 build=k8s-up
 job_minutes_default=330
 k3d=1
-# make k8s-up builds the web image and make k8s-web-sourcemaps its source maps: web_ref of the dispatch names the
-# commit of svp-web they build (verify-run.sh).
+# make k8s-up WEB_FROM=clone builds the web image from the clone of svp-web (verify-run.sh), so make
+# k8s-web-sourcemaps can build its source maps, and the e2e tests run the same commit: web_ref of the dispatch, or the
+# commit of the web release staging runs.
 web=1
 
 scenario_targets() {
-  step k8s-up 60 make k8s-up
+  step k8s-up 60 make k8s-up WEB_FROM=clone
   step k8s-smoke 15 make k8s-smoke
   step ram-rest-start 15 bash -c 'ram_rest start'
   step drill-k8s-threats 30 make drill-k8s-threats

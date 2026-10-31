@@ -37,16 +37,14 @@ fi
 # The services' images first, so a build that fails stops the run before anything is installed. Each release of
 # chart svp-service then gets its image with --set (never written to a file): the local registry, the service's dev
 # tag and an empty digest (image_sets). The repository, tag and digest in envs/<env>/images/ of svp-gitops name
-# releases on GHCR for the GitOps path; this path neither reads nor pulls them, except the web client's when WEB_FROM
-# asks for a release (web_source of lib.sh: stg, or image with WEB_IMAGE): then web is not built and its release
-# runs, by digest, pulled by the nodes from GHCR without credentials.
+# releases on GHCR for the GitOps path; this path neither reads nor pulls them, except the web client's unless
+# WEB_FROM=clone builds it from the clone of svp-web (web_source of lib.sh: stg by default, or image with WEB_IMAGE):
+# then web is not built and its release runs, by digest, pulled by the nodes from GHCR without credentials.
 service_chart=deploy/helm/svp-service
 web_source
 if [ -n "$web_release" ]; then
-  built=()
-  for svc in "${svp_services[@]}"; do [ "$svc" = web ] || built+=("$svc"); done
-  build_dev_images "${built[@]}"
-  ok "web runs release $web_release (WEB_FROM=${WEB_FROM:-}), with the build id CI gave it: make k8s-web-sourcemaps needs SOURCEMAPS_DIR with its maps"
+  build_dev_images "${built_services[@]}"
+  ok "web runs release $web_release (WEB_FROM=${WEB_FROM:-stg}), with the build id CI gave it: make k8s-web-sourcemaps needs SOURCEMAPS_DIR with its maps"
 else
   build_dev_images
 fi

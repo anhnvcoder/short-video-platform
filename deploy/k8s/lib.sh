@@ -357,8 +357,7 @@ gitops_clone() {
   ok "svp-gitops at ${sha:0:12} ($ref) in ${dir#"$repo_root"/}"
 }
 
-# The web client's source lives in its own repository, svp-web. web/ of this repository is its copy until the web
-# moves there for good; a folder of the workspace takes precedence over it as soon as one is there.
+# The web client's source lives in its own repository, svp-web; this repository holds none of it.
 web_url=https://github.com/anhnvcoder/svp-web.git
 # The clone CI jobs build and test from (make web-clone), inside the checkout and gitignored. A machine reads its own
 # (web_dir).
@@ -377,38 +376,28 @@ web_is_clone() {
 
 # web_dir: prints the absolute path of the web client's source that images are built from. SVP_WEB_DIR when set (CI
 # sets it to the clone of make web-clone; on a machine it may name another clone), which must be a clone of svp-web;
-# otherwise <workspace>/frontend (the workspace as for gitops_dir) when it exists, which must be one too; otherwise
-# web/ of this repository, the copy kept until the web has moved. The working tree is read as it is, uncommitted
-# changes included; nothing is cloned, fetched or switched. A folder that is there but no clone of svp-web fails,
-# printing the command that makes the clone, instead of building something else in its place.
+# otherwise <workspace>/frontend (the workspace as for gitops_dir), which must be one too. The working tree is read as
+# it is, uncommitted changes included; nothing is cloned, fetched or switched. No folder there, or one that is no clone
+# of svp-web, fails, printing the command that makes the clone, instead of building something else in its place.
 web_dir() {
   local dir common
   if [ -n "${SVP_WEB_DIR:-}" ]; then
     dir=$SVP_WEB_DIR
     web_is_clone "$dir" ||
       fail "SVP_WEB_DIR=$dir is not a clone of svp-web: clone it there (git clone $web_url '$dir'), or in CI run make web-clone first and set SVP_WEB_DIR to its folder"
-    (cd "$dir" && pwd -P)
-    return
-  fi
-  if common=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
+  else
+    # --path-format=absolute: otherwise git prints the common directory relative to the current directory.
+    common=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) ||
+      fail "$repo_root is not a git checkout, so the workspace that holds the clone of svp-web is unknown; set SVP_WEB_DIR"
     dir=$(dirname "$(dirname "$common")")/frontend
-    if [ -e "$dir" ]; then
-      web_is_clone "$dir" ||
-        fail "$dir is not a clone of svp-web, the web client's source: git clone $web_url '$dir' in its place (or set SVP_WEB_DIR to a clone)"
-      (cd "$dir" && pwd -P)
-      return
-    fi
+    web_is_clone "$dir" ||
+      fail "$dir is not a clone of svp-web, the web client's source: git clone $web_url '$dir' (or set SVP_WEB_DIR to a clone)"
   fi
-  [ -d "$repo_root/web" ] ||
-    fail "no source of the web client: neither SVP_WEB_DIR, nor <workspace>/frontend, nor web/ of this repository; git clone $web_url <workspace>/frontend (or set SVP_WEB_DIR to a clone)"
-  echo "$repo_root/web"
+  (cd "$dir" && pwd -P)
 }
 
-# web_dockerfile DIR: the Dockerfile that builds the web image from DIR (printed by web_dir): web/ of this repository
-# has its own under deploy/docker/, a clone of svp-web has its own at its top.
-web_dockerfile() {
-  if [ "$1" = "$repo_root/web" ]; then echo "$repo_root/deploy/docker/web.Dockerfile"; else echo "$1/Dockerfile"; fi
-}
+# web_dockerfile DIR: the Dockerfile that builds the web image from DIR (printed by web_dir), at the top of the clone.
+web_dockerfile() { echo "$1/Dockerfile"; }
 
 # web_clone: CI's copy of the web client's source (make web-clone), as gitops_clone: clones svp-web anonymously into
 # $web_ci_clone (the whole history), or fetches it when it is there, then checks out WEB_REF detached and exports
@@ -859,49 +848,40 @@ gitops_timeout_report() {
     done
 }
 
-# The seven services whose images the cluster runs, in the order they are built: web last, since the six Go images
-# share the Go module cache and build fast, so their errors show before the web build, the longest of all.
+# The seven services whose images the cluster runs, in the order the dev path builds them: web last (from the clone of
+# svp-web, web_dir), since the six Go images share the Go module cache and build fast, so their errors show before the
+# web build, the longest of all. Every release set (stg, prd, the records of stg) names these seven.
 svp_services=(gateway user-service video-service engagement-service feed-service media-worker web)
+# The services whose images this repository builds from its own tree, and whose releases its CI builds, signs and
+# promotes: the six Go services. web is one of the seven releases, but its source and its releases are svp-web's.
+built_services=(gateway user-service video-service engagement-service feed-service media-worker)
 
-# dockerfile SERVICE: the Dockerfile that builds SERVICE's image, relative to the repository root.
+# dockerfile SERVICE: the Dockerfile that builds SERVICE's image (one of built_services), relative to the repository
+# root.
 dockerfile() {
   case $1 in
   media-worker) echo deploy/docker/media-worker.Dockerfile ;;
-  web) echo deploy/docker/web.Dockerfile ;;
   *) echo deploy/docker/service.Dockerfile ;;
   esac
-}
-
-# build_context SERVICE: the directory SERVICE's image is built from, relative to the repository root. The Go images
-# need the whole module (go.mod, gen/, internal/); the web image only web/, whose own .dockerignore decides what
-# reaches the build, as compose builds it.
-build_context() {
-  if [ "$1" = web ]; then echo web; else echo .; fi
 }
 
 # web_build_id: prints the build id of the web image on the dev path (SVP_BUILD_ID, which Next uses as its
 # deploymentId and the server as its release name): dev- and the first 12 hex digits of the SHA-256 of the list
 # "<SHA-256 of the content> <path>", sorted by path, of every file the build context web_dir sends (by its
 # .dockerignore, not by git: a .DS_Store git ignores counts, a tracked file .dockerignore leaves out does not) plus the
-# Dockerfile (web_dockerfile). Paths are relative to the repository for web/ of this repository (web/<name>,
-# deploy/docker/web.Dockerfile) and to the clone for a clone of svp-web. The same context gives the same id, so the
-# build cache gives the same image ID and `make k8s-up` starts no new ReplicaSet (or canary); any change of the
-# context gives a new id, so two different builds never share one deploymentId through a file git does not see. A
-# symlink counts by the path it points to (the context sends it as it is); file modes do not count.
+# Dockerfile (web_dockerfile), each path relative to the clone. The same context gives the same id, so the build cache
+# gives the same image ID and `make k8s-up` starts no new ReplicaSet (or canary); any change of the context gives a new
+# id, so two different builds never share one deploymentId through a file git does not see. A symlink counts by the
+# path it points to (the context sends it as it is); file modes do not count.
 #
-# Only the form web/.dockerignore has is understood: each line (blank lines and # comments aside) is a one-level name
-# pattern of letters, digits, . _ - * and ?, which, as in Docker, matches a name at the root of the context only and
-# leaves out its whole tree. Any other line fails, naming it, instead of drifting from what Docker sends unnoticed;
-# a new form means teaching this function the same rule in the same change.
+# Only the form the clone's .dockerignore has is understood: each line (blank lines and # comments aside) is a
+# one-level name pattern of letters, digits, . _ - * and ?, which, as in Docker, matches a name at the root of the
+# context only and leaves out its whole tree. Any other line fails, naming it, instead of drifting from what Docker
+# sends unnoticed; a new form means teaching this function the same rule in the same change.
 web_build_id() {
-  local dir base prefix dockerfile ignore line path name pattern list kept entry
+  local dir dockerfile=Dockerfile ignore line path name pattern list kept entry
   local patterns=() entries=() files=()
   dir=$(web_dir) || return 1
-  if [ "$dir" = "$repo_root/web" ]; then
-    base=$repo_root prefix=web/ dockerfile=deploy/docker/web.Dockerfile
-  else
-    base=$dir prefix= dockerfile=Dockerfile
-  fi
   ignore=$dir/.dockerignore
   [ -f "$ignore" ] || {
     echo "web_build_id: $ignore is missing" >&2
@@ -928,7 +908,7 @@ web_build_id() {
         break
       fi
     done
-    [ -z "$kept" ] || entries+=("$prefix$name")
+    [ -z "$kept" ] || entries+=("$name")
   done < <(find "$dir" -mindepth 1 -maxdepth 1 -print0)
   [ ${#entries[@]} -gt 0 ] || {
     echo "web_build_id: $ignore leaves nothing of $dir in the build context" >&2
@@ -946,7 +926,7 @@ web_build_id() {
   # two spaces become one. find does not follow symlinks, so a symlink is hashed by its target path, never its content.
   list=$(
     set -o pipefail
-    cd "$base" || exit 1
+    cd "$dir" || exit 1
     {
       find "${files[@]}" -type f -print0 | xargs -0 shasum -a 256 -- |
         sed 's/^\([0-9a-f]\{64\}\)  /\1 /' || exit 1
@@ -967,7 +947,7 @@ web_build_id() {
 # same folder. WEB_BUILD_ID replaces it for a second build of the same source (make drill-k8s-web-canary): next build
 # runs again with that id, so the image is another build, with its own deploymentId and Server Action ids.
 build_image() {
-  local args=(--file "$2/$(dockerfile "$1")") context=$2/$(build_context "$1") id dir
+  local args=(--file "$2/$(dockerfile "$1")") context=$2 id dir
   case $1 in
   media-worker) ;;
   web)
@@ -984,7 +964,7 @@ build_image() {
 }
 
 # build_dev_images [SERVICE...]: builds the images of SERVICE... (default: the seven of svp_services) from the working
-# tree, pushes each to the registry as
+# tree (web from the clone of svp-web, build_image), pushes each to the registry as
 # 127.0.0.1:5111/svp/<service>:dev-<first 12 hex digits of its image ID>, and sets dev_tag_<service with _ for -> to
 # that tag. The build cache gives the same image ID for the same inputs, so a run with no code
 # change yields the same tags, the pod templates do not change, and no new ReplicaSet (later: no canary) starts. Run
@@ -1007,15 +987,10 @@ build_dev_images() {
 
 # image_paths SERVICE: the paths SERVICE's image is built from, relative to the repository root: what its Dockerfile
 # copies (go.mod, go.sum, gen/, internal/, services/<service>/), the Dockerfile itself and .dockerignore, which decides
-# what reaches the build. The web image is built from web/ alone (its .dockerignore inside it) and its Dockerfile, so
-# a change of go.mod, internal/ or the root .dockerignore does not build it, and a change under web/ builds only it.
-# CI builds a release of SERVICE when one of them changed (deploy/ci/changed-services.sh).
+# what reaches the build. SERVICE is one of built_services: CI builds a release of SERVICE when one of them changed
+# (deploy/ci/changed-services.sh).
 image_paths() {
-  if [ "$1" = web ]; then
-    printf '%s\n' web "$(dockerfile web)"
-  else
-    printf '%s\n' go.mod go.sum gen internal "services/$1" "$(dockerfile "$1")" .dockerignore
-  fi
+  printf '%s\n' go.mod go.sum gen internal "services/$1" "$(dockerfile "$1")" .dockerignore
 }
 
 # Release images: built, scanned and signed by CI only,
@@ -1293,19 +1268,19 @@ gitops_at() {
   fi
 }
 
-# web_source: what the web client of `make up` and `make k8s-up` runs, from WEB_FROM: clone (the default when unset)
-# builds its image from web_dir; stg runs the release staging runs (stg_release web); image runs WEB_IMAGE, a release
-# given as ghcr.io/<repository>@sha256:<digest>, which GHCR must serve to an anonymous pull as the nodes and compose
-# pull it. Sets web_release to REPOSITORY@DIGEST of that release, empty when the image is built. A release keeps the
-# SVP_BUILD_ID CI built it with and is never built here, so the targets that build the source maps of the web
-# (make web-sourcemaps, and make k8s-web-sourcemaps without SOURCEMAPS_DIR) do not apply to it.
+# web_source: what the web client of `make up` and `make k8s-up` runs, from WEB_FROM: stg (the default when unset) runs
+# the release staging runs (stg_release web); clone builds its image from web_dir, the clone of svp-web; image runs
+# WEB_IMAGE, a release given as ghcr.io/<repository>@sha256:<digest>, which GHCR must serve to an anonymous pull as the
+# nodes and compose pull it. Sets web_release to REPOSITORY@DIGEST of that release, empty when the image is built. A
+# release keeps the SVP_BUILD_ID CI built it with and is never built here, so the targets that build the source maps of
+# the web (make web-sourcemaps, and make k8s-web-sourcemaps without SOURCEMAPS_DIR) do not apply to it.
 web_source() {
   local repo code
   web_release=
-  case ${WEB_FROM:-clone} in
+  case ${WEB_FROM:-stg} in
   clone | stg)
-    [ -z "${WEB_IMAGE:-}" ] || fail "WEB_IMAGE is set, but WEB_FROM is ${WEB_FROM:-clone}: set WEB_FROM=image to run it, or unset it"
-    [ "${WEB_FROM:-clone}" = clone ] || web_release=$(stg_release web) || exit 1
+    [ -z "${WEB_IMAGE:-}" ] || fail "WEB_IMAGE is set, but WEB_FROM is ${WEB_FROM:-stg}: set WEB_FROM=image to run it, or unset it"
+    [ "${WEB_FROM:-stg}" = clone ] || web_release=$(stg_release web) || exit 1
     ;;
   image)
     [[ ${WEB_IMAGE:-} =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]] ||
@@ -1317,7 +1292,7 @@ web_source() {
     web_release=$WEB_IMAGE
     ;;
   *)
-    fail "WEB_FROM='$WEB_FROM' is not valid: clone (default: build from the web client's source), stg (the release staging runs) or image (WEB_IMAGE)"
+    fail "WEB_FROM='$WEB_FROM' is not valid: stg (default: the release staging runs), clone (build from the clone of svp-web) or image (WEB_IMAGE)"
     ;;
   esac
 }
@@ -1334,8 +1309,7 @@ compose_images() {
   compose_releases=() compose_notes=()
   case ${IMAGES:-} in
   '')
-    for svc in "${svp_services[@]}"; do
-      [ "$svc" != web ] || continue
+    for svc in "${built_services[@]}"; do
       var=SVP_$(printf '%s' "$svc" | tr 'a-z-' 'A-Z_')_IMAGE
       export "$var=svp/$svc:dev"
     done
@@ -1343,8 +1317,7 @@ compose_images() {
     compose_notes+=("the six backend services built from the working tree")
     ;;
   stg)
-    for svc in "${svp_services[@]}"; do
-      [ "$svc" != web ] || continue
+    for svc in "${built_services[@]}"; do
       var=SVP_$(printf '%s' "$svc" | tr 'a-z-' 'A-Z_')_IMAGE
       ref=$(stg_release "$svc") || exit 1
       export "$var=$ref"

@@ -6,8 +6,10 @@
 ## Ý nghĩa và tác động tới người dùng
 
 Kyverno kiểm mọi Pod ở namespace `svp` qua `ImageValidatingPolicy` `svp-images` (chart `deploy/helm/svp-policy`): chỉ image
-`ghcr.io/anhnvcoder/short-video-platform/*` theo digest, ký keyless bởi `images.yml@refs/heads/main`, attestation `vuln` đủ hai
-nền tảng, không CRITICAL, không quá 72 giờ ([ADR-0015](../adr/0015-cicd-devsecops-stage5.md) §8). Hai chế độ:
+của một nguồn phát hành trong `deploy/helm/svp-policy/files/sources.json` (`backend`: `ghcr.io/anhnvcoder/short-video-platform/<tên>`,
+`web`: `ghcr.io/anhnvcoder/svp-web/web`; một glob mỗi tên được phát hành, không glob cả prefix) theo digest, ký keyless bởi
+`images.yml@refs/heads/main` của repo nguồn đó, attestation `vuln` đủ hai nền tảng, không CRITICAL, không quá 72 giờ
+([ADR-0015](../adr/0015-cicd-devsecops-stage5.md) §8, [ADR-0033](../adr/0033-svp-web-repo.md) §2). Hai chế độ:
 
 - **GitOps** (`make k8s-gitops-up`): Enforce, `failurePolicy: Fail`.
 - **Dev** (`make k8s-up`): Audit, `failurePolicy: Ignore`; Kyverno chết không chặn gì, chỉ mất PolicyReport.

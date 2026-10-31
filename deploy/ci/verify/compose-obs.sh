@@ -48,6 +48,9 @@
 build=up
 job_minutes_default=120
 k3d=0
+# make web-lighthouse and make measure-upload run the code of the web client: the clone of svp-web (verify-run.sh),
+# at web_ref of the dispatch or the commit of the web release staging runs, the release make up runs.
+web=1
 
 # --- Steps of their own; exported, since timeout runs them in a new bash.
 
@@ -171,9 +174,10 @@ fallback_alert_check() {
   echo "ok    no RateLimitFallbackActive started during the load; Alertmanager answered every poll"
 }
 
-# lighthouse_run N: make web-lighthouse, its manifest kept as manifest-N.json (each run writes manifest.json anew).
+# lighthouse_run N: make web-lighthouse, its manifest kept as manifest-N.json (each run writes manifest.json anew in
+# test-results/lighthouse/ of the clone of svp-web, SVP_WEB_DIR).
 lighthouse_run() {
-  local rc dir=web/test-results/lighthouse
+  local rc dir=$SVP_WEB_DIR/test-results/lighthouse
   make web-lighthouse
   rc=$?
   [ -f "$dir/manifest.json" ] && mv "$dir/manifest.json" "$dir/manifest-$1.json"
@@ -182,7 +186,7 @@ lighthouse_run() {
 
 # lcp_median: see lcp in the header.
 lcp_median() {
-  local dir=web/test-results/lighthouse reports
+  local dir=$SVP_WEB_DIR/test-results/lighthouse reports
   reports=$(jq -r '.[].jsonPath' "$dir"/manifest-*.json) || return 1
   [ -n "$reports" ] || { echo "no Lighthouse report"; return 1; }
   # shellcheck disable=SC2086 # one path per line, none with a blank (lhci names them)

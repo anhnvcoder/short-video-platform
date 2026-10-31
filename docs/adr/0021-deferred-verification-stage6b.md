@@ -32,7 +32,7 @@
   của [0028](0028-dora-metrics.md) ngày 2026-10-28), lượt lịch không chờ phát hành (`wait-release`, `measure-gitops` `skipped` kèm lý
   do) và trong `drill-k8s-supplychain` bỏ ca (c), (l) khi image của ca đó quá tuổi tối đa của policy (SKIP kèm dòng `NOTE`); job
   `record-stg` ghi khi bước kịch bản của `gitops` xanh và `release-set.json` có trong artifact, không còn phụ thuộc bước chờ phát
-  hành; `targets` bỏ một bước kiểm nào (trừ `wait-release`, `measure-gitops`) thì `release-set` `skipped`, không ghi (mục 3)
+  hành; `targets` bỏ một bước kiểm nào (trừ `wait-release`, `measure-gitops`) thì `release-set` `skipped`, không ghi (mục 3); từ 2026-10-31 §3 (mã web của kịch bản từ `make web-clone`, input `web_ref`, `WEB_FROM=clone` cho `dev-k3d`, `web-canary`), §6 (`gitops-sourcemaps.sh` kéo image `web-sourcemaps` của `svp-web`), §10 (cổng lockfile npm ở CI của `svp-web`) và job `stack` của `ci.yml` (web bản stg, e2e của `svp-web`) chỉnh bởi [0033](0033-svp-web-repo.md)
 - Ngày: 2026-10-24
 
 ## Bối cảnh
@@ -1322,6 +1322,15 @@ tuần đầu có job `gitops` (bản ghi stg không cần bước chờ, mục 
   - ADR-0020 §6, §7 (Velero, Chaos Mesh chạy trên k3d của runner với phủ riêng), §2 (`render.sh` nhận số pod) (mục 7, 8).
 
 ## Hiện thực ở
+
+Từ 2026-10-31 ([ADR-0033](0033-svp-web-repo.md)): mã web của kịch bản ở bản clone `svp-web` (`make web-clone`, `web_clone` của
+`deploy/k8s/lib.sh`; bước `--clones` của `deploy/ci/verify-run.sh`, input `web_ref` của `.github/workflows/verify.yml`, `web=1` của
+`deploy/ci/verify/compose-obs.sh`, `dev-k3d.sh`, `web-canary.sh`, `gitops.sh`; `WEB_FROM=clone` ở `dev-k3d.sh`, `web-canary.sh`);
+`deploy/ci/verify-collect.sh` lấy kết quả web ở `.web/svp-web/test-results`. Client canary `web/e2e/canary/clients.ts` là
+`e2e/canary/clients.ts` của `svp-web`, D17 ở `app/`, `next.config.ts` của repo đó. §6: `deploy/ci/gitops-sourcemaps.sh` kéo image
+`web-sourcemaps` khi web của stg thuộc `svp-web`. §10: cổng lockfile là `make lockfile-scan` của `svp-web` (job `check` của CI repo
+đó), chạy `deploy/ci/scan-gate.sh --fs` của repo này từ checkout ghim; target `web-lockfile-scan` và job `web` đã bỏ. Job `stack` của
+`.github/workflows/ci.yml`: `make gitops-clone`, `make web-clone`, web bản stg, `make web-e2e` của bản clone.
 
 Phần 1:
 

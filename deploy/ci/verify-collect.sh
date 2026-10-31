@@ -29,13 +29,14 @@
 # From the checkout (all read from the stack/cluster): .k8s/drills/*.json and traffic-*.log (each line a time, a user,
 # a route, a status and a duration), .k6/<run>/summary.json, the summary of each pod of the k6 Job
 # (.k6/cloud-<time>/pod-<i>.json of deploy/k6/cloud/run.sh logs, whose table is in the target's output),
-# web/test-results/measure-*.json and glitchtip-*.json, the
-# Lighthouse reports web/test-results/lighthouse/*.json and *.html, and the error-context.md Playwright writes for a
-# failed test (web/test-results/playwright/<test>/: the error and the page's accessibility tree at that moment, text,
-# so the next red e2e test has evidence; its trace stays out). Everything else under those places is listed in
-# files.txt as not-allowed: .env, kubeconfig, .k8s/ca.*, .k8s/helm/, .k8s/drills/threats-*.log, Playwright traces,
+# and, from the clone of the web client's repository svp-web the run's web targets ran in (.web/svp-web, the folder of
+# make web-clone), test-results/measure-*.json and glitchtip-*.json, the Lighthouse reports
+# test-results/lighthouse/*.json and *.html, and the error-context.md Playwright writes for a failed test
+# (test-results/playwright/<test>/: the error and the page's accessibility tree at that moment, text, so the next red
+# e2e test has evidence; its trace stays out). Everything else under those places is listed in files.txt as
+# not-allowed: .env, kubeconfig, .k8s/ca.*, .k8s/helm/, .k8s/drills/threats-*.log, Playwright traces,
 # videos, screenshots, HAR and HTML report, k6's machine.json, hidden files and every service log never get in. A
-# hidden file is dropped with its own rule and a warning, except web/test-results/playwright/.last-run.json, which
+# hidden file is dropped with its own rule and a warning, except test-results/playwright/.last-run.json, which
 # Playwright writes on every run (the ids of the tests that failed): known, so not-allowed without a warning.
 #
 # Each candidate is refused when it is hidden, not a regular file (a link could point at .env), over 5 MiB, or when it
@@ -217,15 +218,17 @@ if [ -d "$out" ]; then
   done < <(find "$out" \( -type f -o -type l \) -print0 | LC_ALL=C sort -z)
 fi
 
-# --- The checkout's results: BASE in the tree, DEST its folder in the artifact.
-for pair in .k8s/drills:k8s-drills .k6:k6 web/test-results:web-test-results; do
+# --- The checkout's results: BASE in the tree, DEST its folder in the artifact. The web client's are in the clone of
+# svp-web in the tree, where its targets write them.
+web_results=.web/svp-web/test-results
+for pair in .k8s/drills:k8s-drills .k6:k6 "$web_results:web-test-results"; do
   base=${pair%%:*}
   dest=${pair#*:}
   [ -d "$repo/$base" ] || continue
   while IFS= read -r -d '' file; do
     sub=${file#"$repo/$base"/}
     src=$base/$sub
-    if [ "$src" = web/test-results/playwright/.last-run.json ]; then drop "$src" not-allowed; continue; fi
+    if [ "$src" = "$web_results/playwright/.last-run.json" ]; then drop "$src" not-allowed; continue; fi
     if hidden "$sub"; then drop "$src" hidden; continue; fi
     allowed=0
     case $base:$sub in
@@ -233,11 +236,11 @@ for pair in .k8s/drills:k8s-drills .k6:k6 web/test-results:web-test-results; do
       .k8s/drills:*.json | .k8s/drills:traffic-*.log) allowed=1 ;;
       .k6:*/*/*) ;;
       .k6:*/summary.json | .k6:cloud-*/pod-*.json) allowed=1 ;;
-      web/test-results:lighthouse/*/*) ;;
-      web/test-results:lighthouse/*.json | web/test-results:lighthouse/*.html) allowed=1 ;;
-      web/test-results:playwright/*/error-context.md) allowed=1 ;;
-      web/test-results:*/*) ;;
-      web/test-results:measure-*.json | web/test-results:glitchtip-*.json) allowed=1 ;;
+      "$web_results":lighthouse/*/*) ;;
+      "$web_results":lighthouse/*.json | "$web_results":lighthouse/*.html) allowed=1 ;;
+      "$web_results":playwright/*/error-context.md) allowed=1 ;;
+      "$web_results":*/*) ;;
+      "$web_results":measure-*.json | "$web_results":glitchtip-*.json) allowed=1 ;;
     esac
     if [ "$allowed" = 1 ]; then consider "$file" "$src" "$dest/$sub" stack; else drop "$src" not-allowed; fi
   done < <(find "$repo/$base" \( -type f -o -type l \) -print0 | LC_ALL=C sort -z)

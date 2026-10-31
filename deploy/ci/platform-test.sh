@@ -52,12 +52,13 @@
 #   - gitops_no_provenance of deploy/ci/verify/gitops.sh: the newest web release in the history of web.yaml that the
 #     fake cosign finds signed without provenance, passing over without cosign a release built from a commit holding
 #     provenance-predicate.sh; none found and an error of cosign each exit with their own status;
-#   - changed-services.sh builds all seven images for a change of platform.sh, as for common.sh and rescan.sh, and none
-#     for a change of this test, of promote-test.sh, of platform-guard.sh, of sourcemaps-image.sh and its test (another
+#   - changed-services.sh builds all six images of this repository (never web, which svp-web builds) for a change of
+#     platform.sh, as for common.sh and rescan.sh, and none for a change under web/ (a file added, then deleted) or of
+#     this test, of promote-test.sh, of platform-guard.sh, of sourcemaps-image.sh and its test (another
 #     source's CI pushes that image), of a scenario file under deploy/ci/verify/, of the
 #     scripts of other workflows and of svp-gitops's check (record-stg.sh, gitops-check.sh with values-check.sh and
 #     verify-release.sh, dora.sh and the tests of
-#     these and of release-set.sh, promote-prd.sh), of the policy's values or of docs/; all seven for a change of
+#     these and of release-set.sh, promote-prd.sh), of the policy's values or of docs/; all six for a change of
 #     release-set.sh and promote-prd.sh (job promote-prd of images.yml), and of the GRYPE_IMAGE line of the Makefile,
 #     none for another line of it;
 #   - platform-guard.sh reads the scenario files under deploy/ci/verify/ too; given another repository's tree as ROOT
@@ -72,8 +73,9 @@
 #     and ci_commit are that checkout's (and a checkout with no origin on github.com is refused, an origin's
 #     credential never shown); plan.sh of svp-web's run builds the services of its release source at every run, with
 #     no base, refuses a service or a drill its source does not have and a tree whose HEAD is not the run's commit, and
-#     in this checkout refuses a run of svp-web that forgot SVP_CODE_ROOT and a run of a fork; scan-gate.sh reads that
-#     tree's .trivyignore.yaml and stops, naming it, when the tree has none.
+#     in this checkout refuses a run of svp-web that forgot SVP_CODE_ROOT and a run of a fork; in this checkout plan.sh
+#     builds the six for services all and refuses services web, and build-image.sh refuses web before it builds
+#     anything; scan-gate.sh reads that tree's .trivyignore.yaml and stops, naming it, when the tree has none.
 # Runs on macOS and Linux: no network, no Docker, no cluster.
 #
 # Usage, from anywhere: deploy/ci/platform-test.sh
@@ -962,6 +964,25 @@ lacks "$work/output" "images=" && ok "plan.sh in this checkout: a run of svp-web
 plan_own "a run of a fork" 1 GITHUB_REPOSITORY=someone/short-video-platform GITHUB_SHA="$base"
 check "plan.sh in this checkout: a run of a fork: no release source" has "$work/plan.err" \
   "this run is of https://github.com/someone/short-video-platform, which is the repository of 0 release sources"
+# web is still a service of release source backend while prd runs that release, but this repository holds no source of
+# it: a dispatch builds the six, never web, and build-image.sh refuses web before anything is built.
+plan_own "a dispatch with services all" 0 "${backend_run[@]}" GITHUB_SHA="$base" EVENT_NAME=workflow_dispatch \
+  INPUT_SERVICES=all
+same "plan.sh in this checkout: services all builds the six, not web" \
+  'images=["gateway","user-service","video-service","engagement-service","feed-service","media-worker"]' \
+  "$(grep '^images=' "$work/output")"
+plan_own "a dispatch with services web" 1 "${backend_run[@]}" GITHUB_SHA="$base" EVENT_NAME=workflow_dispatch \
+  INPUT_SERVICES="gateway web"
+check "plan.sh in this checkout: services web is refused, naming the six" has "$work/plan.err" \
+  "services: 'web' is not an image this repository builds (gateway user-service video-service engagement-service feed-service media-worker)"
+rc=0
+on github env "${backend_run[@]}" GITHUB_SHA="$base" "$tree/deploy/ci/build-image.sh" web amd64 "$work/leg" \
+  >/dev/null 2>"$work/build.err" || rc=$?
+same "build-image.sh in this checkout: web (exit 1)" 1 "$rc"
+check "build-image.sh in this checkout: web is refused, its source is another repository's" has "$work/build.err" \
+  "web is not an image this repository builds (gateway user-service video-service engagement-service feed-service media-worker): its source is another repository's"
+[ ! -e "$work/leg" ] && ok "build-image.sh in this checkout: web: nothing built, no output folder" ||
+  fail "build-image.sh in this checkout: web: nothing built, no output folder"
 
 # --- rescan.sh run: a run attests only the releases of the source of its own repository, as the identity of that
 # source's signing workflow. A clone of svp-gitops on disk whose main names a gateway of backend and a web of svp-web;
@@ -1259,7 +1280,7 @@ on local "$tree/deploy/ci/platform-guard.sh" "$work/bin" >"$work/guard.out" 2>&1
 same "platform-guard.sh ROOT: a directory outside git exits 2" 2 "$rc"
 
 # --- changed-services.sh: platform.sh is part of the image pipeline (common.sh sources it), so a change of it builds
-# all seven, as do release-set.sh and promote-prd.sh (job promote-prd); this test, platform-guard.sh,
+# all six, as do release-set.sh and promote-prd.sh (job promote-prd); this test, platform-guard.sh,
 # provenance-predicate-test.sh, the scripts of the verification runs and of the other workflows, the policy's values
 # and docs/ are read by no image job.
 changed_by() {
@@ -1267,8 +1288,14 @@ changed_by() {
   g commit -qam "change $1"
   on local "$tree/deploy/ci/changed-services.sh" HEAD~1 HEAD 2>/dev/null
 }
-all="engagement-service feed-service gateway media-worker user-service video-service web"
-same "changed-services: a change of platform.sh builds all seven" "$all" "$(changed_by deploy/ci/platform.sh)"
+all="engagement-service feed-service gateway media-worker user-service video-service"
+same "changed-services: a change of platform.sh builds all six" "$all" "$(changed_by deploy/ci/platform.sh)"
+# The web client's source left this repository: a file under web/ (and its removal) builds no image.
+mkdir -p "$tree/web" && echo "export {};" >"$tree/web/page.ts"
+same "changed-services: a file added under web/ builds nothing" "" "$(g add web && changed_by web/page.ts)"
+g rm -q -r web && g commit -qm "drop web/"
+same "changed-services: the removal of web/ builds nothing" "" \
+  "$(on local "$tree/deploy/ci/changed-services.sh" HEAD~1 HEAD 2>/dev/null)"
 same "changed-services: a change of platform-test.sh builds nothing" "" "$(changed_by deploy/ci/platform-test.sh)"
 same "changed-services: a change of promote-test.sh builds nothing" "" "$(changed_by deploy/ci/promote-test.sh)"
 same "changed-services: a change of platform-guard.sh builds nothing" "" "$(changed_by deploy/ci/platform-guard.sh)"
@@ -1282,14 +1309,14 @@ same "changed-services: a change of gitops-sourcemaps-test.sh builds nothing" ""
 for f in sourcemaps-image.sh sourcemaps-image-test.sh; do
   same "changed-services: a change of $f builds nothing" "" "$(changed_by "deploy/ci/$f")"
 done
-same "changed-services: a change of rescan.sh builds all seven" "$all" "$(changed_by deploy/ci/rescan.sh)"
+same "changed-services: a change of rescan.sh builds all six" "$all" "$(changed_by deploy/ci/rescan.sh)"
 for f in record-stg.sh gitops-check.sh gitops-check-test.sh values-check.sh verify-release.sh dora.sh dora-test.sh \
   release-set-test.sh promote-prd-test.sh; do
   same "changed-services: a change of $f builds nothing" "" "$(changed_by "deploy/ci/$f")"
 done
-same "changed-services: a change of release-set.sh builds all seven" "$all" "$(changed_by deploy/ci/release-set.sh)"
-same "changed-services: a change of promote-prd.sh builds all seven" "$all" "$(changed_by deploy/ci/promote-prd.sh)"
-same "changed-services: a change of common.sh builds all seven" "$all" "$(changed_by deploy/ci/common.sh)"
+same "changed-services: a change of release-set.sh builds all six" "$all" "$(changed_by deploy/ci/release-set.sh)"
+same "changed-services: a change of promote-prd.sh builds all six" "$all" "$(changed_by deploy/ci/promote-prd.sh)"
+same "changed-services: a change of common.sh builds all six" "$all" "$(changed_by deploy/ci/common.sh)"
 same "changed-services: a change of the policy's values builds nothing" "" \
   "$(changed_by deploy/helm/svp-policy/values.yaml)"
 same "changed-services: a change under docs/ builds nothing" "" "$(changed_by docs/decision.md)"
@@ -1298,7 +1325,7 @@ printf 'TRIVY_IMAGE := trivy@sha256:1\nGRYPE_IMAGE := grype@sha256:1\nK6_IMAGE :
 g add Makefile && g commit -qm "add the Makefile"
 sed 's/^GRYPE_IMAGE := grype@sha256:1$/GRYPE_IMAGE := grype@sha256:2/' "$tree/Makefile" >"$work/Makefile" &&
   cp "$work/Makefile" "$tree/Makefile" && g commit -qam "bump grype"
-same "changed-services: a change of the GRYPE_IMAGE line builds all seven" "$all" \
+same "changed-services: a change of the GRYPE_IMAGE line builds all six" "$all" \
   "$(on local "$tree/deploy/ci/changed-services.sh" HEAD~1 HEAD 2>/dev/null)"
 same "changed-services: a change of another line of the Makefile builds nothing" "" "$(changed_by Makefile)"
 

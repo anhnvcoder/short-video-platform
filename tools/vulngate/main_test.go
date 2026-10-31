@@ -245,9 +245,9 @@ func TestDockerfiles(t *testing.T) {
 		want  string
 	}{
 		{"same release, flags and lower case", map[string]string{
-			"a.Dockerfile":   "from --platform=$BUILDPLATFORM golang:1.27.3-trixie@sha256:0 AS build\n",
-			"b.Dockerfile":   "FROM docker.io/library/golang:1.27.3 AS build\n",
-			"web.Dockerfile": "FROM node:26-trixie@sha256:0 AS build\n",
+			"a.Dockerfile": "from --platform=$BUILDPLATFORM golang:1.27.3-trixie@sha256:0 AS build\n",
+			"b.Dockerfile": "FROM docker.io/library/golang:1.27.3 AS build\n",
+			"c.Dockerfile": "FROM alpine:3.24@sha256:0 AS base\n",
 		}, 0, "2 golang images match"},
 		{"other release", map[string]string{"service.Dockerfile": "# builder\nFROM golang:1.27.4-trixie@sha256:0 AS build\n"}, 1,
 			"service.Dockerfile:2: golang image is go1.27.4, govulncheck scanned go1.27.3 (go directive of go.mod): use one Go release in both"},
@@ -256,8 +256,8 @@ func TestDockerfiles(t *testing.T) {
 		{"latest", map[string]string{"service.Dockerfile": "FROM golang:latest\n"}, 1, "does not pin a patch release"},
 		{"digest only", map[string]string{"service.Dockerfile": "FROM golang@sha256:0\n"}, 1, "does not pin a patch release"},
 		{"no golang stage", map[string]string{
-			"web.Dockerfile": "FROM node:26-trixie@sha256:0 AS build\n",
-			"x.Dockerfile":   "FROM example.com/golang:1.27.3\n",
+			"c.Dockerfile": "FROM alpine:3.24@sha256:0 AS base\n",
+			"x.Dockerfile": "FROM example.com/golang:1.27.3\n",
 		}, 1, "no golang build stage in "},
 	}
 	for _, tt := range tests {

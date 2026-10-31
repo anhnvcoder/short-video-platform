@@ -4,7 +4,7 @@
   2026-10-29 (provenance trong `images.yml`, policy và `verify-release.sh` có giá trị bật, mặc định tắt); bậc 2–5 xong 2026-10-29
   đến 2026-10-30: bảy bản phát hành build ở `6ca2d8a` mang provenance (PR promote #36), bật `requireProvenance` ở `envs/stg/`,
   `envs/prd/svp-policy.yaml` của `svp-gitops` ngay từ commit khởi tạo ([ADR-0025](0025-gitops-config-repo.md)), kịch bản `gitops` với
-  policy bật đạt cả ca `a` và ca `l` (mục Kiểm chứng sau)
+  policy bật đạt cả ca `a` và ca `l` (mục Kiểm chứng sau); §4, §5 (repository và ref mà provenance phải nêu, identity theo nguồn phát hành; `verify-release.sh` theo nguồn) và §6 (rollback về web của nguồn cũ sau khi gỡ nguồn đó bị từ chối như rollback về bản trước provenance) chỉnh bởi [0033](0033-svp-web-repo.md), từ 2026-10-30
 - Ngày: 2026-10-28
 
 ## Bối cảnh
@@ -300,6 +300,12 @@ Giả định chưa kiểm được lúc viết; mỗi dòng nêu phép kiểm c
   - ADR-0015 §8: thứ tự kiểm thêm 7–10 khi giá trị bật (GitOps), đường dev không đổi.
 
 ## Hiện thực ở
+
+Từ 2026-10-30 ([ADR-0033](0033-svp-web-repo.md)): `repository`, `provenanceRef`, `subject` của mỗi nguồn ở
+`deploy/helm/svp-policy/files/sources.json` thay `provenanceRepository`, `provenanceRef` của `values.yaml` (khoá
+`imageVerification.requireProvenance` giữ ở `values.yaml`); `provenance_source`, `sign_identity` của `deploy/ci/common.sh` và
+`deploy/ci/verify-release.sh` theo nguồn; image của `svp-web` mang provenance do `deploy/ci/provenance-predicate.sh` dựng trong CI của
+repo đó.
 
 Hiện thực 2026-10-29 tới bậc 1 của mục 6 (sinh provenance, policy và `verify-release.sh` có giá trị bật, mặc định tắt):
 

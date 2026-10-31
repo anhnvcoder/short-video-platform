@@ -644,6 +644,8 @@ của web (trang báo lỗi, không gửi byte nào), không có e2e; `make up O
 
 ## Hiện thực ở
 
+Từ 2026-10-31 mã web ở repo `svp-web` ([ADR-0033](0033-svp-web-repo.md)): mỗi đường `web/<x>` dưới đây là `<x>` của repo đó; target `web-check` là `make check` của `svp-web`, `web-lighthouse` còn ở `Makefile` repo này, gọi `make lighthouse` của bản clone.
+
 - Handle và tên hiển thị (§1, §2): `services/user-service/migrations/00005_add_user_profile.sql`, `services/user-service/internal/server/`;
   phía web `web/features/profile/` (`display-name.ts`, `api.ts`), `web/server/profile-actions.ts`.
 - Danh sách video theo tác giả (§4): `services/video-service/internal/server/server.go`,

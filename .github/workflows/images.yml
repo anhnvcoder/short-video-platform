@@ -1,4 +1,4 @@
-# Images of the seven services: build only what changed,
+# Images of the six backend services (the web client's are svp-web's): build only what changed,
 # on native amd64 and arm64 runners; scan the local image with trivy, and its SBOM with grype, and block secrets and
 # CRITICAL vulnerabilities BEFORE anything is pushed; push exactly what was scanned; join a multi-arch index; sign it keyless with cosign and
 # attest the SBOM (syft), the scan result and the build provenance; promote the signed digests to stg through a pull request in the
@@ -72,7 +72,7 @@ jobs:
   last-success:
     # The base of a push build: head_sha of the newest successful push run of this workflow on main. A job
     # of its own because only it reads the Actions API; it checks out nothing and runs no code of the repository. When
-    # the API fails the output stays empty and the job green: plan then builds all seven (too much, never too little).
+    # the API fails the output stays empty and the job green: plan then builds all six (too much, never too little).
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -187,15 +187,6 @@ jobs:
     # main: the same steps 1-3, then push exactly the scanned image (step 4: by config digest) and hand the leg to the
     # jobs after it as an artifact (step 5). The gate step has no always() and no continue-on-error: a blocked image
     # stops the leg before the push. The cache is the only shared state, and no job holding id-token uses it.
-    # The web legs also hand over the browser bundle's source maps, exported by build-image.sh from the image's own
-    # build cache, as artifact web-sourcemaps-<arch> (default retention; the maps describe code that is public anyway):
-    # the tree _next/static/... of chunks and maps as an upload to the error tracker reads it, and the file
-    # image-digest, the manifest digest this leg pushed. A commit can be built more than once (a dispatch that rebuilds
-    # web), so to find the maps of a running web image: list the runs of this workflow for the commit in its tag (12
-    # hex), download each run's web-sourcemaps-amd64 and take the one whose image-digest equals the linux/amd64 manifest
-    # of the image's signed index; then check that the debug id of every chunk the web serves is in it. Only pushed legs
-    # have a digest, so pull requests export and check the maps in build-image.sh but upload none: an artifact without a
-    # digest could never be matched to an image.
     needs: plan
     if: >-
       ${{ !cancelled() && needs.plan.result == 'success'
@@ -239,18 +230,6 @@ jobs:
             ${{ runner.temp }}/leg/db-updated-at
           if-no-files-found: error
           retention-days: 7
-      - name: Pack the web source maps with the pushed manifest digest
-        if: matrix.image == 'web'
-        run: |
-          deploy/ci/build-image.sh --sourcemaps-artifact "$RUNNER_TEMP/leg" "$RUNNER_TEMP/leg/digest" \
-            "$RUNNER_TEMP/web-sourcemaps"
-      - name: Hand over the web source maps
-        if: matrix.image == 'web'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: web-sourcemaps-${{ matrix.arch }}
-          path: ${{ runner.temp }}/web-sourcemaps
-          if-no-files-found: error
       - name: Keep the SARIF for the Security tab, blocked or not
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -577,7 +556,7 @@ jobs:
   sarif:
     # Uploads the SARIF of main's builds and rescans to the Security tab, one category per tool, image and architecture.
     # One upload per tool: upload-sarif merges every file it is given into a single SARIF log, and GitHub rejects a log
-    # with more than 20 runs. Each leg writes one trivy and one grype run, so all seven images (14 legs) would make 28
+    # with more than 20 runs. Each leg writes one trivy and one grype run, so all six images (12 legs) would make 24
     # runs in one log; per tool it is at most 14 (a rescan writes trivy runs only and never shares a run with a build).
     # The only job with security-events: write; it runs no code of the repository. A report, not a check: not in
     # images-ok (a failed upload still turns the run red).

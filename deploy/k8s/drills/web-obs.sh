@@ -9,7 +9,8 @@
 #              SKIP while a failed query is FAIL. Every series' route label is one of the closed set of
 #              server/telemetry/vitals.ts. p75 of each metric is printed, over all routes and per route, from the
 #              cumulative buckets (a series the e2e run made may hold a single sample, which increase() cannot read).
-#   3. errors  the GlitchTip event that web/e2e/glitchtip.e2e.ts found (web/test-results/glitchtip-<project>.json of
+#   3. errors  the GlitchTip event that e2e/glitchtip.e2e.ts of the web client found (test-results/
+#              glitchtip-<project>.json of its clone, web_dir of deploy/k8s/lib.sh, after
 #              `SVP_E2E_GLITCHTIP=1 make k8s-web-e2e` on k3d) is there, tagged service=web and runtime=browser, with
 #              frames mapped to the web's source (turbopack:///[project]/...), read again through the API. Its
 #              environment (in the file and as the API returns it) must equal the SENTRY_ENVIRONMENT that the running
@@ -48,7 +49,6 @@ tempo_port=13200
 glitchtip_port=8000
 tempo_url=http://127.0.0.1:$tempo_port
 glitchtip_url=http://127.0.0.1:$glitchtip_port
-results_dir=$repo_root/web/test-results
 # Seconds back from now that Tempo is searched.
 trace_window=3600
 # The route label values of server/telemetry/vitals.ts.
@@ -163,7 +163,9 @@ web_environment() {
   printf '%s\n' "$values"
 }
 check_errors() {
-  local file project stack id status sources env_want env_file env_event n=0
+  local file project stack id status sources env_want env_file env_event n=0 results_dir
+  # The results of the e2e run are in the clone of svp-web it ran from, the one web_dir names.
+  results_dir=$(web_dir)/test-results || fail "no clone of svp-web, where make k8s-web-e2e writes its results"
   env_want=$(web_environment)
   token=$(kc -n svp-obs get secret glitchtip-api --ignore-not-found -o jsonpath='{.data.SENTRY_AUTH_TOKEN}' |
     base64 -d) || fail "read Secret svp-obs/glitchtip-api"
@@ -173,9 +175,9 @@ check_errors() {
     [ -f "$file" ] || continue
     stack=$(jq -r '.stack // ""' "$file")
     [ "$stack" = k3d ] ||
-      fail "web/test-results/glitchtip-$project.json is from the $stack stack; run SVP_E2E_GLITCHTIP=1 make k8s-web-e2e"
+      fail "$file is from the $stack stack; run SVP_E2E_GLITCHTIP=1 make k8s-web-e2e"
     id=$(jq -r '.event_id // ""' "$file")
-    [[ $id =~ ^[0-9a-f]{32}$ ]] || fail "web/test-results/glitchtip-$project.json holds an event id (got '$id')"
+    [[ $id =~ ^[0-9a-f]{32}$ ]] || fail "$file holds an event id (got '$id')"
     status=$(glitchtip_get "/api/0/projects/svp/svp/events/$id/" "$work/event.json")
     [ "$status" = 200 ] || fail "GlitchTip GET event $id ($project) is 200 (status $status)"
     jq -e '([.tags[]? | select(.key == "service") | .value] == ["web"]) and
@@ -183,7 +185,7 @@ check_errors() {
       fail "GlitchTip event $id ($project) has tags service=web and runtime=browser"
     env_file=$(jq -r '.environment // ""' "$file")
     [ "$env_file" = "$env_want" ] ||
-      fail "web/test-results/glitchtip-$project.json has environment '$env_file', the web pods read '$env_want'"
+      fail "$file has environment '$env_file', the web pods read '$env_want'"
     env_event=$(jq -r '([.tags[]? | select(.key == "environment") | .value][0]) // .environment // ""' "$work/event.json")
     [ "$env_event" = "$env_want" ] ||
       fail "GlitchTip event $id ($project) has environment '$env_event', the web pods read '$env_want'"
@@ -196,7 +198,7 @@ check_errors() {
     n=$((n + 1))
   done
   token=
-  [ "$n" -gt 0 ] || fail "no web/test-results/glitchtip-<project>.json: run SVP_E2E_GLITCHTIP=1 make k8s-web-e2e first"
+  [ "$n" -gt 0 ] || fail "no $results_dir/glitchtip-<project>.json: run SVP_E2E_GLITCHTIP=1 make k8s-web-e2e first"
 }
 
 # run_check NAME FUNCTION: runs FUNCTION in a subshell, so that its fail ends only that check, and records the result.

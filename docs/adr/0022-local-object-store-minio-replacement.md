@@ -418,6 +418,8 @@ máy còn nguyên; điều kiện xoá của quy tắc 4 (mục 13 đã chạy, 
 
 ## Hiện thực ở
 
+Từ 2026-10-31 mã web ở repo `svp-web` ([ADR-0033](0033-svp-web-repo.md)): mỗi đường `web/<x>` dưới đây là `<x>` của repo đó.
+
 - Store compose (Quyết định 1–3, 7): service `s3`, `s3-init`, volume `s3-data`, anchor image `x-s3-image` của
   `deploy/compose/compose.yaml`; biến `.env`, `test-stack`, `clean-data`, target `object-store-copy` ở `deploy/compose/compose.mk`;
   `.env.example`; Renovate theo version ở `renovate.json`.

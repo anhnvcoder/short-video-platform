@@ -93,8 +93,9 @@
 build=k8s-gitops-up
 job_minutes_default=330
 k3d=1
-# The web's source maps are uploaded with the Sentry CLI of the web client's code: web_ref of the dispatch names the
-# commit of svp-web that is (verify-run.sh).
+# The web's e2e tests and the upload of its source maps (the Sentry CLI of its packages) run the code of the web
+# client: the clone of svp-web (verify-run.sh), at web_ref of the dispatch or the commit of the web release staging
+# runs, the release the cluster runs.
 web=1
 
 # The repository: verify-run.sh's when sourced, this file's own when run as a script.

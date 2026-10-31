@@ -11,7 +11,7 @@
   canary web dưới traffic và client trình duyệt (D6, D14, D18) đạt; source map của image CI kiểm sau merge (D5); §9 (source map
   của image CI kéo từ giai đoạn 7 về giai đoạn 6b, artifact `web-sourcemaps-<arch>` của `images.yml`) và §3 (ngưỡng p99 canary
   của web 250 ms theo số k6) chỉnh bởi 0021; §6 (CORS toàn cục của MinIO ở k3d) bị thay một phần bởi
-  [0022](0022-local-object-store-minio-replacement.md) (CORS theo bucket trên RustFS, cùng origin `https://svp.localhost:8443`)
+  [0022](0022-local-object-store-minio-replacement.md) (CORS theo bucket trên RustFS, cùng origin `https://svp.localhost:8443`); từ 2026-10-30 §1 (image `web` build, ký, promote ở CI của `svp-web`, đường `ghcr.io/anhnvcoder/svp-web/web`, `SVP_BUILD_ID` theo commit của `svp-web`; Kyverno chọn attestor theo nguồn phát hành) và §9 (source map của image CI là image `web-sourcemaps` trên GHCR thay artifact của lượt chạy) chỉnh bởi [0033](0033-svp-web-repo.md)
 - Ngày: 2026-10-22
 
 ## Bối cảnh
@@ -761,6 +761,14 @@ source map của image CI kiểm sau merge.
     một lần): xét khoá cố định không bí mật lúc build để id action ít đổi (mục 1).
 
 ## Hiện thực ở
+
+Từ 2026-10-30 ([ADR-0033](0033-svp-web-repo.md)) image `web` build, ký, promote ở `.github/workflows/images.yml` của `svp-web`,
+bằng `deploy/ci/build-image.sh`, `sign-image.sh`, `promote.sh --source web` của repo này chạy từ checkout ghim `.backend/`; bảng nguồn
+`deploy/helm/svp-policy/files/sources.json` (attestor theo prefix ở `templates/imagevalidatingpolicy.yaml`). Từ 2026-10-31 mã web ở
+`svp-web`: mỗi đường `web/<x>` dưới đây là `<x>` của repo đó, `deploy/docker/web.Dockerfile` là `Dockerfile` ở gốc của nó. §9: image
+`web-sourcemaps` do `deploy/ci/sourcemaps-image.sh push` đẩy (gọi từ CI `svp-web`), `deploy/ci/gitops-sourcemaps.sh` kéo ẩn danh;
+`web-sourcemaps`, `k8s-web-sourcemaps`, `k8s-web-e2e` của `Makefile`, `deploy/k8s/k8s.mk` là wrapper gọi `make sourcemaps`,
+`k8s-sourcemaps`, `k8s-e2e` của bản clone `svp-web`. Values của release `web` ở `base/services/web.yaml` của `svp-gitops`.
 
 - Image `web` trong chuỗi cung ứng (§1): `deploy/docker/web.Dockerfile`, `deploy/ci/build-image.sh` (`SVP_BUILD_ID`),
   `deploy/k8s/k8s.mk`, `deploy/k8s/install.sh`.
