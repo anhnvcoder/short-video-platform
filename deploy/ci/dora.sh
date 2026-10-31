@@ -195,8 +195,8 @@ for name in $others; do
   dir=
   case $name in
   web)
-    # web_dir falls back to web/ of this checkout, which holds no history of svp-web.
-    dir=$(web_dir 2>/dev/null) && [ "$dir" != "$repo_root/web" ] || dir=
+    # web_dir fails unless SVP_WEB_DIR or <workspace>/frontend is a clone of svp-web; no clone leaves dir empty.
+    dir=$(web_dir 2>/dev/null) || dir=
     ;;
   esac
   [ -n "$dir" ] && git -C "$dir" rev-parse --verify -q "$main^{commit}" >/dev/null ||
