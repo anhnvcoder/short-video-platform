@@ -3,7 +3,10 @@
 - Trạng thái: Chấp nhận (người học duyệt 2026-10-30, chọn (a) ở cả sáu dòng "Cần người học chọn"; các điểm thiết kế còn lại theo
   đề xuất). Bước 1–5 của mục 9 xong 2026-10-30: PR-1 merge (`28bf2ca`, PR #43; sửa tiếp PR #45, #48), repo `svp-web` với lịch sử chụp
   ở `28bf2ca`, check của `svp-gitops` theo nguồn (PR #20), bản phát hành đầu của `svp-web` chạy ở stg (PR #22 của `svp-gitops`); PR-2
-  (cắt `web/`) hiện thực 2026-10-31, chưa merge; promote prd có web của `svp-web` và PR-3 chưa (mục Kết quả, Hiện thực ở)
+  (cắt `web/`) hiện thực 2026-10-31, chưa merge; promote prd có web của `svp-web` và PR-3 chưa (mục Kết quả, Hiện thực ở); §10
+  (Renovate của `svp-web`: không automerge; bản `patch`, `digest` của gói npm, Node, base image và service container của CI tự merge khi
+  `ci-ok`, `images-ok` xanh; action, `.backend-commit`, `api/contract.json`, minor, major giữ tay) chỉnh bởi
+  [0035](0035-renovate-automerge.md)
 - Ngày: 2026-10-30
 
 ## Bối cảnh

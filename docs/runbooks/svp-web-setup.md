@@ -221,7 +221,8 @@ Làm trước khi bất kỳ commit nào có `.github/workflows/` được push 
 
 - Chỉ squash, auto-merge: mỗi PR là đúng một commit trên `main`, tức một tag image (12 hex của commit) và một ứng viên phát hành; luật
   không lùi của promote web so tổ tiên trên `main` của `svp-web` (ADR-0033 §4), lịch sử thẳng thì tổ tiên trùng thứ tự merge; rollback
-  một thay đổi là revert một commit. Auto-merge cho người học bật trên PR của mình hay của Renovate (sau khi đọc) để PR tự merge khi
+  một thay đổi là revert một commit. Auto-merge: Renovate tự bật trên PR bản `patch`, `digest` của danh sách cho phép (gói npm, Node,
+  base image, image dịch vụ của CI; ADR-0035); người học bật trên PR của mình hay PR Renovate còn lại (sau khi đọc) để PR tự merge khi
   `ci-ok`, `images-ok` xanh; không mở đường nào qua ruleset (C2).
 - Commit squash lấy tiêu đề và mô tả của PR: tiêu đề PR (conventional commit) thành message trên `main`, footer `Refs:` hay dòng `This
   reverts commit <sha>.` của PR revert còn trong commit; mặc định của GitHub lấy message commit lẻ khi PR có một commit.

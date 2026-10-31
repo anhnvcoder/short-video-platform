@@ -464,7 +464,8 @@ flowchart LR
   tĩnh trong CI bằng bước 4 của `deploy/ci/gitops-check.sh` (`make helm-check`, check của `svp-gitops`), chưa kiểm chữ ký nhà cung cấp.
 - **Renovate** (§10): App Mend cho repo này và `svp-gitops`, mở PR hằng tuần cho Go module, action (SHA), base image, công cụ của
   `Makefile` (repo này), chart upstream, image ghim trong `base/`, commit checker (`svp-gitops`, bỏ qua `envs/**`); chờ bản phát hành
-  3 ngày, không automerge.
+  3 ngày; repo này tự merge bản `patch`, `digest` của Go module, base image và image dịch vụ khi `ci-ok`, `images-ok` xanh, còn lại (và
+  mọi PR của `svp-gitops`) duyệt tay ([ADR-0035](adr/0035-renovate-automerge.md)).
 - **Chi phí:** repo public nên runner (cả arm64) và package GHCR public không tính tiền; ngân sách thời gian mỗi workflow
   dưới 10 phút (kiểm sau push). Kyverno thêm 0,13–0,16 GiB RAM: cluster dev nghỉ 6,40 GiB, đỉnh 7,92 GiB khi media-worker
   scale lên (đo 2026-10-21, cách đo ADR-0014 §2); cluster GitOps đo sau push.
