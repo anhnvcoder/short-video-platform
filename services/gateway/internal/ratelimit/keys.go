@@ -7,7 +7,7 @@ import (
 	"net/netip"
 	"strings"
 
-	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/httpx"
+	"github.com/anhnvcoder/svp-backend/services/gateway/internal/httpx"
 )
 
 // ClientIP is the id of the client's address for the IP classes: the address that from, the

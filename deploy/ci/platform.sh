@@ -198,7 +198,30 @@ ci_temp_dir() {
 
 # The code repository (owner/name on its host): the one that holds deploy/ci/ and the workflows that build, sign and
 # promote releases. Change it here when the repository moves.
-_ci_code_repo=anhnvcoder/short-video-platform
+_ci_code_repo=anhnvcoder/svp-backend
+
+# The former names of renamed repositories, one line each: "<old owner/name> <current owner/name>". The host redirects
+# an old name to the repository, but what was written before a rename keeps it: the run_url of a record of stg, the
+# repository of a release source that no longer builds. Those records are read for as long as a window of the
+# delivery metrics reaches back (years), so a rename adds a line here and none is ever taken out.
+_ci_renamed_repos='anhnvcoder/short-video-platform anhnvcoder/svp-backend
+anhnvcoder/svp-web anhnvcoder/svp-frontend'
+
+# ci_repo_renames: prints the renamed repositories, one line each: "<old owner/name> <current owner/name>".
+ci_repo_renames() { printf '%s\n' "$_ci_renamed_repos"; }
+
+# ci_repo_current REPO: prints the current name (owner/name) of repository REPO, given by its current or a former name
+# (_ci_renamed_repos); a repository never renamed is printed as given.
+ci_repo_current() {
+  local old new
+  while read -r old new; do
+    [ "$old" != "${1:-}" ] || {
+      echo "$new"
+      return 0
+    }
+  done <<<"$_ci_renamed_repos"
+  echo "${1:-}"
+}
 
 # _ci_local_repo: on a machine, owner/name of the repository whose code is built: the code repository's, or, when
 # SVP_CODE_ROOT names the checkout of another repository (whose CI runs these scripts from a pinned checkout of this
@@ -735,19 +758,25 @@ ci_artifact_fetch() {
 }
 
 # ci_is_run_url URL: true when URL is the page of a run of a workflow of the code repository on its host
-# (https://github.com/<code repository>/actions/runs/<id>), the form ci_run_url gives on GitHub. Prints nothing.
+# (https://github.com/<code repository>/actions/runs/<id>), the form ci_run_url gives on GitHub, under the code
+# repository's current name or a former one (_ci_renamed_repos: a record made before a rename names its run so).
+# Prints nothing.
 ci_is_run_url() {
   local platform
   platform=$(ci_platform) || return 1
   case $platform in
-  github | local) [[ ${1:-} =~ ^https://github\.com/$_ci_code_repo/actions/runs/[0-9]+$ ]] ;;
+  github | local)
+    [[ ${1:-} =~ ^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/actions/runs/[0-9]+$ ]] &&
+      [ "$(ci_repo_current "${BASH_REMATCH[1]}")" = "$_ci_code_repo" ]
+    ;;
   esac
 }
 
 # ci_run_workflow URL: prints "<workflow file> <branch>" of the run at URL, a run of the code repository (the form
-# ci_is_run_url takes), as the host knows it: e.g. ".github/workflows/verify.yml main". Exit 1 when URL has another
-# form or the host does not answer (no such run, a network error; its message on stderr). A read, so a machine asks
-# GitHub too.
+# ci_is_run_url takes), as the host knows it: e.g. ".github/workflows/verify.yml main". The run is asked of the code
+# repository under its current name whatever name URL gives: a run id belongs to the repository, which keeps its runs
+# through a rename. Exit 1 when URL has another form or the host does not answer (no such run, a network error; its
+# message on stderr). A read, so a machine asks GitHub too.
 ci_run_workflow() {
   local platform
   platform=$(ci_platform) || return 1

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Canary of the web client on cluster svp (make drill-k8s-web-canary), on the dev path: the web's Helm release from
-# the working tree, no git, its image built from the clone of svp-web (web_dir of deploy/k8s/lib.sh). With drill
+# the working tree, no git, its image built from the clone of svp-frontend (web_dir of deploy/k8s/lib.sh). With drill
 # traffic running (deploy/k8s/drills/traffic.sh, which requests /login and one static asset; started here unless one
 # runs, and then stopped) and, during each canary, browser clients of their own (e2e/canary/clients.ts of that clone,
 # with the Node of its .nvmrc and the Chromium of its node_modules: users logged in through the login page,
@@ -373,7 +373,7 @@ check_good_runs() {
 }
 
 # start_clients LABEL OLD_TAB: starts the browser clients for the canary LABEL (OLD_TAB 1: the first is the old tab)
-# in the background, from the clone of svp-web with the Node of its .nvmrc, into $work/clients-LABEL; returns once
+# in the background, from the clone of svp-frontend with the Node of its .nvmrc, into $work/clients-LABEL; returns once
 # they are set up. Each start registers fresh users, so the register rate limit keys are reset first (LOCAL LAB ONLY).
 start_clients() {
   local dir="$work/clients-$1" n=$clients_n deadline=$((SECONDS + 180))
@@ -486,9 +486,9 @@ rollout_json
 [ "$(rget '.status.phase')" = Healthy ] ||
   fail "rollout $ns/$rollout is $(rget '.status.phase'), not Healthy; run make k8s-up WEB_FROM=clone first"
 hc status "$rollout" --namespace "$ns" >/dev/null 2>&1 || fail "no Helm release $rollout in $ns (the dev path, make k8s-up)"
-# The browser clients' code and Node: the clone of svp-web and the major of its .nvmrc. The newest nvm install of that
+# The browser clients' code and Node: the clone of svp-frontend and the major of its .nvmrc. The newest nvm install of that
 # major goes first on PATH when there is one (nvm leaves PATH to the shell, whose default may be another major), as
-# the Makefile of svp-web picks it; without one (CI's setup-node) PATH is used as it is.
+# the Makefile of svp-frontend picks it; without one (CI's setup-node) PATH is used as it is.
 web_src=$(web_dir) || exit 1
 node_major=$(cat "$web_src/.nvmrc" 2>/dev/null) || fail "$web_src/.nvmrc not found: no Node major for the browser clients"
 node_bin=$(ls -d "${NVM_DIR:-$HOME/.nvm}/versions/node/v$node_major."*/bin 2>/dev/null | sort -V | tail -n 1) || node_bin=

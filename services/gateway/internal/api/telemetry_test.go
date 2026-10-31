@@ -24,11 +24,11 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 
-	videov1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/video/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
-	"github.com/anhnvcoder/short-video-platform/internal/logx"
-	"github.com/anhnvcoder/short-video-platform/internal/sentryx"
-	"github.com/anhnvcoder/short-video-platform/internal/telemetry"
+	videov1 "github.com/anhnvcoder/svp-backend/gen/go/svp/video/v1"
+	"github.com/anhnvcoder/svp-backend/internal/grpcerr"
+	"github.com/anhnvcoder/svp-backend/internal/logx"
+	"github.com/anhnvcoder/svp-backend/internal/sentryx"
+	"github.com/anhnvcoder/svp-backend/internal/telemetry"
 )
 
 // testTracerProvider and the TraceContext propagator are global in the package's tests, as

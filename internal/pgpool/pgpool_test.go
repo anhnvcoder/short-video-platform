@@ -26,8 +26,8 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace/noop"
 
-	"github.com/anhnvcoder/short-video-platform/internal/pgretry/pgretrytest"
-	"github.com/anhnvcoder/short-video-platform/internal/pgtest"
+	"github.com/anhnvcoder/svp-backend/internal/pgretry/pgretrytest"
+	"github.com/anhnvcoder/svp-backend/internal/pgtest"
 )
 
 func TestParseConfigConnectTimeout(t *testing.T) {

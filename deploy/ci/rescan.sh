@@ -34,15 +34,16 @@
 #     bot/promote-stg-<NAME> otherwise) while its pull request is open there (the source's promoter app's own, never a
 #     fork's from a branch of that name), and at VALUES_REF when given (a branch, a full commit or refs/pull/<n>/head
 #     of svp-gitops). A file naming a release of another source is left out with a line on stderr (that source's CI
-#     rescans it); one under the prefix of no source is listed, so the run fails on it. For backend only, a
-#     VALUES_REF that svp-gitops has not, and that is a full commit of this repository from before svp-gitops held the
-#     releases, is read there instead, from deploy/k8s/values/services/<service>.yaml: a release only that history
-#     names (a web release from before CI attested provenance, which the supply chain drill needs) gets a fresh
-#     attestation too. GITOPS_DIR is a clone of svp-gitops (CI's, from make gitops-clone): the refs are fetched into
-#     it under refs/svp/rescan/, anonymously; the open pull request is asked of the repository's host with the job's
-#     own token, a read of a public repository. Fails, after printing every release it could read, when a file cannot
-#     be read or the host does not say whether the pull request is open (main and VALUES_REF are still listed); fails
-#     at once when VALUES_REF is neither.
+#     rescans it; nobody rescans a retired source's, one without promoter, whose successor takes it over); one under
+#     the prefix of no source is listed, so the run fails on it. NAME must be an active source (with promoter). For
+#     backend only, a VALUES_REF that svp-gitops has not, and that is a full commit of this repository from before
+#     svp-gitops held the releases, is read there instead, from deploy/k8s/values/services/<service>.yaml: a release
+#     only that history names (a web release from before CI attested provenance)
+#     gets a fresh attestation too. GITOPS_DIR is a clone of svp-gitops (CI's, from make gitops-clone): the refs are
+#     fetched into it under refs/svp/rescan/, anonymously; the open pull request is asked of the repository's host with
+#     the job's own token, a read of a public repository. Fails, after printing every release it could read, when a file
+#     cannot be read or the host does not say whether the pull request is open (main and VALUES_REF are still listed);
+#     fails at once when VALUES_REF is neither.
 set -euo pipefail
 
 # shellcheck source=deploy/ci/common.sh
@@ -104,7 +105,8 @@ source_args() {
     source=${2:-}
     shift 2 || fail "--source needs a name"
   fi
-  src=$(release_source "$source") || exit 1
+  # A retired source (no promoter) has no run, no promote branch and no app: refused.
+  src=$(active_source "$source") || exit 1
   source_app=$(jq -r .promoter <<<"$src")
   source_branch=$gitops_promote_branch
   [ "$source" = backend ] || source_branch=$gitops_promote_branch-$source
@@ -112,9 +114,10 @@ source_args() {
 }
 
 # keep_own: reads the lines of list on stdin and prints those of source's releases and those of no source; one of
-# another source's is named on stderr instead.
+# another source's is named on stderr instead: an active source's CI rescans it, and a retired source's release (no
+# promoter) is rescanned by nobody, its attestation ageing out until its successor's promote replaces it.
 keep_own() {
-  local line svc repo where owner
+  local line svc repo where owner why
   # Split by hand: read with IFS=<tab> would merge the two tabs around an empty digest.
   while IFS= read -r line; do
     svc=${line%%$'\t'*}
@@ -122,7 +125,10 @@ keep_own() {
     repo=${repo%%$'\t'*}
     where=${line##*$'\t'}
     if owner=$(source_of_repository "$repo" 2>/dev/null) && [ "$owner" != "$source" ]; then
-      echo "skip  $svc in $where: $repo is a release of source $owner, which its own CI rescans" >&2
+      why="which its own CI rescans"
+      release_source "$owner" | jq -e 'has("promoter")' >/dev/null ||
+        why="which is retired: nothing rescans it until the source that publishes $svc now takes it over"
+      echo "skip  $svc in $where: $repo is a release of source $owner, $why" >&2
       continue
     fi
     printf '%s\n' "$line"

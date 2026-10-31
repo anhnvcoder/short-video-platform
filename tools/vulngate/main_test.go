@@ -25,14 +25,14 @@ const (
 	// Symbol level, no fix, reached through two paths: one failure.
 	symbolMsg1 = `{"finding":{"osv":"GO-2026-7001","trace":[` +
 		`{"module":"example.com/lib","version":"v1.2.3","package":"example.com/lib/parse","function":"Parse","position":{"filename":"parse/parse.go","line":40}},` +
-		`{"module":"github.com/anhnvcoder/short-video-platform","package":"github.com/anhnvcoder/short-video-platform/internal/objstore","function":"Download","receiver":"*Store","position":{"filename":"internal/objstore/objstore.go","line":275}}]}}`
+		`{"module":"github.com/anhnvcoder/svp-backend","package":"github.com/anhnvcoder/svp-backend/internal/objstore","function":"Download","receiver":"*Store","position":{"filename":"internal/objstore/objstore.go","line":275}}]}}`
 	symbolMsg2 = `{"finding":{"osv":"GO-2026-7001","trace":[` +
 		`{"module":"example.com/lib","version":"v1.2.3","package":"example.com/lib/parse","function":"Parse","position":{"filename":"parse/parse.go","line":40}},` +
-		`{"module":"github.com/anhnvcoder/short-video-platform","package":"github.com/anhnvcoder/short-video-platform/internal/pagetoken","function":"Decode","position":{"filename":"internal/pagetoken/pagetoken.go","line":12}}]}}`
+		`{"module":"github.com/anhnvcoder/svp-backend","package":"github.com/anhnvcoder/svp-backend/internal/pagetoken","function":"Decode","position":{"filename":"internal/pagetoken/pagetoken.go","line":12}}]}}`
 	// Symbol level with a fix in the standard library.
 	fixedSymbolMsg = `{"finding":{"osv":"GO-2026-6809","fixed_version":"v1.27.4","trace":[` +
 		`{"module":"stdlib","version":"v1.27.3","package":"crypto/x509","function":"Verify","receiver":"*Certificate","position":{"filename":"src/crypto/x509/verify.go","line":548}},` +
-		`{"module":"github.com/anhnvcoder/short-video-platform","package":"github.com/anhnvcoder/short-video-platform/internal/objstore","function":"Download","receiver":"*Store","position":{"filename":"internal/objstore/objstore.go","line":275}}]}}`
+		`{"module":"github.com/anhnvcoder/svp-backend","package":"github.com/anhnvcoder/svp-backend/internal/objstore","function":"Download","receiver":"*Store","position":{"filename":"internal/objstore/objstore.go","line":275}}]}}`
 
 	goodDockerfile = "FROM golang:1.27.3-trixie@sha256:0000 AS build\nRUN go build ./...\n" +
 		"FROM gcr.io/distroless/static-debian13:nonroot@sha256:1111\n"
@@ -133,7 +133,7 @@ func TestCalledWithoutException(t *testing.T) {
 	}
 	wantLines(t, out,
 		"FAIL  GO-2026-7001 example.com/lib@v1.2.3 (no fix)\n"+
-			"        github.com/anhnvcoder/short-video-platform/internal/objstore.(*Store).Download internal/objstore/objstore.go:275\n"+
+			"        github.com/anhnvcoder/svp-backend/internal/objstore.(*Store).Download internal/objstore/objstore.go:275\n"+
 			"        example.com/lib/parse.Parse parse/parse.go:40\n",
 		// The called vulnerability is not counted again among the module-level ones.
 		"INFO  1 vulnerabilities in required modules, not called: GO-2026-6866 golang.org/x/net@v0.60.0")

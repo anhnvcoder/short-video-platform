@@ -20,9 +20,9 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
-	"github.com/anhnvcoder/short-video-platform/internal/pgpool"
-	"github.com/anhnvcoder/short-video-platform/internal/sentryx"
-	"github.com/anhnvcoder/short-video-platform/internal/telemetry"
+	"github.com/anhnvcoder/svp-backend/internal/pgpool"
+	"github.com/anhnvcoder/svp-backend/internal/sentryx"
+	"github.com/anhnvcoder/svp-backend/internal/telemetry"
 )
 
 func TestServeRequiresItsVariables(t *testing.T) {

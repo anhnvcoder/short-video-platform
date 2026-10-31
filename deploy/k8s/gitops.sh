@@ -6,12 +6,13 @@
 #      image.repository and image.digest of the seven files envs/stg/images/ of svp-gitops at the commit the cluster is
 #      built at, which the promote pull requests write (one per release source); each must be a release of
 #      <imagePrefix><service> of a release source of chart svp-policy that publishes that service
-#      (deploy/helm/svp-policy/files/sources.json: ghcr.io/anhnvcoder/short-video-platform/ for every service of this
-#      repository, ghcr.io/anhnvcoder/svp-web/ for web) that GHCR serves to an anonymous pull (the nodes pull without
-#      credentials), signed by images.yml on main of that source's repository, with a vuln attestation that is clean
-#      and at most 48 hours old (Kyverno refuses new pods at 72), and with a build provenance attestation when chart
-#      svp-policy checks provenance in stg at that revision (its values at the commit of envs/stg/charts.yaml, then
-#      envs/stg/svp-policy.yaml: deploy/ci/values-check.sh --gitops);
+#      (deploy/helm/svp-policy/files/sources.json: ghcr.io/anhnvcoder/svp-backend/ for every service of this
+#      repository, ghcr.io/anhnvcoder/svp-frontend/ for web, and the prefixes of the two repositories under their names
+#      before the rename, retired sources whose releases may still run) that GHCR serves to an anonymous pull (the
+#      nodes pull without credentials), signed by images.yml on main of that source's repository, with a vuln
+#      attestation that is clean and at most 48 hours old (Kyverno refuses new pods at 72), and with a build
+#      provenance attestation when chart svp-policy checks provenance in stg at that revision (its values at the
+#      commit of envs/stg/charts.yaml, then envs/stg/svp-policy.yaml: deploy/ci/values-check.sh --gitops);
 #   2. the registry and the cluster (as `make k8s-up`); nothing is built here, the images come from GHCR;
 #   3. the Secrets from .env (deploy/k8s/secrets.sh), which never go to git: with externalSecrets of chart svp-cluster
 #      on in envs/stg (every revision of svp-gitops), only their source, the Secrets of namespace svp-secrets, from
@@ -65,7 +66,7 @@ set -euo pipefail
 . "$repo_root/deploy/ci/platform.sh"
 
 # repoURL and chartRepoURL of argocd/apps/values.yaml of svp-gitops, both in sourceRepos of AppProject svp.
-chart_repo_url=https://github.com/anhnvcoder/short-video-platform.git
+chart_repo_url=https://github.com/anhnvcoder/svp-backend.git
 rev=${GITOPS_REV:-main}
 
 command -v jq >/dev/null || fail "jq is not installed (brew install jq): it reads components.json and Argo CD's status"

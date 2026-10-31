@@ -12,8 +12,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
-	"github.com/anhnvcoder/short-video-platform/internal/logx"
+	"github.com/anhnvcoder/svp-backend/internal/grpcerr"
+	"github.com/anhnvcoder/svp-backend/internal/logx"
 )
 
 const (

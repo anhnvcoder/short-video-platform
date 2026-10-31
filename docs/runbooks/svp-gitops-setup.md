@@ -15,7 +15,7 @@ Ba vai, và Argo CD chỉ đọc:
 
 ```mermaid
 flowchart LR
-  subgraph code["repo code: anhnvcoder/short-video-platform"]
+  subgraph code["repo code: anhnvcoder/svp-backend"]
     ci["images.yml: build, quét, ký"] --> promote["job promote<br/>environment promote (chỉ main)<br/>variable Client ID + secret khoá .pem"]
   end
   app["GitHub App svp-gitops-promoter<br/>token 1 giờ, chỉ svp-gitops,<br/>chỉ quyền đã cấp"]
@@ -51,7 +51,7 @@ nào khác là sai, xem mục của bước đó ở "Khôi phục và xác nh�
 
 ```sh
 G=repos/anhnvcoder/svp-gitops
-C=repos/anhnvcoder/short-video-platform
+C=repos/anhnvcoder/svp-backend
 # 1. Cài đặt repo svp-gitops
 gh api $G -q '{default_branch, allow_auto_merge, allow_squash_merge, allow_merge_commit, allow_rebase_merge, delete_branch_on_merge}'
 gh api $G -q '{squash_merge_commit_title, squash_merge_commit_message}'
@@ -292,7 +292,7 @@ commit message. Sửa ở đúng ô rồi chạy lại lệnh kiểm.
 
 **Làm gì** (https://github.com/settings/apps/new; hay Settings → Developer settings → GitHub Apps → **New GitHub App**):
 
-- **GitHub App name**: `svp-gitops-promoter`. **Homepage URL**: `https://github.com/anhnvcoder/short-video-platform`.
+- **GitHub App name**: `svp-gitops-promoter`. **Homepage URL**: `https://github.com/anhnvcoder/svp-backend`.
 - **Callback URL** để trống, không tích **Request user authorization (OAuth) during installation**.
 - **Webhook**: **bỏ tích Active**.
 - **Permissions** → **Repository permissions**: **Contents** Read and write, **Pull requests** Read and write, **Deployments** Read
@@ -335,7 +335,7 @@ select repositories" với đúng một dòng `anhnvcoder/svp-gitops`; phần qu
 
 ### A4. Environment `promote` ở repo code
 
-**Làm gì** (https://github.com/anhnvcoder/short-video-platform/settings/environments → **New environment**):
+**Làm gì** (https://github.com/anhnvcoder/svp-backend/settings/environments → **New environment**):
 
 - **Name**: `promote` → **Configure environment**.
 - **Deployment protection rules**: không tích **Required reviewers**, không **Wait timer** (stg tự động; cổng prd là Code Owner của PR
@@ -347,7 +347,7 @@ select repositories" với đúng một dòng `anhnvcoder/svp-gitops`; phần qu
   (cả dòng `-----BEGIN RSA PRIVATE KEY-----` và `-----END …-----`). Hay từ terminal, không qua clipboard:
 
   ```sh
-  gh secret set SVP_GITOPS_APP_PRIVATE_KEY --env promote --repo anhnvcoder/short-video-platform < /đường/tới/khoá.pem
+  gh secret set SVP_GITOPS_APP_PRIVATE_KEY --env promote --repo anhnvcoder/svp-backend < /đường/tới/khoá.pem
   ```
 
   Rồi xoá file `.pem` (khoá mới tạo lại được bất cứ lúc nào ở trang App; không cần giữ bản sao).
@@ -363,7 +363,7 @@ select repositories" với đúng một dòng `anhnvcoder/svp-gitops`; phần qu
 một tên `SVP_GITOPS_APP_PRIVATE_KEY`. Thời điểm đặt khoá (không có giá trị):
 
 ```sh
-gh api repos/anhnvcoder/short-video-platform/environments/promote/secrets/SVP_GITOPS_APP_PRIVATE_KEY -q '{name, updated_at}'
+gh api repos/anhnvcoder/svp-backend/environments/promote/secrets/SVP_GITOPS_APP_PRIVATE_KEY -q '{name, updated_at}'
 ```
 
 **Nếu sai:**
@@ -377,7 +377,7 @@ gh api repos/anhnvcoder/short-video-platform/environments/promote/secrets/SVP_GI
 ### A5. Renovate cho `svp-gitops`
 
 **Làm gì:** https://github.com/apps/renovate → **Configure** → `anhnvcoder` → **Only select repositories** → thêm
-`anhnvcoder/svp-gitops` (giữ `short-video-platform`) → **Save**.
+`anhnvcoder/svp-gitops` (giữ `svp-backend`) → **Save**.
 
 **Vì sao:** `svp-gitops/renovate.json` đề xuất nâng chart upstream, image ghim digest, action của `check.yml` và commit checker
 (`CHECKER_COMMIT` của `check.yml`); không có thì các ghim đó cũ dần (ADR-0025 §10). Mọi PR của Renovate đổi file có Code Owner, nên
@@ -480,12 +480,12 @@ lượt này ký; ứng viên có commit là con cháu của mọi ứng viên k
 
 ```sh
 # lượt images.yml trên main có job promote xanh
-gh run list --repo anhnvcoder/short-video-platform --workflow images.yml --branch main --limit 1 --json conclusion,url
+gh run list --repo anhnvcoder/svp-backend --workflow images.yml --branch main --limit 1 --json conclusion,url
 # PR của bot: tác giả app/svp-gitops-promoter, chỉ đổi envs/stg/, đã tự merge
 gh pr list --repo anhnvcoder/svp-gitops --author 'app/svp-gitops-promoter' --state all --limit 1 --json number,state,mergedAt
 gh pr view <số PR> --repo anhnvcoder/svp-gitops --json files -q '.files[].path'      # chỉ envs/stg/images/…, envs/stg/charts.yaml
 # job promote chỉ chạy được trên main (bản ghi environment của repo code)
-gh api 'repos/anhnvcoder/short-video-platform/deployments?environment=promote&per_page=3' -q '.[] | {ref, created_at}'   # ref main
+gh api 'repos/anhnvcoder/svp-backend/deployments?environment=promote&per_page=3' -q '.[] | {ref, created_at}'   # ref main
 ```
 
 **Nếu sai:** job `promote` đỏ ở bước tạo token → A4 (tên biến, khoá) rồi A2, A3. PR mở mà không tự merge → `allow_auto_merge` (A1), hay
@@ -528,7 +528,7 @@ kịch bản với mọi bước.
 2. Dispatch, không kèm `services`, `rescan`, `values_ref`, `drill` (lượt promote prd là một lượt riêng, job từ chối nếu kèm):
 
    ```sh
-   gh workflow run images.yml --repo anhnvcoder/short-video-platform --ref main -f promote_prd=true [-f record=<id>]
+   gh workflow run images.yml --repo anhnvcoder/svp-backend --ref main -f promote_prd=true [-f record=<id>]
    ```
 
 3. Job `promote-prd` (environment `promote`) dựng lại nhánh `bot/promote-prd` thành một commit trên `main` của `svp-gitops`, chép **cả
@@ -543,7 +543,7 @@ của `svp-gitops`: bảy digest **và** `charts.yaml` phải bằng đúng payl
 **Kiểm:**
 
 ```sh
-gh run list --repo anhnvcoder/short-video-platform --workflow images.yml --branch main --event workflow_dispatch --limit 1 \
+gh run list --repo anhnvcoder/svp-backend --workflow images.yml --branch main --event workflow_dispatch --limit 1 \
   --json conclusion,url                                                      # chỉ job promote-prd (và images-ok) chạy
 gh pr list --repo anhnvcoder/svp-gitops --head bot/promote-prd --state all --limit 1 --json number,author,state,autoMergeRequest
 gh pr view <số PR> --repo anhnvcoder/svp-gitops --json files -q '.files[].path'      # chỉ envs/prd/images/…, envs/prd/charts.yaml
@@ -564,7 +564,7 @@ gh pr view <số PR> --repo anhnvcoder/svp-gitops --json files -q '.files[].path
 #### C4. Rollback
 
 **prd** (người học dispatch): như C3 với id của một bản ghi **cũ hơn** bản prd đang chạy:
-`gh workflow run images.yml --repo anhnvcoder/short-video-platform --ref main -f promote_prd=true -f record=<id cũ>`. Bản cũ gần như luôn
+`gh workflow run images.yml --repo anhnvcoder/svp-backend --ref main -f promote_prd=true -f record=<id cũ>`. Bản cũ gần như luôn
 có attestation `vuln` quá 48 giờ: chạy trước lệnh rescan mà check in ra (`… -f rescan=true -f values_ref=<commit svp-gitops của bản ghi>`).
 Duyệt và merge như C3. Rollback prd là promote một bộ đã chạy ở stg, không phải sửa tay.
 
@@ -608,6 +608,57 @@ nếu đang chạy.
   workflow, mà `.github/` có Code Owner và App không có quyền `workflows` (ADR-0025 §5).
 - **Kiểm:** bước `The commit of the checker` trong log lượt `check` của PR in đúng commit mới; `gitops-ok` xanh trước khi merge.
 - **Nếu sai:** check đỏ ngay sau bump trên cây không đổi → checker mới đổi luật mà cây chưa theo: đóng PR, sửa cây (hay checker) trước.
+
+#### C6. Đổi tên repo code và repo web (2026-10-31)
+
+**Bối cảnh** ([ADR-0036](../adr/0036-repo-rename.md)): `anhnvcoder/short-video-platform` đổi tên thành `anhnvcoder/svp-backend`,
+`anhnvcoder/svp-web` thành `anhnvcoder/svp-frontend`. Identity ký (subject keyless) và prefix image mang tên repo nên đổi theo; bảng nguồn
+của bản chuyển (commit merge của PR đổi tên ở backend, gọi là T) có bốn nguồn: `backend`, `web` theo tên mới và hai nguồn nghỉ hưu
+`oldbackend`, `oldweb` (không `promoter`) để stg, prd đi qua bằng PR bot như mọi bản phát hành. Environment `promote`, variable, secret
+và bản cài App đi theo repo khi đổi tên, không phải đặt lại.
+
+**Làm gì** (người học, theo thứ tự của ADR-0036 §4):
+
+1. Sau khi PR đổi tên của backend merge (T): merge PR của `svp-gitops` đặt `CHECKER_COMMIT` = T, checkout repo code
+   `anhnvcoder/svp-backend`, bỏ bước checkout repo web và `SVP_SOURCE_DIR_WEB` (check tự clone ẩn danh repo của mỗi nguồn khác `backend`
+   theo URL của bảng, URL cũ đi theo chuyển hướng của GitHub), `chartRepoURL` của `argocd/apps/values.yaml` và `sourceRepos` của
+   `argocd/project.yaml` thành `https://github.com/anhnvcoder/svp-backend.git`. Merge **trước** khi PR bot đầu sau đổi tên được kiểm lại
+   (checker cũ không đọc được bảng có nguồn không `promoter`, PR bot đỏ ở checker cũ là dự kiến).
+2. Bật public 12 package mới, mỗi cái khi nó xuất hiện (bảng và cách làm ở
+   [svp-frontend-setup.md](svp-frontend-setup.md#e1-đổi-tên-repo-package-ghcr-mới-public-2026-10-31)): bảy package
+   `svp-backend/{gateway,user-service,video-service,engagement-service,feed-service,media-worker,api/gateway}` sau lượt `images.yml` đầu
+   ở T, rồi chạy lại job `promote` của lượt đó (`gh run rerun <id> --repo anhnvcoder/svp-backend --job <id job promote>`) để PR bot được
+   kiểm bằng checker T; ba package `svp-backend/{drill-vulnerable,drill-unsigned,drill-no-provenance}` sau `gh workflow run images.yml
+   --repo anhnvcoder/svp-backend --ref main -f drill=true`; hai package `svp-frontend/{web,web-sourcemaps}` sau lượt `images.yml` đầu
+   của `svp-frontend`.
+3. PR bot stg của backend (sáu file từ `oldbackend` sang `backend`, `charts.yaml` lên T) merge **trước 2026-11-02 07:00 UTC**: nó còn để
+   lại web `oldweb` ở stg, mà check của nó kiểm attestation `vuln` của cả bảy file trong 48 giờ (ADR-0036 §5).
+4. Khi mọi file `envs/*/images/` trên `main` đã dưới hai prefix mới (stg qua PR bot của hai repo, prd qua C3), PR gỡ `oldbackend`,
+   `oldweb` ở backend merge, rồi bump `CHECKER_COMMIT` lên commit đó (C5) ngay, không chờ Renovate (ADR-0036 §9).
+
+**Kiểm** (chỉ đọc):
+
+```sh
+gh api -H 'Accept: application/vnd.github.raw' repos/anhnvcoder/svp-gitops/contents/.github/workflows/check.yml |
+  grep -n 'CHECKER_COMMIT:\|repository: anhnvcoder/\|SVP_SOURCE_DIR_[A-Z]*:'   # CHECKER_COMMIT là T; repository: anhnvcoder/svp-backend; không SVP_SOURCE_DIR_*
+for f in argocd/apps/values.yaml argocd/project.yaml; do
+  gh api -H 'Accept: application/vnd.github.raw' "repos/anhnvcoder/svp-gitops/contents/$f" | grep -n 'github.com/anhnvcoder/'
+done                                                         # chỉ https://github.com/anhnvcoder/svp-backend.git (và svp-gitops)
+for e in stg prd; do for f in $(gh api "repos/anhnvcoder/svp-gitops/contents/envs/$e/images" -q '.[].path'); do
+  printf '%s ' "$f"; gh api -H 'Accept: application/vnd.github.raw' "repos/anhnvcoder/svp-gitops/contents/$f" | grep 'repository:'
+done; done                                                   # sau bước 4: mọi dòng dưới ghcr.io/anhnvcoder/svp-backend/ hay svp-frontend/
+anon() { t=$(curl -s "https://ghcr.io/token?scope=repository:anhnvcoder/$1:pull" | jq -r '.token // empty')
+  [ -n "$t" ] || { echo "$1 DENIED"; return; }
+  echo "$1 $(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $t" "https://ghcr.io/v2/anhnvcoder/$1/tags/list")"; }
+for p in svp-backend/gateway svp-backend/user-service svp-backend/video-service svp-backend/engagement-service \
+  svp-backend/feed-service svp-backend/media-worker svp-backend/api/gateway svp-backend/drill-vulnerable svp-backend/drill-unsigned \
+  svp-backend/drill-no-provenance svp-frontend/web svp-frontend/web-sourcemaps; do anon "$p"; done   # mỗi dòng "<package> 200"
+```
+
+**Nếu sai:** PR bot đỏ "is not a clone of" → `check.yml` còn đặt `SVP_SOURCE_DIR_*`; đỏ vì kéo ẩn danh → package chưa public (bước 2),
+rồi `gh run rerun <id> --repo anhnvcoder/svp-gitops --failed`; đỏ vì `vuln` quá 48 giờ của bản `oldweb` → trễ mốc bước 3: đường lùi ở
+ADR-0036 §5 (một PR của người học thay cả bảy file stg và `charts.yaml` khi frontend đã có bản mới). Không tạo repo nào mang tên cũ
+(`short-video-platform`, `svp-web`) dưới `anhnvcoder` (ADR-0036 §10).
 
 ### Xoay khoá App
 
@@ -658,7 +709,7 @@ không làm gián đoạn:
   `refs/heads/main`, `tags.json`); lượt đầu của `check` trên `main` [40902199532](https://github.com/anhnvcoder/svp-gitops/actions/runs/40902199532)
   xanh `gitops-ok`, quyền token ở đầu log chỉ `Contents: read`. Ba ruleset `main`, `owners`, `tags` đã nhập, cả ba `active`; repo 0 tag.
 - 2026-10-29, trước merge PR cắt ở repo code, kịch bản `gitops` của `verify.yml` trên nhánh
-  [40954609229](https://github.com/anhnvcoder/short-video-platform/actions/runs/40954609229): Argo CD đọc `svp-gitops` ở `refs/heads/main`
+  [40954609229](https://github.com/anhnvcoder/svp-backend/actions/runs/40954609229): Argo CD đọc `svp-gitops` ở `refs/heads/main`
   qua HTTPS không credential, chart ở commit ghim, 26/26 Application Synced/Healthy. PR #2 của `svp-gitops` (sync wave cho
   kube-prometheus-stack) là PR của người học trên file có chủ, merge trước lượt đó.
 - 2026-10-30, lệnh `squash` của "Kiểm tra nhanh": `COMMIT_OR_PR_TITLE` / `COMMIT_MESSAGES` (mặc định của GitHub), **lệch** A1: người

@@ -19,7 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/anhnvcoder/short-video-platform/internal/dbmigrate"
+	"github.com/anhnvcoder/svp-backend/internal/dbmigrate"
 )
 
 // EnvURL names the variable holding a superuser DSN (URL form) to the local Postgres; `make

@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anhnvcoder/short-video-platform/internal/pgpool"
-	"github.com/anhnvcoder/short-video-platform/internal/sentryx"
+	"github.com/anhnvcoder/svp-backend/internal/pgpool"
+	"github.com/anhnvcoder/svp-backend/internal/sentryx"
 )
 
 func TestServeRequiresItsVariables(t *testing.T) {

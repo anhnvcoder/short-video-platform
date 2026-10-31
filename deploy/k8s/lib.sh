@@ -357,41 +357,40 @@ gitops_clone() {
   ok "svp-gitops at ${sha:0:12} ($ref) in ${dir#"$repo_root"/}"
 }
 
-# The web client's source lives in its own repository, svp-web; this repository holds none of it.
-web_url=https://github.com/anhnvcoder/svp-web.git
+# The web client's source lives in its own repository, svp-frontend; this repository holds none of it.
+web_url=https://github.com/anhnvcoder/svp-frontend.git
 # The clone CI jobs build and test from (make web-clone), inside the checkout and gitignored. A machine reads its own
 # (web_dir).
-web_ci_clone=$repo_root/.web/svp-web
-# Repository of the web releases svp-web's CI pushes; the tag of such a release names a commit of svp-web.
-web_release_repository=ghcr.io/anhnvcoder/svp-web/web
+web_ci_clone=$repo_root/.web/svp-frontend
 
-# web_is_clone DIR: true when DIR is the top of a git work tree whose remote origin is svp-web, as gitops_is_clone.
+# web_is_clone DIR: true when DIR is the top of a git work tree whose remote origin is svp-frontend, as gitops_is_clone.
 web_is_clone() {
   local top url
   [ -d "$1" ] || return 1
   top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) && [ "$top" = "$(cd "$1" && pwd -P)" ] || return 1
   url=$(git -C "$1" remote get-url origin 2>/dev/null) || return 1
-  [[ $url =~ ^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)anhnvcoder/svp-web(\.git)?$ ]]
+  [[ $url =~ ^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)anhnvcoder/svp-frontend(\.git)?$ ]]
 }
 
 # web_dir: prints the absolute path of the web client's source that images are built from. SVP_WEB_DIR when set (CI
-# sets it to the clone of make web-clone; on a machine it may name another clone), which must be a clone of svp-web;
+# sets it to the clone of make web-clone; on a machine it may name another clone), which must be a clone of
+# svp-frontend;
 # otherwise <workspace>/frontend (the workspace as for gitops_dir), which must be one too. The working tree is read as
 # it is, uncommitted changes included; nothing is cloned, fetched or switched. No folder there, or one that is no clone
-# of svp-web, fails, printing the command that makes the clone, instead of building something else in its place.
+# of svp-frontend, fails, printing the command that makes the clone, instead of building something else in its place.
 web_dir() {
   local dir common
   if [ -n "${SVP_WEB_DIR:-}" ]; then
     dir=$SVP_WEB_DIR
     web_is_clone "$dir" ||
-      fail "SVP_WEB_DIR=$dir is not a clone of svp-web: clone it there (git clone $web_url '$dir'), or in CI run make web-clone first and set SVP_WEB_DIR to its folder"
+      fail "SVP_WEB_DIR=$dir is not a clone of svp-frontend: clone it there (git clone $web_url '$dir'), or in CI run make web-clone first and set SVP_WEB_DIR to its folder"
   else
     # --path-format=absolute: otherwise git prints the common directory relative to the current directory.
     common=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) ||
-      fail "$repo_root is not a git checkout, so the workspace that holds the clone of svp-web is unknown; set SVP_WEB_DIR"
+      fail "$repo_root is not a git checkout, so the workspace that holds the clone of svp-frontend is unknown; set SVP_WEB_DIR"
     dir=$(dirname "$(dirname "$common")")/frontend
     web_is_clone "$dir" ||
-      fail "$dir is not a clone of svp-web, the web client's source: git clone $web_url '$dir' (or set SVP_WEB_DIR to a clone)"
+      fail "$dir is not a clone of svp-frontend, the web client's source: git clone $web_url '$dir' (or set SVP_WEB_DIR to a clone)"
   fi
   (cd "$dir" && pwd -P)
 }
@@ -399,30 +398,33 @@ web_dir() {
 # web_dockerfile DIR: the Dockerfile that builds the web image from DIR (printed by web_dir), at the top of the clone.
 web_dockerfile() { echo "$1/Dockerfile"; }
 
-# web_clone: CI's copy of the web client's source (make web-clone), as gitops_clone: clones svp-web anonymously into
-# $web_ci_clone (the whole history), or fetches it when it is there, then checks out WEB_REF detached and exports
+# web_clone: CI's copy of the web client's source (make web-clone), as gitops_clone: clones svp-frontend anonymously
+# into $web_ci_clone (the whole history), or fetches it when it is there, then checks out WEB_REF detached and exports
 # SVP_WEB_DIR to that folder for what this shell runs next. WEB_REF is a branch (as origin/<branch>) or a full commit
 # SHA; unset, it is the commit of the web release staging runs (image.tag of envs/stg/images/web.yaml in the
-# clone of svp-gitops, gitops_dir), so the tests run the code of the image that runs there; a release of
-# another repository there has no commit of svp-web, and WEB_REF must then be given. Refuses a clone there with
-# uncommitted changes, or a folder that is no clone of svp-web. Touches nothing outside .web/ of this checkout.
+# clone of svp-gitops, gitops_dir), so the tests run the code of the image that runs there. That release must be
+# <imagePrefix>web of a release source of the working tree's table (release_source_of): the sources that publish web
+# are the web client's repository under its name now and under the name it had before (a retired source), and every
+# tag of theirs is a commit of svp-frontend; a release under no such prefix has no commit there, and WEB_REF must then
+# be given. Refuses a clone there with uncommitted changes, or a folder that is no clone of svp-frontend. Touches
+# nothing outside .web/ of this checkout.
 web_clone() {
   local dir=$web_ci_clone ref=${WEB_REF:-} target sha gitops file repo tag=
   local git_=(env GIT_TERMINAL_PROMPT=0 git -c credential.helper=)
   if [ -z "$ref" ]; then
     gitops=$(gitops_dir) || exit 1
     file=$gitops/envs/stg/images/web.yaml
-    [ -f "$file" ] || fail "$file not found; set WEB_REF to a branch or a full commit SHA of svp-web"
+    [ -f "$file" ] || fail "$file not found; set WEB_REF to a branch or a full commit SHA of svp-frontend"
     repo=$(values_field repository <"$file") || fail "cannot read image.repository in $file (above)"
-    [ "$repo" = "$web_release_repository" ] ||
-      fail "staging runs web from $repo (envs/stg/images/web.yaml), not a release of svp-web: set WEB_REF to a branch or a full commit SHA of svp-web"
+    release_source_of web "$repo" >/dev/null ||
+      fail "staging runs web from $repo (envs/stg/images/web.yaml), not a release of a source that publishes web ($(release_repositories web)): set WEB_REF to a branch or a full commit SHA of svp-frontend"
     tag=$(values_field tag <"$file") || fail "cannot read image.tag in $file (above)"
-    [ -n "$tag" ] || fail "image.tag is empty in $file; set WEB_REF to a branch or a full commit SHA of svp-web"
+    [ -n "$tag" ] || fail "image.tag is empty in $file; set WEB_REF to a branch or a full commit SHA of svp-frontend"
     ref=$tag
   fi
   if [ -e "$dir" ]; then
     web_is_clone "$dir" ||
-      fail "$dir is not a clone of svp-web; remove it (rm -rf .web) and run make web-clone again"
+      fail "$dir is not a clone of svp-frontend; remove it (rm -rf .web) and run make web-clone again"
     [ ! -e "$(git -C "$dir" rev-parse --path-format=absolute --git-path index)" ] ||
       [ -z "$(git -C "$dir" status --porcelain)" ] ||
       fail "$dir has uncommitted changes, which make web-clone does not overwrite; commit or remove them first"
@@ -441,7 +443,7 @@ web_clone() {
     fail "WEB_REF=$ref is neither a branch of $web_url nor a commit of it"
   git -C "$dir" checkout -q --detach "$sha" || fail "check out $ref ($sha) in $dir"
   export SVP_WEB_DIR=$dir
-  ok "svp-web at ${sha:0:12} ($ref) in ${dir#"$repo_root"/}"
+  ok "svp-frontend at ${sha:0:12} ($ref) in ${dir#"$repo_root"/}"
 }
 
 # argocd_root_app REPO_URL REVISION ENV CHART_REPO_URL: prints the root Application svp-root of the GitOps path, as
@@ -849,11 +851,11 @@ gitops_timeout_report() {
 }
 
 # The seven services whose images the cluster runs, in the order the dev path builds them: web last (from the clone of
-# svp-web, web_dir), since the six Go images share the Go module cache and build fast, so their errors show before the
-# web build, the longest of all. Every release set (stg, prd, the records of stg) names these seven.
+# svp-frontend, web_dir), since the six Go images share the Go module cache and build fast, so their errors show before
+# the web build, the longest of all. Every release set (stg, prd, the records of stg) names these seven.
 svp_services=(gateway user-service video-service engagement-service feed-service media-worker web)
 # The services whose images this repository builds from its own tree, and whose releases its CI builds, signs and
-# promotes: the six Go services. web is one of the seven releases, but its source and its releases are svp-web's.
+# promotes: the six Go services. web is one of the seven releases, but its source and its releases are svp-frontend's.
 built_services=(gateway user-service video-service engagement-service feed-service media-worker)
 
 # dockerfile SERVICE: the Dockerfile that builds SERVICE's image (one of built_services), relative to the repository
@@ -964,7 +966,7 @@ build_image() {
 }
 
 # build_dev_images [SERVICE...]: builds the images of SERVICE... (default: the seven of svp_services) from the working
-# tree (web from the clone of svp-web, build_image), pushes each to the registry as
+# tree (web from the clone of svp-frontend, build_image), pushes each to the registry as
 # 127.0.0.1:5111/svp/<service>:dev-<first 12 hex digits of its image ID>, and sets dev_tag_<service with _ for -> to
 # that tag. The build cache gives the same image ID for the same inputs, so a run with no code
 # change yields the same tags, the pod templates do not change, and no new ReplicaSet (later: no canary) starts. Run
@@ -1000,24 +1002,26 @@ image_paths() {
 # never reads them: `make k8s-up` passes its own registry, tag and an empty digest (deploy/k8s/install.sh).
 # This is the prefix of this repository's own releases; the release sources below name every prefix the cluster runs.
 # shellcheck disable=SC2034 # read by the scripts that source this file
-ghcr_prefix=ghcr.io/anhnvcoder/short-video-platform
+ghcr_prefix=ghcr.io/anhnvcoder/svp-backend
 
 # Release sources: every repository whose CI builds, signs and publishes images the GitOps path runs. Each has a name,
 # its repository URL, the prefix its images live under on GHCR (ending in /), the services it publishes there (a
 # service is in two sources only while it moves from one to the other), the drill images it may push there, the
 # keyless identity of its images.yml on main (issuer, subject), the ref its build provenance names, and the GitHub App
-# that promotes its releases (promoter). They are written once, in this file of chart svp-policy, whose policy admits
-# exactly these images with these identities; the scripts read the same file, so what they check is what admission
-# checks.
+# that promotes its releases (promoter). A source without promoter is retired: the repository it names no longer
+# builds (renamed, its successor another source), its releases already signed are still admitted, but nothing builds,
+# promotes or rescans for it. They are written once, in this file of chart svp-policy, whose policy admits exactly
+# these images with these identities; the scripts read the same file, so what they check is what admission checks.
 release_sources_file=deploy/helm/svp-policy/files/sources.json
 
 # _release_sources_check WHERE: reads a table of release sources on stdin and prints it as compact JSON when it holds
 # what the template of chart svp-policy accepts: at least one source; every field a non-empty string without a quote,
-# backslash or white space (they go into CEL string literals); a name of a lowercase letter then letters and digits;
+# backslash or white space (they go into CEL string literals), promoter the one field a source may leave out (a
+# retired source) but never give empty or of another type; a name of a lowercase letter then letters and digits;
 # repository, issuer and subject https:// URLs, provenanceRef a refs/... ref, imagePrefix ending in /; no two sources
-# with one name or one promoter; services a non-empty list and drillImages a list of image names; no service in more
-# than two sources; no prefix the start of another's (an image under both could not be told apart). Fails naming WHERE
-# and the first problem otherwise.
+# with one name, no two with one promoter; services a non-empty list and drillImages a list of image names; no service
+# in more than two sources; no prefix the start of another's (an image under both could not be told apart). Fails
+# naming WHERE and the first problem otherwise.
 # The jq program of _release_sources_check, kept out of $(...), which bash 3.2 misreads with these quotes inside.
 _release_sources_jq='
     def plain: type == "string" and test("^[^\u0027\"\\\\\\s]+$");
@@ -1025,17 +1029,20 @@ _release_sources_jq='
     if (.sources | type) != "array" or (.sources | length) == 0 then "sources lists no release source"
     else .sources as $s
     | ([$s[] | select(type != "object"
-        or ([.name, .repository, .imagePrefix, .issuer, .subject, .provenanceRef, .promoter] | all(plain) | not))
+        or ([.name, .repository, .imagePrefix, .issuer, .subject, .provenanceRef] | all(plain) | not))
         | (.name? // "?" | tostring)] | first) as $bad
+    | ([$s[] | select(type == "object" and has("promoter") and (.promoter | plain | not)) | (.name | tostring)] | first) as $badpromoter
     | if $bad != null then
-        "source \($bad): name, repository, imagePrefix, issuer, subject, provenanceRef and promoter must each be a string without quote, backslash or white space"
+        "source \($bad): name, repository, imagePrefix, issuer, subject and provenanceRef must each be a string without quote, backslash or white space"
+      elif $badpromoter != null then
+        "source \($badpromoter): promoter, when given, must be a string without quote, backslash or white space (leave it out for a retired source)"
       elif any($s[]; .name | test("^[a-z][a-z0-9]*$") | not) then "a source name is not a lowercase letter then letters and digits"
       elif any($s[]; [.repository, .issuer, .subject] | all(startswith("https://")) | not)
         then "repository, issuer and subject of every source must be https:// URLs"
       elif any($s[]; .provenanceRef | startswith("refs/") | not) then "provenanceRef of every source must be a refs/... ref"
       elif any($s[]; .imagePrefix | test("^[a-z0-9.:_/-]+/$") | not) then "imagePrefix of every source must end in /"
       elif ([$s[].name] | unique | length) != ($s | length) then "two sources share a name"
-      elif ([$s[].promoter] | unique | length) != ($s | length) then "two sources share a promoter"
+      elif ([$s[] | select(has("promoter")) | .promoter] | (unique | length) != length) then "two sources share a promoter"
       elif any($s[]; ((.services | names) and (.services | length) > 0 and (.drillImages | names)) | not)
         then "every source needs a non-empty list services and a list drillImages, of image names"
       elif ([$s[].services[]] | group_by(.) | any(length > 2)) then "a service is in more than two sources"
@@ -1269,7 +1276,7 @@ gitops_at() {
 }
 
 # web_source: what the web client of `make up` and `make k8s-up` runs, from WEB_FROM: stg (the default when unset) runs
-# the release staging runs (stg_release web); clone builds its image from web_dir, the clone of svp-web; image runs
+# the release staging runs (stg_release web); clone builds its image from web_dir, the clone of svp-frontend; image runs
 # WEB_IMAGE, a release given as ghcr.io/<repository>@sha256:<digest>, which GHCR must serve to an anonymous pull as the
 # nodes and compose pull it. Sets web_release to REPOSITORY@DIGEST of that release, empty when the image is built. A
 # release keeps the SVP_BUILD_ID CI built it with and is never built here, so the targets that build the source maps of
@@ -1292,7 +1299,7 @@ web_source() {
     web_release=$WEB_IMAGE
     ;;
   *)
-    fail "WEB_FROM='$WEB_FROM' is not valid: stg (default: the release staging runs), clone (build from the clone of svp-web) or image (WEB_IMAGE)"
+    fail "WEB_FROM='$WEB_FROM' is not valid: stg (default: the release staging runs), clone (build from the clone of svp-frontend) or image (WEB_IMAGE)"
     ;;
   esac
 }

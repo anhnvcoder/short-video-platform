@@ -15,8 +15,8 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
-	"github.com/anhnvcoder/short-video-platform/internal/secret"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
+	"github.com/anhnvcoder/svp-backend/internal/secret"
 )
 
 const (

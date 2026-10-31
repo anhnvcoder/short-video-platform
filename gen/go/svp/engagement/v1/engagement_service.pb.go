@@ -453,8 +453,8 @@ const file_svp_engagement_v1_engagement_service_proto_rawDesc = "" +
 	"\x06Unlike\x12 .svp.engagement.v1.UnlikeRequest\x1a!.svp.engagement.v1.UnlikeResponse\x12Y\n" +
 	"\n" +
 	"RecordView\x12$.svp.engagement.v1.RecordViewRequest\x1a%.svp.engagement.v1.RecordViewResponse\x12S\n" +
-	"\bGetStats\x12\".svp.engagement.v1.GetStatsRequest\x1a#.svp.engagement.v1.GetStatsResponseB\xe7\x01\n" +
-	"\x15com.svp.engagement.v1B\x16EngagementServiceProtoP\x01ZPgithub.com/anhnvcoder/short-video-platform/gen/go/svp/engagement/v1;engagementv1\xa2\x02\x03SEX\xaa\x02\x11Svp.Engagement.V1\xca\x02\x11Svp\\Engagement\\V1\xe2\x02\x1dSvp\\Engagement\\V1\\GPBMetadata\xea\x02\x13Svp::Engagement::V1b\x06proto3"
+	"\bGetStats\x12\".svp.engagement.v1.GetStatsRequest\x1a#.svp.engagement.v1.GetStatsResponseB\xde\x01\n" +
+	"\x15com.svp.engagement.v1B\x16EngagementServiceProtoP\x01ZGgithub.com/anhnvcoder/svp-backend/gen/go/svp/engagement/v1;engagementv1\xa2\x02\x03SEX\xaa\x02\x11Svp.Engagement.V1\xca\x02\x11Svp\\Engagement\\V1\xe2\x02\x1dSvp\\Engagement\\V1\\GPBMetadata\xea\x02\x13Svp::Engagement::V1b\x06proto3"
 
 var (
 	file_svp_engagement_v1_engagement_service_proto_rawDescOnce sync.Once

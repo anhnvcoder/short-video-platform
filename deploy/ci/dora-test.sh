@@ -28,12 +28,18 @@
 #   - records left out are listed with why; 100 records, as many as one list returns: warned about; a bad --days is
 #     refused; the JSON goes into a directory that does not exist yet;
 #   - release source web: with no record holding a web release of svp-web, --clones names nothing and the run needs
-#     no clone of svp-web (none exists); records that do (G7 at wa, G8 at wc of a throwaway clone of svp-web, after G4
+#     no clone of svp-frontend (none exists); records that do (G7 at wa, G8 at wc of a throwaway clone of svp-web, after G4
 #     of backend's web): --clones names web, the run without a clone stops
 #     saying why, and with one (SVP_WEB_DIR) the lead time of web counts the commits of svp-web: none at the first
 #     deployment of its web, wb and wc at the next; once a later commit of the code repository drops web from
 #     backend's services in the table, the record whose web is backend's still counts (judged by the table at its
-#     charts revision).
+#     charts revision);
+#   - the rename (tables of release sources written as they were, not the working tree's): the records above name
+#     their runs under the code repository's former name and count; G9 runs the charts of the rename with the six
+#     services of the new backend and web of the retired oldweb, G10 web of the new web source; with the working
+#     tree's table dropping the retired sources, every record still counts, --clones names web once, the lead time
+#     goes on through the rename on one history per repository (the first deployment of the new backend samples only
+#     what G4 did not hold, the web of oldweb and of web share the clone of svp-frontend, wd alone new at G10).
 # Every run is a machine's (env -i: no variable of a CI job running this test). Runs on macOS and Linux: no network.
 #
 # Usage, from anywhere: deploy/ci/dora-test.sh
@@ -102,8 +108,46 @@ mkdir -p "$tree/deploy/k8s/values/services" "$tree/deploy/helm/svp-cluster" "$tr
   "$tree/docs/postmortems"
 cp -R "$here" "$tree/deploy/ci"
 cp "$src/deploy/k8s/lib.sh" "$tree/deploy/k8s/"
-mkdir -p "$tree/deploy/helm/svp-policy"
-cp -R "$src/deploy/helm/svp-policy/values.yaml" "$src/deploy/helm/svp-policy/files" "$tree/deploy/helm/svp-policy/"
+mkdir -p "$tree/deploy/helm/svp-policy/files"
+cp "$src/deploy/helm/svp-policy/values.yaml" "$tree/deploy/helm/svp-policy/"
+# sources NAME: writes table NAME of release sources into the tree (history, not the working tree's: the story spans
+# the rename of both repositories). before: backend under short-video-platform publishing web too, web under svp-web;
+# rename: backend and web under the new names beside the retired oldbackend and oldweb under the old ones; after: the
+# two new sources alone, the retired ones dropped.
+sources() {
+  local old_b='{"name": "oldbackend", "repository": "https://github.com/anhnvcoder/short-video-platform",
+    "imagePrefix": "ghcr.io/anhnvcoder/short-video-platform/", "drillImages": [],
+    "services": ["gateway", "user-service", "video-service", "engagement-service", "feed-service", "media-worker"],
+    "issuer": "https://token.actions.githubusercontent.com",
+    "subject": "https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main",
+    "provenanceRef": "refs/heads/main"}'
+  local old_w='{"name": "oldweb", "repository": "https://github.com/anhnvcoder/svp-web",
+    "imagePrefix": "ghcr.io/anhnvcoder/svp-web/", "services": ["web"], "drillImages": [],
+    "issuer": "https://token.actions.githubusercontent.com",
+    "subject": "https://github.com/anhnvcoder/svp-web/.github/workflows/images.yml@refs/heads/main",
+    "provenanceRef": "refs/heads/main"}'
+  local new_b='{"name": "backend", "repository": "https://github.com/anhnvcoder/svp-backend",
+    "imagePrefix": "ghcr.io/anhnvcoder/svp-backend/", "drillImages": ["drill-vulnerable", "drill-unsigned"],
+    "services": ["gateway", "user-service", "video-service", "engagement-service", "feed-service", "media-worker"],
+    "issuer": "https://token.actions.githubusercontent.com",
+    "subject": "https://github.com/anhnvcoder/svp-backend/.github/workflows/images.yml@refs/heads/main",
+    "provenanceRef": "refs/heads/main", "promoter": "svp-gitops-promoter"}'
+  local new_w='{"name": "web", "repository": "https://github.com/anhnvcoder/svp-frontend",
+    "imagePrefix": "ghcr.io/anhnvcoder/svp-frontend/", "services": ["web"], "drillImages": [],
+    "issuer": "https://token.actions.githubusercontent.com",
+    "subject": "https://github.com/anhnvcoder/svp-frontend/.github/workflows/images.yml@refs/heads/main",
+    "provenanceRef": "refs/heads/main", "promoter": "svp-web-promoter"}'
+  local table
+  case $1 in
+  before)
+    table="[$(jq -c '.name = "backend" | .services += ["web"] | .drillImages = ["drill-vulnerable", "drill-unsigned"]
+      | .promoter = "svp-gitops-promoter"' <<<"$old_b"), $(jq -c '.name = "web" | .promoter = "svp-web-promoter"' <<<"$old_w")]" ;;
+  rename) table="[$new_b, $new_w, $old_b, $old_w]" ;;
+  after) table="[$new_b, $new_w]" ;;
+  esac
+  jq '{sources: .}' <<<"$table" >"$tree/deploy/helm/svp-policy/files/sources.json"
+}
+sources before
 for svc in "${services[@]}"; do
   [ "$svc" = web ] && continue
   mkdir -p "$tree/services/$svc" && echo "package main // $svc" >"$tree/services/$svc/main.go"
@@ -386,7 +430,7 @@ wg() {
 }
 mkdir -p "$web"
 wg init -q -b main
-wg remote add origin https://github.com/anhnvcoder/svp-web
+wg remote add origin https://github.com/anhnvcoder/svp-frontend
 for c in wa:2026-10-22 wb:2026-10-23 wc:2026-10-24; do
   GIT_AUTHOR_DATE=${c#*:}T00:00:00Z GIT_COMMITTER_DATE=${c#*:}T00:00:00Z wg commit -q --allow-empty -m "${c%%:*}"
 done
@@ -416,31 +460,94 @@ same "web: --clones names web" "0 web" "$rc $(cat "$work/web-clones.out")"
 rc=$(run web-none "$work/web-none.json")
 [ "$rc" != 0 ] && [ ! -e "$work/web-none.json" ] && ok "web: no clone of svp-web, the run stops" ||
   fail "web: no clone of svp-web, the run stops (exit $rc)"
-expect "web: no clone of svp-web, says why" "$work/web-none.err" \
-  "records of stg hold releases of release source web, built from commits of https://github.com/anhnvcoder/svp-web"
+expect "web: no clone of svp-frontend, says why" "$work/web-none.err" \
+  "records of stg hold releases built from commits of https://github.com/anhnvcoder/svp-frontend"
 extra=(SVP_WEB_DIR="$web")
 rc=$(run web "$work/web.json")
 same "web: with a clone of svp-web, exits 0" 0 "$rc"
 [ "$rc" = 0 ] || sed 's/^/      /' "$work/web.err" >&2
-same "web: the commits of svp-web after the first deployment of its web, from svp-web" \
-  "$(printf '%s\n' "service web anhnvcoder/svp-web ${wb:0:12} 2026-10-27T00:00:00Z 345600" \
-    "service web anhnvcoder/svp-web ${wc:0:12} 2026-10-27T00:00:00Z 259200" | sort)" \
+same "web: the commits of svp-web after the first deployment of its web, from its clone, named by its current name" \
+  "$(printf '%s\n' "service web anhnvcoder/svp-frontend ${wb:0:12} 2026-10-27T00:00:00Z 345600" \
+    "service web anhnvcoder/svp-frontend ${wc:0:12} 2026-10-27T00:00:00Z 259200" | sort)" \
   "$(jq -r '.stg.changes[] | select(.service == "web") | "\(.kind) \(.service) \(.repository) \(.sha[0:12]) \(.deployed_at) \(.lead_time)"' \
     "$work/web.json" | sort)"
 same "web: no sample at the first deployment of its web" 0 "$(jq -r '.stg.deployments[1].changes' "$work/web.json")"
-# A later commit of the code repository drops web from backend's services in the table: the record of G4, whose web is
-# backend's under the charts of k8 (a table where backend still publishes web), still counts.
-jq -c '(.sources[] | select(.name == "backend") | .services) -= ["web"]' \
-  "$tree/deploy/helm/svp-policy/files/sources.json" >"$work/sources.json"
-cp "$work/sources.json" "$tree/deploy/helm/svp-policy/files/sources.json"
-g add -A && GIT_AUTHOR_DATE=2026-10-28T00:00:00Z GIT_COMMITTER_DATE=2026-10-28T00:00:00Z g commit -q -m "feat(policy): web of svp-web alone"
+# --- The rename. kR (10-28) moves the table to the new names beside the retired sources; G9 (10-28 06:00) runs the
+# charts of kR with the six services built at kR by the new backend and web still the release of the retired oldweb;
+# wd (10-28 18:00) is a commit of the web client; G10 (10-29) runs its release by the new web source. kD (10-29
+# 12:00) drops the retired sources, so the working tree's table knows neither. Records: those above, their runs under
+# the code repository's former name, and G9, G10 under its new name.
+sources rename
+g add -A && GIT_AUTHOR_DATE=2026-10-28T00:00:00Z GIT_COMMITTER_DATE=2026-10-28T00:00:00Z g commit -q -m "chore: the rename"
+kR=$(g rev-parse HEAD)
+for svc in "${services[@]}"; do
+  [ "$svc" = web ] && continue
+  printf '# The release of %s.\nimage:\n  repository: ghcr.io/anhnvcoder/svp-backend/%s\n  tag: "%s"\n  digest: "%s"\n' \
+    "$svc" "$svc" "${kR:0:12}" "$(digest "N-$svc")" >"$config/envs/stg/images/$svc.yaml"
+done
+charts_file stg "$kR"
+r9=$(gc_at 2026-10-28T06:00:00Z "chore(stg): the six services of the new backend")
+GIT_AUTHOR_DATE=2026-10-28T18:00:00Z GIT_COMMITTER_DATE=2026-10-28T18:00:00Z wg commit -q --allow-empty -m wd
+wd=$(wg rev-parse HEAD)
+wg update-ref refs/remotes/origin/main HEAD
+printf '# The release of web.\nimage:\n  repository: ghcr.io/anhnvcoder/svp-frontend/web\n  tag: "%s"\n  digest: "%s"\n' \
+  "${wd:0:12}" "$(digest "W-$wd")" >"$config/envs/stg/images/web.yaml"
+r10=$(gc_at 2026-10-29T00:00:00Z "chore(stg): web of the new web source")
+gw update-ref refs/remotes/origin/main HEAD
+sources after
+g add -A && GIT_AUTHOR_DATE=2026-10-29T12:00:00Z GIT_COMMITTER_DATE=2026-10-29T12:00:00Z g commit -q -m "chore: drop the retired sources"
 g update-ref refs/remotes/origin/main HEAD
-rc=$(run moved "$work/moved.json")
-same "web moved off backend: exits 0" 0 "$rc"
-[ "$rc" = 0 ] || sed 's/^/      /' "$work/moved.err" >&2
-same "web moved off backend: G4 with backend's web still a deployment, no record left out" \
-  "${r4:0:12} ${r7:0:12} ${r8:0:12} []" \
-  "$(jq -r '[.stg.deployments[].ref[0:12]] | join(" ")' "$work/moved.json") $(jq -c .stg.records_left_out "$work/moved.json")"
+# renamed_record ID R DEPLOYED_AT RUN WEB_REPOSITORY WEB_COMMIT: a record of R under the charts of kR, the six services
+# of the new backend at kR, web WEB_REPOSITORY at WEB_COMMIT, its run under the new name of the code repository.
+renamed_record() {
+  local images='{}' svc
+  for svc in "${services[@]}"; do
+    if [ "$svc" = web ]; then
+      images=$(jq -c --arg r "$5" --arg t "${6:0:12}" --arg d "$(digest "W-$6")" \
+        '. + {web: {repository: $r, tag: $t, digest: $d}}' <<<"$images")
+    else
+      images=$(jq -c --arg s "$svc" --arg t "${kR:0:12}" --arg d "$(digest "N-$svc")" \
+        '. + {($s): {repository: "ghcr.io/anhnvcoder/svp-backend/\($s)", tag: $t, digest: $d}}' <<<"$images")
+    fi
+  done
+  record "$1" "$2" "$3" "$3" "$4" "$bot" B A "$kR" |
+    jq -c --argjson i "$images" --arg run "https://github.com/anhnvcoder/svp-backend/actions/runs/$4" \
+      '.payload.images = $i | .payload.run_url = $run'
+}
+{
+  renamed_record 54 "$r10" 2026-10-29T06:00:00Z 106 ghcr.io/anhnvcoder/svp-frontend/web "$wd"
+  renamed_record 53 "$r9" 2026-10-28T12:00:00Z 105 ghcr.io/anhnvcoder/svp-web/web "$wc"
+  web_record 52 "$r8" 2026-10-27T00:00:00Z 102 "$wc"
+  web_record 51 "$r7" 2026-10-25T01:00:00Z 101 "$wa"
+  record 50 "$r4" 2026-10-17T00:00:00Z 2026-10-17T01:00:00Z 100 "$bot" B A "$k8"
+} | jq -s . >"$work/gh/deployments.json"
+for id in 53 54; do echo '[{"state": "success"}]' >"$work/gh/statuses-$id.json"; done
+for run in 105 106; do echo '{"path": ".github/workflows/verify.yml", "head_branch": "main"}' >"$work/gh/run-$run.json"; done
+rc=$(run renamed-clones --clones)
+same "the rename: --clones names web once for the releases of oldweb and web" "0 web" \
+  "$rc $(cat "$work/renamed-clones.out")"
+rc=$(run renamed "$work/renamed.json")
+same "the rename, the working tree's table without the retired sources: exits 0" 0 "$rc"
+[ "$rc" = 0 ] || sed 's/^/      /' "$work/renamed.err" >&2
+same "the rename: every record counts, those of runs under the former name of the code repository too" \
+  "${r4:0:12} ${r7:0:12} ${r8:0:12} ${r9:0:12} ${r10:0:12} []" \
+  "$(jq -r '[.stg.deployments[].ref[0:12]] | join(" ")' "$work/renamed.json") $(jq -c .stg.records_left_out "$work/renamed.json")"
+same "the rename: record #50 of G4, backend's web of before the rename (judged by its charts' table), a deployment" \
+  "[50]" "$(jq -c '.stg.deployments[0].records' "$work/renamed.json")"
+# G4 held the gateway at k5 (k1..k5 deployed) under the old name; feed-service at k7 and video-service at k9 reach stg
+# first with G9. Keyed by release source, G9 would be the first deployment of the new backend and take no sample.
+same "the rename: the first deployment of the new backend continues the history of the old one" \
+  "$(printf '%s\n' "service feed-service anhnvcoder/svp-backend ${k7:0:12} 2026-10-28T12:00:00Z 1598400" \
+    "service video-service anhnvcoder/svp-backend ${k9:0:12} 2026-10-28T12:00:00Z 820800" | sort)" \
+  "$(jq -r --arg d 2026-10-28T12:00:00Z '.stg.changes[] | select(.deployed_at == $d and .kind == "service")
+    | "\(.kind) \(.service) \(.repository) \(.sha[0:12]) \(.deployed_at) \(.lead_time)"' "$work/renamed.json" | sort)"
+same "the rename: web of oldweb and of web on one clone, only wd new at G10" \
+  "service web anhnvcoder/svp-frontend ${wd:0:12} 2026-10-29T06:00:00Z 43200" \
+  "$(jq -r --arg d 2026-10-29T06:00:00Z '.stg.changes[] | select(.deployed_at == $d and .service == "web")
+    | "\(.kind) \(.service) \(.repository) \(.sha[0:12]) \(.deployed_at) \(.lead_time)"' "$work/renamed.json")"
+same "the rename: no lead time sample of web at G9 (the release of oldweb G8 already held)" "" \
+  "$(jq -r --arg d 2026-10-28T12:00:00Z '.stg.changes[] | select(.deployed_at == $d and .service == "web") | .sha' \
+    "$work/renamed.json")"
 extra=()
 
 if [ "$failures" -gt 0 ]; then

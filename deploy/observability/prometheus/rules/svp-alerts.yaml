@@ -30,7 +30,7 @@ groups:
           severity: page
         annotations:
           summary: "Kafka consumer group {{ $labels.redpanda_group }} has had lag for 2 minutes"
-          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/kafka-consumer-lag-high.md"
+          runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/kafka-consumer-lag-high.md"
       - alert: KafkaConsumerLagHigh
         expr: >-
           max by (redpanda_group) (redpanda_kafka_consumer_group_lag_max{redpanda_group="media-worker"}) > 0
@@ -41,7 +41,7 @@ groups:
           redpanda_group: media-worker
         annotations:
           summary: "Kafka consumer group {{ $labels.redpanda_group }} has had lag for 20 minutes"
-          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/kafka-consumer-lag-high.md"
+          runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/kafka-consumer-lag-high.md"
 
       # Rate limiting runs on the in-memory fallback store when a Redis command
       # fails or exceeds its 50 ms limit. One slow command is not an outage: under load a few a minute
@@ -80,7 +80,7 @@ groups:
           severity: page
         annotations:
           summary: "gateway {{ $labels.service_instance_id }}: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
-          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+          runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/rate-limit-fallback-active.md"
 
       # The slow trickle the page ignores: at least 1% of an instance's decisions on the fallback over
       # 30 minutes, and at least 30 of them. Redis commands that time out now and then, not an outage;
@@ -94,7 +94,7 @@ groups:
           severity: ticket
         annotations:
           summary: "gateway {{ $labels.service_instance_id }}: at least 1% of rate limit decisions in 30 minutes ran on the in-memory fallback"
-          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+          runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/rate-limit-fallback-active.md"
 
       # Same shape: a record went to a dead-letter topic in the last 10 minutes.
       - alert: KafkaDLQRecords
@@ -107,7 +107,7 @@ groups:
           severity: page
         annotations:
           summary: "{{ $labels.service_name }}: consumer group {{ $labels.group }} sent records from {{ $labels.topic }} to its dead-letter topic"
-          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/kafka-dlq-records.md"
+          runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/kafka-dlq-records.md"
 
       # Breaker of one gateway instance not closed (1 half-open, 2 open) in every sample of the last
       # minute: 5 samples 15 s apart, all above 0. 2 <-> 1 does not reset it, one 0 does.
@@ -120,7 +120,7 @@ groups:
           severity: page
         annotations:
           summary: "gateway: circuit breaker to {{ $labels.target }} has not been closed for 1 minute"
-          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/circuit-breaker-open.md"
+          runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/circuit-breaker-open.md"
 
       # Background loops: svp_loop_last_success_seconds is the Unix time of the last successful step,
       # 0 before the first one. One rule per loop, two branches that exclude each other:
@@ -149,7 +149,7 @@ groups:
           loop: outbox-relay
         annotations:
           summary: "{{ $labels.service_name }}: background loop {{ $labels.loop }} has not succeeded for 2 minutes"
-          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
+          runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/background-loop-stalled.md"
 
       - alert: BackgroundLoopStalled
         expr: >-
@@ -166,7 +166,7 @@ groups:
           loop: outbox-cleanup
         annotations:
           summary: "{{ $labels.service_name }}: background loop {{ $labels.loop }} has not succeeded for 32 minutes"
-          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
+          runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/background-loop-stalled.md"
 
       - alert: BackgroundLoopStalled
         expr: >-
@@ -183,7 +183,7 @@ groups:
           loop: upload-sweep
         annotations:
           summary: "{{ $labels.service_name }}: background loop {{ $labels.loop }} has not succeeded for 18 minutes"
-          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
+          runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/background-loop-stalled.md"
 
       - alert: BackgroundLoopStalled
         expr: >-
@@ -200,7 +200,7 @@ groups:
           loop: timeline-prune
         annotations:
           summary: "{{ $labels.service_name }}: background loop {{ $labels.loop }} has not succeeded for 3 hours 10 minutes"
-          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
+          runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/background-loop-stalled.md"
 
   # Backups of Postgres svp-pg in the k3d cluster:
   # Prometheus scrapes the exporter of its instance (PodMonitor svp-pg), so unlike the OTLP gauges
@@ -221,7 +221,7 @@ groups:
           severity: page
         annotations:
           summary: "Postgres {{ $labels.pod }}: archiving WAL to the backup object store has been failing for 5 minutes"
-          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/postgres-wal-archiving-failing.md"
+          runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/postgres-wal-archiving-failing.md"
 
       # The newest base backup the Barman Cloud plugin reports is more than 26 hours old: the daily
       # one of ScheduledBackup svp-pg-daily (03:00 UTC) plus 2 hours. A ticket: WAL archiving still
@@ -235,7 +235,7 @@ groups:
           backup: stale
         annotations:
           summary: "Postgres {{ $labels.pod }}: the newest base backup is more than 26 hours old"
-          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/postgres-backup-too-old.md"
+          runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/postgres-backup-too-old.md"
       # No base backup at all for an hour. 0 is the plugin's value before the first one; the
       # ScheduledBackup takes one as soon as it is made (immediate), which completes in minutes, so a
       # new cluster waiting for its first backup does not fire, nor does a cluster with no series. The
@@ -249,7 +249,7 @@ groups:
           backup: none
         annotations:
           summary: "Postgres {{ $labels.pod }}: no base backup for an hour"
-          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/postgres-backup-too-old.md"
+          runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/postgres-backup-too-old.md"
 
   # Argo CD's view of each Application on the GitOps path: argocd_app_info, one series per Application whose labels
   # carry its sync and health status, scraped from the application controller (PodMonitor
@@ -278,7 +278,7 @@ groups:
           severity: page
         annotations:
           summary: "Argo CD Application {{ $labels.name }} ({{ $labels.dest_namespace }}): Degraded, Missing or Unknown for 10 minutes"
-          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/argocd-application-degraded.md"
+          runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/argocd-application-degraded.md"
 
       # A deploy that never finishes, for 30 minutes: still OutOfSync (the automated sync keeps failing, or waits on a
       # hook that never ends), or still Progressing or Suspended (a rollout that does not complete, a canary paused on
@@ -293,4 +293,4 @@ groups:
           severity: ticket
         annotations:
           summary: "Argo CD Application {{ $labels.name }} ({{ $labels.dest_namespace }}): not Synced and Healthy for 30 minutes"
-          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/argocd-application-degraded.md"
+          runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/argocd-application-degraded.md"

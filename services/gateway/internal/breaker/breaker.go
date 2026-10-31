@@ -20,7 +20,7 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 
-	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
+	"github.com/anhnvcoder/svp-backend/internal/grpcerr"
 )
 
 // thresholds says when a breaker opens and for how long.
@@ -154,7 +154,7 @@ func stateValue(s gobreaker.State) int64 {
 // observeState registers the callback that reports state as svp.breaker.state for target on
 // every collection.
 func observeState(target string, state *atomic.Int64) {
-	meter := otel.Meter("github.com/anhnvcoder/short-video-platform/services/gateway/internal/breaker")
+	meter := otel.Meter("github.com/anhnvcoder/svp-backend/services/gateway/internal/breaker")
 	gauge, err := meter.Int64ObservableGauge("svp.breaker.state")
 	if err != nil {
 		otel.Handle(err)

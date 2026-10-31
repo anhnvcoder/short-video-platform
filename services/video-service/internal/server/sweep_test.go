@@ -10,10 +10,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc/codes"
 
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
-	"github.com/anhnvcoder/short-video-platform/internal/logx"
-	"github.com/anhnvcoder/short-video-platform/internal/pgtest"
-	"github.com/anhnvcoder/short-video-platform/services/video-service/migrations"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
+	"github.com/anhnvcoder/svp-backend/internal/logx"
+	"github.com/anhnvcoder/svp-backend/internal/pgtest"
+	"github.com/anhnvcoder/svp-backend/services/video-service/migrations"
 )
 
 const testAbandonAfter = time.Hour

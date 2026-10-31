@@ -22,10 +22,10 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	engagementv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/engagement/v1"
-	userv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1"
-	videov1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/video/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
+	engagementv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/engagement/v1"
+	userv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/user/v1"
+	videov1 "github.com/anhnvcoder/svp-backend/gen/go/svp/video/v1"
+	"github.com/anhnvcoder/svp-backend/internal/grpcerr"
 )
 
 func TestParseMediaBaseURL(t *testing.T) {

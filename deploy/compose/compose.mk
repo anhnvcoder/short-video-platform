@@ -34,7 +34,7 @@ SMOKE_URL ?= http://127.0.0.1:8080
 # Which images `make up` runs (compose_images of deploy/k8s/lib.sh, which exports what compose.yaml reads). IMAGES:
 # unset builds the six backend services from the working tree; stg runs their releases in staging (envs/stg/images/
 # of the clone of svp-gitops, read as it is), with no Go build. WEB_FROM: stg (unset) runs the web client's release in
-# staging, clone builds it from its source (the clone of svp-web: SVP_WEB_DIR, else <workspace>/frontend), image runs
+# staging, clone builds it from its source (the clone of svp-frontend: SVP_WEB_DIR, else <workspace>/frontend), image runs
 # WEB_IMAGE (ghcr.io/<repository>@sha256:<digest>). make k8s-up reads WEB_FROM and WEB_IMAGE as well, not IMAGES.
 IMAGES ?=
 WEB_FROM ?=
@@ -157,7 +157,7 @@ GLITCHTIP_INIT = COMPOSE='$(COMPOSE_UP_lgtm)' deploy/observability/glitchtip/ini
 glitchtip-init: env-required db-bootstrap ## Migrate and bootstrap GlitchTip (admin, org/project svp, drill token, source map upload token), add SENTRY_* to .env; idempotent, never changes a set value
 	$(GLITCHTIP_INIT)
 
-up: k3d-exclusive env-required obs-valid obs-exclusive db-bootstrap ## Bootstrap Postgres, build, migrate and start the core stack (web client at http://localhost:3001); OBS=lgtm adds Grafana LGTM (127.0.0.1:3000) and GlitchTip (127.0.0.1:8000), OBS=elastic adds Elasticsearch, Kibana (127.0.0.1:5601) and APM Server instead, OBS=off turns telemetry off (drills keep it off); IMAGES=stg runs the staging releases of the six backend services instead of building them; the web client runs its staging release, WEB_FROM=clone builds it from the clone of svp-web (../frontend, or SVP_WEB_DIR), WEB_FROM=image (WEB_IMAGE=<ghcr.io/...@sha256:...>) runs that release; refuses while a container of a profile not chosen runs (make down first)
+up: k3d-exclusive env-required obs-valid obs-exclusive db-bootstrap ## Bootstrap Postgres, build, migrate and start the core stack (web client at http://localhost:3001); OBS=lgtm adds Grafana LGTM (127.0.0.1:3000) and GlitchTip (127.0.0.1:8000), OBS=elastic adds Elasticsearch, Kibana (127.0.0.1:5601) and APM Server instead, OBS=off turns telemetry off (drills keep it off); IMAGES=stg runs the staging releases of the six backend services instead of building them; the web client runs its staging release, WEB_FROM=clone builds it from the clone of svp-frontend (../frontend, or SVP_WEB_DIR), WEB_FROM=image (WEB_IMAGE=<ghcr.io/...@sha256:...>) runs that release; refuses while a container of a profile not chosen runs (make down first)
 	$(if $(filter lgtm,$(OBS)),$(GLITCHTIP_INIT))
 	$(call WITH_IMAGES,compose_up_images) $(COMPOSE_UP_$(OBS)) up -d $(UP_BUILD) --wait
 

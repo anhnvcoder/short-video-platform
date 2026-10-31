@@ -18,12 +18,12 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	feedv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/feed/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
-	"github.com/anhnvcoder/short-video-platform/internal/pagetoken"
-	"github.com/anhnvcoder/short-video-platform/internal/redistest"
-	"github.com/anhnvcoder/short-video-platform/internal/redisx"
-	"github.com/anhnvcoder/short-video-platform/services/feed-service/internal/store"
+	feedv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/feed/v1"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
+	"github.com/anhnvcoder/svp-backend/internal/pagetoken"
+	"github.com/anhnvcoder/svp-backend/internal/redistest"
+	"github.com/anhnvcoder/svp-backend/internal/redisx"
+	"github.com/anhnvcoder/svp-backend/services/feed-service/internal/store"
 )
 
 // loadMessage is the log line the drills count, one per Postgres read of a first explore page.

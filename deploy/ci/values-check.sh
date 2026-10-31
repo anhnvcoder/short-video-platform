@@ -95,7 +95,7 @@ if [ "$failed" -ne 0 ]; then
   echo "Refresh the vuln attestations of these releases, then run this check again:" >&2
   echo "  $refresh" >&2
   echo "A missing provenance needs a new release instead, as named above: a rescan does not add one." >&2
-  echo "A release of another source (svp-web) is rescanned by the images.yml of that repository, dispatched there." >&2
+  echo "A release of another source (svp-frontend) is rescanned by the images.yml of that repository, dispatched there." >&2
   ci_summary "values-check failed: refresh the vuln attestations with \`$refresh\`; a missing provenance needs a new release (above)"
 fi
 exit "$failed"

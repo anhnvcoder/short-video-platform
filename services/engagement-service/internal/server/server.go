@@ -31,14 +31,14 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	engagementv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/engagement/v1"
-	eventv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/event/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/callerid"
-	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
-	"github.com/anhnvcoder/short-video-platform/internal/kafkax"
-	"github.com/anhnvcoder/short-video-platform/internal/logx"
-	"github.com/anhnvcoder/short-video-platform/services/engagement-service/internal/store"
+	engagementv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/engagement/v1"
+	eventv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/event/v1"
+	"github.com/anhnvcoder/svp-backend/internal/callerid"
+	"github.com/anhnvcoder/svp-backend/internal/grpcerr"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
+	"github.com/anhnvcoder/svp-backend/internal/kafkax"
+	"github.com/anhnvcoder/svp-backend/internal/logx"
+	"github.com/anhnvcoder/svp-backend/services/engagement-service/internal/store"
 )
 
 const (

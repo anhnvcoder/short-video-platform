@@ -88,7 +88,7 @@ kubectl --context k3d-svp -n svp get rollout web -o jsonpath='{.status.restarted
 
 ```sh
 curl -sG "$PROM/api/v1/query" --data-urlencode 'query=slo:sli_error:ratio_rate5m{sloth_slo="web-availability"}' | jq -c '.data.result[] | .value[1]'
-make web-e2e        # compose: Playwright trên Chromium và WebKit, e2e của bản clone svp-web (../frontend hay SVP_WEB_DIR)
+make web-e2e        # compose: Playwright trên Chromium và WebKit, e2e của bản clone svp-frontend (../frontend hay SVP_WEB_DIR)
                     # (LOCAL LAB ONLY: seed xoá khoá rate limit đăng ký)
 make k8s-web-e2e    # k3d, cùng bản clone
 ```

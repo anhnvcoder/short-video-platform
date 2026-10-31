@@ -49,10 +49,9 @@
 #     checks that file; one of another file checks none;
 #   - plan.sh on a push to main that builds no image: promote_charts when a file under deploy/helm/ or one a symbolic
 #     link there points to changed, not for docs/;
-#   - gitops_no_provenance of deploy/ci/verify/gitops.sh: the newest web release in the history of web.yaml that the
-#     fake cosign finds signed without provenance, passing over without cosign a release built from a commit holding
-#     provenance-predicate.sh; none found and an error of cosign each exit with their own status;
-#   - changed-services.sh builds all six images of this repository (never web, which svp-web builds) for a change of
+#   - gitops_supplychain of deploy/ci/verify/gitops.sh: case l gets the newest drill-no-provenance, and none (not
+#     empty) with the step failing when GHCR does not give it;
+#   - changed-services.sh builds all six images of this repository (never web, which svp-frontend builds) for a change of
 #     platform.sh, as for common.sh and rescan.sh, and none for a change under web/ (a file added, then deleted) or of
 #     this test, of promote-test.sh, of platform-guard.sh, of sourcemaps-image.sh and its test (another
 #     source's CI pushes that image), of a scenario file under deploy/ci/verify/, of the
@@ -62,20 +61,24 @@
 #     release-set.sh and promote-prd.sh (job promote-prd of images.yml), and of the GRYPE_IMAGE line of the Makefile,
 #     none for another line of it;
 #   - platform-guard.sh reads the scenario files under deploy/ci/verify/ too; given another repository's tree as ROOT
-#     (svp-web's) it reads every file there but .github/ and .backend/, and a ROOT that is no directory or no git
+#     (svp-frontend's) it reads every file there but .github/ and .backend/, and a ROOT that is no directory or no git
 #     tree exits 2;
 #   - rescan.sh run attests only the releases of the source of the run's repository, as that source's signing
-#     workflow: a run of svp-web without --source web, a run of backend with --source web, and a run of svp-web from
+#     workflow: a run of svp-frontend without --source web, a run of backend with --source web, and a run of svp-frontend from
 #     another workflow fail, naming both sources (or the identity), before the host or cosign is asked anything; the
-#     scheduled run of backend and the run of svp-web with --source web each read their own promote pull request and
+#     scheduled run of backend and the run of svp-frontend with --source web each read their own promote pull request and
 #     ask cosign for their own releases only, leaving the other source's to it; on a machine the run is refused first;
-#   - another repository's tree (SVP_CODE_ROOT, a checkout whose origin is svp-web): on a machine ci_repo, ci_repo_url
+#   - another repository's tree (SVP_CODE_ROOT, a checkout whose origin is svp-frontend): on a machine ci_repo, ci_repo_url
 #     and ci_commit are that checkout's (and a checkout with no origin on github.com is refused, an origin's
-#     credential never shown); plan.sh of svp-web's run builds the services of its release source at every run, with
+#     credential never shown); plan.sh of svp-frontend's run builds the services of its release source at every run, with
 #     no base, refuses a service or a drill its source does not have and a tree whose HEAD is not the run's commit, and
-#     in this checkout refuses a run of svp-web that forgot SVP_CODE_ROOT and a run of a fork; in this checkout plan.sh
+#     in this checkout refuses a run of svp-frontend that forgot SVP_CODE_ROOT, a run of a fork and a run of a retired
+#     source (no promoter: this repository under its name before the rename); in this checkout plan.sh
 #     builds the six for services all and refuses services web, and build-image.sh refuses web before it builds
-#     anything; scan-gate.sh reads that tree's .trivyignore.yaml and stops, naming it, when the tree has none.
+#     anything; scan-gate.sh reads that tree's .trivyignore.yaml and stops, naming it, when the tree has none;
+#   - common.sh reads a retired source as any other (its identity, the source of a repository under its prefix);
+#   - web_clone of deploy/k8s/lib.sh without WEB_REF checks out the commit of the web release stg runs when it is a
+#     release of web or of the retired oldweb, and refuses one under another prefix before anything is cloned.
 # Runs on macOS and Linux: no network, no Docker, no cluster.
 #
 # Usage, from anywhere: deploy/ci/platform-test.sh
@@ -501,10 +504,10 @@ same "local: tee prints once" x "$(fn local 'echo x | ci_summary_tee')"
 same "local: a mask prints nothing (it would print the value)" "" "$(fn local 'ci_mask "s3cret-value"')"
 same "local: a warning is a plain line" 'warning: look here' "$(fn local 'ci_warning "look here"')"
 same "local: the temp directory is /tmp" /tmp "$(fn local ci_temp_dir)"
-same "local: this repository" anhnvcoder/short-video-platform "$(fn local ci_repo)"
+same "local: this repository" anhnvcoder/svp-backend "$(fn local ci_repo)"
 same "local: links are local" "local local local local" \
   "$(fn local 'echo "$(ci_run_id) $(ci_run_url) $(ci_run_attempt_url) $(ci_builder_id)"')"
-same "local: the repository's page on GitHub" https://github.com/anhnvcoder/short-video-platform \
+same "local: the repository's page on GitHub" https://github.com/anhnvcoder/svp-backend \
   "$(fn local ci_repo_url)"
 same "local: the ref, the workflow file and its ref are local, no dispatch input" "local local local " \
   "$(fn local 'echo "$(ci_ref) $(ci_workflow_path) $(ci_workflow_ref) $(ci_dispatch_input services)"')"
@@ -512,9 +515,9 @@ same "local: the commit is HEAD of the checkout platform.sh is in" "$(git -C "$h
   "$(fn local ci_commit)"
 check "local: no file of a job was written" test ! -s "$work/output" -a ! -s "$work/summary"
 
-# A checkout of svp-web, another release source's repository, whose CI runs these scripts from a pinned checkout of
+# A checkout of svp-frontend, another release source's repository, whose CI runs these scripts from a pinned checkout of
 # this one: SVP_CODE_ROOT names it, and on a machine the repository and commit of the run are its own.
-webtree=$work/svp-web
+webtree=$work/svp-frontend
 mkdir -p "$webtree"
 printf 'vulnerabilities: []\n' >"$webtree/.trivyignore.yaml"
 gw() {
@@ -522,35 +525,35 @@ gw() {
     -c user.email=test@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"
 }
 gw init -q -b main && gw add -A && gw commit -qm web
-gw remote add origin https://github.com/anhnvcoder/svp-web.git
+gw remote add origin https://github.com/anhnvcoder/svp-frontend.git
 web_head=$(gw rev-parse HEAD)
 same "local, SVP_CODE_ROOT: the repository, its page and the commit are the checkout's" \
-  "anhnvcoder/svp-web https://github.com/anhnvcoder/svp-web $web_head" \
+  "anhnvcoder/svp-frontend https://github.com/anhnvcoder/svp-frontend $web_head" \
   "$(on local env SVP_CODE_ROOT="$webtree" "$BASH" -c '. "$0"; echo "$(ci_repo) $(ci_repo_url) $(ci_commit)"' \
     "$here/platform.sh")"
-gw remote set-url origin git@github.com:anhnvcoder/svp-web.git
-same "local, SVP_CODE_ROOT: an ssh origin names the same repository" anhnvcoder/svp-web \
+gw remote set-url origin git@github.com:anhnvcoder/svp-frontend.git
+same "local, SVP_CODE_ROOT: an ssh origin names the same repository" anhnvcoder/svp-frontend \
   "$(on local env SVP_CODE_ROOT="$webtree" "$BASH" -c '. "$0"; ci_repo' "$here/platform.sh")"
-gw remote set-url origin https://gitlab.example/anhnvcoder/svp-web.git
+gw remote set-url origin https://gitlab.example/anhnvcoder/svp-frontend.git
 if out=$(on local env SVP_CODE_ROOT="$webtree" "$BASH" -c '. "$0"; ci_repo_url' "$here/platform.sh" 2>&1); then
   fail "local, SVP_CODE_ROOT: an origin off github.com is refused (got '$out')"
 else
   same "local, SVP_CODE_ROOT: an origin off github.com is refused, naming it" \
-    "FAIL  SVP_CODE_ROOT=$webtree has no remote origin on github.com (got 'https://gitlab.example/anhnvcoder/svp-web.git'): its repository cannot be named" \
+    "FAIL  SVP_CODE_ROOT=$webtree has no remote origin on github.com (got 'https://gitlab.example/anhnvcoder/svp-frontend.git'): its repository cannot be named" \
     "$out"
 fi
-gw remote set-url origin https://x-access-token:ghs_faketoken0123456789@github.com/anhnvcoder/svp-web.git
+gw remote set-url origin https://x-access-token:ghs_faketoken0123456789@github.com/anhnvcoder/svp-frontend.git
 if out=$(on local env SVP_CODE_ROOT="$webtree" "$BASH" -c '. "$0"; ci_repo' "$here/platform.sh" 2>&1); then
   fail "local, SVP_CODE_ROOT: an origin carrying a credential is refused (got '$out')"
 else
   same "local, SVP_CODE_ROOT: an origin carrying a credential is refused, the credential not shown" \
-    "FAIL  SVP_CODE_ROOT=$webtree has no remote origin on github.com (got 'https://github.com/anhnvcoder/svp-web.git'): its repository cannot be named" \
+    "FAIL  SVP_CODE_ROOT=$webtree has no remote origin on github.com (got 'https://github.com/anhnvcoder/svp-frontend.git'): its repository cannot be named" \
     "$out"
 fi
-gw remote set-url origin https://github.com/anhnvcoder/svp-web.git
+gw remote set-url origin https://github.com/anhnvcoder/svp-frontend.git
 got=$(fn local 'ci_change_request_write "" bot/promote main "chore(release): x" /tmp/body')
 same "local: a pull request is printed, not written" "dry run: gh $(gh_line pr create \
-  --repo anhnvcoder/short-video-platform --base main --head bot/promote --title "chore(release): x" \
+  --repo anhnvcoder/svp-backend --base main --head bot/promote --title "chore(release): x" \
   --body-file /tmp/body)" "$got "
 check "local: gh is not called to write" test ! -s "$work/gh.log"
 got=$(fn local "ci_change_request_auto_merge 7 $(printf 'a%.0s' $(seq 40)) anhnvcoder/svp-gitops")
@@ -559,10 +562,10 @@ same "local: auto-merge is printed, not turned on" "dry run: gh $(gh_line pr mer
 check "local: gh is not called for auto-merge" test ! -s "$work/gh.log"
 same "local: no credential helper" "" "$(fn local ci_git_auth)"
 same "local: the dispatch hint names the code repository" \
-  "gh workflow run images.yml --repo anhnvcoder/short-video-platform --ref main -f rescan=true -f values_ref=abc" \
+  "gh workflow run images.yml --repo anhnvcoder/svp-backend --ref main -f rescan=true -f values_ref=abc" \
   "$(fn local 'ci_dispatch_hint images.yml main rescan=true values_ref=abc')"
 same "github: the dispatch hint names the code repository, not the job's" \
-  "gh workflow run images.yml --repo anhnvcoder/short-video-platform --ref main" \
+  "gh workflow run images.yml --repo anhnvcoder/svp-backend --ref main" \
   "$(fn github 'ci_dispatch_hint images.yml main')"
 sha=0123456789abcdef0123456789abcdef01234567
 jq -n --arg sha "$sha" '[{type: "PushEvent", payload: {head: "ffff"}, created_at: "2026-10-01T00:00:00Z"},
@@ -575,8 +578,8 @@ events_filter="[.[] | select(.type == \"PushEvent\" and .payload.head == \"$sha\
 same "local: no pull request of the commit, the push time is read from the host's events" \
   "2026-10-02T03:04:05Z PushEvent of the repository's events" "$(fn local "ci_push_time $sha")"
 same "local: the pull requests, then the events, are read for this repository" "$(gh_line api -X GET \
-  repos/anhnvcoder/short-video-platform/commits/$sha/pulls -f per_page=100 --jq "$pulls_filter")
-$(gh_line api -X GET repos/anhnvcoder/short-video-platform/events -f per_page=100 --jq "$events_filter")" \
+  repos/anhnvcoder/svp-backend/commits/$sha/pulls -f per_page=100 --jq "$pulls_filter")
+$(gh_line api -X GET repos/anhnvcoder/svp-backend/events -f per_page=100 --jq "$events_filter")" \
   "$(cat "$work/gh.log")"
 # A pull request merged as the commit gives its merged_at, and the events are not read; one merged as another commit,
 # or not merged, is skipped.
@@ -670,7 +673,7 @@ runs_jq="\"\\(.total_count) \\(.workflow_runs | length)\", (.workflow_runs
           and (.event == \"push\" or .event == \"workflow_dispatch\")))
         | sort_by(.run_started_at, .id) | reverse | .[].id)"
 for p in github local; do
-  [ $p = github ] && repo=octo/repo || repo=anhnvcoder/short-video-platform
+  [ $p = github ] && repo=octo/repo || repo=anhnvcoder/svp-backend
   fresh
   rc=0
   got=$(fn $p "ci_artifact_runs images.yml $sha web-sourcemaps-amd64") || rc=$?
@@ -719,7 +722,7 @@ same "gitlab: ci_artifact_runs fails" 1 "$rc"
 check "gitlab: ci_artifact_runs names GitLab CI" has "$work/err" "this runs on GitLab CI"
 
 for p in github local; do
-  [ $p = github ] && repo=octo/repo || repo=anhnvcoder/short-video-platform
+  [ $p = github ] && repo=octo/repo || repo=anhnvcoder/svp-backend
   fresh
   rm -rf "$work/fetch" && mkdir "$work/fetch"
   rc=0
@@ -781,19 +784,35 @@ done
 # --- ci_is_run_url, ci_run_workflow, ci_deployment_record, ci_deployment_list: the records of an environment in
 # svp-gitops and the runs they name.
 check "github: a run of the code repository is a run URL" fn github \
+  'ci_is_run_url https://github.com/anhnvcoder/svp-backend/actions/runs/4242'
+# A record made before the code repository was renamed names its run under the former name.
+check "local: a run of the code repository under its former name is a run URL" fn local \
   'ci_is_run_url https://github.com/anhnvcoder/short-video-platform/actions/runs/4242'
-for bad in https://github.com/someone/fork/actions/runs/4242 https://github.com/anhnvcoder/short-video-platform/actions/runs/x \
-  "https://github.com/anhnvcoder/short-video-platform/actions/runs/4242/attempts/1" ""; do
+same "ci_repo_current: the former name of the code repository is its current name" anhnvcoder/svp-backend \
+  "$(fn local 'ci_repo_current anhnvcoder/short-video-platform')"
+same "ci_repo_current: the former name of the web client's repository is its current name" anhnvcoder/svp-frontend \
+  "$(fn local 'ci_repo_current anhnvcoder/svp-web')"
+same "ci_repo_current: a repository never renamed keeps its name" anhnvcoder/svp-gitops \
+  "$(fn local 'ci_repo_current anhnvcoder/svp-gitops')"
+for bad in https://github.com/someone/fork/actions/runs/4242 https://github.com/anhnvcoder/svp-backend/actions/runs/x \
+  "https://github.com/anhnvcoder/svp-backend/actions/runs/4242/attempts/1" \
+  https://github.com/anhnvcoder/svp-web/actions/runs/4242 ""; do
   if fn local "ci_is_run_url '$bad'"; then fail "local: '$bad' is no run URL"; else ok "local: '$bad' is no run URL"; fi
 done
 echo '{"id": 4242, "path": ".github/workflows/verify.yml", "head_branch": "main", "event": "schedule"}' >"$work/gh/run-4242.json"
 for p in github local; do
   fresh
   same "$p: ci_run_workflow prints the workflow file and the branch of a run" ".github/workflows/verify.yml main" \
-    "$(fn "$p" 'ci_run_workflow https://github.com/anhnvcoder/short-video-platform/actions/runs/4242')"
+    "$(fn "$p" 'ci_run_workflow https://github.com/anhnvcoder/svp-backend/actions/runs/4242')"
   check "$p: ci_run_workflow asks the host for the run of the code repository" grep -qF -- \
-    "$(gh_line api -X GET repos/anhnvcoder/short-video-platform/actions/runs/4242)" "$work/gh.log"
-  if fn "$p" 'ci_run_workflow https://github.com/anhnvcoder/short-video-platform/actions/runs/4243' >/dev/null 2>&1; then
+    "$(gh_line api -X GET repos/anhnvcoder/svp-backend/actions/runs/4242)" "$work/gh.log"
+  fresh
+  same "$p: ci_run_workflow reads a run named under the former name of the code repository" \
+    ".github/workflows/verify.yml main" \
+    "$(fn "$p" 'ci_run_workflow https://github.com/anhnvcoder/short-video-platform/actions/runs/4242')"
+  check "$p: ci_run_workflow asks the host for that run under the current name" grep -qF -- \
+    "$(gh_line api -X GET repos/anhnvcoder/svp-backend/actions/runs/4242)" "$work/gh.log"
+  if fn "$p" 'ci_run_workflow https://github.com/anhnvcoder/svp-backend/actions/runs/4243' >/dev/null 2>&1; then
     fail "$p: ci_run_workflow fails when the host knows no such run"
   else
     ok "$p: ci_run_workflow fails when the host knows no such run"
@@ -810,7 +829,7 @@ rev=$(printf 'c%.0s' $(seq 40))
 echo '{"environment": "stg", "ref": "'"$rev"'", "images": {}}' >"$work/payload.json"
 fresh
 : >"$work/gh/inputs.jsonl"
-same "github: ci_deployment_record prints the id of the record" 9001 "$(fn github "ci_deployment_record anhnvcoder/svp-gitops stg $rev '$work/payload.json' 'stg checked' https://github.com/anhnvcoder/short-video-platform/actions/runs/4242")"
+same "github: ci_deployment_record prints the id of the record" 9001 "$(fn github "ci_deployment_record anhnvcoder/svp-gitops stg $rev '$work/payload.json' 'stg checked' https://github.com/anhnvcoder/svp-backend/actions/runs/4242")"
 same "github: a deployment, then its status" \
   "$(gh_line api -X POST repos/anhnvcoder/svp-gitops/deployments --input - --jq .id)"$'\n'"$(gh_line api -X POST repos/anhnvcoder/svp-gitops/deployments/9001/statuses --input - --jq .state)" \
   "$(cat "$work/gh.log")"
@@ -818,7 +837,7 @@ same "github: the deployment: ref, environment, payload, no auto-merge, no requi
   "$rev stg stg false [] false" \
   "$(sed -n 1p "$work/gh/inputs.jsonl" | jq -r '"\(.ref) \(.environment) \(.payload.environment) \(.auto_merge) \(.required_contexts | tojson) \(.transient_environment)"')"
 same "github: the status: success, the run as its log, earlier records left active" \
-  "success https://github.com/anhnvcoder/short-video-platform/actions/runs/4242 false" \
+  "success https://github.com/anhnvcoder/svp-backend/actions/runs/4242 false" \
   "$(sed -n 2p "$work/gh/inputs.jsonl" | jq -r '"\(.state) \(.log_url) \(.auto_inactive)"')"
 fresh
 got=$(fn github "ci_deployment_record --dry-run anhnvcoder/svp-gitops stg $rev '$work/payload.json' 'stg checked' https://example.invalid/run")
@@ -894,37 +913,37 @@ digest_b=sha256:$(printf 'b%.0s' $(seq 64))
 
 # plan.sh: a drill run on main hands its seven outputs on, in this order, and writes its summary.
 want_plan='mode=drill
-images=["drill-vulnerable","drill-unsigned"]
-legs={"include":[{"image":"drill-vulnerable","arch":"amd64","runner":"ubuntu-24.04"},{"image":"drill-vulnerable","arch":"arm64","runner":"ubuntu-24.04-arm"},{"image":"drill-unsigned","arch":"amd64","runner":"ubuntu-24.04"},{"image":"drill-unsigned","arch":"arm64","runner":"ubuntu-24.04-arm"}]}
+images=["drill-vulnerable","drill-unsigned","drill-no-provenance"]
+legs={"include":[{"image":"drill-vulnerable","arch":"amd64","runner":"ubuntu-24.04"},{"image":"drill-vulnerable","arch":"arm64","runner":"ubuntu-24.04-arm"},{"image":"drill-unsigned","arch":"amd64","runner":"ubuntu-24.04"},{"image":"drill-unsigned","arch":"arm64","runner":"ubuntu-24.04-arm"},{"image":"drill-no-provenance","arch":"amd64","runner":"ubuntu-24.04"},{"image":"drill-no-provenance","arch":"arm64","runner":"ubuntu-24.04-arm"}]}
 has_images=true
 base=
 promote_charts=false
 values_ref='
 fresh
-backend_run=(GITHUB_REPOSITORY=anhnvcoder/short-video-platform GITHUB_SERVER_URL=https://github.com)
+backend_run=(GITHUB_REPOSITORY=anhnvcoder/svp-backend GITHUB_SERVER_URL=https://github.com)
 got=$(on github env "${backend_run[@]}" GITHUB_SHA="$base" EVENT_NAME=workflow_dispatch GIT_REF=refs/heads/main \
   INPUT_DRILL=true "$tree/deploy/ci/plan.sh")
 same "plan.sh on github: nothing on stdout" "" "$got"
 same "plan.sh on github: the seven outputs in GITHUB_OUTPUT" "$want_plan" "$(cat "$work/output")"
-same "plan.sh on github: the summary" "Mode: drill. Images: drill-vulnerable drill-unsigned." "$(cat "$work/summary")"
+same "plan.sh on github: the summary" "Mode: drill. Images: drill-vulnerable drill-unsigned drill-no-provenance." "$(cat "$work/summary")"
 got=$(on local env EVENT_NAME=workflow_dispatch GIT_REF=refs/heads/main INPUT_DRILL=true "$tree/deploy/ci/plan.sh")
 same "plan.sh on a machine: summary then outputs on stdout" \
-  "Mode: drill. Images: drill-vulnerable drill-unsigned."$'\n'"$want_plan" "$got"
+  "Mode: drill. Images: drill-vulnerable drill-unsigned drill-no-provenance."$'\n'"$want_plan" "$got"
 
-# plan.sh of svp-web's run (SVP_CODE_ROOT its checkout, HEAD the run's commit): the services of its release source at
+# plan.sh of svp-frontend's run (SVP_CODE_ROOT its checkout, HEAD the run's commit): the services of its release source at
 # every run, no base, nothing to promote of the charts.
-# web_plan NAME WANT_RC VAR=VALUE...: plan.sh in a made-up run of svp-web on github, its outputs in output.
+# web_plan NAME WANT_RC VAR=VALUE...: plan.sh in a made-up run of svp-frontend on github, its outputs in output.
 web_plan() {
   local name=$1 want=$2 rc=0
   shift 2
   fresh
-  on github env GITHUB_REPOSITORY=anhnvcoder/svp-web GITHUB_SERVER_URL=https://github.com GITHUB_SHA="$web_head" \
+  on github env GITHUB_REPOSITORY=anhnvcoder/svp-frontend GITHUB_SERVER_URL=https://github.com GITHUB_SHA="$web_head" \
     SVP_CODE_ROOT="$webtree" GIT_REF=refs/heads/main "$@" "$tree/deploy/ci/plan.sh" >/dev/null 2>"$work/plan.err" ||
     rc=$?
-  same "plan.sh of svp-web: $name (exit $want)" "$want" "$rc"
+  same "plan.sh of svp-frontend: $name (exit $want)" "$want" "$rc"
 }
 web_plan "a push to main" 0 EVENT_NAME=push
-same "plan.sh of svp-web: a push to main builds web on both architectures, no base" 'mode=build
+same "plan.sh of svp-frontend: a push to main builds web on both architectures, no base" 'mode=build
 images=["web"]
 legs={"include":[{"image":"web","arch":"amd64","runner":"ubuntu-24.04"},{"image":"web","arch":"arm64","runner":"ubuntu-24.04-arm"}]}
 has_images=true
@@ -932,21 +951,21 @@ base=
 promote_charts=false
 values_ref=' "$(cat "$work/output")"
 web_plan "a pull request" 0 EVENT_NAME=pull_request PR_BASE_REF=main GIT_REF=refs/pull/7/merge
-same "plan.sh of svp-web: a pull request builds web" 'images=["web"]' "$(grep '^images=' "$work/output")"
+same "plan.sh of svp-frontend: a pull request builds web" 'images=["web"]' "$(grep '^images=' "$work/output")"
 web_plan "a dispatch with services web" 0 EVENT_NAME=workflow_dispatch INPUT_SERVICES=web
-same "plan.sh of svp-web: services web builds web" 'images=["web"]' "$(grep '^images=' "$work/output")"
+same "plan.sh of svp-frontend: services web builds web" 'images=["web"]' "$(grep '^images=' "$work/output")"
 web_plan "a dispatch with services gateway" 1 EVENT_NAME=workflow_dispatch INPUT_SERVICES=gateway
-check "plan.sh of svp-web: services gateway is refused, naming what the source publishes" has "$work/plan.err" \
+check "plan.sh of svp-frontend: services gateway is refused, naming what the source publishes" has "$work/plan.err" \
   "services: 'gateway' is not an image of release source web (web)"
 web_plan "a drill" 1 EVENT_NAME=workflow_dispatch INPUT_DRILL=true
-check "plan.sh of svp-web: a drill is refused" has "$work/plan.err" "release source web has no drill image to build"
+check "plan.sh of svp-frontend: a drill is refused" has "$work/plan.err" "release source web has no drill image to build"
 web_plan "a rescan" 0 EVENT_NAME=schedule
-same "plan.sh of svp-web: a rescan builds nothing" 'mode=rescan has_images=false' \
+same "plan.sh of svp-frontend: a rescan builds nothing" 'mode=rescan has_images=false' \
   "$(grep '^mode=' "$work/output") $(grep '^has_images=' "$work/output")"
 web_plan "a tree at another commit than the run's" 1 EVENT_NAME=push GITHUB_SHA="$base"
-check "plan.sh of svp-web: a tree at another commit: names SVP_CODE_ROOT" has "$work/plan.err" \
-  "HEAD of $webtree is $web_head, but this run builds $base of https://github.com/anhnvcoder/svp-web: set SVP_CODE_ROOT"
-# A job of svp-web that forgot SVP_CODE_ROOT: this checkout is not the run's commit, so plan.sh stops before it plans
+check "plan.sh of svp-frontend: a tree at another commit: names SVP_CODE_ROOT" has "$work/plan.err" \
+  "HEAD of $webtree is $web_head, but this run builds $base of https://github.com/anhnvcoder/svp-frontend: set SVP_CODE_ROOT"
+# A job of svp-frontend that forgot SVP_CODE_ROOT: this checkout is not the run's commit, so plan.sh stops before it plans
 # from this checkout's diff; a run of a repository that is no release source (a fork) stops too.
 plan_own() {
   local name=$1 want=$2 rc=0
@@ -956,16 +975,23 @@ plan_own() {
     "$tree/deploy/ci/plan.sh" >/dev/null 2>"$work/plan.err" || rc=$?
   same "plan.sh in this checkout: $name (exit $want)" "$want" "$rc"
 }
-plan_own "a run of svp-web without SVP_CODE_ROOT" 1 GITHUB_REPOSITORY=anhnvcoder/svp-web GITHUB_SHA="$web_head"
-check "plan.sh in this checkout: a run of svp-web without SVP_CODE_ROOT: names SVP_CODE_ROOT" has "$work/plan.err" \
-  "HEAD of $tree is $base, but this run builds $web_head of https://github.com/anhnvcoder/svp-web: set SVP_CODE_ROOT"
-lacks "$work/output" "images=" && ok "plan.sh in this checkout: a run of svp-web without SVP_CODE_ROOT: no output" ||
-  fail "plan.sh in this checkout: a run of svp-web without SVP_CODE_ROOT: no output"
-plan_own "a run of a fork" 1 GITHUB_REPOSITORY=someone/short-video-platform GITHUB_SHA="$base"
+plan_own "a run of svp-frontend without SVP_CODE_ROOT" 1 GITHUB_REPOSITORY=anhnvcoder/svp-frontend GITHUB_SHA="$web_head"
+check "plan.sh in this checkout: a run of svp-frontend without SVP_CODE_ROOT: names SVP_CODE_ROOT" has "$work/plan.err" \
+  "HEAD of $tree is $base, but this run builds $web_head of https://github.com/anhnvcoder/svp-frontend: set SVP_CODE_ROOT"
+lacks "$work/output" "images=" && ok "plan.sh in this checkout: a run of svp-frontend without SVP_CODE_ROOT: no output" ||
+  fail "plan.sh in this checkout: a run of svp-frontend without SVP_CODE_ROOT: no output"
+plan_own "a run of a fork" 1 GITHUB_REPOSITORY=someone/svp-backend GITHUB_SHA="$base"
 check "plan.sh in this checkout: a run of a fork: no release source" has "$work/plan.err" \
-  "this run is of https://github.com/someone/short-video-platform, which is the repository of 0 release sources"
-# web is still a service of release source backend while prd runs that release, but this repository holds no source of
-# it: a dispatch builds the six, never web, and build-image.sh refuses web before anything is built.
+  "this run is of https://github.com/someone/svp-backend, which is the repository of 0 release sources"
+# A run of this repository under the name it had before the rename is a run of a retired source (no promoter): its
+# successor, backend, builds; such a run builds, pushes and signs nothing.
+plan_own "a run of a retired source" 1 GITHUB_REPOSITORY=anhnvcoder/short-video-platform GITHUB_SHA="$base"
+check "plan.sh in this checkout: a run of a retired source: names it" has "$work/plan.err" \
+  "this run is of https://github.com/anhnvcoder/short-video-platform, the repository of release source oldbackend, which is retired (no promoter in deploy/helm/svp-policy/files/sources.json): nothing of it is built, pushed or signed"
+lacks "$work/output" "images=" && ok "plan.sh in this checkout: a run of a retired source: no output" ||
+  fail "plan.sh in this checkout: a run of a retired source: no output"
+# web is no service of release source backend (svp-frontend publishes it), and this repository holds no source of it:
+# a dispatch builds the six, never web, and build-image.sh refuses web before anything is built.
 plan_own "a dispatch with services all" 0 "${backend_run[@]}" GITHUB_SHA="$base" EVENT_NAME=workflow_dispatch \
   INPUT_SERVICES=all
 same "plan.sh in this checkout: services all builds the six, not web" \
@@ -979,13 +1005,15 @@ rc=0
 on github env "${backend_run[@]}" GITHUB_SHA="$base" "$tree/deploy/ci/build-image.sh" web amd64 "$work/leg" \
   >/dev/null 2>"$work/build.err" || rc=$?
 same "build-image.sh in this checkout: web (exit 1)" 1 "$rc"
-check "build-image.sh in this checkout: web is refused, its source is another repository's" has "$work/build.err" \
-  "web is not an image this repository builds (gateway user-service video-service engagement-service feed-service media-worker): its source is another repository's"
+# Source backend no longer publishes web, so the source of the run refuses it before the list of this checkout's
+# services is read.
+check "build-image.sh in this checkout: web is refused, not an image of its release source" has "$work/build.err" \
+  "web is not an image of release source backend (gateway user-service video-service engagement-service feed-service media-worker drill-vulnerable drill-unsigned drill-no-provenance): nothing is built, pushed or signed under ghcr.io/anhnvcoder/svp-backend/"
 [ ! -e "$work/leg" ] && ok "build-image.sh in this checkout: web: nothing built, no output folder" ||
   fail "build-image.sh in this checkout: web: nothing built, no output folder"
 
 # --- rescan.sh run: a run attests only the releases of the source of its own repository, as the identity of that
-# source's signing workflow. A clone of svp-gitops on disk whose main names a gateway of backend and a web of svp-web;
+# source's signing workflow. A clone of svp-gitops on disk whose main names a gateway of backend and a web of svp-frontend;
 # gh lists no open promote pull request; the fake cosign refuses every signature, so nothing is ever attested.
 rg=$work/rescan-gitops
 gr() {
@@ -996,17 +1024,17 @@ mkdir -p "$rg/envs/stg/images"
 for svc in gateway user-service video-service engagement-service feed-service media-worker; do
   d=
   [ "$svc" != gateway ] || d=$digest_a
-  printf 'image:\n  repository: ghcr.io/anhnvcoder/short-video-platform/%s\n  tag: "%s"\n  digest: "%s"\n' "$svc" \
+  printf 'image:\n  repository: ghcr.io/anhnvcoder/svp-backend/%s\n  tag: "%s"\n  digest: "%s"\n' "$svc" \
     "${d:+0123456789ab}" "$d" >"$rg/envs/stg/images/$svc.yaml"
 done
-printf 'image:\n  repository: ghcr.io/anhnvcoder/svp-web/web\n  tag: "0123456789ab"\n  digest: "%s"\n' "$digest_b" \
+printf 'image:\n  repository: ghcr.io/anhnvcoder/svp-frontend/web\n  tag: "0123456789ab"\n  digest: "%s"\n' "$digest_b" \
   >"$rg/envs/stg/images/web.yaml"
 git init -q --bare "$rg.git"
 gr init -q -b main && gr add -A && gr commit -qm release && gr remote add origin "$rg.git" && gr push -q origin main
-web_run=(GITHUB_REPOSITORY=anhnvcoder/svp-web
-  GITHUB_WORKFLOW_REF=anhnvcoder/svp-web/.github/workflows/images.yml@refs/heads/main)
+web_run=(GITHUB_REPOSITORY=anhnvcoder/svp-frontend
+  GITHUB_WORKFLOW_REF=anhnvcoder/svp-frontend/.github/workflows/images.yml@refs/heads/main)
 backend_rescan=("${backend_run[@]}"
-  GITHUB_WORKFLOW_REF=anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main)
+  GITHUB_WORKFLOW_REF=anhnvcoder/svp-backend/.github/workflows/images.yml@refs/heads/main)
 # rescan_run NAME WANT_RC VAR=VALUE... -- [--source NAME]: rescan.sh run in a made-up job on github with the variables,
 # its output in rescan-NAME.out, its OUT rescan-NAME.
 rescan_run() {
@@ -1033,32 +1061,32 @@ nothing_read() {
 }
 rescan_run "the scheduled rescan of backend" 1 "${backend_rescan[@]}" --
 check "rescan.sh run: backend: the promote pull request of backend asked for" has "$work/gh.log" "--head bot/promote-stg "
-check "rescan.sh run: backend: the web of svp-web left to its source" has "$work/rescan-the scheduled rescan of backend.out" \
-  "skip  web in main of svp-gitops, envs/stg/images/web.yaml: ghcr.io/anhnvcoder/svp-web/web is a release of source web"
+check "rescan.sh run: backend: the web of svp-frontend left to its source" has "$work/rescan-the scheduled rescan of backend.out" \
+  "skip  web in main of svp-gitops, envs/stg/images/web.yaml: ghcr.io/anhnvcoder/svp-frontend/web is a release of source web"
 check "rescan.sh run: backend: the signature of its gateway asked for" has "$work/cosign.log" \
-  "--certificate-identity https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main ghcr.io/anhnvcoder/short-video-platform/gateway@$digest_a"
+  "--certificate-identity https://github.com/anhnvcoder/svp-backend/.github/workflows/images.yml@refs/heads/main ghcr.io/anhnvcoder/svp-backend/gateway@$digest_a"
 check "rescan.sh run: backend: unsigned, so not attested" lacks "$work/cosign.log" "attest"
-rescan_run "svp-web without --source" 1 "${web_run[@]}" --
-check "rescan.sh run: svp-web without --source: names both sources" has "$work/rescan-svp-web without --source.out" \
-  "FAIL  rescan.sh run --source backend in a run of https://github.com/anhnvcoder/svp-web, the repository of release source web: a run attests only the releases of its own source (--source web)"
-nothing_read "svp-web without --source"
+rescan_run "svp-frontend without --source" 1 "${web_run[@]}" --
+check "rescan.sh run: svp-frontend without --source: names both sources" has "$work/rescan-svp-frontend without --source.out" \
+  "FAIL  rescan.sh run --source backend in a run of https://github.com/anhnvcoder/svp-frontend, the repository of release source web: a run attests only the releases of its own source (--source web)"
+nothing_read "svp-frontend without --source"
 rescan_run "backend with --source web" 1 "${backend_rescan[@]}" -- --source web
 check "rescan.sh run: backend with --source web: names both sources" has "$work/rescan-backend with --source web.out" \
-  "FAIL  rescan.sh run --source web in a run of https://github.com/anhnvcoder/short-video-platform, the repository of release source backend"
+  "FAIL  rescan.sh run --source web in a run of https://github.com/anhnvcoder/svp-backend, the repository of release source backend"
 nothing_read "backend with --source web"
-rescan_run "svp-web with --source web, from another workflow" 1 "${web_run[@]}" \
-  GITHUB_WORKFLOW_REF=anhnvcoder/svp-web/.github/workflows/ci.yml@refs/heads/main -- --source web
+rescan_run "svp-frontend with --source web, from another workflow" 1 "${web_run[@]}" \
+  GITHUB_WORKFLOW_REF=anhnvcoder/svp-frontend/.github/workflows/ci.yml@refs/heads/main -- --source web
 check "rescan.sh run: another workflow: names the identity" has \
-  "$work/rescan-svp-web with --source web, from another workflow.out" \
-  "FAIL  this run is https://github.com/anhnvcoder/svp-web/.github/workflows/ci.yml@refs/heads/main, but the releases of source web are attested only as https://github.com/anhnvcoder/svp-web/.github/workflows/images.yml@refs/heads/main"
-nothing_read "svp-web with --source web, from another workflow"
-rescan_run "svp-web with --source web" 1 "${web_run[@]}" -- --source web
-check "rescan.sh run: svp-web: its own promote pull request asked for" has "$work/gh.log" "--head bot/promote-stg-web "
-check "rescan.sh run: svp-web: the gateway of backend left to its source" has "$work/rescan-svp-web with --source web.out" \
-  "skip  gateway in main of svp-gitops, envs/stg/images/gateway.yaml: ghcr.io/anhnvcoder/short-video-platform/gateway is a release of source backend"
-check "rescan.sh run: svp-web: the signature of its web asked for, as its identity" has "$work/cosign.log" \
-  "--certificate-identity https://github.com/anhnvcoder/svp-web/.github/workflows/images.yml@refs/heads/main ghcr.io/anhnvcoder/svp-web/web@$digest_b"
-check "rescan.sh run: svp-web: nothing of backend asked for" lacks "$work/cosign.log" "short-video-platform/"
+  "$work/rescan-svp-frontend with --source web, from another workflow.out" \
+  "FAIL  this run is https://github.com/anhnvcoder/svp-frontend/.github/workflows/ci.yml@refs/heads/main, but the releases of source web are attested only as https://github.com/anhnvcoder/svp-frontend/.github/workflows/images.yml@refs/heads/main"
+nothing_read "svp-frontend with --source web, from another workflow"
+rescan_run "svp-frontend with --source web" 1 "${web_run[@]}" -- --source web
+check "rescan.sh run: svp-frontend: its own promote pull request asked for" has "$work/gh.log" "--head bot/promote-stg-web "
+check "rescan.sh run: svp-frontend: the gateway of backend left to its source" has "$work/rescan-svp-frontend with --source web.out" \
+  "skip  gateway in main of svp-gitops, envs/stg/images/gateway.yaml: ghcr.io/anhnvcoder/svp-backend/gateway is a release of source backend"
+check "rescan.sh run: svp-frontend: the signature of its web asked for, as its identity" has "$work/cosign.log" \
+  "--certificate-identity https://github.com/anhnvcoder/svp-frontend/.github/workflows/images.yml@refs/heads/main ghcr.io/anhnvcoder/svp-frontend/web@$digest_b"
+check "rescan.sh run: svp-frontend: nothing of backend asked for" lacks "$work/cosign.log" "svp-backend/"
 fresh
 rc=0
 on local "$tree/deploy/ci/rescan.sh" run "$work/rescan-local" "$rg" >"$work/rescan-local.out" 2>&1 || rc=$?
@@ -1218,17 +1246,17 @@ grype_report "$work/grype.json" "$critical_npm"
   echo "vulnerabilities:"
   ignore_entry CVE-2026-1111 "$soon" pkg:npm/left-pad@1.0.0
 } >"$webtree/.trivyignore.yaml"
-# web_gate NAME WANT_EXIT: the grype gate on a machine with svp-web's tree as SVP_CODE_ROOT.
+# web_gate NAME WANT_EXIT: the grype gate on a machine with svp-frontend's tree as SVP_CODE_ROOT.
 web_gate() {
   local rc=0
   on local env SVP_CODE_ROOT="$webtree" "$tree/deploy/ci/scan-gate.sh" --grype "web linux/arm64" "$work/grype.json" \
     >"$work/gate.out" 2>"$work/gate.err" || rc=$?
   same "$1 (exit code)" "$2" "$rc"
 }
-web_gate "scan-gate.sh --grype, svp-web's tree: its .trivyignore.yaml covers the match" 0
+web_gate "scan-gate.sh --grype, svp-frontend's tree: its .trivyignore.yaml covers the match" 0
 mv "$webtree/.trivyignore.yaml" "$work/web-trivyignore.yaml"
-web_gate "scan-gate.sh --grype, svp-web's tree without .trivyignore.yaml" 1
-check "scan-gate.sh, svp-web's tree without .trivyignore.yaml: names the file" has "$work/gate.err" \
+web_gate "scan-gate.sh --grype, svp-frontend's tree without .trivyignore.yaml" 1
+check "scan-gate.sh, svp-frontend's tree without .trivyignore.yaml: names the file" has "$work/gate.err" \
   "$webtree has no file .trivyignore.yaml: SVP_CODE_ROOT must be the checkout whose code is built"
 mv "$work/web-trivyignore.yaml" "$webtree/.trivyignore.yaml"
 
@@ -1254,9 +1282,9 @@ g checkout -q -- deploy/ci/rescan.sh
 check "platform-guard.sh: its own root as ROOT is the check without one" on local "$tree/deploy/ci/platform-guard.sh" \
   "$tree/deploy/ci/../.."
 
-# --- platform-guard.sh ROOT, on svp-web's tree: clean as it is; every file it holds is read, wherever it sits, but
+# --- platform-guard.sh ROOT, on svp-frontend's tree: clean as it is; every file it holds is read, wherever it sits, but
 # .github/ (the platform's workflows) and .backend/ (the pinned checkout of this repository, even when not ignored).
-check "platform-guard.sh ROOT: svp-web's tree is clean" on local "$tree/deploy/ci/platform-guard.sh" "$webtree"
+check "platform-guard.sh ROOT: svp-frontend's tree is clean" on local "$tree/deploy/ci/platform-guard.sh" "$webtree"
 mkdir -p "$webtree/e2e" "$webtree/.github/workflows" "$webtree/.backend/deploy/ci"
 printf '#!/usr/bin/env bash\nsha=$GITHUB_SHA\n' >"$webtree/e2e/run.sh"
 gw add e2e/run.sh && gw commit -qm "e2e runner"
@@ -1265,7 +1293,7 @@ echo 'sha: ${{ github.sha }} $GITHUB_SHA' >"$webtree/.github/workflows/ci.yml"
 echo 'echo a=b >>"$GITHUB_OUTPUT"' >"$webtree/.backend/deploy/ci/step.sh"
 rc=0
 on local "$tree/deploy/ci/platform-guard.sh" "$webtree" >"$work/guard.out" 2>&1 || rc=$?
-same "platform-guard.sh ROOT: a match in svp-web's tree exits 1" 1 "$rc"
+same "platform-guard.sh ROOT: a match in svp-frontend's tree exits 1" 1 "$rc"
 check "platform-guard.sh ROOT: names the tracked script's line" has "$work/guard.out" 'e2e/run.sh:2:sha=$GITHUB_SHA'
 check "platform-guard.sh ROOT: names the untracked Makefile's line" has "$work/guard.out" "Makefile:2:"
 check "platform-guard.sh ROOT: .github/ is not read" lacks "$work/guard.out" ".github/"
@@ -1362,17 +1390,19 @@ mkdir -p "$cfg/envs/stg/images" "$cfg/envs/prd/images" "$cfg/base"
 echo "# The base values" >"$cfg/base/README.md"
 for env in stg prd; do
   charts "$env" "$off_rev"
-  for svc in gateway user-service video-service engagement-service feed-service media-worker web; do
-    printf 'image:\n  repository: ghcr.io/anhnvcoder/short-video-platform/%s\n  tag: ""\n  digest: ""\n' "$svc" \
+  for svc in gateway user-service video-service engagement-service feed-service media-worker; do
+    printf 'image:\n  repository: ghcr.io/anhnvcoder/svp-backend/%s\n  tag: ""\n  digest: ""\n' "$svc" \
       >"$cfg/envs/$env/images/$svc.yaml"
   done
+  printf 'image:\n  repository: ghcr.io/anhnvcoder/svp-frontend/web\n  tag: ""\n  digest: ""\n' \
+    >"$cfg/envs/$env/images/web.yaml"
 done
 gc init -q -b main && gc add -A && gc commit -qm init
 gc remote add origin https://github.com/anhnvcoder/svp-gitops.git
 fx=$work/cosign-fixtures
 mkdir -p "$fx"
-image=ghcr.io/anhnvcoder/short-video-platform/web
-subject=https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main
+image=ghcr.io/anhnvcoder/svp-backend/gateway
+subject=https://github.com/anhnvcoder/svp-backend/.github/workflows/images.yml@refs/heads/main
 commit=0123456789abcdef0123456789abcdef01234567
 # envelope: an in-toto statement on stdin as cosign verify-attestation prints it, one line.
 envelope() { jq -c '{payloadType: "application/vnd.in-toto+json", payload: (tojson | @base64)}'; }
@@ -1383,17 +1413,17 @@ jq -n --arg d "${digest_a#sha256:}" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --a
 # provenance [JQ]: the provenance.jsonl CI's predicate would give for $digest_a, changed by the jq filter JQ.
 provenance() {
   jq -n --arg d "${digest_a#sha256:}" --arg b "$subject" --arg c "$commit" '{
-    predicateType: "https://slsa.dev/provenance/v1", subject: [{name: "web", digest: {sha256: $d}}],
+    predicateType: "https://slsa.dev/provenance/v1", subject: [{name: "gateway", digest: {sha256: $d}}],
     predicate: {buildDefinition: {buildType: "https://actions.github.io/buildtypes/workflow/v1",
       externalParameters: {workflow: {ref: "refs/heads/main",
-        repository: "https://github.com/anhnvcoder/short-video-platform", path: ".github/workflows/images.yml"}},
-      resolvedDependencies: [{uri: "git+https://github.com/anhnvcoder/short-video-platform@refs/heads/main",
+        repository: "https://github.com/anhnvcoder/svp-backend", path: ".github/workflows/images.yml"}},
+      resolvedDependencies: [{uri: "git+https://github.com/anhnvcoder/svp-backend@refs/heads/main",
         digest: {gitCommit: $c}}]},
       runDetails: {builder: {id: $b}, metadata: {invocationId: "https://github.com/x/runs/1/attempts/1"}}}}' |
     jq -c "${1:-.}" | envelope >"$fx/slsaprovenance1.jsonl"
 }
 echo "$commit" >"$fx/cert-sha"
-# release NAME WANT_RC [ARGS...]: verify-release.sh --gitops <tree> [ARGS...] web $digest_a on a machine, output in
+# release NAME WANT_RC [ARGS...]: verify-release.sh --gitops <tree> [ARGS...] $image $digest_a on a machine, output in
 # vr.out.
 release() {
   local name=$1 want=$2 rc=0
@@ -1412,7 +1442,7 @@ check "verify-release.sh: provenance off: the ok line names no provenance" lacks
 overlay stg true
 release "on in the stg overlay, the release has no provenance" 1
 check "verify-release.sh: names the missing provenance and the release to build again" has "$work/vr.out" \
-  "has no provenance attestation of https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main, which the policy requires here: a release built before CI attested provenance; release it again (gh workflow run images.yml --repo anhnvcoder/short-video-platform --ref main -f services=web)"
+  "has no provenance attestation of https://github.com/anhnvcoder/svp-backend/.github/workflows/images.yml@refs/heads/main, which the policy requires here: a release built before CI attested provenance; release it again (gh workflow run images.yml --repo anhnvcoder/svp-backend --ref main -f services=gateway)"
 FAKE_COSIGN_DOWN=slsaprovenance1 release "on in the stg overlay, GHCR out of reach for the provenance" 1
 check "verify-release.sh: an unreachable registry is not read as a release from before provenance" has "$work/vr.out" \
   "its provenance attestation could not be verified (Error: GET https://ghcr.io/v2/: dial tcp: i/o timeout); check again, do not build it again"
@@ -1462,8 +1492,8 @@ provenance_case() {
 provenance_case "another builder" '.predicate.runDetails.builder.id = "https://github.com/x/y/.github/workflows/z.yml@refs/heads/main"' \
   "provenance builder.id is https://github.com/x/y/.github/workflows/z.yml@refs/heads/main, not $subject"
 provenance_case "another repository" \
-  '.predicate.buildDefinition.externalParameters.workflow.repository = "https://github.com/fork/short-video-platform"' \
-  "provenance workflow repository is https://github.com/fork/short-video-platform, not https://github.com/anhnvcoder/short-video-platform"
+  '.predicate.buildDefinition.externalParameters.workflow.repository = "https://github.com/fork/svp-backend"' \
+  "provenance workflow repository is https://github.com/fork/svp-backend, not https://github.com/anhnvcoder/svp-backend"
 provenance_case "another ref" '.predicate.buildDefinition.externalParameters.workflow.ref = "refs/heads/feat/x"' \
   "provenance workflow ref is refs/heads/feat/x, not refs/heads/main"
 provenance_case "another digest" '.subject[0].digest.sha256 = "'"${digest_b#sha256:}"'"' \
@@ -1532,12 +1562,15 @@ check "verify-release.sh: an overlay refused: cosign never asked" test ! -s "$wo
 
 # Release sources: each image is verified with the identity of the source whose prefix it is under, at the revision
 # the environment's charts.yaml pins. A commit of the copy from before the table (the policy's values with the
-# identity lines, no files/sources.json) reads as its one source backend.
-web_image=ghcr.io/anhnvcoder/svp-web/web
-web_subject=https://github.com/anhnvcoder/svp-web/.github/workflows/images.yml@refs/heads/main
+# identity lines, no files/sources.json) reads as its one source backend: such commits predate the rename of the
+# repository, so their lines name it as it was then, short-video-platform, which published web too.
+web_image=ghcr.io/anhnvcoder/svp-frontend/web
+web_subject=https://github.com/anhnvcoder/svp-frontend/.github/workflows/images.yml@refs/heads/main
 backend_image=$image
+legacy_image=ghcr.io/anhnvcoder/short-video-platform/web
+legacy_subject=https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main
 gv rm -q -r deploy/helm/svp-policy/files
-awk -v s="$subject" '{ print }
+awk -v s="$legacy_subject" '{ print }
   /^  namespace: / {
     print "  imagePrefix: ghcr.io/anhnvcoder/short-video-platform/"
     print "  issuer: https://token.actions.githubusercontent.com"
@@ -1552,32 +1585,36 @@ same "verify-release.sh: the copy is back on the table of release sources" "" "$
 overlay stg false
 overlay prd false
 image=$web_image
-release "the web source's image, signed by svp-web" 0 --env stg
-check "verify-release.sh: the web source's image is verified with svp-web's identity" has "$work/cosign.log" \
+release "the web source's image, signed by svp-frontend" 0 --env stg
+check "verify-release.sh: the web source's image is verified with svp-frontend's identity" has "$work/cosign.log" \
   "verify --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity $web_subject $web_image@$digest_a"
 check "verify-release.sh: the web source's image is never verified with the backend's identity" lacks "$work/cosign.log" \
   "--certificate-identity $subject"
 overlay stg true
 provenance '.predicate.runDetails.builder.id = "'"$web_subject"'"
-  | .predicate.buildDefinition.externalParameters.workflow.repository = "https://github.com/anhnvcoder/svp-web"'
-release "the web source's image with svp-web's provenance, on in stg" 0 --env stg
-check "verify-release.sh: the ok line names svp-web's identity" has "$work/vr.out" "provenance of ${commit:0:12} by $web_subject"
+  | .predicate.buildDefinition.externalParameters.workflow.repository = "https://github.com/anhnvcoder/svp-frontend"'
+release "the web source's image with svp-frontend's provenance, on in stg" 0 --env stg
+check "verify-release.sh: the ok line names svp-frontend's identity" has "$work/vr.out" "provenance of ${commit:0:12} by $web_subject"
 provenance
 release "the web source's image with the backend's provenance" 1 --env stg
 check "verify-release.sh: the backend's builder is refused for the web source" has "$work/vr.out" \
   "provenance builder.id is $subject, not $web_subject"
 rm -f "$fx/slsaprovenance1.jsonl"
 overlay stg false
-image=ghcr.io/anhnvcoder/svp-web/gateway
+image=ghcr.io/anhnvcoder/svp-frontend/gateway
 release "the gateway under the web source's prefix" 1 --env stg
 check "verify-release.sh: a service the source does not publish: names what is admitted" has "$work/vr.out" \
-  "ghcr.io/anhnvcoder/svp-web/gateway is not a release of gateway that the policy of stg admits (at ${off_rev:0:12}: ghcr.io/anhnvcoder/short-video-platform/gateway)"
+  "ghcr.io/anhnvcoder/svp-frontend/gateway is not a release of gateway that the policy of stg admits (at ${off_rev:0:12}: ghcr.io/anhnvcoder/svp-backend/gateway or ghcr.io/anhnvcoder/short-video-platform/gateway)"
 check "verify-release.sh: a service the source does not publish: cosign never asked" test ! -s "$work/cosign.log"
 charts stg "$legacy_rev"
-image=$backend_image
+image=$legacy_image
 release "the backend's web at a commit before the table" 0 --env stg
 check "verify-release.sh: before the table, the identity of the values' lines" has "$work/cosign.log" \
-  "--certificate-identity $subject $backend_image@$digest_a"
+  "--certificate-identity $legacy_subject $legacy_image@$digest_a"
+image=$backend_image
+release "the backend's gateway under its new prefix at a commit before the table" 1 --env stg
+check "verify-release.sh: before the table, the new prefix is not admitted" has "$work/vr.out" \
+  "$backend_image is not a release of gateway that the policy of stg admits (at ${legacy_rev:0:12}: ghcr.io/anhnvcoder/short-video-platform/gateway)"
 image=$web_image
 release "the web source's image at a commit before the table" 1 --env stg
 check "verify-release.sh: before the table, the web source is not admitted" has "$work/vr.out" \
@@ -1592,15 +1629,24 @@ charts prd "$off_rev"
 image=$backend_image
 rm "$cfg/envs/stg/svp-policy.yaml" "$cfg/envs/prd/svp-policy.yaml"
 
+# The retired sources (no promoter) are read as every other: their identity, and the source of a repository under
+# their prefix.
+# shellcheck disable=SC2016 # expanded by the inner shell
+got=$(on local bash -c '. "$1/deploy/ci/common.sh" && sign_identity oldweb && echo "$sign_subject" &&
+  source_of_repository ghcr.io/anhnvcoder/short-video-platform/gateway &&
+  release_source_of web ghcr.io/anhnvcoder/svp-web/web | jq -r .name && release_repositories web' _ "$vr")
+same "common.sh: the retired sources are read as the others" \
+  "https://github.com/anhnvcoder/svp-web/.github/workflows/images.yml@refs/heads/main"$'\n'"oldbackend"$'\n'"oldweb"$'\n'"ghcr.io/anhnvcoder/svp-frontend/web or ghcr.io/anhnvcoder/svp-web/web" \
+  "$got"
 # The functions of common.sh that name no source keep to source backend; a repository's source is read by its prefix;
 # oci_labels names the repository of its source and the commit of code_root (SVP_CODE_ROOT, this checkout without).
 # shellcheck disable=SC2016 # expanded by the inner shell
 got=$(on local bash -c '. "$1/deploy/ci/common.sh" && sign_identity && echo "$sign_subject" && sign_identity web &&
   echo "$sign_subject" && provenance_source && echo "$provenance_repository $provenance_ref" &&
-  source_of_repository ghcr.io/anhnvcoder/short-video-platform/api/gateway && oci_labels | head -n 2 &&
+  source_of_repository ghcr.io/anhnvcoder/svp-backend/api/gateway && oci_labels | head -n 2 &&
   oci_labels web | head -n 1' _ "$vr")
 same "common.sh: the identity of sources backend and web, and labels of this checkout" \
-  "$subject"$'\n'"$web_subject"$'\n'"https://github.com/anhnvcoder/short-video-platform refs/heads/main"$'\n'"backend"$'\n'"org.opencontainers.image.source=https://github.com/anhnvcoder/short-video-platform"$'\n'"org.opencontainers.image.revision=$(gv rev-parse HEAD)"$'\n'"org.opencontainers.image.source=https://github.com/anhnvcoder/svp-web" \
+  "$subject"$'\n'"$web_subject"$'\n'"https://github.com/anhnvcoder/svp-backend refs/heads/main"$'\n'"backend"$'\n'"org.opencontainers.image.source=https://github.com/anhnvcoder/svp-backend"$'\n'"org.opencontainers.image.revision=$(gv rev-parse HEAD)"$'\n'"org.opencontainers.image.source=https://github.com/anhnvcoder/svp-frontend" \
   "$got"
 # shellcheck disable=SC2016
 got=$(on local env SVP_CODE_ROOT="$cfg" bash -c '. "$1/deploy/ci/common.sh" && echo "$script_root" &&
@@ -1621,7 +1667,7 @@ same "common.sh: drill_images are the drillImages of source backend, which the p
 # other file nothing. The gateway is released in both environments.
 overlay stg false
 for env in stg prd; do
-  printf 'image:\n  repository: ghcr.io/anhnvcoder/short-video-platform/gateway\n  tag: "%s"\n  digest: "%s"\n' \
+  printf 'image:\n  repository: ghcr.io/anhnvcoder/svp-backend/gateway\n  tag: "%s"\n  digest: "%s"\n' \
     "${off_rev:0:12}" "$digest_a" >"$cfg/envs/$env/images/gateway.yaml"
 done
 gc add -A && gc commit -qm "the gateway released"
@@ -1645,11 +1691,11 @@ values_check "provenance turned on in stg, its gateway has none" 1
 check "values-check.sh: provenance on in stg: says stg's policy changed" has "$work/vc.out" \
   "note  what the releases of stg must carry may have changed since ${pr_base:0:12} (envs/stg/svp-policy.yaml)"
 check "values-check.sh: provenance on in stg: names the release without provenance" has "$work/vc.out" \
-  "ghcr.io/anhnvcoder/short-video-platform/gateway@$digest_a has no provenance attestation"
+  "ghcr.io/anhnvcoder/svp-backend/gateway@$digest_a has no provenance attestation"
 check "values-check.sh: provenance on in stg: every service of stg is read" has "$work/vc.out" \
   "ok    envs/stg/images/web.yaml: no digest"
 check "values-check.sh: provenance on in stg: prd is not read" lacks "$work/vc.out" "envs/prd/"
-hint="gh workflow run images.yml --repo anhnvcoder/short-video-platform --ref main -f rescan=true"
+hint="gh workflow run images.yml --repo anhnvcoder/svp-backend --ref main -f rescan=true"
 check "values-check.sh: the dispatch in the log, naming the code repository" has "$work/vc.out" "  $hint"
 provenance
 values_check "provenance turned on in stg, the release has it" 0
@@ -1665,7 +1711,7 @@ charts prd "$off_rev"
 gc commit -qam "prd back"
 gc update-ref refs/heads/main HEAD
 pr_base=$(gc rev-parse HEAD)
-printf 'image:\n  repository: ghcr.io/anhnvcoder/short-video-platform/web\n  tag: "%s"\n  digest: "%s"\n' \
+printf 'image:\n  repository: ghcr.io/anhnvcoder/svp-frontend/web\n  tag: "%s"\n  digest: "%s"\n' \
   "${off_rev:0:12}" "$digest_a" >"$cfg/envs/stg/images/web.yaml"
 gc commit -qam "web released in stg"
 values_check "an image file changed: only it is checked" 0
@@ -1675,7 +1721,7 @@ if on github "$vr/deploy/ci/values-check.sh" --gitops "$cfg" "" >/dev/null 2>"$w
   fail "values-check.sh: no base, unsigned releases fail"
 else ok "values-check.sh: no base, unsigned releases fail"; fi
 check "values-check.sh: cosign is asked for the policy's issuer and subject" has "$work/cosign.log" \
-  "verify --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main ghcr.io/anhnvcoder/short-video-platform/gateway@$digest_a"
+  "verify --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity https://github.com/anhnvcoder/svp-backend/.github/workflows/images.yml@refs/heads/main ghcr.io/anhnvcoder/svp-backend/gateway@$digest_a"
 same "values-check.sh: the dispatch in the summary" "values-check failed: refresh the vuln attestations with \`$hint\`; a missing provenance needs a new release (above)" "$(cat "$work/summary")"
 
 # --- plan.sh on a push to main that builds no image (the base: the newest successful push run): promote_charts when
@@ -1703,44 +1749,87 @@ echo "exporters: {}" >>"$vr/deploy/observability/otelcol/k8s-config.yaml"
 gv commit -qam "the collector's config"
 plan_charts "a push that changes the file a chart's link points to promotes the charts" true
 
-# --- gitops_no_provenance (deploy/ci/verify/gitops.sh) in the copy: the newest web release in the history of web.yaml
-# that cosign finds signed without provenance. A release built from a commit holding provenance-predicate.sh is passed
-# over without asking cosign; an error of cosign is never "no provenance".
-mkdir -p "$vr/deploy/k8s/values/services"
-web_release() {
-  printf 'image:\n  repository: ghcr.io/anhnvcoder/short-video-platform/web\n  tag: "%s"\n  digest: "%s"\n' "$1" "$2" \
-    >"$vr/deploy/k8s/values/services/web.yaml"
-  gv add deploy/k8s/values/services/web.yaml && gv commit -qm "release web $1"
-}
-# A commit this history does not hold, so not one known to hold the provenance script: cosign is asked.
-web_release 0123456789ab "$digest_b"
-old_values=$(gv rev-parse HEAD)
-web_release "$(gv rev-parse --short=12 HEAD)" "$digest_a"
-# no_provenance NAME WANT_RC [VAR=VALUE...]: gitops_no_provenance with the variables, stdout in np.out, stderr in np.err.
-no_provenance() {
-  local name=$1 want=$2 rc=0
-  shift 2
-  fresh
+# --- The supply chain step of deploy/ci/verify/gitops.sh in the copy. gitops_supplychain hands the drill the newest
+# drill-no-provenance for case l, and none (never empty, which the drill reads as "look it up yourself") when GHCR did
+# not give it, the step then failing; a stub gitops-sourcemaps.sh answers for GHCR and a fake make records its
+# arguments. gitops_stale has its tests in deploy/ci/verify-collect-test.sh.
+sc=$work/supplychain
+mkdir -p "$sc/bin"
+cat >"$sc/gitops-sourcemaps.sh" <<'STUB'
+#!/usr/bin/env bash
+# Test stub: answers newest IMAGE and web-amd64 the way GHCR would, failing for the image in FAKE_GHCR_MISSING.
+case $1 in
+web-amd64) echo "ghcr.io/anhnvcoder/svp-frontend/web@sha256:$(printf 'c%.0s' $(seq 64))" ;;
+newest)
+  [ "$2" != "${FAKE_GHCR_MISSING:-}" ] || { echo "ghcr.io/anhnvcoder/svp-backend/$2 is not on GHCR" >&2; exit 1; }
+  echo "ghcr.io/anhnvcoder/svp-backend/$2@sha256:$(printf 'd%.0s' $(seq 64))"
+  ;;
+esac
+STUB
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" >"%s"\n' "$sc/make.args" >"$sc/bin/make"
+chmod 755 "$sc/gitops-sourcemaps.sh" "$sc/bin/make"
+dnp=ghcr.io/anhnvcoder/svp-backend/drill-no-provenance@sha256:$(printf 'd%.0s' $(seq 64))
+# supplychain WANT_RC [VAR=VALUE...]: gitops_supplychain with the stubs, stdout and stderr in sc.out.
+supplychain() {
+  local want=$1 rc=0
+  shift
+  rm -f "$sc/make.args"
   # The file as $1: with it as $0, it would take itself for run as a script.
-  on local env repo="$vr" here="$vr/deploy/ci" "$@" "$BASH" -c '. "$1"; gitops_no_provenance' bash \
-    "$vr/deploy/ci/verify/gitops.sh" >"$work/np.out" 2>"$work/np.err" || rc=$?
-  same "gitops_no_provenance: $name (exit $want)" "$want" "$rc"
+  on local env repo="$vr" here="$sc" "$@" "$BASH" -c 'PATH="$2:$PATH"; . "$1"; gitops_supplychain' bash \
+    "$vr/deploy/ci/verify/gitops.sh" "$sc/bin" >"$work/sc.out" 2>&1 || rc=$?
+  same "gitops_supplychain: exit $want" "$want" "$rc"
 }
-rm -f "$fx/slsaprovenance1.jsonl"
-no_provenance "the older release, signed without provenance" 0 FAKE_COSIGN_DIR="$fx"
-same "gitops_no_provenance: names it and the values that name it" \
-  "ghcr.io/anhnvcoder/short-video-platform/web@$digest_b (values of ${old_values:0:12})" "$(cat "$work/np.out")"
-check "gitops_no_provenance: the release built with the provenance script: cosign never asked" lacks \
-  "$work/cosign.log" "web@$digest_a"
-provenance
-no_provenance "every release asked has provenance" 1 FAKE_COSIGN_DIR="$fx"
-check "gitops_no_provenance: none: says so" has "$work/np.err" \
-  "no signed web release without provenance in the history of deploy/k8s/values/services/web.yaml"
-no_provenance "cosign answers with an error" 2
-check "gitops_no_provenance: an error: names the release" has "$work/np.err" \
-  "web@$digest_b: cosign could not tell whether it carries a provenance attestation"
-check "gitops_no_provenance: an error: cosign's own line" has "$work/np.err" "Error: no signatures found"
-same "gitops_no_provenance: an error: nothing on stdout" "" "$(cat "$work/np.out")"
+supplychain 0
+check "gitops_supplychain: case l gets the newest drill-no-provenance" has "$sc/make.args" \
+  "SUPPLYCHAIN_NO_PROVENANCE=$dnp"
+supplychain 1 FAKE_GHCR_MISSING=drill-no-provenance
+check "gitops_supplychain: drill-no-provenance not on GHCR: case l left out with none" has "$sc/make.args" \
+  "SUPPLYCHAIN_NO_PROVENANCE=none"
+check "gitops_supplychain: drill-no-provenance not on GHCR: the step fails naming it" has "$work/sc.out" \
+  "without what GHCR did not give (above): drill-no-provenance;"
+
+# --- web_clone of deploy/k8s/lib.sh without WEB_REF: the commit of the web release stg runs, when that release is
+# <imagePrefix>web of a source of the table: web, and oldweb (the same repository before its rename, so its tags are
+# commits of it too). A release under another prefix is refused before anything is cloned. In a copy of the throwaway
+# checkout; the clone of svp-frontend comes from a repository on disk (url.insteadOf of a git config of its own).
+wc=$work/webclone
+cp -R "$tree" "$wc"
+wg=$work/webclone-gitops
+wgit() {
+  GIT_DIR=$wg/.git GIT_WORK_TREE=$wg GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=test \
+    -c user.email=test@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"
+}
+mkdir -p "$wg/envs/stg/images"
+wgit init -q -b main && wgit remote add origin https://github.com/anhnvcoder/svp-gitops.git
+fe=$work/frontend
+GIT_DIR=$fe/.git GIT_WORK_TREE=$fe GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git init -q -b main "$fe"
+GIT_DIR=$fe/.git GIT_WORK_TREE=$fe GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=test \
+  -c user.email=test@example.invalid -c commit.gpgsign=false commit -q --allow-empty -m web
+fe_head=$(GIT_DIR=$fe/.git git rev-parse HEAD)
+printf '[url "%s"]\n\tinsteadOf = https://github.com/anhnvcoder/svp-frontend.git\n' "$fe/.git" >"$work/webclone.gitconfig"
+# web_clone_case NAME WANT_RC REPOSITORY: web_clone with envs/stg/images/web.yaml naming REPOSITORY at the commit of
+# $fe, its output in wc.out; the clone is removed first.
+web_clone_case() {
+  local rc=0
+  rm -rf "$wc/.web"
+  printf 'image:\n  repository: %s\n  tag: "%s"\n  digest: "%s"\n' "$3" "${fe_head:0:12}" "$digest_a" \
+    >"$wg/envs/stg/images/web.yaml"
+  # shellcheck disable=SC2016 # expanded by the inner shell
+  on local env GIT_CONFIG_GLOBAL="$work/webclone.gitconfig" SVP_GITOPS_DIR="$wg" \
+    bash -c '. "$1/deploy/k8s/lib.sh" && web_clone' _ "$wc" >"$work/wc.out" 2>&1 || rc=$?
+  same "web_clone: $1 (exit $2)" "$2" "$rc"
+}
+web_clone_case "stg runs a release of source web" 0 ghcr.io/anhnvcoder/svp-frontend/web
+check "web_clone: a release of web: its commit checked out" has "$work/wc.out" \
+  "svp-frontend at ${fe_head:0:12} (${fe_head:0:12}) in .web/svp-frontend"
+web_clone_case "stg runs a release of the retired source oldweb" 0 ghcr.io/anhnvcoder/svp-web/web
+check "web_clone: a release of oldweb: its commit checked out" has "$work/wc.out" \
+  "svp-frontend at ${fe_head:0:12} (${fe_head:0:12}) in .web/svp-frontend"
+web_clone_case "stg runs web under a prefix no source publishes it under" 1 ghcr.io/anhnvcoder/svp-backend/web
+check "web_clone: under another prefix: names the admitted repositories" has "$work/wc.out" \
+  "staging runs web from ghcr.io/anhnvcoder/svp-backend/web (envs/stg/images/web.yaml), not a release of a source that publishes web (ghcr.io/anhnvcoder/svp-frontend/web or ghcr.io/anhnvcoder/svp-web/web): set WEB_REF"
+[ ! -e "$wc/.web" ] && ok "web_clone: under another prefix: nothing cloned" ||
+  fail "web_clone: under another prefix: nothing cloned"
 
 if ((failures)); then
   echo "$failures check(s) failed" >&2

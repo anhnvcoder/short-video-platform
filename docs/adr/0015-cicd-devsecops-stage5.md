@@ -420,7 +420,7 @@ workflow quyết. Các job:
   Tag trên GHCR **đổi được** (ai có `packages: write` đẩy lại cùng tag), nên mọi chỗ triển khai trỏ **digest**:
   `image.digest` trong values (mục 9), Kyverno từ chối image không có digest (mục 8). Tag chỉ để người đọc.
 - **Label OCI trên config** (`docker buildx build --label`): `org.opencontainers.image.source` =
-  `https://github.com/anhnvcoder/short-video-platform`, `org.opencontainers.image.revision` = SHA 40 hex,
+  `https://github.com/anhnvcoder/svp-backend`, `org.opencontainers.image.revision` = SHA 40 hex,
   `org.opencontainers.image.created` = giờ commit (UTC, RFC 3339): cùng commit cho cùng label, không đổi theo giờ build.
   Index mang ba annotation cùng giá trị. GHCR liên kết package với repo khi label `org.opencontainers.image.source` có từ
   lần publish đầu ("A package only inherits the access permissions of a linked repository automatically if you link the
@@ -545,7 +545,7 @@ workflow quyết. Các job:
     chưa có test (issue kyverno/kyverno#15557 còn mở).
 - **Identity ký** (Kyverno và `cosign verify` kiểm đúng hai giá trị này):
   - issuer `https://token.actions.githubusercontent.com`;
-  - subject `https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main` (SAN của
+  - subject `https://github.com/anhnvcoder/svp-backend/.github/workflows/images.yml@refs/heads/main` (SAN của
     chứng chỉ Fulcio là `server_url + job_workflow_ref`, Build Signer URI, `docs/oid-info.md` của Fulcio). Mọi trigger của
     `images.yml` trên `main` (push, lịch, dispatch) có cùng subject; lượt của PR không có `id-token: write`, và lượt của
     nhánh khác có subject khác nên Kyverno từ chối.
@@ -561,9 +561,9 @@ workflow quyết. Các job:
   ```json
   {
     "invocation": {
-      "uri": "https://github.com/anhnvcoder/short-video-platform/actions/runs/<run_id>/attempts/<attempt>",
+      "uri": "https://github.com/anhnvcoder/svp-backend/actions/runs/<run_id>/attempts/<attempt>",
       "event_id": "<run_id>",
-      "builder.id": "https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main",
+      "builder.id": "https://github.com/anhnvcoder/svp-backend/.github/workflows/images.yml@refs/heads/main",
       "parameters": null
     },
     "scanner": {
@@ -738,7 +738,7 @@ workflow quyết. Các job:
           keyless:
             identities:
               - issuer: https://token.actions.githubusercontent.com
-                subject: https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main
+                subject: https://github.com/anhnvcoder/svp-backend/.github/workflows/images.yml@refs/heads/main
     attestations:
       - name: vuln
         intoto:
@@ -931,7 +931,7 @@ workflow quyết. Các job:
   - **Đã đo trên cluster GitOps (2026-10-29, `main`):** phát hành `user-service` (PR #29 merge 02:49:25Z): sync bắt đầu +120 s,
     pod Ready +139 s (phần lớn là chờ Argo CD poll git: `timeout.reconciliation` 60 s, ADR-0014 §12 ghi tệ nhất ~120 s; +120 s nằm ở cận tệ nhất đó), Job migrate tạo đúng
     trong sync đó, 0 restart; source map của image CI đạt. Mốc push lấy từ `merged_at` của PR promote vì Events API trễ. Lượt
-    [40801610039](https://github.com/anhnvcoder/short-video-platform/actions/runs/40801610039); chi tiết và tiêu chí ở D5, D26
+    [40801610039](https://github.com/anhnvcoder/svp-backend/actions/runs/40801610039); chi tiết và tiêu chí ở D5, D26
     của [ADR-0021](0021-deferred-verification-stage6b.md).
 - **Rollback:** PR `git revert` commit phát hành (hay sửa values về digest cũ), như mọi PR. Đóng PR cuộn đang mở nếu nó
   còn mang bản bị rollback (quy tắc chọn ở trên chỉ đọc nhánh bot khi PR còn mở). `values-check` đỏ vì attestation của

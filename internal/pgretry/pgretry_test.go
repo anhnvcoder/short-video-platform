@@ -11,8 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/anhnvcoder/short-video-platform/internal/pgretry"
-	"github.com/anhnvcoder/short-video-platform/internal/pgretry/pgretrytest"
+	"github.com/anhnvcoder/svp-backend/internal/pgretry"
+	"github.com/anhnvcoder/svp-backend/internal/pgretry/pgretrytest"
 )
 
 // connectErr returns the error pgconn gives for a connection attempt to addr.

@@ -23,13 +23,13 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	eventv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/event/v1"
-	mediav1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/media/v1"
-	videov1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/video/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
-	"github.com/anhnvcoder/short-video-platform/internal/kafkax"
-	"github.com/anhnvcoder/short-video-platform/internal/objstore"
-	"github.com/anhnvcoder/short-video-platform/services/media-worker/internal/transcode"
+	eventv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/event/v1"
+	mediav1 "github.com/anhnvcoder/svp-backend/gen/go/svp/media/v1"
+	videov1 "github.com/anhnvcoder/svp-backend/gen/go/svp/video/v1"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
+	"github.com/anhnvcoder/svp-backend/internal/kafkax"
+	"github.com/anhnvcoder/svp-backend/internal/objstore"
+	"github.com/anhnvcoder/svp-backend/services/media-worker/internal/transcode"
 )
 
 // fakeStore keeps objects in memory and follows objstore's error contract, Create's

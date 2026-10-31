@@ -59,8 +59,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	eventv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/event/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
+	eventv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/event/v1"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
 )
 
 // Event is a topic's wrapper message, such as svp.video.v1.VideoEvent: the envelope in field 1,

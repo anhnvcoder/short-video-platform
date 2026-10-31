@@ -7,8 +7,8 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 
-	"github.com/anhnvcoder/short-video-platform/internal/pgtest"
-	"github.com/anhnvcoder/short-video-platform/services/video-service/migrations"
+	"github.com/anhnvcoder/svp-backend/internal/pgtest"
+	"github.com/anhnvcoder/svp-backend/services/video-service/migrations"
 )
 
 // tables returns which of videos and outbox exist.

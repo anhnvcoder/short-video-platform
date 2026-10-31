@@ -4,7 +4,7 @@
 # Installed by deploy/k8s/install.sh as wave 7 of argocd/apps/components.json of svp-gitops, once every dependency runs.
 
 image:
-  # GitOps path: ghcr.io/anhnvcoder/short-video-platform/<service>, from the release's values file. Dev path: `make
+  # GitOps path: ghcr.io/anhnvcoder/svp-backend/<service>, from the release's values file. Dev path: `make
   # k8s-up` passes k3d-svp-registry:5111/svp/<service>, the local registry under the name the nodes resolve on network
   # k3d-svp.
   repository: ""

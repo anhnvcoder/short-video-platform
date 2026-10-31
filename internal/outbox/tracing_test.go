@@ -20,7 +20,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
 )
 
 func traceTelemetry(t *testing.T) (*tracetest.SpanRecorder, *sdkmetric.ManualReader) {

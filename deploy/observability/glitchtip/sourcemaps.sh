@@ -37,7 +37,7 @@
 #      say it was sent; the check that the stack maps is e2e/glitchtip.e2e.ts (SVP_E2E_GLITCHTIP=1).
 # The temporary directory and the port-forward go away when the script ends, however it ends.
 #
-# Usage: sourcemaps.sh compose|k3d [MAPS_DIR] (run from the Makefile of svp-web, make sourcemaps or make
+# Usage: sourcemaps.sh compose|k3d [MAPS_DIR] (run from the Makefile of svp-frontend, make sourcemaps or make
 # k8s-sourcemaps, which puts the Node and pnpm of its clone first on PATH).
 set -euo pipefail
 

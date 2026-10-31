@@ -18,12 +18,12 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	engagementv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/engagement/v1"
-	userv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1"
-	videov1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/video/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/callerid"
-	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
-	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/httpx"
+	engagementv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/engagement/v1"
+	userv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/user/v1"
+	videov1 "github.com/anhnvcoder/svp-backend/gen/go/svp/video/v1"
+	"github.com/anhnvcoder/svp-backend/internal/callerid"
+	"github.com/anhnvcoder/svp-backend/internal/grpcerr"
+	"github.com/anhnvcoder/svp-backend/services/gateway/internal/httpx"
 )
 
 func TestRegisterWithHandle(t *testing.T) {

@@ -11,9 +11,9 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 
-	"github.com/anhnvcoder/short-video-platform/internal/dbmigrate"
-	"github.com/anhnvcoder/short-video-platform/internal/pgtest"
-	"github.com/anhnvcoder/short-video-platform/services/user-service/migrations"
+	"github.com/anhnvcoder/svp-backend/internal/dbmigrate"
+	"github.com/anhnvcoder/svp-backend/internal/pgtest"
+	"github.com/anhnvcoder/svp-backend/services/user-service/migrations"
 )
 
 // upTo returns the migrations up to and including version, named as goose expects.

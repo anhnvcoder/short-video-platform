@@ -65,23 +65,19 @@
 #   drill-k8s-supplychain  make drill-k8s-supplychain with the images it needs, read from GHCR without credentials
 #                          (deploy/ci/gitops-sourcemaps.sh): the linux/amd64 manifest of the web release the cluster runs
 #                          as the unsigned image (no signature or attestation names it, they name its index), the newest
-#                          drill-vulnerable, and the newest drill-unsigned for when Kyverno admits the first. An image
-#                          that cannot be read is left out (its case SKIPs) and the step fails after the drill. For case
-#                          l (a release without build provenance) the newest web release in the history of this
-#                          repository, where the releases lived before svp-gitops, that cosign finds signed without a
-#                          provenance attestation (gitops_no_provenance); none found and case l SKIPs, which fails
-#                          nothing, while a release
-#                          cosign cannot answer for is left out like the images above. Case l passes only when that
-#                          release's vuln attestation is within 72 hours: dispatch the rescan the drill names
-#                          (images.yml -f rescan=true -f values_ref=<a commit whose values name it>) less than 72 hours
-#                          before this run. Case c likewise needs drill-vulnerable built within 72 hours
-#                          (images.yml -f drill=true). Nobody dispatches either before a scheduled run, so there
-#                          gitops_stale leaves out the image of c or l whose vuln attestation is past the policy's
-#                          maximum age (its case SKIPs, failing nothing), with a NOTE line naming the case, its age and
-#                          that dispatch; every other case must pass as on a dispatch, which keeps both and fails them.
+#                          drill-vulnerable, the newest drill-unsigned for when Kyverno admits the first, and for case l
+#                          (signed and attested vuln, without build provenance) the newest drill-no-provenance. An image
+#                          that cannot be read is left out (its case SKIPs) and the step fails after the drill. Cases c
+#                          and l pass only when their drill image's vuln attestation is within 72 hours: dispatch
+#                          images.yml -f drill=true less than 72 hours before this run (no image file of svp-gitops
+#                          names a drill image, so the daily rescan never attests one again). Nobody dispatches it
+#                          before a scheduled run, so there gitops_stale leaves out the image of c or l whose vuln
+#                          attestation is past the policy's maximum age (its case SKIPs, failing nothing), with a NOTE
+#                          line naming the case, its age and that dispatch; every other case must pass as on a
+#                          dispatch, which keeps both and fails them.
 #                          Case m (the release sources apart) needs no image of its own: it moves the releases the
 #                          cluster runs and the image of case l under the other source's prefix, and SKIPs its
-#                          identity part until a release of svp-web runs here
+#                          identity part until a release of svp-frontend runs here
 #   gitops-sourcemaps      make k8s-web-sourcemaps SOURCEMAPS_DIR=<maps/ the step before found>, which checks them
 #                          against the chunks the web serves before the upload; fails with the reason when that step
 #                          failed or left nothing. When it found none on a branch other than main (status skipped: the
@@ -94,7 +90,7 @@ build=k8s-gitops-up
 job_minutes_default=330
 k3d=1
 # The web's e2e tests and the upload of its source maps (the Sentry CLI of its packages) run the code of the web
-# client: the clone of svp-web (verify-run.sh), at web_ref of the dispatch or the commit of the web release staging
+# client: the clone of svp-frontend (verify-run.sh), at web_ref of the dispatch or the commit of the web release staging
 # runs, the release the cluster runs.
 web=1
 
@@ -252,63 +248,13 @@ gitops_external_secrets() {
   echo "ok    $(grep -c . <<<"$want") ExternalSecrets Ready, each Secret with its type and keys"
 }
 
-# gitops_no_provenance: prints REPOSITORY@DIGEST (values of <commit>) of the newest web release named in the history of
-# this repository's deploy/k8s/values/services/web.yaml (from HEAD), where the releases were promoted before svp-gitops
-# held them (every release svp-gitops names has a provenance attestation), that carries a signature of images.yml on
-# main and no provenance attestation of it, read anonymously with cosign. Those releases are all of release source
-# backend, built by this repository, so they are read with its identity. Every release since CI attests provenance has
-# one, so the search passes over, without asking GHCR, a release whose tag (the commit it was built from) already holds
-# deploy/ci/provenance-predicate.sh: it stays a couple of cosign calls however many releases came since. Status 1, the
-# reason on stderr, when the history has none (case l SKIPs); 2 when cosign could not answer for a release (the registry
-# or Sigstore out of reach), so an error is never read as "no provenance".
-gitops_no_provenance() (
-  # shellcheck source=deploy/ci/common.sh
-  . "$here/common.sh" || exit 1
-  sign_identity backend
-  file=deploy/k8s/values/services/web.yaml
-  seen=" "
-  for c in $(git -C "$repo" log --format=%H -- "$file"); do
-    content=$(git -C "$repo" show "$c:$file" 2>/dev/null) || continue
-    digest=$(values_field digest <<<"$content" 2>/dev/null) &&
-      image_repo=$(values_field repository <<<"$content" 2>/dev/null) || continue
-    # Unreadable, the tag only costs a cosign call.
-    tag=$(values_field tag <<<"$content" 2>/dev/null) || tag=
-    [ -n "$digest" ] && [ "$image_repo" = "$ghcr_prefix/web" ] || continue
-    case $seen in *" $digest "*) continue ;; esac
-    seen="$seen$digest "
-    if [ -n "$tag" ] && git -C "$repo" cat-file -e "$tag^{commit}:deploy/ci/provenance-predicate.sh" 2>/dev/null; then
-      continue
-    fi
-    rc=0
-    provenance_absent "$sign_issuer" "$sign_subject" "$image_repo@$digest" || rc=$?
-    case $rc in
-    1) continue ;;
-    0)
-      if ! verify_signature "$image_repo" "$digest"; then
-        echo "$image_repo@$digest has no provenance, but cosign verifies no signature of it (above)" >&2
-        exit 2
-      fi
-      echo "$image_repo@$digest (values of ${c:0:12})"
-      exit 0
-      ;;
-    *)
-      echo "$image_repo@$digest: cosign could not tell whether it carries a provenance attestation (above)" >&2
-      exit 2
-      ;;
-    esac
-  done
-  echo "no signed web release without provenance in the history of $file" >&2
-  exit 1
-)
-
-# gitops_stale CASE IMAGE [VALUES_COMMIT]: status 0, after printing a NOTE line that names the case, the age and the
-# dispatch that makes it pass again, when the vuln attestation of IMAGE (REPOSITORY@DIGEST) was scanned longer ago than
+# gitops_stale CASE IMAGE: status 0, after printing a NOTE line that names the case, the age and the dispatch that
+# makes it pass again (a new build of the drill images), when the vuln attestation of IMAGE (REPOSITORY@DIGEST) was scanned longer ago than
 # the policy's maximum age (imageVerification.maxAttestationAge of chart svp-policy) less an hour, read as
 # drill-k8s-supplychain reads it: the oldest scanFinishedOn of the attestations cosign verifies, anonymously, with the
-# identity of the release source whose prefix IMAGE is under. CASE c is
-# drill-vulnerable, which only a new build of the drill images scans again; CASE l is the release without provenance,
-# rescanned with VALUES_COMMIT as values_ref. Status 1 otherwise, also when cosign or the time cannot be read: the drill then reads it
-# again and fails the case with what it got.
+# identity of the release source whose prefix IMAGE is under. CASE c is drill-vulnerable, CASE l drill-no-provenance:
+# only a new build of the drill images scans them again. Status 1 otherwise, also when cosign or the time cannot be
+# read: the drill then reads it again and fails the case with what it got.
 gitops_stale() (
   # shellcheck source=deploy/ci/common.sh
   . "$here/common.sh" || exit 1
@@ -329,12 +275,7 @@ gitops_stale() (
   age=$(jq -nr --arg t "$scanned" 'now - ($t | fromdateiso8601) | floor') && [[ $age =~ ^[0-9]+$ ]] || exit 1
   # An hour short of the maximum: the drill and Kyverno read the age again minutes later, after the cases before c.
   [ "$age" -gt "$((max_s - 3600))" ] || exit 1
-  if [ "$1" = c ]; then
-    hint=$(ci_dispatch_hint images.yml main drill=true) || exit 1
-  else
-    hint=$(ci_dispatch_hint images.yml main rescan=true \
-      "values_ref=${3:-<a full commit of this repository whose deploy/k8s/values/services/ names it>}") || exit 1
-  fi
+  hint=$(ci_dispatch_hint images.yml main drill=true) || exit 1
   echo "NOTE  case $1 left out on this scheduled run (it SKIPs): $2 was scanned at $scanned, $((age / 3600)) h ago," \
     "within an hour of $max_age or more; nobody rescans it before a scheduled run, so it is checked on a dispatch run within $max_age" \
     "of: $hint"
@@ -342,28 +283,21 @@ gitops_stale() (
 
 # gitops_supplychain: see drill-k8s-supplychain in the header.
 gitops_supplychain() {
-  local unsigned vulnerable fallback no_provenance missing= rc=0 values_short values_full
+  local unsigned vulnerable fallback no_provenance missing= rc=0
   unsigned=$("$here/gitops-sourcemaps.sh" web-amd64) || missing="$missing the web release's linux/amd64 manifest;"
   vulnerable=$("$here/gitops-sourcemaps.sh" newest drill-vulnerable) || missing="$missing drill-vulnerable;"
   fallback=$("$here/gitops-sourcemaps.sh" newest drill-unsigned) || missing="$missing drill-unsigned;"
-  no_provenance=$(gitops_no_provenance) || {
-    # 1: none in the history, case l SKIPs; otherwise GHCR did not answer, as for the images above.
-    [ $? -eq 1 ] || missing="$missing a web release without provenance;"
-    no_provenance=
-  }
+  no_provenance=$("$here/gitops-sourcemaps.sh" newest drill-no-provenance) || missing="$missing drill-no-provenance;"
   # A scheduled run: see SVP_VERIFY_SCHEDULED in the header.
   if [ "${SVP_VERIFY_SCHEDULED:-}" = true ]; then
     if [ -n "$vulnerable" ] && gitops_stale c "$vulnerable"; then vulnerable=; fi
-    if [ -n "$no_provenance" ]; then
-      values_short=$(sed -n 's/.*(values of \([0-9a-f]*\))$/\1/p' <<<"$no_provenance")
-      values_full=$(git -C "$repo" rev-parse --verify -q "${values_short:-none}^{commit}") || values_full=
-      if gitops_stale l "${no_provenance%% *}" "$values_full"; then no_provenance=; fi
-    fi
+    if [ -n "$no_provenance" ] && gitops_stale l "$no_provenance"; then no_provenance=; fi
   fi
   echo "unsigned: ${unsigned:-none}; vulnerable: ${vulnerable:-none}; unsigned if Kyverno admits that: ${fallback:-none}"
   echo "without provenance: ${no_provenance:-none, case l SKIPs}"
+  # none, not empty: the drill looks drill-no-provenance up itself when it is not given one.
   make drill-k8s-supplychain SUPPLYCHAIN_UNSIGNED="$unsigned" SUPPLYCHAIN_VULNERABLE="$vulnerable" \
-    SUPPLYCHAIN_UNSIGNED_FALLBACK="$fallback" SUPPLYCHAIN_NO_PROVENANCE="${no_provenance%% *}" || rc=$?
+    SUPPLYCHAIN_UNSIGNED_FALLBACK="$fallback" SUPPLYCHAIN_NO_PROVENANCE="${no_provenance:-none}" || rc=$?
   if [ -n "$missing" ]; then
     echo "FAIL  drill-k8s-supplychain ran without what GHCR did not give (above):$missing"
     return 1
@@ -391,8 +325,8 @@ gitops_sourcemaps() {
     ;;
   esac
 }
-export -f gitops_up gitops_charts_rev gitops_env gitops_external_secrets gitops_argocd_metrics gitops_no_provenance \
-  gitops_stale gitops_supplychain gitops_sourcemaps
+export -f gitops_up gitops_charts_rev gitops_env gitops_external_secrets gitops_argocd_metrics gitops_stale \
+  gitops_supplychain gitops_sourcemaps
 
 scenario_targets() {
   local round maps maps_status maps_reason no_maps before_status smoke_status listed unchecked=

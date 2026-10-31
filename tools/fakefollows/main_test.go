@@ -14,8 +14,8 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 	"google.golang.org/protobuf/proto"
 
-	userv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
+	userv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/user/v1"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
 )
 
 // cluster starts an in-memory Kafka with the follow topic (3 partitions, like the stack) and

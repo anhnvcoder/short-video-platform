@@ -17,8 +17,8 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/anhnvcoder/short-video-platform/internal/authtoken"
-	"github.com/anhnvcoder/short-video-platform/internal/logx"
+	"github.com/anhnvcoder/svp-backend/internal/authtoken"
+	"github.com/anhnvcoder/svp-backend/internal/logx"
 )
 
 // Trace returns the otelhttp handler around next: every request gets a server span and the

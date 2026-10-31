@@ -16,7 +16,7 @@ import (
 	"github.com/twmb/franz-go/pkg/kfake"
 	"github.com/twmb/franz-go/pkg/kgo"
 
-	"github.com/anhnvcoder/short-video-platform/internal/logx"
+	"github.com/anhnvcoder/svp-backend/internal/logx"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"

@@ -8,7 +8,7 @@
   210 kB) và
   §11 (cơ chế tin `traceparent`) chỉnh bởi 0019; phần C hiện thực và đã kiểm trên máy ngày 2026-10-24 (mục "Kết quả phần C"
   của 0019), phần cần cluster GitOps và RAM lớn hơn dời giai đoạn 7 (0019 §12); §11 (CORS MinIO toàn cục, MinIO community
-  để ADR riêng) bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md) (RustFS, CORS theo bucket); từ 2026-10-31 vị trí `web/` và các target `web-*` (mã ở repo `svp-web`, backend giữ wrapper chạy trên stack của nó), §8 (`gen/api.d.ts` sinh từ hợp đồng đã phát hành, không từ file trong repo) và §10 (danh sách gói npm, Renovate của web ở `svp-web`) chỉnh bởi [0033](0033-svp-web-repo.md)
+  để ADR riêng) bị thay một phần bởi [0022](0022-local-object-store-minio-replacement.md) (RustFS, CORS theo bucket); từ 2026-10-31 vị trí `web/` và các target `web-*` (mã ở repo `svp-frontend`, backend giữ wrapper chạy trên stack của nó), §8 (`gen/api.d.ts` sinh từ hợp đồng đã phát hành, không từ file trong repo) và §10 (danh sách gói npm, Renovate của web ở `svp-frontend`) chỉnh bởi [0033](0033-svp-web-repo.md)
 - Ngày: 2026-10-21
 
 ## Bối cảnh
@@ -682,12 +682,12 @@ với cổng mới đã kiểm tĩnh: `docker compose config` của `core` + `ob
 
 ## Hiện thực ở
 
-Từ 2026-10-31 ([ADR-0033](0033-svp-web-repo.md)) mã web ở repo `svp-web`, gốc repo là thư mục `web/` cũ: mỗi đường `web/<x>`
-dưới đây là `<x>` của `svp-web`, `deploy/docker/web.Dockerfile` là `Dockerfile` ở gốc của nó. Target `web-install`, `web-dev`,
+Từ 2026-10-31 ([ADR-0033](0033-svp-web-repo.md)) mã web ở repo `svp-frontend`, gốc repo là thư mục `web/` cũ: mỗi đường `web/<x>`
+dưới đây là `<x>` của `svp-frontend`, `deploy/docker/web.Dockerfile` là `Dockerfile` ở gốc của nó. Target `web-install`, `web-dev`,
 `web-generate`, `web-check`, `web-lockfile-scan` thành `make install`, `dev`, `generate`, `check`, `lockfile-scan` của `Makefile`
-`svp-web`; `web-e2e` còn ở `Makefile` repo này, là wrapper gọi `make e2e` của bản clone (`web_dir` của `deploy/k8s/lib.sh`). Job `web`
-của `ci.yml` thành job `check` của `.github/workflows/ci.yml` của `svp-web`. §8: `gen/api.d.ts` sinh bằng `scripts/contract.sh` từ hợp
-đồng mà `api/contract.json` ghim. §10: `package.json`, `pnpm-workspace.yaml`, `renovate.json` của `svp-web`. Service `web` của
+`svp-frontend`; `web-e2e` còn ở `Makefile` repo này, là wrapper gọi `make e2e` của bản clone (`web_dir` của `deploy/k8s/lib.sh`). Job `web`
+của `ci.yml` thành job `check` của `.github/workflows/ci.yml` của `svp-frontend`. §8: `gen/api.d.ts` sinh bằng `scripts/contract.sh` từ hợp
+đồng mà `api/contract.json` ghim. §10: `package.json`, `pnpm-workspace.yaml`, `renovate.json` của `svp-frontend`. Service `web` của
 `deploy/compose/compose.yaml` ở lại repo này (mặc định chạy bản phát hành stg); values `web` ở `base/services/web.yaml` của `svp-gitops`.
 
 - Web client và BFF (§1, §5, §6, §8): `web/` (`proxy.ts`; `server/`: `session.ts`, `session-access.ts`, `auth.ts`, `csrf.ts`,

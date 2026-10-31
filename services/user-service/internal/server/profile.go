@@ -12,10 +12,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/grpc/codes"
 
-	userv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
-	"github.com/anhnvcoder/short-video-platform/services/user-service/internal/store"
+	userv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/user/v1"
+	"github.com/anhnvcoder/svp-backend/internal/grpcerr"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
+	"github.com/anhnvcoder/svp-backend/services/user-service/internal/store"
 )
 
 // MaxProfileIDs is the most user ids one GetProfiles call accepts: a page of the feed holds at

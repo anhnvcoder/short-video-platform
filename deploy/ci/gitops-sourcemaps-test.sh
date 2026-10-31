@@ -21,7 +21,9 @@
 #   - web of release source svp-web: the image ghcr.io/anhnvcoder/svp-web/web-sourcemaps:amd64-<hex of the manifest>
 #     is pulled and its _next/ taken, no run of any workflow listed; a tag GHCR does not serve is skipped on a branch
 #     and fails on main; a layer with a link, with a file outside _next/, or with other bytes than its digest fails;
-#     web-amd64 names the release's own repository.
+#     web-amd64 names the release's own repository. These cases read the table of release sources of before the
+#     repositories were renamed; then, with the working tree's table, web of the retired oldweb takes its maps from
+#     the image under svp-web's prefix and web of the web source from the one under svp-frontend's.
 # Runs on macOS and Linux: no network, no Docker, no cluster.
 #
 # Usage, from anywhere: deploy/ci/gitops-sourcemaps-test.sh
@@ -68,9 +70,23 @@ release=$(g rev-parse HEAD)
 for b in main feat/stage6b-test; do
   g branch -q -f "$b" "$release"
 done
-# The table of release sources the scripts read in the code repository's working tree.
-mkdir -p "$repo/deploy/helm/svp-policy"
-cp -R "$here/../helm/svp-policy/files" "$repo/deploy/helm/svp-policy/"
+# The table of release sources the scripts read in the code repository's working tree: first the one of before the
+# repositories were renamed (history: backend under short-video-platform still published web, its maps an artifact of
+# its runs; web under svp-web), then, at the end, the working tree's.
+mkdir -p "$repo/deploy/helm/svp-policy/files"
+cat >"$repo/deploy/helm/svp-policy/files/sources.json" <<'TABLE'
+{"sources": [
+  {"name": "backend", "repository": "https://github.com/anhnvcoder/short-video-platform",
+   "imagePrefix": "ghcr.io/anhnvcoder/short-video-platform/",
+   "services": ["gateway", "user-service", "video-service", "engagement-service", "feed-service", "media-worker", "web"],
+   "drillImages": ["drill-vulnerable", "drill-unsigned"], "issuer": "https://token.actions.githubusercontent.com",
+   "subject": "https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main",
+   "provenanceRef": "refs/heads/main", "promoter": "svp-gitops-promoter"},
+  {"name": "web", "repository": "https://github.com/anhnvcoder/svp-web", "imagePrefix": "ghcr.io/anhnvcoder/svp-web/",
+   "services": ["web"], "drillImages": [], "issuer": "https://token.actions.githubusercontent.com",
+   "subject": "https://github.com/anhnvcoder/svp-web/.github/workflows/images.yml@refs/heads/main",
+   "provenanceRef": "refs/heads/main", "promoter": "svp-web-promoter"}]}
+TABLE
 
 # web_file TAG DIGEST [REPOSITORY]: an image file of the web release (of backend when REPOSITORY is not given).
 web_file() {
@@ -272,7 +288,7 @@ jq -nc --arg old "${build:0:12}" --arg new "${release:0:12}" \
 got=$(cat "$work/reads.out")
 has "web-amd64: the linux/amd64 manifest of the release" "$got" "web-amd64 $child"
 has "newest: the index of the newest commit's tag, by the digest of its bytes" "$got" \
-  "newest ghcr.io/anhnvcoder/short-video-platform/drill-vulnerable@sha256:$(sha 'newest index')"
+  "newest ghcr.io/anhnvcoder/svp-backend/drill-vulnerable@sha256:$(sha 'newest index')"
 
 # --- Web of release source svp-web: its maps are an image beside it. maps_image NAME DIR: an image of maps whose layer
 # is DIR packed (gzip), in $work/NAME (manifest.json, layer.tgz).
@@ -337,6 +353,25 @@ has "svp-web, a layer of other bytes: says so" "$(reason svp-web-bytes)" "with o
 ) >"$work/svp-web-reads.out" 2>&1 || true
 has "svp-web: web-amd64 names its own repository" "$(cat "$work/svp-web-reads.out")" \
   "web-amd64 ghcr.io/anhnvcoder/svp-web/web@$child"
+
+# --- The table of the working tree: web of the retired source oldweb (svp-web, as stg runs it until the web source's
+# first release) still has its maps under its own prefix, where its CI pushed them; web of the web source under
+# svp-frontend's.
+cp "$here/../helm/svp-policy/files/sources.json" "$repo/deploy/helm/svp-policy/files/sources.json"
+rc=$(run_fetch oldweb feat/stage6b-test FAKE_MAPS="$work/good")
+same "the working tree's table, web of oldweb: ok, exit 0" "ok 0" "$(status oldweb) $rc"
+has "the working tree's table, web of oldweb: the image of its maps under the prefix of svp-web" \
+  "$(cat "$work/oldweb.calls")" "ghcr_get anhnvcoder/svp-web/web-sourcemaps manifests/amd64-${child#sha256:}"
+c checkout -q -f main
+web_file 0123456789ab "$index" ghcr.io/anhnvcoder/svp-frontend/web >"$config/envs/stg/images/web.yaml"
+c commit -q -am "web of svp-frontend"
+c update-ref refs/remotes/origin/main "$(c rev-parse HEAD)"
+rc=$(run_fetch frontend feat/stage6b-test FAKE_MAPS="$work/good")
+same "the working tree's table, web of svp-frontend: ok, exit 0" "ok 0" "$(status frontend) $rc"
+has "the working tree's table, web of svp-frontend: the image of its maps under its prefix" \
+  "$(cat "$work/frontend.calls")" "ghcr_get anhnvcoder/svp-frontend/web-sourcemaps manifests/amd64-${child#sha256:}"
+has "the working tree's table, web of svp-frontend: the index read from its own repository" \
+  "$(cat "$work/frontend.calls")" "ghcr_get anhnvcoder/svp-frontend/web manifests/$index"
 
 if [ "$failures" -gt 0 ]; then
   echo "FAIL  $failures check(s) failed" >&2

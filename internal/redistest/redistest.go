@@ -18,7 +18,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/anhnvcoder/short-video-platform/internal/redisx"
+	"github.com/anhnvcoder/svp-backend/internal/redisx"
 )
 
 // EnvURL names the variable holding the test Redis URL; `make test` sets it.

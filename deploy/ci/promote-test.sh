@@ -24,16 +24,24 @@
 #     request is open, of a values_ref of svp-gitops, and of a values_ref that is a commit of this repository from
 #     before svp-gitops (deploy/k8s/values/services/); a values_ref that is neither fails; a host that does not answer
 #     whether the pull request is open fails the list after main's and values_ref's releases are printed.
-#   - release source web (promote.sh --source web, run from this checkout on a throwaway clone of svp-web,
+#   - release source web (promote.sh --source web, run from this checkout on a throwaway clone of svp-frontend,
 #     SVP_CODE_ROOT): its first release takes web.yaml over from backend (a line "takeover"), on bot/promote-stg-web by
-#     its own app's bot, changing that file alone, its first comment sentence that of svp-web and the rest of the
-#     comment kept (its first paragraph wrapped again, a later one as it is), charts.yaml never; then never back on main of svp-gitops (an older commit of svp-web changes
+#     its own app's bot, changing that file alone, its first comment sentence that of svp-frontend and the rest of the
+#     comment kept (its first paragraph wrapped again, a later one as it is), charts.yaml never; then never back on main of svp-gitops (an older commit of svp-frontend changes
 #     nothing); a release of another service under its prefix is refused; a run of backend that built web leaves
-#     web.yaml of svp-web as it is, saying so, and promotes the rest; promote.sh --header puts the sentence on top of
-#     a file without a comment; rescan.sh list of backend leaves the release of svp-web out, saying so, and
+#     web.yaml of svp-frontend as it is, saying so, and promotes the rest; promote.sh --header puts the sentence on top of
+#     a file without a comment; rescan.sh list of backend leaves the release of svp-frontend out, saying so, and
 #     rescan.sh list --source web lists it alone, from main and from bot/promote-stg-web of its own app; on a machine
 #     with no dry run, the open pull request of its own app is read again after the push (edited, auto-merge by its
-#     number) and one merged before the push fails the run.
+#     number) and one merged before the push fails the run;
+#   - the rename (main of svp-gitops runs the six services of the retired source oldbackend and web of the retired
+#     oldweb, the comments naming the old repositories): promote.sh and rescan.sh list refuse --source oldweb; each
+#     active source's rescan leaves the retired releases out, saying so, and fails nothing; backend's run takes the six
+#     files over (six lines "takeover", the sentence of backend in each comment) with charts.yaml, whose comment names
+#     the code repository by its new name, still refusing a release newer than the charts; the web source's run takes
+#     web.yaml over alone; a file of another active source is left as it is (the run of backend that built web, under a
+#     table where both publish web); a commit of this repository from before svp-gitops is read as values_ref, its
+#     releases (under the prefix of oldbackend) left out.
 # Every run is a machine's (the local platform of platform.sh, whose job variables platform-test.sh covers): env -i
 # leaves none of a CI job's variables to the scripts. This run's commit is HEAD of the throwaway checkout.
 # Runs on macOS and Linux: no network, no Docker, no cluster.
@@ -88,7 +96,7 @@ esac
 EOF
 cat >"$work/bin/git" <<EOF
 #!/usr/bin/env bash
-# A fetch in the throwaway clone of svp-web (whose origin must be on github.com) reads its bare repository instead.
+# A fetch in the throwaway clone of svp-frontend (whose origin must be on github.com) reads its bare repository instead.
 if [ -n "\${FAKE_WEB_DIR:-}" ] && [ "\$1" = -C ] && [ "\$2" = "\$FAKE_WEB_DIR" ] && [ "\$3" = fetch ]; then
   args=()
   for a in "\$@"; do if [ "\$a" = origin ]; then args+=("\$FAKE_WEB_ORIGIN"); else args+=("\$a"); fi; done
@@ -176,10 +184,10 @@ for env in stg prd; do
     echo "# Derived from that commit."
     derived "$c0"; } >"$gtree/envs/$env/charts.yaml"
   for svc in gateway user-service video-service engagement-service feed-service media-worker web; do
-    printf '# The release image of %s in %s.\nimage:\n  repository: ghcr.io/anhnvcoder/short-video-platform/%s\n  tag: ""\n  digest: ""\n' \
+    printf '# The release image of %s in %s.\nimage:\n  repository: ghcr.io/anhnvcoder/svp-backend/%s\n  tag: ""\n  digest: ""\n' \
       "$svc" "$env" "$svc" >"$gtree/envs/$env/images/$svc.yaml"
   done
-  printf '# The release image of gateway in %s.\nimage:\n  repository: ghcr.io/anhnvcoder/short-video-platform/gateway\n  tag: "%s"\n  digest: "%s"\n' \
+  printf '# The release image of gateway in %s.\nimage:\n  repository: ghcr.io/anhnvcoder/svp-backend/gateway\n  tag: "%s"\n  digest: "%s"\n' \
     "$env" "${c0:0:12}" "$digest_a" >"$gtree/envs/$env/images/gateway.yaml"
 done
 gs init -q -b main && gs add -A && gs commit -qm init
@@ -198,7 +206,7 @@ merge_bot() {
 # release DIR SERVICE COMMIT DIGEST: an artifact release-<service> of the job sign in DIR.
 release() {
   mkdir -p "$1/release-$2"
-  echo "ghcr.io/anhnvcoder/short-video-platform/$2" >"$1/release-$2/repository"
+  echo "ghcr.io/anhnvcoder/svp-backend/$2" >"$1/release-$2/repository"
   echo "${3:0:12}" >"$1/release-$2/tag"
   echo "$4" >"$1/release-$2/digest"
 }
@@ -246,7 +254,7 @@ check "dry run: the auto-merge it would turn on, for the pushed head" has "$work
   "$(printed pr merge bot/promote-stg --repo anhnvcoder/svp-gitops --auto --squash --match-head-commit "$head")"
 check "dry run: the body links the run (none on a machine)" has "$work/promote.out" "dry run: body | Lượt chạy: local"
 check "dry run: the body names this run's commit" has "$work/promote.out" \
-  "dry run: body | Commit repo code của lượt chạy: https://github.com/anhnvcoder/short-video-platform/commit/$c1"
+  "dry run: body | Commit repo code của lượt chạy: https://github.com/anhnvcoder/svp-backend/commit/$c1"
 check "dry run: the summary" has "$work/promote.out" \
   "Promote: \`bot/promote-stg\` of anhnvcoder/svp-gitops at ${head:0:12}, auto-merge on: chore(stg): phát hành gateway ${c1:0:12}"
 merge_bot
@@ -281,7 +289,7 @@ check "a release newer than the charts: nothing pushed" has "$work/promote.out" 
 # listed (closed): main's gateway.
 remote update-ref refs/heads/bot/promote-stg "$(remote rev-parse main)"
 gs fetch -q origin && gs checkout -q -B work origin/main
-printf '# The release image of gateway in stg.\nimage:\n  repository: ghcr.io/anhnvcoder/short-video-platform/gateway\n  tag: "%s"\n  digest: "%s"\n' \
+printf '# The release image of gateway in stg.\nimage:\n  repository: ghcr.io/anhnvcoder/svp-backend/gateway\n  tag: "%s"\n  digest: "%s"\n' \
   "${c1:0:12}" "$digest_c" >"$gtree/envs/stg/images/gateway.yaml"
 gs commit -qam "gateway build c" && gs push -q -f origin HEAD:refs/heads/bot/promote-stg
 release "$work/r5" user-service "$c3" "$digest_d"
@@ -392,9 +400,9 @@ echo '[]' >"$work/gh/prs.json"
 list "main of svp-gitops" 0
 same "rescan.sh list: fourteen image files of main" 14 "$(grep -c "main of svp-gitops, envs/" "$work/list.out")"
 check "rescan.sh list: the gateway of stg on main" has "$work/list.out" \
-  "gateway${tab}ghcr.io/anhnvcoder/short-video-platform/gateway${tab}$digest_b${tab}main of svp-gitops, envs/stg/images/gateway.yaml"
+  "gateway${tab}ghcr.io/anhnvcoder/svp-backend/gateway${tab}$digest_b${tab}main of svp-gitops, envs/stg/images/gateway.yaml"
 check "rescan.sh list: a service not released, with an empty digest" has "$work/list.out" \
-  "web${tab}ghcr.io/anhnvcoder/short-video-platform/web${tab}${tab}main of svp-gitops, envs/prd/images/web.yaml"
+  "web${tab}ghcr.io/anhnvcoder/svp-backend/web${tab}${tab}main of svp-gitops, envs/prd/images/web.yaml"
 same "rescan.sh list: the app's open pull request of svp-gitops is asked for" \
   "$(gh_line pr list --repo anhnvcoder/svp-gitops --head bot/promote-stg --base main --state open --limit 500 \
     --json number,isCrossRepository,author)" "$(cat "$work/gh.log")"
@@ -402,7 +410,7 @@ check "rescan.sh list: no pull request open, bot/promote-stg not read" lacks "$w
 echo "$app_pr" >"$work/gh/prs.json"
 list "the app's pull request open" 0
 check "rescan.sh list: the release of bot/promote-stg" has "$work/list.out" \
-  "user-service${tab}ghcr.io/anhnvcoder/short-video-platform/user-service${tab}$digest_a${tab}bot/promote-stg of svp-gitops (pull request #9), envs/stg/images/user-service.yaml"
+  "user-service${tab}ghcr.io/anhnvcoder/svp-backend/user-service${tab}$digest_a${tab}bot/promote-stg of svp-gitops (pull request #9), envs/stg/images/user-service.yaml"
 echo "$person_pr" >"$work/gh/prs.json"
 list "only a person's and a fork's pull request" 0
 check "rescan.sh list: theirs not read" lacks "$work/list.out" "bot/promote-stg"
@@ -422,7 +430,8 @@ check "rescan.sh list: the releases of values_ref" has "$work/list.out" \
   "${tab}$digest_a${tab}bot/promote-stg of svp-gitops, envs/stg/images/user-service.yaml"
 list "values_ref a commit of svp-gitops" 0 "$(remote rev-parse main~1)"
 check "rescan.sh list: the releases of that commit" has "$work/list.out" "$(remote rev-parse main~1) of svp-gitops, envs/"
-# A commit of this repository from before svp-gitops held the releases: its deploy/k8s/values/services/.
+# A commit of this repository from before svp-gitops held the releases: its deploy/k8s/values/services/. Those were
+# released before the rename, under the prefix of the retired source oldbackend, so they are read and left out.
 mkdir -p "$tree/deploy/k8s/values/services"
 for svc in gateway user-service video-service engagement-service feed-service media-worker web; do
   printf 'image:\n  repository: ghcr.io/anhnvcoder/short-video-platform/%s\n  tag: ""\n  digest: ""\n' "$svc" \
@@ -433,17 +442,19 @@ printf 'replicas: 1\nimage:\n  repository: ghcr.io/anhnvcoder/short-video-platfo
 g add -A deploy/k8s/values && g commit -qm "the values before svp-gitops"
 old=$(g rev-parse HEAD)
 list "values_ref a commit of this repository from before svp-gitops" 0 "$old"
-check "rescan.sh list: the web release of that commit" has "$work/list.out" \
-  "web${tab}ghcr.io/anhnvcoder/short-video-platform/web${tab}$digest_c${tab}commit ${old:0:12} of the code repository, deploy/k8s/values/services/web.yaml"
+check "rescan.sh list: the web release of that commit is read, a release of the retired oldbackend left out" \
+  has "$work/list.err" \
+  "skip  web in commit ${old:0:12} of the code repository, deploy/k8s/values/services/web.yaml: ghcr.io/anhnvcoder/short-video-platform/web is a release of source oldbackend, which is retired: nothing rescans it"
+check "rescan.sh list: nothing of that commit listed" lacks "$work/list.out" "commit ${old:0:12} of the code repository"
 list "values_ref a commit of this repository without values" 1 "$c3"
 check "rescan.sh list: says it is neither" has "$work/list.err" \
   "values_ref $c3 is neither a commit of svp-gitops nor one of this repository with deploy/k8s/values/services/"
 list "values_ref no ref at all" 1 no-such-branch
 check "rescan.sh list: says it is no ref of svp-gitops" has "$work/list.err" "values_ref no-such-branch is no ref of svp-gitops"
 
-# --- Release source web. A throwaway clone of svp-web (origin on github.com, its main in a bare repository beside it):
+# --- Release source web. A throwaway clone of svp-frontend (origin on github.com, its main in a bare repository beside it):
 # w0 and w1 on main. On main of svp-gitops web.yaml of stg is backend's release at c0, its comment as written today.
-web=$work/svp-web
+web=$work/svp-frontend
 wg() {
   GIT_DIR=$web/.git GIT_WORK_TREE=$web GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$real_git" -c user.name=test \
     -c user.email=test@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"
@@ -451,51 +462,52 @@ wg() {
 mkdir -p "$web"
 wg init -q -b main && wg commit -q --allow-empty -m w0 && w0=$(wg rev-parse HEAD)
 wg commit -q --allow-empty -m w1 && w1=$(wg rev-parse HEAD)
-"$real_git" init -q --bare "$work/svp-web-origin.git"
-wg push -q "$work/svp-web-origin.git" main
-wg remote add origin https://github.com/anhnvcoder/svp-web
+"$real_git" init -q --bare "$work/svp-frontend-origin.git"
+wg push -q "$work/svp-frontend-origin.git" main
+wg remote add origin https://github.com/anhnvcoder/svp-frontend
 gs fetch -q origin && gs checkout -q -B work origin/main
 web_comment="# The release image of web in stg, nothing else: the release on GHCR that CI of the code repository built,
 # scanned and signed (.github/workflows/images.yml there). The tag names the commit for people; the cluster pulls the
 # digest. Its configuration is base/services/web.yaml and envs/stg/web.yaml when there is one."
-printf '%s\nimage:\n  repository: ghcr.io/anhnvcoder/short-video-platform/web\n  tag: "%s"\n  digest: "%s"\n' \
+printf '%s\nimage:\n  repository: ghcr.io/anhnvcoder/svp-backend/web\n  tag: "%s"\n  digest: "%s"\n' \
   "$web_comment" "${c0:0:12}" "$digest_a" >"$gtree/envs/stg/images/web.yaml"
 gs commit -qam "web of backend" && gs push -q origin HEAD:main
 web_release() {
   mkdir -p "$1/release-$2"
-  echo "ghcr.io/anhnvcoder/svp-web/$2" >"$1/release-$2/repository"
+  echo "ghcr.io/anhnvcoder/svp-frontend/$2" >"$1/release-$2/repository"
   echo "${3:0:12}" >"$1/release-$2/tag"
   echo "$4" >"$1/release-$2/digest"
 }
-# promote_web NAME WANT_RC RELEASES [VAR=VALUE...]: promote.sh --source web of this checkout on the clone of svp-web.
+# promote_web NAME WANT_RC RELEASES [VAR=VALUE...]: promote.sh --source web of this checkout on the clone of svp-frontend.
 promote_web() {
   local name=$1 want=$2 releases=$3 rc=0
   shift 3
   fresh
   on env PROMOTE_GITOPS_URL="$gitops_url" SVP_CODE_ROOT="$web" FAKE_WEB_DIR="$web" \
-    FAKE_WEB_ORIGIN="$work/svp-web-origin.git" "$@" "$tree/deploy/ci/promote.sh" --source web "$releases" \
+    FAKE_WEB_ORIGIN="$work/svp-frontend-origin.git" "$@" "$tree/deploy/ci/promote.sh" --source web "$releases" \
     >"$work/promote.out" 2>&1 || rc=$?
   same "promote.sh --source web: $name (exit $want)" "$want" "$rc"
   [ "$rc" = "$want" ] || sed 's/^/      | /' "$work/promote.out" >&2
 }
 web_release "$work/w0" web "$w0" "$digest_c"
 wg checkout -q --detach "$w0"
-promote_web "the first release of svp-web" 0 "$work/w0" PROMOTE_DRY_RUN=1
+promote_web "the first release of svp-frontend" 0 "$work/w0" PROMOTE_DRY_RUN=1
 check "web: a takeover of backend's web.yaml, said so" has "$work/promote.out" \
-  "takeover: web.yaml on main is ghcr.io/anhnvcoder/short-video-platform/web:${c0:0:12} (source backend); first release of source web"
+  "takeover: web.yaml on main is ghcr.io/anhnvcoder/svp-backend/web:${c0:0:12} (source backend); first release of source web"
 head=$(remote rev-parse bot/promote-stg-web)
 same "web: on its own branch, one commit on top of main" "$(remote rev-parse main)" "$(remote rev-parse "$head^")"
 same "web: the commit is the bot of its own app" \
   "svp-web-promoter[bot] 271828+svp-web-promoter[bot]@users.noreply.github.com" "$(remote log -1 --format='%an %ae' "$head")"
 same "web: only web.yaml of stg changes, never charts.yaml" "envs/stg/images/web.yaml" "$(changed_files "$head")"
-same "web: the release of svp-web" "ghcr.io/anhnvcoder/svp-web/web
+same "web: the release of svp-frontend" "ghcr.io/anhnvcoder/svp-frontend/web
 tag: \"${w0:0:12}\" digest: \"$digest_c\"" \
   "$(remote show "$head:envs/stg/images/web.yaml" | sed -n 's/^  repository: //p')
 $(image_of "$head" stg web)"
-same "web: the first comment sentence is svp-web's, the rest of the paragraph kept and wrapped again" \
-  "# The release image of web in stg, nothing else: the release on GHCR that CI of https://github.com/anhnvcoder/svp-web
-# built, scanned and signed (.github/workflows/images.yml there). The tag names the commit for people; the cluster
-# pulls the digest. Its configuration is base/services/web.yaml and envs/stg/web.yaml when there is one." \
+same "web: the first comment sentence is svp-frontend's, the rest of the paragraph kept and wrapped again" \
+  "# The release image of web in stg, nothing else: the release on GHCR that CI of
+# https://github.com/anhnvcoder/svp-frontend built, scanned and signed (.github/workflows/images.yml there). The tag
+# names the commit for people; the cluster pulls the digest. Its configuration is base/services/web.yaml and
+# envs/stg/web.yaml when there is one." \
   "$(remote show "$head:envs/stg/images/web.yaml" | grep '^#')"
 check "web: the pull request of its own branch" has "$work/promote.out" \
   "$(printed pr create --repo anhnvcoder/svp-gitops --base main --head bot/promote-stg-web) --title "
@@ -506,7 +518,7 @@ remote update-ref refs/heads/main "$c"
 
 web_release "$work/w1" web "$w1" "$digest_d"
 wg checkout -q --detach "$w1"
-promote_web "a newer release of svp-web" 0 "$work/w1" PROMOTE_DRY_RUN=1
+promote_web "a newer release of svp-frontend" 0 "$work/w1" PROMOTE_DRY_RUN=1
 check "web, newer: no takeover any more" lacks "$work/promote.out" "takeover"
 same "web, newer: its release" "tag: \"${w1:0:12}\" digest: \"$digest_d\"" \
   "$(image_of "$(remote rev-parse bot/promote-stg-web)" stg web)"
@@ -517,20 +529,27 @@ c=$(GIT_AUTHOR_NAME=owner GIT_AUTHOR_EMAIL=o@example.invalid GIT_COMMITTER_NAME=
 remote update-ref refs/heads/main "$c"
 web_release "$work/w0b" web "$w0" "$digest_b"
 wg checkout -q --detach "$w0"
-promote_web "an older commit of svp-web" 0 "$work/w0b" PROMOTE_DRY_RUN=1
+promote_web "an older commit of svp-frontend" 0 "$work/w0b" PROMOTE_DRY_RUN=1
 check "web, older: never back, nothing pushed" has "$work/promote.out" "Nothing differs from main of svp-gitops"
 web_release "$work/wg" gateway "$w0" "$digest_b"
-promote_web "a gateway under the prefix of svp-web" 1 "$work/wg" PROMOTE_DRY_RUN=1
+promote_web "a gateway under the prefix of svp-frontend" 1 "$work/wg" PROMOTE_DRY_RUN=1
 check "web: another service under its prefix is refused" has "$work/promote.out" \
-  "ghcr.io/anhnvcoder/svp-web/gateway is not the repository of a service of release source web"
+  "ghcr.io/anhnvcoder/svp-frontend/gateway is not the repository of a service of release source web"
 
-# A run of backend that still built web, once web.yaml is svp-web's: left as it is, the gateway promoted.
+# A run of backend that still built web, once web.yaml is svp-frontend's: left as it is, the gateway promoted. Under a
+# table where both active sources publish web (as while web moved from backend; the working tree's table, put back
+# after, gives web to the web source and the retired oldweb only).
 release "$work/b1" web "$c3" "$digest_c"
 release "$work/b1" gateway "$c3" "$digest_c"
 run_at "$c3"
-promote "backend, web.yaml of svp-web on main" 0 "$work/b1" PROMOTE_DRY_RUN=1
-check "backend: web of svp-web left as it is, said so" has "$work/promote.out" \
-  "ok    web: released by source web (main's ghcr.io/anhnvcoder/svp-web/web:${w1:0:12}), left as it is"
+table=$tree/deploy/helm/svp-policy/files/sources.json
+cp "$table" "$work/sources.json"
+jq '.sources |= map(select(.name != "oldweb") | if .name == "backend" then .services += ["web"] else . end)' \
+  "$work/sources.json" >"$table"
+promote "backend, web.yaml of svp-frontend on main" 0 "$work/b1" PROMOTE_DRY_RUN=1
+cp "$work/sources.json" "$table"
+check "backend: web of svp-frontend left as it is, said so" has "$work/promote.out" \
+  "ok    web: released by source web (main's ghcr.io/anhnvcoder/svp-frontend/web:${w1:0:12}), left as it is"
 changed=$(changed_files "$(remote rev-parse bot/promote-stg)")
 check "backend: web.yaml not written ($changed)" test "${changed/web.yaml/}" = "$changed"
 same "backend: the gateway promoted" "tag: \"${c3:0:12}\" digest: \"$digest_c\"" \
@@ -539,45 +558,46 @@ same "backend: the gateway promoted" "tag: \"${c3:0:12}\" digest: \"$digest_c\""
 printf 'image:\n  repository: x\n' | on "$tree/deploy/ci/promote.sh" --header gateway prd web >"$work/header.out"
 same "promote.sh --header: a file without a comment gets the sentence on top" \
   "# The release image of gateway in prd, nothing else: the release on GHCR that CI of
-# https://github.com/anhnvcoder/svp-web built, scanned and signed (.github/workflows/images.yml there).
+# https://github.com/anhnvcoder/svp-frontend built, scanned and signed (.github/workflows/images.yml there).
 image:
   repository: x" "$(cat "$work/header.out")"
 printf '# Old first sentence\n# over two lines. Then the\n# rest.\n#\n#   A later paragraph, as it is.\nimage:\n  repository: x\n' |
   on "$tree/deploy/ci/promote.sh" --header web stg web >"$work/header.out"
 same "promote.sh --header: the first paragraph wrapped again around the new sentence, a later one kept" \
-  "# The release image of web in stg, nothing else: the release on GHCR that CI of https://github.com/anhnvcoder/svp-web
-# built, scanned and signed (.github/workflows/images.yml there). Then the rest.
+  "# The release image of web in stg, nothing else: the release on GHCR that CI of
+# https://github.com/anhnvcoder/svp-frontend built, scanned and signed (.github/workflows/images.yml there). Then the
+# rest.
 #
 #   A later paragraph, as it is.
 image:
   repository: x" "$(cat "$work/header.out")"
 
-# rescan.sh list of each source on the clone: backend leaves web of svp-web out, web lists it alone.
+# rescan.sh list of each source on the clone: backend leaves web of svp-frontend out, web lists it alone.
 "$real_git" -C "$work/clone" fetch -q origin
-list "backend, web of svp-web in stg" 0
-check "rescan.sh list: backend leaves web of svp-web out" lacks "$work/list.out" "ghcr.io/anhnvcoder/svp-web/web"
+list "backend, web of svp-frontend in stg" 0
+check "rescan.sh list: backend leaves web of svp-frontend out" lacks "$work/list.out" "ghcr.io/anhnvcoder/svp-frontend/web"
 check "rescan.sh list: backend says why" has "$work/list.err" \
-  "skip  web in main of svp-gitops, envs/stg/images/web.yaml: ghcr.io/anhnvcoder/svp-web/web is a release of source web, which its own CI rescans"
+  "skip  web in main of svp-gitops, envs/stg/images/web.yaml: ghcr.io/anhnvcoder/svp-frontend/web is a release of source web, which its own CI rescans"
 same "rescan.sh list: backend lists its thirteen others" 13 "$(grep -c "main of svp-gitops, envs/" "$work/list.out")"
 web_pr='[{"number": 11, "isCrossRepository": false, "author": {"login": "app/svp-web-promoter"}}]'
 echo "$web_pr" >"$work/gh/prs.json"
 list "web, its pull request open" 0 --source web
 same "rescan.sh list --source web: web of stg from main and from its branch, nothing else" \
-  "web${tab}ghcr.io/anhnvcoder/svp-web/web${tab}$digest_d${tab}main of svp-gitops, envs/stg/images/web.yaml
-web${tab}ghcr.io/anhnvcoder/svp-web/web${tab}$digest_d${tab}bot/promote-stg-web of svp-gitops (pull request #11), envs/stg/images/web.yaml" \
+  "web${tab}ghcr.io/anhnvcoder/svp-frontend/web${tab}$digest_d${tab}main of svp-gitops, envs/stg/images/web.yaml
+web${tab}ghcr.io/anhnvcoder/svp-frontend/web${tab}$digest_d${tab}bot/promote-stg-web of svp-gitops (pull request #11), envs/stg/images/web.yaml" \
   "$(cat "$work/list.out")"
 same "rescan.sh list --source web: asks for the pull request of its own branch" \
   "$(gh_line pr list --repo anhnvcoder/svp-gitops --head bot/promote-stg-web --base main --state open --limit 500 \
     --json number,isCrossRepository,author)" "$(cat "$work/gh.log")"
 echo '[]' >"$work/gh/prs.json"
 
-# On a machine, svp-gitops on its disk, no dry run: the open pull request of svp-web's own app is read again after the
+# On a machine, svp-gitops on its disk, no dry run: the open pull request of svp-frontend's own app is read again after the
 # real push and found (it is not the app of backend's): edited, its auto-merge by its number; merged before the push,
 # the run fails.
 wg checkout -q main
 wg commit -q --allow-empty -m w2 && w2=$(wg rev-parse HEAD)
 wg commit -q --allow-empty -m w3 && w3=$(wg rev-parse HEAD)
-wg push -q "$work/svp-web-origin.git" main
+wg push -q "$work/svp-frontend-origin.git" main
 web_pr_list=$(gh_line pr list --repo anhnvcoder/svp-gitops --head bot/promote-stg-web --base main --state open \
   --limit 500 --json number,isCrossRepository,author)
 echo "$web_pr" >"$work/gh/prs.json"
@@ -600,6 +620,103 @@ check "web, merged before the push: says so" has "$work/promote.out" \
   "FAIL  pull request #11 of bot/promote-stg-web in anhnvcoder/svp-gitops was merged or closed between the start of this run and its push"
 check "web, merged before the push: no auto-merge" lacks "$work/promote.out" "$(printed pr merge)"
 echo '[]' >"$work/gh/prs.json"
+
+# --- The rename. On main of svp-gitops stg runs the six services released by the retired source oldbackend and web by
+# the retired oldweb, the comments naming the repositories by their former names. Each active source's run takes over
+# the files of the services it publishes; a retired source has no run.
+gs fetch -q origin && gs checkout -q -B work origin/main
+for svc in gateway user-service video-service engagement-service feed-service media-worker; do
+  printf '%s\n%s\nimage:\n  repository: ghcr.io/anhnvcoder/short-video-platform/%s\n  tag: "%s"\n  digest: "%s"\n' \
+    "# The release image of $svc in stg, nothing else: the release on GHCR that CI of" \
+    "# https://github.com/anhnvcoder/short-video-platform built, scanned and signed (.github/workflows/images.yml there)." \
+    "$svc" "${c0:0:12}" "$digest_a" >"$gtree/envs/stg/images/$svc.yaml"
+done
+printf '%s\n%s\nimage:\n  repository: ghcr.io/anhnvcoder/svp-web/web\n  tag: "%s"\n  digest: "%s"\n' \
+  "# The release image of web in stg, nothing else: the release on GHCR that CI of https://github.com/anhnvcoder/svp-web" \
+  "# built, scanned and signed (.github/workflows/images.yml there)." "${w0:0:12}" "$digest_a" \
+  >"$gtree/envs/stg/images/web.yaml"
+{ echo "# The commit of the code repository (https://github.com/anhnvcoder/short-video-platform) whose charts stg runs."
+  echo "revision: $c2"
+  echo "# Derived from that commit."
+  derived "$c2"; } >"$gtree/envs/stg/charts.yaml"
+gs commit -qam "stg on the retired sources" && gs push -q origin HEAD:main
+gmain_rename=$(remote rev-parse main)
+echo '[]' >"$work/gh/prs.json"
+
+# A retired source has no run: promote.sh and rescan.sh refuse it.
+retired="FAIL  release source oldweb is retired (no promoter in deploy/helm/svp-policy/files/sources.json): nothing is promoted or rescanned for it"
+fresh
+rc=0
+on env PROMOTE_GITOPS_URL="$gitops_url" SVP_CODE_ROOT="$web" FAKE_WEB_DIR="$web" FAKE_WEB_ORIGIN="$work/svp-web-origin.git" \
+  PROMOTE_DRY_RUN=1 "$tree/deploy/ci/promote.sh" --source oldweb "$work/none" >"$work/promote.out" 2>&1 || rc=$?
+same "promote.sh --source oldweb: refused (exit 1)" 1 "$rc"
+check "promote.sh --source oldweb: says it is retired" has "$work/promote.out" "$retired"
+check "promote.sh --source oldweb: nothing read of svp-gitops" lacks "$work/promote.out" "svp-gitops main"
+"$real_git" -C "$work/clone" fetch -q origin
+list "--source oldweb" 1 --source oldweb
+check "rescan.sh list --source oldweb: says it is retired" has "$work/list.err" "$retired"
+check "rescan.sh list --source oldweb: lists nothing" test ! -s "$work/list.out"
+# The releases of the retired sources are left out of each active source's rescan, saying so, and fail nothing.
+list "backend, stg on the retired sources" 0
+check "rescan.sh list: backend leaves the releases of oldbackend out, saying so" has "$work/list.err" \
+  "skip  gateway in main of svp-gitops, envs/stg/images/gateway.yaml: ghcr.io/anhnvcoder/short-video-platform/gateway is a release of source oldbackend, which is retired: nothing rescans it"
+check "rescan.sh list: backend lists none of oldbackend" lacks "$work/list.out" "short-video-platform"
+list "web, stg on the retired sources" 0 --source web
+check "rescan.sh list --source web: leaves the release of oldweb out, saying so" has "$work/list.err" \
+  "skip  web in main of svp-gitops, envs/stg/images/web.yaml: ghcr.io/anhnvcoder/svp-web/web is a release of source oldweb, which is retired: nothing rescans it"
+
+# backend takes over still comparing its releases with the charts: one newer than the revision is refused.
+release "$work/rn" gateway "$c3" "$digest_c"
+run_at "$c2"
+promote "the rename: a release of backend newer than the charts" 1 "$work/rn" PROMOTE_DRY_RUN=1
+check "the rename, newer than the charts: a takeover, said so" has "$work/promote.out" \
+  "takeover: gateway.yaml on main is ghcr.io/anhnvcoder/short-video-platform/gateway:${c0:0:12} (source oldbackend, retired); first release of source backend"
+check "the rename, newer than the charts: refused, left as main has it" has "$work/promote.out" \
+  "FAIL  gateway: its release ${c3:0:12} is newer than the charts' revision ${c2:0:12}; left as main has it"
+
+# backend's run of c3 with its six releases: the six files and charts.yaml, web.yaml of oldweb not its own.
+for svc in gateway user-service video-service engagement-service feed-service media-worker; do
+  release "$work/rr" "$svc" "$c3" "$digest_b"
+done
+run_at "$c3"
+promote "the rename: backend takes the six services over from oldbackend" 0 "$work/rr" PROMOTE_DRY_RUN=1
+head=$(remote rev-parse bot/promote-stg)
+same "the rename: six takeovers, each said so" 6 \
+  "$(grep -c '^takeover: .* (source oldbackend, retired); first release of source backend$' "$work/promote.out")"
+same "the rename: the six image files and charts.yaml of stg change, web.yaml not" \
+  "envs/stg/charts.yaml envs/stg/images/engagement-service.yaml envs/stg/images/feed-service.yaml envs/stg/images/gateway.yaml envs/stg/images/media-worker.yaml envs/stg/images/user-service.yaml envs/stg/images/video-service.yaml" \
+  "$(changed_files "$head")"
+same "the rename: the gateway is backend's release" "ghcr.io/anhnvcoder/svp-backend/gateway
+tag: \"${c3:0:12}\" digest: \"$digest_b\"" \
+  "$(remote show "$head:envs/stg/images/gateway.yaml" | sed -n 's/^  repository: //p')
+$(image_of "$head" stg gateway)"
+same "the rename: the gateway's comment is the sentence of backend" \
+  "$(remote show "$gmain_rename:envs/stg/images/gateway.yaml" | on "$tree/deploy/ci/promote.sh" --header gateway stg backend |
+    grep '^#')" "$(remote show "$head:envs/stg/images/gateway.yaml" | grep '^#')"
+check "the rename: the gateway's comment names the new repository" has \
+  <(remote show "$head:envs/stg/images/gateway.yaml") "https://github.com/anhnvcoder/svp-backend"
+same "the rename: revision c3, its derived values" "revision: $c3"$'\n'"$(derived "$c3")" \
+  "$(remote show "$head:envs/stg/charts.yaml" | grep -v '^#')"
+same "the rename: the comment of charts.yaml names the code repository by its current name" \
+  "# The commit of the code repository (https://github.com/anhnvcoder/svp-backend) whose charts stg runs." \
+  "$(remote show "$head:envs/stg/charts.yaml" | head -n 1)"
+
+# The web source's run: web.yaml of oldweb taken over, the rest left alone.
+web_release "$work/wr" web "$w3" "$digest_d"
+wg checkout -q --detach "$w3"
+promote_web "the rename: web takes web over from oldweb" 0 "$work/wr" PROMOTE_DRY_RUN=1
+check "the rename, web: a takeover of oldweb's web.yaml, said so" has "$work/promote.out" \
+  "takeover: web.yaml on main is ghcr.io/anhnvcoder/svp-web/web:${w0:0:12} (source oldweb, retired); first release of source web"
+head=$(remote rev-parse bot/promote-stg-web)
+same "the rename, web: only web.yaml of stg changes" "envs/stg/images/web.yaml" "$(changed_files "$head")"
+same "the rename, web: the release of svp-frontend" "ghcr.io/anhnvcoder/svp-frontend/web
+tag: \"${w3:0:12}\" digest: \"$digest_d\"" \
+  "$(remote show "$head:envs/stg/images/web.yaml" | sed -n 's/^  repository: //p')
+$(image_of "$head" stg web)"
+same "the rename, web: the comment is the sentence of web" \
+  "# The release image of web in stg, nothing else: the release on GHCR that CI of
+# https://github.com/anhnvcoder/svp-frontend built, scanned and signed (.github/workflows/images.yml there)." \
+  "$(remote show "$head:envs/stg/images/web.yaml" | grep '^#')"
 
 if ((failures)); then
   echo "$failures check(s) failed" >&2

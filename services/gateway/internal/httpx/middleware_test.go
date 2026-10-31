@@ -14,8 +14,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/metadata"
 
-	"github.com/anhnvcoder/short-video-platform/internal/authtoken"
-	"github.com/anhnvcoder/short-video-platform/internal/callerid"
+	"github.com/anhnvcoder/svp-backend/internal/authtoken"
+	"github.com/anhnvcoder/svp-backend/internal/callerid"
 )
 
 const (

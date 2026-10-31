@@ -37,14 +37,14 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	eventv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/event/v1"
-	mediav1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/media/v1"
-	videov1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/video/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
-	"github.com/anhnvcoder/short-video-platform/internal/kafkax"
-	"github.com/anhnvcoder/short-video-platform/internal/logx"
-	"github.com/anhnvcoder/short-video-platform/internal/objstore"
-	"github.com/anhnvcoder/short-video-platform/services/media-worker/internal/transcode"
+	eventv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/event/v1"
+	mediav1 "github.com/anhnvcoder/svp-backend/gen/go/svp/media/v1"
+	videov1 "github.com/anhnvcoder/svp-backend/gen/go/svp/video/v1"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
+	"github.com/anhnvcoder/svp-backend/internal/kafkax"
+	"github.com/anhnvcoder/svp-backend/internal/logx"
+	"github.com/anhnvcoder/svp-backend/internal/objstore"
+	"github.com/anhnvcoder/svp-backend/services/media-worker/internal/transcode"
 )
 
 // Topics and consumer group. The topics must be ones redpanda-init creates, since the broker does
@@ -91,7 +91,7 @@ const (
 )
 
 // instrumentationName names the tracer and meter of the worker.
-const instrumentationName = "github.com/anhnvcoder/short-video-platform/services/media-worker/internal/worker"
+const instrumentationName = "github.com/anhnvcoder/svp-backend/services/media-worker/internal/worker"
 
 // transcodeBuckets are the bucket bounds in seconds, the same as svp.video.ready.duration of
 // video-service; this histogram feeds dashboards only, no SLO.

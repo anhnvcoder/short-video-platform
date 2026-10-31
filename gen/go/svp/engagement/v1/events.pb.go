@@ -7,7 +7,7 @@
 package engagementv1
 
 import (
-	v1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/event/v1"
+	v1 "github.com/anhnvcoder/svp-backend/gen/go/svp/event/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -167,8 +167,8 @@ const file_svp_engagement_v1_events_proto_rawDesc = "" +
 	"\x05event\"F\n" +
 	"\fViewRecorded\x12\x19\n" +
 	"\bvideo_id\x18\x01 \x01(\tR\avideoId\x12\x1b\n" +
-	"\tviewer_id\x18\x02 \x01(\tR\bviewerIdB\xdc\x01\n" +
-	"\x15com.svp.engagement.v1B\vEventsProtoP\x01ZPgithub.com/anhnvcoder/short-video-platform/gen/go/svp/engagement/v1;engagementv1\xa2\x02\x03SEX\xaa\x02\x11Svp.Engagement.V1\xca\x02\x11Svp\\Engagement\\V1\xe2\x02\x1dSvp\\Engagement\\V1\\GPBMetadata\xea\x02\x13Svp::Engagement::V1b\x06proto3"
+	"\tviewer_id\x18\x02 \x01(\tR\bviewerIdB\xd3\x01\n" +
+	"\x15com.svp.engagement.v1B\vEventsProtoP\x01ZGgithub.com/anhnvcoder/svp-backend/gen/go/svp/engagement/v1;engagementv1\xa2\x02\x03SEX\xaa\x02\x11Svp.Engagement.V1\xca\x02\x11Svp\\Engagement\\V1\xe2\x02\x1dSvp\\Engagement\\V1\\GPBMetadata\xea\x02\x13Svp::Engagement::V1b\x06proto3"
 
 var (
 	file_svp_engagement_v1_events_proto_rawDescOnce sync.Once

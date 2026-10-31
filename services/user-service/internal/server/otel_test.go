@@ -12,11 +12,11 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
-	userv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/authtoken"
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
-	"github.com/anhnvcoder/short-video-platform/internal/pgpool"
-	"github.com/anhnvcoder/short-video-platform/services/user-service/internal/password"
+	userv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/user/v1"
+	"github.com/anhnvcoder/svp-backend/internal/authtoken"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
+	"github.com/anhnvcoder/svp-backend/internal/pgpool"
+	"github.com/anhnvcoder/svp-backend/services/user-service/internal/password"
 )
 
 // Register, Login, Refresh and Logout on the pool serve opens (pgpool, with SQL spans) leave

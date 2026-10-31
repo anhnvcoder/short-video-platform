@@ -2,8 +2,8 @@
 # changed-services.sh BASE HEAD: prints, on one line in alphabetical order, the services whose image must be built
 # for the changes from commit BASE to commit HEAD; the reason goes to stderr.
 #
-# The services are the six this repository builds (built_services of deploy/k8s/lib.sh): web is built by svp-web, so
-# no change here ever builds it. A service is built when a changed path is one of its image paths (`image_paths` of
+# The services are the six this repository builds (built_services of deploy/k8s/lib.sh): web is built by svp-frontend,
+# so no change here ever builds it. A service is built when a changed path is one of its image paths (`image_paths` of
 # deploy/k8s/lib.sh: go.mod, go.sum, gen/, internal/, services/<svc>/, its Dockerfile, .dockerignore), or when the
 # pipeline that builds, scans and signs changed: then all six.
 # The pipeline is .github/workflows/images.yml, anything under deploy/ci/ but the files no image job reads:

@@ -3,7 +3,7 @@
 - Trạng thái: Chấp nhận; adapter hiện thực 2026-10-25 (nhánh `github`, `local`), kiểm trên CI thật sau push; bảng Tên chốt (hàm
   của repo cấu hình: PR ở repo đích và auto-merge, bot và credential git của GitHub App, `ci_push_time` theo repo, lượt chạy, bản ghi
   Deployment) và bảng ánh xạ repo (dòng của repo cấu hình) chỉnh bởi [0025](0025-gitops-config-repo.md) và
-  [0028](0028-dora-metrics.md), từ 2026-10-30; §4 (identity ký thành bảng nhiều nguồn `deploy/helm/svp-policy/files/sources.json`), §1 (`platform-guard.sh` nhận thư mục gốc, chạy cả ở `svp-web`), hàm `ci_*` đọc tác giả và người gửi PR, bảng ánh xạ (script chung, multi-project, credential thứ hai) chỉnh bởi [0033](0033-svp-web-repo.md), từ 2026-10-30
+  [0028](0028-dora-metrics.md), từ 2026-10-30; §4 (identity ký thành bảng nhiều nguồn `deploy/helm/svp-policy/files/sources.json`), §1 (`platform-guard.sh` nhận thư mục gốc, chạy cả ở `svp-frontend`), hàm `ci_*` đọc tác giả và người gửi PR, bảng ánh xạ (script chung, multi-project, credential thứ hai) chỉnh bởi [0033](0033-svp-web-repo.md), từ 2026-10-30
 - Ngày: 2026-10-25
 
 ## Bối cảnh
@@ -221,7 +221,7 @@ Từng bước, theo thứ tự; đổi nào cũng đi qua review như mọi tha
 Từ 2026-10-30 ([ADR-0033](0033-svp-web-repo.md)): identity ký ở `deploy/helm/svp-policy/files/sources.json` (một mục mỗi nguồn),
 `sign_identity`, `use_build_source` của `deploy/ci/common.sh`; `script_root`, `code_root` (`SVP_CODE_ROOT`) của `common.sh` cho script
 chạy trên cây của repo khác; `deploy/ci/platform-guard.sh [ROOT]`; `ci_change_request_author`, `ci_change_request_sender` của
-`deploy/ci/platform.sh`. Workflow của `svp-web` gọi các script này từ `.backend/` (checkout ở commit `.backend-commit`).
+`deploy/ci/platform.sh`. Workflow của `svp-frontend` gọi các script này từ `.backend/` (checkout ở commit `.backend-commit`).
 
 - `deploy/ci/platform.sh` (adapter), `deploy/ci/platform-test.sh` (test), `deploy/ci/platform-guard.sh` (phép kiểm); cả hai chạy ở
   job `config` của `.github/workflows/ci.yml`.

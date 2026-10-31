@@ -12,7 +12,8 @@
 #   - cosign attest --type spdxjson of each platform's SBOM on that platform's manifest digest;
 #   - cosign attest --type vuln of the predicate on the index digest;
 #   - cosign attest --type slsaprovenance1 of the build provenance (provenance-predicate.sh: workflow, ref, commit and
-#     run of this CI run) on the index digest. Not for the drill images: they are no release.
+#     run of this CI run) on the index digest. Not for the drill images: they are no release (drill-no-provenance is
+#     signed only to show the policy refusing a signed, clean image that lacks it).
 # The image must lie under the prefix of the release source this run builds for (use_build_source of common.sh: the
 # source whose repository runs the job) and be one of its services or drill images: a run of one repository never
 # signs under another source's prefix, where the policy expects that source's identity. The provenance names the

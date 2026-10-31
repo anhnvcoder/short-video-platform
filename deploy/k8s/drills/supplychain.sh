@@ -42,14 +42,19 @@
 #   h  an ephemeral container (what kubectl debug adds) in a running pod of svp: with an unsigned image refused, with
 #      image a admitted;
 #   i  an UPDATE of a running pod of svp that sets a container's image to an unsigned one: refused;
-#   l  SUPPLYCHAIN_NO_PROVENANCE (a release signed before CI attested build provenance): refused with the provenance
+#   l  an image signed and attested vuln like a release, but without build provenance: refused with the provenance
 #      rule's message, only when the running policy checks provenance (requireProvenance of chart svp-policy: it has
-#      attestation provenance); otherwise SKIP "policy off". Kyverno checks provenance after every other rule, so the
-#      refusal shows the provenance rule only if the image passes all of them: before sending the pod the drill checks
-#      with cosign (anonymous) that the image is signed, has exactly one vuln attestation of both platforms, no
-#      CRITICAL, scanned within the policy's maximum age, and has no provenance attestation; otherwise the case fails,
-#      naming the dispatch that rescans that release (an old release is out of the values, so the daily rescan skips
-#      it). With the provenance rule on, case a admitted shows a release with provenance passes it;
+#      attestation provenance); otherwise SKIP "policy off". The image is SUPPLYCHAIN_NO_PROVENANCE when set, otherwise
+#      the newest drill-no-provenance under the prefix of release source backend on GHCR (deploy/ci/gitops-sourcemaps.sh
+#      newest, anonymous: the drill image CI signs and attests vuln and never attests provenance);
+#      SUPPLYCHAIN_NO_PROVENANCE=none leaves the case out (SKIP), for a caller that knows that image is past the
+#      maximum age. Kyverno checks provenance after every other rule, so the refusal shows the provenance rule only if
+#      the image passes all of them: before sending the pod the drill checks with cosign (anonymous) that the image is
+#      signed, has exactly one vuln attestation of both platforms, no CRITICAL, scanned within the policy's maximum age,
+#      and has no provenance attestation; otherwise, or when no drill-no-provenance is found, the case fails, naming the
+#      dispatch that builds the drill images again (no image file of svp-gitops names a drill image, so the daily
+#      rescan never attests it again). With the provenance rule on, case a admitted shows a release with provenance
+#      passes it;
 #   k  the keyless path with another vendor's public image (CloudNativePG's operator v1.28.1 on GHCR, signed by its
 #      release workflow; identity from docs/src/security.md of cloudnative-pg/cloudnative-pg and the certificate of
 #      its signature): two temporary policies, one with the right subject, one with a wrong one, each for its own drill
@@ -58,8 +63,8 @@
 #   m  the release sources apart, for every ordered pair of sources A and B of the table:
 #      - names: an image under A's prefix whose name only B publishes (a service or drill image of B, not of A), by a
 #        digest: refused by the prefix rule (the first check), whatever the digest, without any registry asked (no
-#        glob of the policy matches it); SKIP when every name of B is also A's (web, while backend is still a source
-#        of it);
+#        glob of the policy matches it); SKIP when every name of B is also A's (a source and the retired source it
+#        took over from publish the same services: web and oldweb);
 #      - identities, A→B: a release of B that a pod of svp runs, under a temporary copy of the policy (same chart, its
 #        table with the issuer and subject of A and B swapped, only pods of svp labelled svp-drill=supplychain-swap):
 #        refused by the signature rule naming source B, since Kyverno verifies an image with the attestor of the
@@ -67,9 +72,10 @@
 #        B's identity there, the pod would pass. One copy per pair of sources serves both directions and is deleted
 #        after them. Not A's release with its digest under B's prefix: GHCR has no manifest of another repository's
 #        digest, and Kyverno fetches a matched image before any check, so that answer is a registry error. SKIP while
-#        no release of B runs in svp (before that source's first release reaches the cluster);
+#        no release of B runs in svp: before that source's first release reaches the cluster, or, for a retired source
+#        (no promoter), once its successor's releases have replaced all of its own;
 #      - a release of each source other than backend that a pod of svp runs: admitted (case a is backend's); SKIP
-#        while none runs (before that source's first release reaches the cluster).
+#        while none runs, for the same two reasons.
 # The policy admits the images of every release source of its chart (files/sources.json), each under its own prefix
 # and verified with its own identity. Case a and f send an image of source backend (this repository) that a pod of svp
 # runs, e an image of that prefix by tag; the images of b, c and l may be any service or drill image of a source under
@@ -77,7 +83,7 @@
 # with the identity of that source, as Kyverno does.
 # "Unsigned" in h and i is SUPPLYCHAIN_UNSIGNED when set (the signature rule's message), otherwise the dev image of the
 # local registry (the prefix rule's message). A case whose image is not available is printed SKIP with the reason:
-# b without SUPPLYCHAIN_UNSIGNED, c without SUPPLYCHAIN_VULNERABLE, l without SUPPLYCHAIN_NO_PROVENANCE, a, f and the
+# b without SUPPLYCHAIN_UNSIGNED, c without SUPPLYCHAIN_VULNERABLE, l with SUPPLYCHAIN_NO_PROVENANCE=none, a, f and the
 # admitted half of h while no pod of svp
 # runs an image of GHCR (the dev path).
 #
@@ -93,7 +99,7 @@
 #
 # Usage (from the repo root, cluster up): make drill-k8s-supplychain [SUPPLYCHAIN_UNSIGNED=ghcr.io/...@sha256:...]
 #   [SUPPLYCHAIN_UNSIGNED_FALLBACK=ghcr.io/...@sha256:...] [SUPPLYCHAIN_VULNERABLE=ghcr.io/...@sha256:...]
-#   [SUPPLYCHAIN_NO_PROVENANCE=ghcr.io/...@sha256:...] [SUPPLYCHAIN_ENFORCE_TMP=1].
+#   [SUPPLYCHAIN_NO_PROVENANCE=ghcr.io/...@sha256:...|none] [SUPPLYCHAIN_ENFORCE_TMP=1].
 set -euo pipefail
 
 # Only the cluster's API: deploy/compose/lib.sh (the gateway's API helpers, which delete rate limit keys) is left out.
@@ -138,6 +144,7 @@ psa_version=$(sed -n 's/^podSecurityVersion: *//p' "$repo_root/deploy/helm/svp-c
 admitted_names=$(jq -r '.sources[] | .imagePrefix as $p | (.services + .drillImages)[] | $p + .' <<<"$sources")
 for v in SUPPLYCHAIN_UNSIGNED SUPPLYCHAIN_UNSIGNED_FALLBACK SUPPLYCHAIN_VULNERABLE SUPPLYCHAIN_NO_PROVENANCE; do
   [ -n "${!v:-}" ] || continue
+  [ "$v" != SUPPLYCHAIN_NO_PROVENANCE ] || [ "${!v}" != none ] || continue
   [[ ${!v} =~ ^([a-z0-9._/-]+)(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$ ]] &&
     grep -qxF -- "${BASH_REMATCH[1]}" <<<"$admitted_names" ||
     fail "$v must be <imagePrefix of a release source><one of its services or drill images>@sha256:<64 hex>, one of: $(tr "\n" " " <<<"$admitted_names")(got '${!v}')"
@@ -285,22 +292,6 @@ webhooks() {
 policy_checks_provenance() {
   kc get imagevalidatingpolicies.policies.kyverno.io "$1" -o json |
     jq -r 'if any(.spec.attestations[]?; .name == "provenance") then "yes" else "no" end'
-}
-
-# values_commit DIGEST: the full SHA of the newest commit of this repository's history (from HEAD) whose
-# deploy/k8s/values/services/ names DIGEST, the values_ref a rescan of that release needs. A release without
-# provenance predates svp-gitops, so only this history names it (rescan.sh reads a full commit of this repository
-# there); status 1 without one.
-values_commit() {
-  local c
-  for c in $(git -C "$repo_root" log --format=%H -S"$1" HEAD -- deploy/k8s/values/services); do
-    # -S also lists the commit that removed DIGEST: only one whose tree still names it is a values_ref.
-    if git -C "$repo_root" grep -qF -- "$1" "$c" -- 'deploy/k8s/values/services/*'; then
-      echo "$c"
-      return 0
-    fi
-  done
-  return 1
 }
 
 # policy_mode NAME: Deny or Audit, the validationActions of ImageValidatingPolicy NAME.
@@ -696,21 +687,28 @@ fi
 # --- l: a release without provenance, once it is shown to pass every other rule (the header says why).
 if [[ $checks_provenance != yes ]]; then
   result l SKIP "policy off: $policy has no provenance attestation to check (requireProvenance of chart svp-policy is off at the revision the cluster runs)"
-elif [[ -z $no_provenance ]]; then
-  result l SKIP "SUPPLYCHAIN_NO_PROVENANCE is not set (digest of a release signed before CI attested build provenance)"
+elif [[ $no_provenance == none ]]; then
+  result l SKIP "SUPPLYCHAIN_NO_PROVENANCE=none: the caller left the case out"
 else
-  rescan=$(ci_dispatch_hint images.yml main rescan=true \
-    "values_ref=$(values_commit "${no_provenance#*@}" || echo '<a full commit of this repository whose deploy/k8s/values/services/ names it>')") || exit 1
-  image_identity "$no_provenance"
-  envelopes=$(cosign_ verify-attestation --type vuln --certificate-oidc-issuer "$policy_issuer" \
-    --certificate-identity "$policy_subject" "$no_provenance" 2>"$work/cosign.err") || envelopes=
-  if ! cosign_ verify --certificate-oidc-issuer "$policy_issuer" --certificate-identity "$policy_subject" \
+  rebuild=$(ci_dispatch_hint images.yml main drill=true) || exit 1
+  if [[ -z $no_provenance ]]; then
+    no_provenance=$("$repo_root/deploy/ci/gitops-sourcemaps.sh" newest drill-no-provenance 2>"$work/newest.err") ||
+      no_provenance=
+  fi
+  if [[ -n $no_provenance ]]; then
+    image_identity "$no_provenance"
+    envelopes=$(cosign_ verify-attestation --type vuln --certificate-oidc-issuer "$policy_issuer" \
+      --certificate-identity "$policy_subject" "$no_provenance" 2>"$work/cosign.err") || envelopes=
+  fi
+  if [[ -z $no_provenance ]]; then
+    result l FAIL "find the newest ${prefix}drill-no-provenance on GHCR (got: $(tail -n 1 "$work/newest.err")); build the drill images ($rebuild)"
+  elif ! cosign_ verify --certificate-oidc-issuer "$policy_issuer" --certificate-identity "$policy_subject" \
     "$no_provenance" >/dev/null 2>"$work/cosign.err"; then
     result l FAIL "$no_provenance: a signature of $policy_subject that cosign verifies (got: $(tail -n 1 "$work/cosign.err"))"
   elif [[ $(grep -c . <<<"$envelopes") != 1 ]]; then
-    result l FAIL "$no_provenance: exactly one vuln attestation of $policy_subject (got $(grep -c . <<<"$envelopes")); rescan it ($rescan)"
+    result l FAIL "$no_provenance: exactly one vuln attestation of $policy_subject (got $(grep -c . <<<"$envelopes")); build the drill images again ($rebuild)"
   elif ! problem=$(jq -r '.payload | @base64d' <<<"$envelopes" | check_vuln_statement "${no_provenance#*@}" "$max_age_s"); then
-    result l FAIL "$no_provenance: its vuln attestation $problem, so Kyverno would refuse it before the provenance rule; rescan it ($rescan), then run this within $max_age"
+    result l FAIL "$no_provenance: its vuln attestation $problem, so Kyverno would refuse it before the provenance rule; build the drill images again ($rebuild), then run this within $max_age"
   else
     absent=0
     provenance_absent "$policy_issuer" "$policy_subject" "$no_provenance" 2>"$work/cosign.err" || absent=$?
@@ -719,7 +717,7 @@ else
       dry_run drill-supplychain-l svp "$no_provenance"
       refused l "image without a provenance attestation signed by" "$no_provenance (signed, clean vuln attestation within $max_age, no provenance)"
       ;;
-    1) result l FAIL "$no_provenance carries a provenance attestation of $policy_subject: set SUPPLYCHAIN_NO_PROVENANCE to a release from before provenance" ;;
+    1) result l FAIL "$no_provenance carries a provenance attestation of $policy_subject: case l needs an image without one (drill-no-provenance, the default)" ;;
     *) result l FAIL "$no_provenance: cosign could not tell whether it carries a provenance attestation (got: $(tail -n 1 "$work/cosign.err"))" ;;
     esac
   fi
@@ -797,6 +795,15 @@ running_release() {
   jq -r --arg p "$1" '[.items[].spec.containers[].image | select(startswith($p) and test("@sha256:[0-9a-f]{64}$"))]
     | first // empty' <<<"$pods_json"
 }
+# not_running NAME: why no pod of svp runs a release of source NAME, for a SKIP line. A retired source (no promoter)
+# is built no more: its releases run only until those of the source that took over its services replace them.
+not_running() {
+  if jq -e --arg s "$1" '.sources[] | select(.name == $s) | has("promoter")' <<<"$sources" >/dev/null; then
+    echo "no release of source $1 runs in svp (its first release has not reached this cluster)"
+  else
+    echo "no release of source $1 runs in svp (a retired source: its successor's releases have replaced its own)"
+  fi
+}
 # A digest the names part sends: the prefix rule refuses by the name alone, before any registry is asked.
 name_digest=sha256:$(printf '0%.0s' $(seq 64))
 for a in $(jq -r '.sources[].name' <<<"$sources"); do
@@ -853,7 +860,7 @@ for ((i = 0; i < n_sources; i++)); do
         refused m "image without a keyless signature by the workflow of its source: $ry (source $y," \
           "identities, $x→$y: $ry, a release of source $y, under a copy of the policy whose attestor $y has $x's identity"
       else
-        result m SKIP "identities, $x→$y: no release of source $y runs in svp (its first release has not reached this cluster)"
+        result m SKIP "identities, $x→$y: $(not_running "$y")"
       fi
     done
     if [[ -n $ra || -n $rb ]]; then
@@ -869,7 +876,7 @@ for s in $(jq -r '.sources[] | select(.name != "backend") | .name' <<<"$sources"
     dry_run drill-supplychain-m svp "$own"
     admitted m "$own, a release of source $s, verified with $s's identity"
   else
-    result m SKIP "admitted, source $s: no pod of svp runs a release of it (its first release has not reached this cluster)"
+    result m SKIP "admitted, source $s: $(not_running "$s")"
   fi
 done
 

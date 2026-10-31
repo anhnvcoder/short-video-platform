@@ -19,13 +19,13 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	engagementv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/engagement/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/callerid"
-	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
-	"github.com/anhnvcoder/short-video-platform/internal/logx"
-	"github.com/anhnvcoder/short-video-platform/internal/pgtest"
-	"github.com/anhnvcoder/short-video-platform/services/engagement-service/migrations"
+	engagementv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/engagement/v1"
+	"github.com/anhnvcoder/svp-backend/internal/callerid"
+	"github.com/anhnvcoder/svp-backend/internal/grpcerr"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
+	"github.com/anhnvcoder/svp-backend/internal/logx"
+	"github.com/anhnvcoder/svp-backend/internal/pgtest"
+	"github.com/anhnvcoder/svp-backend/services/engagement-service/migrations"
 )
 
 const (

@@ -11,7 +11,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
 )
 
 // The fuzz keys come from fixed seeds, so the coordinator and every worker process verify with

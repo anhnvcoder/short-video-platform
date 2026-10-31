@@ -1,6 +1,6 @@
 # The DORA metrics of stg (deploy/ci/dora.sh): deployment frequency, change lead time, change fail rate, failed
 # deployment recovery time and deployment rework rate, from the deployment records of stg in svp-gitops (evidence that
-# a release ran and passed the checks there, never a merge), the git history of both repositories (and of svp-web once
+# a release ran and passed the checks there, never a merge), the git history of both repositories (and of svp-frontend once
 # a record holds a web release it built) and the front matter of docs/postmortems/. The table goes to the summary
 # page of the run, the whole result to artifact dora. Nothing is kept between runs: the records stay, so any period is
 # computed again by a dispatch with more days.
@@ -53,10 +53,10 @@ jobs:
           fetch-depth: 0
       # Public repository, over HTTPS without credentials: no token, no secret.
       - run: make gitops-clone
-      # The lead time of a web release built by svp-web counts commits of that repository, so its whole history is
-      # cloned (main, anonymously, into .web/svp-web) only when a record of stg that counts holds one: until then the
-      # run needs nothing of svp-web, which may not even have a release yet.
-      - name: Clone svp-web when a record of stg runs its web
+      # The lead time of a web release built by svp-frontend counts commits of that repository, so its whole history is
+      # cloned (main, anonymously, into .web/svp-frontend) only when a record of stg that counts holds one: until then the
+      # run needs nothing of svp-frontend, which may not even have a release yet.
+      - name: Clone svp-frontend when a record of stg runs its web
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -67,7 +67,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DAYS: ${{ inputs.days || '30' }}
         run: |
-          [ ! -d .web/svp-web ] || export SVP_WEB_DIR="$PWD/.web/svp-web"
+          [ ! -d .web/svp-frontend ] || export SVP_WEB_DIR="$PWD/.web/svp-frontend"
           deploy/ci/dora.sh --days "$DAYS" "$RUNNER_TEMP/dora/dora.json"
       - name: Keep the result
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

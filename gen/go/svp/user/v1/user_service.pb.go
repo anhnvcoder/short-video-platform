@@ -1047,8 +1047,8 @@ const file_svp_user_v1_user_service_proto_rawDesc = "" +
 	"\bUnfollow\x12\x1c.svp.user.v1.UnfollowRequest\x1a\x1d.svp.user.v1.UnfollowResponse\x12P\n" +
 	"\vGetProfiles\x12\x1f.svp.user.v1.GetProfilesRequest\x1a .svp.user.v1.GetProfilesResponse\x12e\n" +
 	"\x12GetProfileByHandle\x12&.svp.user.v1.GetProfileByHandleRequest\x1a'.svp.user.v1.GetProfileByHandleResponse\x12b\n" +
-	"\x11UpdateDisplayName\x12%.svp.user.v1.UpdateDisplayNameRequest\x1a&.svp.user.v1.UpdateDisplayNameResponseB\xb7\x01\n" +
-	"\x0fcom.svp.user.v1B\x10UserServiceProtoP\x01ZDgithub.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1;userv1\xa2\x02\x03SUX\xaa\x02\vSvp.User.V1\xca\x02\vSvp\\User\\V1\xe2\x02\x17Svp\\User\\V1\\GPBMetadata\xea\x02\rSvp::User::V1b\x06proto3"
+	"\x11UpdateDisplayName\x12%.svp.user.v1.UpdateDisplayNameRequest\x1a&.svp.user.v1.UpdateDisplayNameResponseB\xae\x01\n" +
+	"\x0fcom.svp.user.v1B\x10UserServiceProtoP\x01Z;github.com/anhnvcoder/svp-backend/gen/go/svp/user/v1;userv1\xa2\x02\x03SUX\xaa\x02\vSvp.User.V1\xca\x02\vSvp\\User\\V1\xe2\x02\x17Svp\\User\\V1\\GPBMetadata\xea\x02\rSvp::User::V1b\x06proto3"
 
 var (
 	file_svp_user_v1_user_service_proto_rawDescOnce sync.Once

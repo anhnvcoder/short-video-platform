@@ -5,7 +5,7 @@
 #   - backend, this repository: its CI exports the maps beside each web build as the artifact web-sourcemaps-amd64
 #     (the runner's nodes are amd64) holding the chunks and maps (_next/static/...) and the file image-digest, the
 #     digest of the linux/amd64 manifest that build pushed;
-#   - another source (svp-web): its CI pushes the maps of each build as an image of their own beside the web image,
+#   - another source (svp-frontend): its CI pushes the maps of each build as an image of their own beside the web image,
 #     <imagePrefix>web-sourcemaps tagged amd64-<the 64 hex of that linux/amd64 manifest>, whose layers hold _next/
 #     alone. An artifact of a run of another repository is never downloaded (that needs a token of that repository):
 #     the image is pulled like a node pulls, anonymously.
@@ -44,8 +44,8 @@
 #       signature or attestation names (they name the index), which the supply chain drill sends as its unsigned web
 #       image.
 #   gitops-sourcemaps.sh newest IMAGE
-#       Prints ghcr.io/anhnvcoder/short-video-platform/IMAGE@<digest> of the newest index of IMAGE (drill-vulnerable,
-#       drill-unsigned) on GHCR: its tags of 12 hex digits name the commit of main that CI built them at, and the newest
+#       Prints ghcr.io/anhnvcoder/svp-backend/IMAGE@<digest> of the newest index of IMAGE (drill-vulnerable,
+#       drill-unsigned, drill-no-provenance) on GHCR: its tags of 12 hex digits name the commit of main that CI built them at, and the newest
 #       commit of this clone among them wins.
 # GHCR is read like a node pulls: an anonymous token for the repository, then the manifest by digest or tag, its bytes
 # hashed to the digest asked for. Sourcing this file only defines its functions (deploy/ci/gitops-sourcemaps-test.sh

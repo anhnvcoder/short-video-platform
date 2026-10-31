@@ -2,25 +2,45 @@
   "sources": [
     {
       "name": "backend",
-      "repository": "https://github.com/anhnvcoder/short-video-platform",
-      "imagePrefix": "ghcr.io/anhnvcoder/short-video-platform/",
-      "services": ["gateway", "user-service", "video-service", "engagement-service", "feed-service", "media-worker", "web"],
-      "drillImages": ["drill-vulnerable", "drill-unsigned"],
+      "repository": "https://github.com/anhnvcoder/svp-backend",
+      "imagePrefix": "ghcr.io/anhnvcoder/svp-backend/",
+      "services": ["gateway", "user-service", "video-service", "engagement-service", "feed-service", "media-worker"],
+      "drillImages": ["drill-vulnerable", "drill-unsigned", "drill-no-provenance"],
       "issuer": "https://token.actions.githubusercontent.com",
-      "subject": "https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main",
+      "subject": "https://github.com/anhnvcoder/svp-backend/.github/workflows/images.yml@refs/heads/main",
       "provenanceRef": "refs/heads/main",
       "promoter": "svp-gitops-promoter"
     },
     {
       "name": "web",
+      "repository": "https://github.com/anhnvcoder/svp-frontend",
+      "imagePrefix": "ghcr.io/anhnvcoder/svp-frontend/",
+      "services": ["web"],
+      "drillImages": [],
+      "issuer": "https://token.actions.githubusercontent.com",
+      "subject": "https://github.com/anhnvcoder/svp-frontend/.github/workflows/images.yml@refs/heads/main",
+      "provenanceRef": "refs/heads/main",
+      "promoter": "svp-web-promoter"
+    },
+    {
+      "name": "oldbackend",
+      "repository": "https://github.com/anhnvcoder/short-video-platform",
+      "imagePrefix": "ghcr.io/anhnvcoder/short-video-platform/",
+      "services": ["gateway", "user-service", "video-service", "engagement-service", "feed-service", "media-worker"],
+      "drillImages": [],
+      "issuer": "https://token.actions.githubusercontent.com",
+      "subject": "https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main",
+      "provenanceRef": "refs/heads/main"
+    },
+    {
+      "name": "oldweb",
       "repository": "https://github.com/anhnvcoder/svp-web",
       "imagePrefix": "ghcr.io/anhnvcoder/svp-web/",
       "services": ["web"],
       "drillImages": [],
       "issuer": "https://token.actions.githubusercontent.com",
       "subject": "https://github.com/anhnvcoder/svp-web/.github/workflows/images.yml@refs/heads/main",
-      "provenanceRef": "refs/heads/main",
-      "promoter": "svp-web-promoter"
+      "provenanceRef": "refs/heads/main"
     }
   ]
 }

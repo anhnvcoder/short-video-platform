@@ -19,14 +19,14 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	feedv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/feed/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/callerid"
-	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
-	"github.com/anhnvcoder/short-video-platform/internal/pagetoken"
-	"github.com/anhnvcoder/short-video-platform/internal/pgtest"
-	"github.com/anhnvcoder/short-video-platform/internal/redisx"
-	"github.com/anhnvcoder/short-video-platform/services/feed-service/migrations"
+	feedv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/feed/v1"
+	"github.com/anhnvcoder/svp-backend/internal/callerid"
+	"github.com/anhnvcoder/svp-backend/internal/grpcerr"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
+	"github.com/anhnvcoder/svp-backend/internal/pagetoken"
+	"github.com/anhnvcoder/svp-backend/internal/pgtest"
+	"github.com/anhnvcoder/svp-backend/internal/redisx"
+	"github.com/anhnvcoder/svp-backend/services/feed-service/migrations"
 )
 
 const (

@@ -44,12 +44,18 @@
 #
 # Each source writes only the image files of its own releases: a service whose file on main of svp-gitops names a
 # release of another source is left as it is, one line saying so, and is no failure (backend leaves web.yaml alone once
-# svp-web releases web, even when a run of backend still builds web). The one exception is the move of a service from
-# backend to another source: that source writes the file while main still names a release of backend (its first
-# release, a takeover), and main's release is no candidate then, since its tag is a commit of another repository; a
-# line "takeover" names it. A file that changes source gets, instead of the first sentence of its comment, the
-# sentence of the new source (its repository and the workflow that built and signed it); the rest of the comment is
-# kept, its first paragraph wrapped again around the new sentence.
+# svp-frontend releases web, even when a run of backend still builds web). Two exceptions, a takeover each, where this
+# source writes the file while main still names another's release (its first release, a line "takeover" naming the
+# old source), and main's release is no candidate then (its tag may be a commit of another repository):
+#   - the move of a service from backend to another source (a run of another source over a release of backend);
+#   - a release of a retired source (one without promoter in the table: its repository was renamed) that publishes the
+#     service, taken over by the run of the source that publishes it now, in either mode: backend still compares its
+#     releases with the charts. A retired source's release is never written back, and no run is a retired source's
+#     (--source of one fails).
+# A file that changes source gets, instead of the first sentence of its comment, the sentence of the new source (its
+# repository and the workflow that built and signed it); the rest of the comment is kept, its first paragraph wrapped
+# again around the new sentence. The comments of envs/stg/charts.yaml are kept, with the URL of a renamed repository
+# replaced by that of its current name (current_repo_urls of common.sh).
 # A repository under the prefix of no source is a failure, never a guess.
 # Another source: its releases are under its imagePrefix; its branch is bot/promote-stg-<NAME>, its bot that of its
 # promoter (the app of its own credential), so the pull requests of two sources never touch each other's branch;
@@ -125,7 +131,7 @@ if [ "${1:-}" = --source ]; then
 fi
 [ $# -eq 1 ] || fail "$usage"
 releases=$1
-source_json=$(release_source "$source") || exit 1
+source_json=$(active_source "$source") || exit 1
 prefix=$(jq -r .imagePrefix <<<"$source_json")
 app=$(jq -r .promoter <<<"$source_json")
 src_services=$(jq -r '.services[]' <<<"$source_json")
@@ -391,18 +397,24 @@ changed=()
 for svc in $src_services; do
   line=$(release_at "$gmain" "$svc") || fail "the image file of $svc on main of svp-gitops cannot be read (above)"
   put main "$svc" "$line"
-  # Whose release main names: this source's, backend's that this source takes over, or another's, left alone.
+  # Whose release main names: this source's, one this source takes over (backend's, or a retired source's of this
+  # service), or another's, left alone.
   IFS="|" read -r r t d <<<"$line"
   owner=$(source_of_repository "$r" 2>/dev/null) ||
     fail "$svc: main of svp-gitops names $r, under the prefix of no release source; not guessing whose it is"
   takeover=
   if [ "$owner" != "$source" ]; then
-    if [ -n "$charts_owner" ] || [ "$owner" != backend ]; then
+    owner_json=$(release_source "$owner") || exit 1
+    if ! jq -e 'has("promoter")' <<<"$owner_json" >/dev/null &&
+      jq -e --arg s "$svc" '.services | index($s)' <<<"$owner_json" >/dev/null; then
+      echo "takeover: $svc.yaml on main is $r:$t (source $owner, retired); first release of source $source"
+    elif [ -z "$charts_owner" ] && [ "$owner" = backend ]; then
+      echo "takeover: $svc.yaml on main is $r:$t (source $owner); first release of source $source"
+    else
       echo "ok    $svc: released by source $owner (main's $r:$t), left as it is"
       continue
     fi
     takeover=yes
-    echo "takeover: $svc.yaml on main is $r:$t (source $owner); first release of source $source"
   fi
   if ! choose "$svc"; then
     echo "FAIL  $svc: $problem; left as main has it" >&2
@@ -439,8 +451,9 @@ if [ -n "$charts_owner" ]; then
     [ -n "$psv" ] || fail "deploy/helm/svp-cluster/values.yaml at ${revision:0:12} pins no podSecurityVersion"
   collector=$(git_ show "$revision:deploy/observability/otelcol/k8s-config.yaml" | shasum -a 256 | cut -d' ' -f1) &&
     [[ $collector =~ ^[0-9a-f]{64}$ ]] || fail "hash deploy/observability/otelcol/k8s-config.yaml at ${revision:0:12}"
-  # Main's file with its three lines replaced, every other line (the comments) kept.
-  charts=$(gg show "$gmain:$charts_file" | awk -v rev="$revision" -v psv="$psv" -v sha="$collector" '
+  # Main's file with its three lines replaced, every other line (the comments) kept, a renamed repository's URL in
+  # them made its current one.
+  charts=$(gg show "$gmain:$charts_file" | current_repo_urls | awk -v rev="$revision" -v psv="$psv" -v sha="$collector" '
     /^revision:/ { n["r"]++; print "revision: " rev; next }
     /^podSecurityVersion:/ { n["p"]++; print "podSecurityVersion: " psv; next }
     /^collectorConfigSha256:/ { n["c"]++; print "collectorConfigSha256: " sha; next }

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anhnvcoder/short-video-platform/internal/authtoken"
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
+	"github.com/anhnvcoder/svp-backend/internal/authtoken"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
 )
 
 func TestOutputParsesAndSignsVerifiableTokens(t *testing.T) {
