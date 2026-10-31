@@ -18,7 +18,6 @@ misconfigurations:
     paths:
       - deploy/docker/service.Dockerfile
       - deploy/docker/media-worker.Dockerfile
-      - deploy/docker/web.Dockerfile
       - deploy/ci/drill/vulnerable.Dockerfile
     statement: health is checked by Kubernetes probes and compose healthchecks per container, not by the image
     expired_at: 2027-01-22

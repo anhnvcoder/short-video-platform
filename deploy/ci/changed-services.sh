@@ -2,9 +2,10 @@
 # changed-services.sh BASE HEAD: prints, on one line in alphabetical order, the services whose image must be built
 # for the changes from commit BASE to commit HEAD; the reason goes to stderr.
 #
-# A service is built when a changed path is one of its image paths (`image_paths` of deploy/k8s/lib.sh: go.mod,
-# go.sum, gen/, internal/, services/<svc>/, its Dockerfile, .dockerignore for a Go service; web/ and its Dockerfile for
-# web, whose build context is web/ alone), or when the pipeline that builds, scans and signs changed: then all seven.
+# The services are the six this repository builds (built_services of deploy/k8s/lib.sh): web is built by svp-web, so
+# no change here ever builds it. A service is built when a changed path is one of its image paths (`image_paths` of
+# deploy/k8s/lib.sh: go.mod, go.sum, gen/, internal/, services/<svc>/, its Dockerfile, .dockerignore), or when the
+# pipeline that builds, scans and signs changed: then all six.
 # The pipeline is .github/workflows/images.yml, anything under deploy/ci/ but the files no image job reads:
 # trivy-config-ignore.yaml (read only by make trivy-config, so renewing one of its entries, due every 90 days at most,
 # releases nothing), the scripts of the verification runs of .github/workflows/verify.yml (verify-host.sh,
@@ -26,10 +27,10 @@
 # values_set_image, ghcr_prefix), and the lines of the Makefile pinning the images the gate runs (TRIVY_IMAGE,
 # SYFT_IMAGE, GRYPE_IMAGE, COSIGN_IMAGE); other Makefile changes do not count. So the weekly Renovate pull request that
 # bumps those tools builds and scans every image with the new trivy or grype before it merges, instead of the next
-# daily rescan on main meeting it first. The cost is on main too: such a change releases all seven images again (and opens their promote
+# daily rescan on main meeting it first. The cost is on main too: such a change releases all six images again (and opens their promote
 # pull request) although no service code changed. Comparing is only done when BASE is HEAD or an ancestor of it:
 #   - BASE empty, all zeros, unknown to this clone, or not comparable with HEAD (force push, rewritten history): all
-#     seven. Building too much costs runner minutes; missing a change would ship an image without it.
+#     six. Building too much costs runner minutes; missing a change would ship an image without it.
 #   - HEAD a proper ancestor of BASE (an older run started again after a newer one succeeded): nothing, the newer run
 #     built every change up to its own commit.
 set -euo pipefail
@@ -42,7 +43,7 @@ head=$(git -C "$repo_root" rev-parse --verify --quiet "$2^{commit}") || fail "HE
 
 all() {
   echo "build every service: $1" >&2
-  printf '%s\n' "${svp_services[@]}" | sort | paste -sd' ' -
+  printf '%s\n' "${built_services[@]}" | sort | paste -sd' ' -
   exit 0
 }
 
@@ -97,7 +98,7 @@ done <<<"$changed"
 tools=$(git -C "$repo_root" diff --name-only --no-renames -G '^(TRIVY|SYFT|GRYPE|COSIGN)_IMAGE[[:space:]]*:=' \
   "$base" "$head" -- Makefile) || fail "compare the tool images of the Makefile since $base"
 [ -z "$tools" ] || all "the image pipeline changed (a tool image pinned in the Makefile)"
-for svc in "${svp_services[@]}"; do
+for svc in "${built_services[@]}"; do
   hit=
   while IFS= read -r prefix; do
     while IFS= read -r path; do

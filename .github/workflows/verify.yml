@@ -23,10 +23,12 @@
 # - the inputs reach the scripts only through env (SCENARIO, SVP_VERIFY_TARGETS, SVP_VERIFY_WEB_REF) and
 #   deploy/ci/verify-run.sh checks them again with a case; if: compares the scenario as an expression, never in a
 #   shell. A scheduled run has no inputs: each job's SCENARIO falls back to its own scenario, the targets are empty
-#   (every one) and so is web_ref (the web client's code as without it);
-# - web_ref, checked in each job's first step, is a branch or a full commit SHA of svp-web, the web client's repository;
-#   verify-run.sh clones it from github.com/anhnvcoder/svp-web only (make web-clone), so a fork's code never runs here,
-#   and only for the scenarios that build or test the web (dev-k3d, web-canary, gitops);
+#   (every one) and so is web_ref (the web client's code at the commit of the web release staging runs);
+# - the web client's code is svp-web, its repository: the step "Clone svp-gitops and svp-web" (verify-run.sh --clones)
+#   clones it from github.com/anhnvcoder/svp-web only (make web-clone), so a fork's code never runs here, for the
+#   scenarios that build, test or measure the web (compose-obs, dev-k3d, web-canary, gitops), before Node, pnpm, its
+#   packages and Playwright's browsers are installed as that clone pins them; at web_ref, checked in each job's first
+#   step, a branch or a full commit SHA of svp-web, or without it at the commit of the web release staging runs;
 # - make env writes a .env of fresh random secrets that lives on this runner until the job ends; the cluster makes more
 #   (GlitchTip's tokens, its CA). deploy/ci/verify-mask.sh masks them in the log as soon as they exist, every target's
 #   output goes to a file on the runner instead of the log, and deploy/ci/verify-collect.sh copies into the artifact
@@ -61,7 +63,7 @@ on:
         required: false
         default: ""
       web_ref:
-        description: "dev-k3d, web-canary, gitops: the web client's code from svp-web (github.com/anhnvcoder/svp-web), main, another of its branches or a full commit SHA; empty keeps the web as without it (deploy/ci/verify-run.sh)"
+        description: "compose-obs, dev-k3d, web-canary, gitops: the web client's code from svp-web (github.com/anhnvcoder/svp-web), main, another of its branches or a full commit SHA; empty is the commit of the web release staging runs (deploy/ci/verify-run.sh)"
         type: string
         required: false
         default: ""
@@ -161,11 +163,18 @@ jobs:
           go-version: 1.27.3
           cache-dependency-path: go.sum
       - run: make ci-bridge-check
+      # svp-gitops (the web release of staging that make up runs) and svp-web (the web client's code that make
+      # web-lighthouse and make measure-upload run), anonymously over HTTPS; web_dir names the clone of svp-web. A failed
+      # clone stops the job here: no later step but the ones that always run.
+      - name: Clone svp-gitops and svp-web
+        id: clones
+        run: deploy/ci/verify-run.sh --clones "$SCENARIO"
+      # Node and pnpm as the clone pins them (its .nvmrc, the packageManager field of its package.json).
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: web/.nvmrc
+          node-version-file: ${{ steps.clones.outputs.web_dir }}/.nvmrc
       - name: Install pnpm
-        working-directory: web
+        working-directory: ${{ steps.clones.outputs.web_dir }}
         run: |
           version=$(node -p 'require("./package.json").packageManager.split("@")[1]')
           npm install -g "pnpm@$version"
@@ -175,11 +184,13 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends postgresql-client redis-tools ffmpeg jq
-      # make web-lighthouse needs lhci from web/node_modules and Playwright's Chromium, and make measure-upload uploads
-      # from Chromium; this scenario runs no test on WebKit.
-      - run: make web-install
+      # make web-lighthouse needs lhci from the clone's node_modules and Playwright's Chromium, and make measure-upload
+      # uploads from Chromium; this scenario runs no test on WebKit.
+      - name: Install the web client's packages
+        working-directory: ${{ steps.clones.outputs.web_dir }}
+        run: make install
       - name: Install the Playwright browser
-        working-directory: web
+        working-directory: ${{ steps.clones.outputs.web_dir }}
         run: pnpm exec playwright install --with-deps chromium
       - run: make env
       - run: deploy/ci/verify-mask.sh env
@@ -266,11 +277,18 @@ jobs:
       # k3d and Helm for deploy/k8s/install.sh and the drills, which call them by name; kubectl is the runner image's
       # (deploy/ci/verify-host.sh checks its version against k3s).
       - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      # As in job compose. Only dev-k3d and web-canary build, test or measure the web and get a clone of svp-web
+      # (web_dir); k6-cloud-mini, chaos and velero run the web release of staging and need no Node.
+      - name: Clone svp-gitops and svp-web
+        id: clones
+        run: deploy/ci/verify-run.sh --clones "$SCENARIO"
+      - if: steps.clones.outputs.web_dir != ''
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: web/.nvmrc
+          node-version-file: ${{ steps.clones.outputs.web_dir }}/.nvmrc
       - name: Install pnpm
-        working-directory: web
+        if: steps.clones.outputs.web_dir != ''
+        working-directory: ${{ steps.clones.outputs.web_dir }}
         run: |
           version=$(node -p 'require("./package.json").packageManager.split("@")[1]')
           npm install -g "pnpm@$version"
@@ -279,10 +297,14 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends ffmpeg jq netcat-openbsd
-      # make k8s-web-e2e runs on Chromium and WebKit.
-      - run: make web-install
+      # make k8s-web-e2e runs on Chromium and WebKit, the web's canary drill its clients on Chromium.
+      - name: Install the web client's packages
+        if: steps.clones.outputs.web_dir != ''
+        working-directory: ${{ steps.clones.outputs.web_dir }}
+        run: make install
       - name: Install the Playwright browsers
-        working-directory: web
+        if: steps.clones.outputs.web_dir != ''
+        working-directory: ${{ steps.clones.outputs.web_dir }}
         run: pnpm exec playwright install --with-deps chromium webkit
       - run: make env
       - run: deploy/ci/verify-mask.sh env
@@ -379,11 +401,15 @@ jobs:
         if: steps.tools.outputs.cache-hit != 'true'
         run: make tools ci-tools
       - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      # As in job compose: svp-web for the web's e2e tests and the Sentry CLI of the source map upload.
+      - name: Clone svp-gitops and svp-web
+        id: clones
+        run: deploy/ci/verify-run.sh --clones "$SCENARIO"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: web/.nvmrc
+          node-version-file: ${{ steps.clones.outputs.web_dir }}/.nvmrc
       - name: Install pnpm
-        working-directory: web
+        working-directory: ${{ steps.clones.outputs.web_dir }}
         run: |
           version=$(node -p 'require("./package.json").packageManager.split("@")[1]')
           npm install -g "pnpm@$version"
@@ -391,9 +417,11 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends ffmpeg jq netcat-openbsd
-      - run: make web-install
+      - name: Install the web client's packages
+        working-directory: ${{ steps.clones.outputs.web_dir }}
+        run: make install
       - name: Install the Playwright browsers
-        working-directory: web
+        working-directory: ${{ steps.clones.outputs.web_dir }}
         run: pnpm exec playwright install --with-deps chromium webkit
       - run: make env
       - run: deploy/ci/verify-mask.sh env

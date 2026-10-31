@@ -28,8 +28,8 @@
 #   - records left out are listed with why; 100 records, as many as one list returns: warned about; a bad --days is
 #     refused; the JSON goes into a directory that does not exist yet;
 #   - release source web: with no record holding a web release of svp-web, --clones names nothing and the run needs
-#     no clone of svp-web (none exists, and web/ of the checkout is no clone); records that do (G7 at wa, G8 at wc of
-#     a throwaway clone of svp-web, after G4 of backend's web): --clones names web, the run without a clone stops
+#     no clone of svp-web (none exists); records that do (G7 at wa, G8 at wc of a throwaway clone of svp-web, after G4
+#     of backend's web): --clones names web, the run without a clone stops
 #     saying why, and with one (SVP_WEB_DIR) the lead time of web counts the commits of svp-web: none at the first
 #     deployment of its web, wb and wc at the next; once a later commit of the code repository drops web from
 #     backend's services in the table, the record whose web is backend's still counts (judged by the table at its
@@ -99,7 +99,7 @@ chmod 755 "$work/bin/gh"
 # collector config, docs.
 tree=$work/code
 mkdir -p "$tree/deploy/k8s/values/services" "$tree/deploy/helm/svp-cluster" "$tree/deploy/observability/otelcol" \
-  "$tree/docs/postmortems" "$tree/web"
+  "$tree/docs/postmortems"
 cp -R "$here" "$tree/deploy/ci"
 cp "$src/deploy/k8s/lib.sh" "$tree/deploy/k8s/"
 mkdir -p "$tree/deploy/helm/svp-policy"
@@ -108,7 +108,6 @@ for svc in "${services[@]}"; do
   [ "$svc" = web ] && continue
   mkdir -p "$tree/services/$svc" && echo "package main // $svc" >"$tree/services/$svc/main.go"
 done
-echo "export {};" >"$tree/web/page.ts"
 echo "podSecurityVersion: v1.36" >"$tree/deploy/helm/svp-cluster/values.yaml"
 echo "receivers: {}" >"$tree/deploy/observability/otelcol/k8s-config.yaml"
 echo "# notes" >"$tree/docs/notes.md"

@@ -20,10 +20,11 @@ k8s-exclusive:
 # clone of svp-gitops is looked up first (gitops_dir), so a missing one stops the target before anything is created.
 # install.sh refuses a cluster made while the object store was MinIO (StatefulSet svp-data/minio): such a cluster is
 # made again, never upgraded in place.
-# WEB_FROM and WEB_IMAGE choose the web client as for make up (deploy/compose/compose.mk): built from its source by
-# default, or a release pulled from GHCR (the nodes pull it anonymously; the image policy only audits on this path).
-# The six backend services are always built here: IMAGES is make up's alone.
-k8s-up: k8s-exclusive env-required ## Create (or start) the registry 127.0.0.1:5111 and cluster svp (API 127.0.0.1:6550, HTTPS 127.0.0.1:8443), build and push the seven images (WEB_FROM=stg|image, WEB_IMAGE=<ghcr.io/...@sha256:...>: six, the web client runs that release), install argocd/apps/components.json of the clone of svp-gitops (../gitops beside the checkout, or SVP_GITOPS_DIR) with its base/ values, with drill traffic while a canary of the gateway or the web client runs; idempotent; refuses a cluster still running MinIO (make k8s-down first) (LOCAL LAB ONLY: a canary's drill traffic resets register rate limit keys in the cluster's Valkey db 10)
+# WEB_FROM and WEB_IMAGE choose the web client as for make up (deploy/compose/compose.mk): its release in staging by
+# default, or WEB_IMAGE (both pulled from GHCR, anonymously by the nodes; the image policy only audits on this path),
+# or built from the clone of svp-web with WEB_FROM=clone. The six backend services are always built here: IMAGES is
+# make up's alone.
+k8s-up: k8s-exclusive env-required ## Create (or start) the registry 127.0.0.1:5111 and cluster svp (API 127.0.0.1:6550, HTTPS 127.0.0.1:8443), build and push the six backend images (WEB_FROM=clone: the web client's too, from the clone of svp-web, ../frontend or SVP_WEB_DIR; otherwise the web client runs its staging release, or WEB_IMAGE=<ghcr.io/...@sha256:...> with WEB_FROM=image), install argocd/apps/components.json of the clone of svp-gitops (../gitops beside the checkout, or SVP_GITOPS_DIR) with its base/ values, with drill traffic while a canary of the gateway or the web client runs; idempotent; refuses a cluster still running MinIO (make k8s-down first) (LOCAL LAB ONLY: a canary's drill traffic resets register rate limit keys in the cluster's Valkey db 10)
 	@test -z '$(IMAGES)' || { echo "make k8s-up: IMAGES=$(IMAGES) is a setting of make up only; the cluster of the dev path builds the six backend services" >&2; exit 1; }
 	@WEB_FROM='$(WEB_FROM)' WEB_IMAGE='$(WEB_IMAGE)' bash -c '$(K8S_LIB) && gitops_dir >/dev/null && web_source && ensure_registry && ensure_cluster'
 	WEB_FROM='$(WEB_FROM)' WEB_IMAGE='$(WEB_IMAGE)' deploy/k8s/install.sh
@@ -37,10 +38,10 @@ GITOPS_REF ?= main
 gitops-clone: ## CI: clone svp-gitops anonymously into .gitops/svp-gitops (gitignored), or fetch it when it is there, and check out GITOPS_REF (default main, or a full commit SHA); refuses a clone there with uncommitted changes. A machine reads its own clone instead (../gitops beside the checkout, or SVP_GITOPS_DIR)
 	@GITOPS_REF='$(GITOPS_REF)' bash -c '$(K8S_LIB) && gitops_clone'
 
-# The web client's source, as the configuration: a machine reads its own clone (<workspace>/frontend, or SVP_WEB_DIR;
-# web/ of this repository while there is none), CI clones it with web-clone into .web/svp-web (gitignored) and sets
-# SVP_WEB_DIR there before any target that builds or tests the web. WEB_REF unset is the commit of the web release in
-# staging (image.tag of envs/stg/images/web.yaml in the clone of svp-gitops), so the tests run the code staging runs.
+# The web client's source, as the configuration: a machine reads its own clone (<workspace>/frontend, or SVP_WEB_DIR),
+# CI clones it with web-clone into .web/svp-web (gitignored) and sets SVP_WEB_DIR there before any target that builds
+# or tests the web. WEB_REF unset is the commit of the web release in staging (image.tag of envs/stg/images/web.yaml in
+# the clone of svp-gitops), so the tests run the code staging runs.
 WEB_REF ?=
 
 web-clone: ## CI: clone svp-web anonymously into .web/svp-web (gitignored), or fetch it when it is there, and check out WEB_REF (a branch or a full commit SHA; unset: the commit of the web release in staging); refuses a clone there with uncommitted changes. Then set SVP_WEB_DIR to that folder; a machine reads its own clone instead (../frontend beside the checkout, or SVP_WEB_DIR)
@@ -88,7 +89,7 @@ k8s-ca: ## Write the CA of the cluster's TLS certificates to .k8s/ca.crt (curl -
 
 # The dev tags depend only on the images' content (deploy/k8s/lib.sh, build_dev_images), so this target and the build
 # inside `make k8s-up` give the same tags for the same working tree.
-k8s-images: ## Build the seven service images from the working tree and push them to the registry 127.0.0.1:5111 as svp/<service>:dev-<image ID>
+k8s-images: ## Build the seven service images from the working tree (the web client's from the clone of svp-web) and push them to the registry 127.0.0.1:5111 as svp/<service>:dev-<image ID>
 	@bash -c '$(K8S_LIB) && ensure_registry && build_dev_images'
 
 # deploy/compose/smoke.sh through Envoy: curl trusts the cluster's CA for api.svp.localhost and s3.svp.localhost (both
@@ -123,14 +124,14 @@ measure-canary: ## Read back the latest aborted canary of the gateway (Rollout, 
 	@test -s .k8s/ca.crt || { echo "make measure-canary: .k8s/ca.crt missing; run make k8s-up (or make k8s-ca)" >&2; exit 1; }
 	$(K8S_DRILL_ENV) deploy/k8s/drills/canary.sh measure
 
-# The canary of the web client: the steps, the browser clients
-# (web/e2e/canary/clients.ts, Chromium of web/node_modules as for k8s-web-e2e) and what passes are at the top of
-# deploy/k8s/drills/web-canary.sh. Node and pnpm of web/ as for the web targets of the Makefile (WEB); Node trusts the
-# cluster's CA for the clients' registrations at the gateway. exec: the drill replaces the recipe's shell, so on SIGINT
-# or SIGTERM make waits for the drill's trap to put the release back instead of returning while it still runs.
-drill-k8s-web-canary: ## Canary drill of the web client on the dev cluster: a second build of the working tree (another build id, so another deploymentId and Server Action ids) goes 25%, 50%, 100% and is promoted under drill traffic and browser clients (an old tab opened before the canary among them), a bad one (GATEWAY_URL to a Service that does not exist: the BFF's /api answers 502) is aborted by its analysis with the stable pods untouched, then the working tree's build goes back as a canary; reloads per client by cause, Server Action 409 ratio, web-asset 404, pod restarts; table and JSON in .k8s/drills/ (LOCAL LAB ONLY: resets register rate limit keys in the cluster's Valkey db 10)
+# The canary of the web client, on a cluster whose web make k8s-up WEB_FROM=clone built: the steps, the browser clients
+# (e2e/canary/clients.ts of the clone of svp-web, web_dir, with the Node of its .nvmrc and the Chromium of its
+# node_modules) and what passes are at the top of deploy/k8s/drills/web-canary.sh. Node trusts the cluster's CA for
+# the clients' registrations at the gateway. exec: the drill replaces the recipe's shell, so on SIGINT or SIGTERM make
+# waits for the drill's trap to put the release back instead of returning while it still runs.
+drill-k8s-web-canary: ## Canary drill of the web client on the dev cluster (make k8s-up WEB_FROM=clone): a second build of the clone of svp-web (another build id, so another deploymentId and Server Action ids) goes 25%, 50%, 100% and is promoted under drill traffic and browser clients (an old tab opened before the canary among them), a bad one (GATEWAY_URL to a Service that does not exist: the BFF's /api answers 502) is aborted by its analysis with the stable pods untouched, then the clone's first build goes back as a canary; reloads per client by cause, Server Action 409 ratio, web-asset 404, pod restarts; table and JSON in .k8s/drills/ (LOCAL LAB ONLY: resets register rate limit keys in the cluster's Valkey db 10)
 	@test -s .k8s/ca.crt || { echo "make drill-k8s-web-canary: .k8s/ca.crt missing; run make k8s-up (or make k8s-ca)" >&2; exit 1; }
-	@$(WEB) exec env $(K8S_DRILL_ENV) NODE_EXTRA_CA_CERTS=$(CURDIR)/.k8s/ca.crt bash ../deploy/k8s/drills/web-canary.sh drill
+	@exec env $(K8S_DRILL_ENV) NODE_EXTRA_CA_CERTS=$(CURDIR)/.k8s/ca.crt bash deploy/k8s/drills/web-canary.sh drill
 
 drill-k8s-pdb: ## Cordon the nodes and, for the gateway then feed-service, evict both pods one after the other, as a drain does: each PodDisruptionBudget lets the first go (201) and refuses the second (429) while its replacement is Pending; uncordon, wait for two ready pods of each and print their nodes (LOCAL LAB ONLY: resets register rate limit keys in the cluster's Valkey db 10)
 	@test -s .k8s/ca.crt || { echo "make drill-k8s-pdb: .k8s/ca.crt missing; run make k8s-up (or make k8s-ca)" >&2; exit 1; }
@@ -177,24 +178,23 @@ k8s-ui-alertmanager: ## Open Alertmanager of cluster svp on http://127.0.0.1:909
 k8s-ui-glitchtip: ## Open GlitchTip of cluster svp on http://127.0.0.1:8000 (port-forward, loopback only; log in with GLITCHTIP_ADMIN_EMAIL and GLITCHTIP_ADMIN_PASSWORD of .env)
 	$(K8S_PORT_FORWARD) service/glitchtip 8000:8000
 
-# The web image's source maps: built from the working
-# tree with the build id `make k8s-up` gave the image (web_build_id of deploy/k8s/lib.sh), or with SOURCEMAPS_DIR read
-# from a folder of chunks and maps made by an earlier build (the artifact web-sourcemaps-<arch> CI exports beside the
+# The web image's source maps and the web client's end-to-end tests against cluster svp are code of svp-web too: each
+# target runs the target of svp-web its help names in the clone web_dir names, as the web targets of the Makefile do
+# (IN_WEB), against this checkout's cluster, .k8s/ca.crt and scripts (deploy/observability/glitchtip/sourcemaps.sh).
+# The maps are built from that clone with the build id make k8s-up WEB_FROM=clone gave the image (web_build_id of
+# deploy/k8s/lib.sh), or read with SOURCEMAPS_DIR from a folder of chunks and maps an earlier build made (CI's of the
 # image the GitOps cluster runs); either way checked against the chunks https://svp.localhost:8443 serves, uploaded
-# through a port-forward of its own on 127.0.0.1:8000, closed at the end. Node and pnpm of web/ as for the web targets
-# of the Makefile (WEB).
+# through a port-forward of its own on 127.0.0.1:8000, closed at the end. The e2e tests check .k8s/ca.crt and the
+# cluster, set SVP_STACK=k3d and the CA for curl and Node, and with SVP_E2E_GLITCHTIP=1 also run the browser error
+# test with the read-only token of Secret svp-obs/glitchtip-api and a port-forward of their own on 127.0.0.1:8000.
+# SVP_E2E_EVIDENCE as for web-e2e.
 SOURCEMAPS_DIR ?=
 
-k8s-web-sourcemaps: ## Upload the source maps of the web client's browser bundle, from the build cluster svp runs (dev path; SOURCEMAPS_DIR=<absolute folder> takes that folder's chunks and maps instead of a build: CI's of the image the GitOps cluster runs), to its GlitchTip with the token of Secret svp-obs/glitchtip-sourcemaps; checks first that the web serves that build (port 127.0.0.1:8000 must be free)
-	@$(WEB) bash ../deploy/observability/glitchtip/sourcemaps.sh k3d $(if $(SOURCEMAPS_DIR),'$(SOURCEMAPS_DIR)')
+k8s-web-sourcemaps: ## Upload the source maps of the web client's browser bundle, from the build cluster svp runs (dev path, make k8s-up WEB_FROM=clone; SOURCEMAPS_DIR=<absolute folder> takes that folder's chunks and maps instead of a build: CI's of the image the GitOps cluster runs), to its GlitchTip with the token of Secret svp-obs/glitchtip-sourcemaps; checks first that the web serves that build (port 127.0.0.1:8000 must be free) (make k8s-sourcemaps of svp-web)
+	@$(IN_WEB) k8s-sourcemaps $(if $(SOURCEMAPS_DIR),SOURCEMAPS_DIR='$(SOURCEMAPS_DIR)')
 
-# The web client's end-to-end tests (`make web-e2e`) against cluster svp at https://svp.localhost:8443, through
-# web/e2e/k3d-e2e.sh: it checks .k8s/ca.crt and the cluster, sets SVP_STACK=k3d and the CA for curl and Node, and with
-# SVP_E2E_GLITCHTIP=1 also runs web/e2e/glitchtip.e2e.ts with the read-only token of Secret svp-obs/glitchtip-api and a
-# port-forward of its own on 127.0.0.1:8000. SVP_E2E_EVIDENCE as for web-e2e. Node and pnpm of web/ as for the web
-# targets of the Makefile (WEB); the Playwright browsers as for web-e2e.
-k8s-web-e2e: ## Playwright end-to-end tests of the web client on Chromium and WebKit against cluster svp at https://svp.localhost:8443 (CA .k8s/ca.crt); SVP_E2E_GLITCHTIP=1 adds the browser error to GlitchTip check (needs make k8s-web-sourcemaps first, port 127.0.0.1:8000 free); SVP_E2E_EVIDENCE=<absolute folder> as for web-e2e (LOCAL LAB ONLY: deletes the register rate limit keys in the cluster's Valkey db 10)
-	@$(WEB) bash e2e/k3d-e2e.sh
+k8s-web-e2e: ## Playwright end-to-end tests of the web client on Chromium and WebKit against cluster svp at https://svp.localhost:8443 (CA .k8s/ca.crt); SVP_E2E_GLITCHTIP=1 adds the browser error to GlitchTip check (needs make k8s-web-sourcemaps first, port 127.0.0.1:8000 free); SVP_E2E_EVIDENCE=<absolute folder> as for web-e2e (make k8s-e2e of svp-web; LOCAL LAB ONLY: deletes the register rate limit keys in the cluster's Valkey db 10)
+	@$(IN_WEB) k8s-e2e
 
 # Read only, after make k8s-web-e2e: the
 # checks and their PASS/FAIL table are at the top of deploy/k8s/drills/web-obs.sh. Tempo, Prometheus and GlitchTip are

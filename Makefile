@@ -102,8 +102,8 @@ SVP_TEST_REDIS_URL ?= redis://127.0.0.1:6379/15
 .DEFAULT_GOAL := help
 
 .PHONY: help tools ci-tools generate generate-go generate-check slo otelcol-validate fmt-check vet lint actionlint buf-lint vulncheck test fuzz \
-	cover check check-go helm-check trivy-config web-lockfile-scan grype renovate-check api-contract-check hooks web-install web-dev web-generate web-generate-check \
-	web-check web-e2e measure-web measure-upload web-lighthouse web-sourcemaps
+	cover check check-go helm-check trivy-config grype renovate-check api-contract-check hooks web-e2e measure-web measure-upload \
+	web-lighthouse web-sourcemaps
 
 help: ## List the targets
 	@grep -hE '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -132,7 +132,7 @@ ci-tools: ## CI only (Linux amd64): install buf and Helm at the pinned versions 
 	tar -xzf "$$tmp/helm.tar.gz" -C "$$tmp" linux-amd64/helm || exit 1; \
 	install -m 755 "$$tmp/linux-amd64/helm" $(GOBIN)/helm
 
-generate: generate-go web-generate ## Generate all code: Go (generate-go) and the web client's API types (web-generate)
+generate: generate-go ## Generate all code (generate-go)
 
 generate-go: ## Generate Go code from proto/ (buf) and from SQL (sqlc, per service)
 	buf generate
@@ -142,8 +142,7 @@ generate-go: ## Generate Go code from proto/ (buf) and from SQL (sqlc, per servi
 # in a scratch copy of the files git tracks plus the untracked ones it does not ignore (so .env is never read), and the
 # result is compared with a second, untouched copy of the same files: the working tree is never written, so uncommitted
 # edits of generated code survive, and a file that generation adds counts as a difference too. A tracked file deleted
-# from the working tree is left out of both copies. The copy has no web/node_modules, so the web client's types are
-# checked by web-generate-check instead.
+# from the working tree is left out of both copies.
 generate-check: ## Fail when make generate-go would change or add a file: list them and print the diff (writes nothing here)
 	@tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
 	git ls-files -z -co --exclude-standard > "$$tmp/listed" || exit 1; \
@@ -179,9 +178,8 @@ otelcol-validate: ## Validate the Collector configs with the pinned Collector: o
 	$(OTELCOL) validate --config=/etc/otelcol/config.yaml --config=/etc/otelcol/elastic.yaml
 	$(OTELCOL) validate --config=/etc/otelcol/k8s.yaml
 
-# web/node_modules is left out: npm packages may ship Go sources of their own (flatted does).
 fmt-check: ## Fail and list the files that gofmt would change (generated code excluded)
-	@out=$$(find . -name '*.go' -not -path './gen/*' -not -path './.roster/*' -not -path './web/node_modules/*' -print0 \
+	@out=$$(find . -name '*.go' -not -path './gen/*' -not -path './.roster/*' -print0 \
 		| xargs -0 grep -L --null '^// Code generated .* DO NOT EDIT\.$$' | xargs -0 gofmt -l) \
 		|| { echo "gofmt failed (syntax error?)" >&2; exit 1; }; \
 	if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
@@ -248,7 +246,7 @@ fuzz: ## Fuzz each Fuzz target of PKGS for FUZZTIME (default 30s), one at a time
 		exit 1; \
 	done
 
-check: check-go web-check ## Run every check: Go (check-go) and the web client (web-check)
+check: check-go ## Run every check (check-go)
 
 check-go: fmt-check vet lint actionlint buf-lint vulncheck test ## Run the Go, workflow and proto checks
 
@@ -282,43 +280,6 @@ trivy-config: ## trivy config on the repository, report only (TRIVY_CONFIG_SARIF
 	env -u DOCKER_DEFAULT_PLATFORM docker run --rm --user "$$(id -u):$$(id -g)" -v "$(CURDIR):/src:ro" --workdir /src \
 		"$$@" --quiet --cache-dir /tmp/trivy --ignorefile deploy/ci/trivy-config-ignore.yaml --exit-code 0 .
 
-# Vulnerability gate of the web client's npm dependencies, read from the lockfile: the web image shows trivy only the
-# few packages left in its node_modules, since the bundler folds the server's dependencies into its chunks.
-# Development dependencies count too: they run in CI and
-# build the bundle that ships. deploy/ci/scan-gate.sh decides as for an image: any CRITICAL left after
-# .trivyignore.yaml fails, fixed upstream or not; HIGH and below are only counted. Only the lockfile is mounted
-# (read-only), at web/pnpm-lock.yaml under the scan root so the findings point at the file of the repository. A report
-# with no npm package fails too: a lockfile format trivy no longer reads would otherwise pass with nothing scanned.
-# trivy needs the network for its DB, and a DB it cannot download fails the target: no scan against a DB of unknown
-# age. WEB_LOCKFILE (absolute path of a file named pnpm-lock.yaml) scans another lockfile, for a negative check.
-# WEB_LOCKFILE_SARIF set to an absolute path writes a SARIF report of the HIGH and CRITICAL findings there, before the
-# gate decides, so a blocked lockfile still shows on main (CI uploads it). SVP_TRIVY_CACHE, when set, keeps the DB in
-# that directory (CI restores it with actions/cache, as images.yml does); unset, the DB goes to a cache inside the
-# container.
-WEB_LOCKFILE ?= $(CURDIR)/web/pnpm-lock.yaml
-WEB_LOCKFILE_SARIF ?=
-web-lockfile-scan: ## trivy fs on web/pnpm-lock.yaml, dev dependencies included; fails on any CRITICAL (WEB_LOCKFILE_SARIF=<absolute path> writes SARIF)
-	@lockfile='$(WEB_LOCKFILE)'; \
-	[ "$$(basename "$$lockfile")" = pnpm-lock.yaml ] && [ -f "$$lockfile" ] || { echo "WEB_LOCKFILE=$$lockfile is not \
-	a file named pnpm-lock.yaml" >&2; exit 1; }; \
-	lockfile="$$(cd "$$(dirname "$$lockfile")" && pwd)/pnpm-lock.yaml" || exit 1; label=$${lockfile#$(CURDIR)/}; \
-	tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
-	set -- -v "$$lockfile:/scan/web/pnpm-lock.yaml:ro" -v "$$tmp:/out"; \
-	if [ -n "$(SVP_TRIVY_CACHE)" ]; then mkdir -p "$(SVP_TRIVY_CACHE)" || exit 1; \
-	  set -- "$$@" -v "$(SVP_TRIVY_CACHE):/cache"; cache=/cache; else cache=/tmp/trivy; fi; \
-	if [ -f .trivyignore.yaml ]; then set -- "$$@" -v "$(CURDIR)/.trivyignore.yaml:/ignore.yaml:ro"; fi; \
-	trivy() { env -u DOCKER_DEFAULT_PLATFORM docker run --rm --user "$$(id -u):$$(id -g)" -e HOME=/tmp "$$@"; }; \
-	trivy "$$@" $(TRIVY_IMAGE) fs --scanners vuln --include-dev-deps --list-all-pkgs --format json \
-		--output /out/trivy.json --quiet --cache-dir "$$cache" \
-		$$([ -f .trivyignore.yaml ] && echo --ignorefile /ignore.yaml) /scan || exit 1; \
-	packages=$$(jq '[.Results[]? | select(.Type == "pnpm") | .Packages[]?] | length' "$$tmp/trivy.json") || exit 1; \
-	echo "$$label: $$packages npm packages scanned"; \
-	[ "$$packages" -gt 0 ] || { echo "FAIL  $$label: trivy read no npm package from it" >&2; exit 1; }; \
-	if [ -n "$(WEB_LOCKFILE_SARIF)" ]; then \
-	  trivy "$$@" -v "$$(dirname "$(WEB_LOCKFILE_SARIF)"):/sarif" $(TRIVY_IMAGE) convert --format sarif \
-		--severity HIGH,CRITICAL --output "/sarif/$$(basename "$(WEB_LOCKFILE_SARIF)")" /out/trivy.json || exit 1; fi; \
-	deploy/ci/scan-gate.sh --fs "$$label" "$$tmp/trivy.json"
-
 # The grype gate of the image pipeline, from a machine: grype on an SPDX SBOM, then deploy/ci/scan-gate.sh --grype (any
 # Critical left after .trivyignore.yaml fails; an expired entry there fails too). SBOM=<absolute path> scans that
 # document; IMAGE=<ref>@sha256:<digest> [ARCH=amd64|arm64] first has the pinned syft read the image of that platform
@@ -350,174 +311,30 @@ api-contract-check: ## Check the version rule of the gateway's OpenAPI spec agai
 hooks: ## Point git at .githooks (run once per clone)
 	git config core.hooksPath .githooks
 
-# Web client in web/. Node's major is pinned in web/.nvmrc and pnpm's exact
-# version in the packageManager field of web/package.json; every web target checks both before it runs anything and,
-# on a mismatch, prints the command that installs the right one. nvm leaves PATH to the shell and its default may be
-# another major, so the newest nvm install of the pinned major goes first on PATH; without one (CI's setup-node) PATH
-# is used as it is. Next's anonymous telemetry is off for every web target.
-WEB_NODE_MAJOR := $(shell cat web/.nvmrc 2>/dev/null)
-NVM_DIR ?= $(HOME)/.nvm
-WEB_NODE_BIN := $(shell ls -d $(NVM_DIR)/versions/node/v$(WEB_NODE_MAJOR).*/bin 2>/dev/null | sort -V | tail -1)
-WEB := cd web && export $(if $(WEB_NODE_BIN),PATH="$(WEB_NODE_BIN):$$PATH") NEXT_TELEMETRY_DISABLED=1 && \
-	node_major=$$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null); \
-	if [ "$$node_major" != "$(WEB_NODE_MAJOR)" ]; then echo "web/ needs Node $(WEB_NODE_MAJOR) (web/.nvmrc), found \
-	$$(node --version 2>/dev/null || echo none): nvm install $(WEB_NODE_MAJOR)" >&2; exit 1; fi; \
-	pnpm_want=$$(node -p 'require("./package.json").packageManager.split("@")[1]') || exit 1; \
-	if [ "$$(pnpm --version 2>/dev/null)" != "$$pnpm_want" ]; then echo "web/ needs pnpm $$pnpm_want (packageManager of \
-	web/package.json), found $$(pnpm --version 2>/dev/null || echo none): npm install -g pnpm@$$pnpm_want" >&2; exit 1; fi;
+# The web client's end-to-end tests, measurements and source map upload against the stack of make up are code of
+# svp-web (its e2e/, lighthouse/ and Makefile). Each target here runs the target of svp-web its help names, in the
+# clone web_dir of deploy/k8s/lib.sh names (<workspace>/frontend, or SVP_WEB_DIR, which CI points at the clone of make
+# web-clone), with that clone's Node, pnpm and Playwright browsers, against this checkout's stack, scripts and .env
+# (SVP_BACKEND_DIR); results go to test-results/ of the clone. LOCAL LAB ONLY: the e2e seed and every Playwright worker,
+# measure-upload and Lighthouse delete the gateway's register rate limit keys in Redis db 10, as make smoke does.
+IN_WEB = dir=$$(bash -c '$(K8S_LIB) && web_dir') && SVP_BACKEND_DIR='$(CURDIR)' $(MAKE) --no-print-directory -C "$$dir"
 
-web-install: ## Install the web client's packages exactly as web/pnpm-lock.yaml pins them
-	@$(WEB) pnpm install --frozen-lockfile
+web-e2e: ## Playwright end-to-end tests of the web client on Chromium and WebKit against the stack of make up (make e2e of svp-web)
+	@$(IN_WEB) e2e
 
-# next dev on loopback only, against the gateway of `make up` and the web's session database (Redis db 9). The
-# browser origin is http://localhost:3002, not 127.0.0.1: POST requests from any other origin are refused as CSRF.
-web-dev: ## Run the web client in dev mode at http://localhost:3002 against the gateway at 127.0.0.1:8080
-	@$(WEB) GATEWAY_URL=http://127.0.0.1:8080 REDIS_URL=redis://127.0.0.1:6379/9 APP_ORIGIN=http://localhost:3002 \
-		MEDIA_ORIGIN=http://127.0.0.1:9000 UPLOAD_ORIGIN=http://127.0.0.1:9000 \
-		pnpm dev --port 3002 --hostname 127.0.0.1
+measure-web: ## Run the web client's e2e tests and print time to first frame after a swipe (p50/p95 per browser) and the memory of container web at rest and after (make measure-web of svp-web)
+	@$(IN_WEB) measure-web
 
-web-generate: ## Generate web/gen/api.d.ts from services/gateway/openapi.yaml (openapi-typescript)
-	@$(WEB) pnpm generate
+measure-upload: ## Upload a ~100 MB video from Chromium through /upload; print time, throughput, page CPU and time to READY; needs ffmpeg and jq (make measure-upload of svp-web)
+	@$(IN_WEB) measure-upload
 
-# Generates into a scratch directory and compares with web/gen/api.d.ts; the working tree is never written. The input
-# is the one of the generate script in web/package.json.
-web-generate-check: ## Fail when make web-generate would change web/gen/api.d.ts: print the diff (writes nothing here)
-	@$(WEB) tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
-	pnpm --silent exec openapi-typescript ../services/gateway/openapi.yaml --output "$$tmp/api.d.ts" >/dev/null || exit 1; \
-	if diff -q gen/api.d.ts "$$tmp/api.d.ts" >/dev/null; then echo "web/gen/api.d.ts is up to date"; exit 0; fi; \
-	echo "make web-generate changes web/gen/api.d.ts (run make web-generate and commit the result):"; \
-	diff -u gen/api.d.ts "$$tmp/api.d.ts"; exit 1
+web-lighthouse: ## Lighthouse (mobile, one run per page) of the feed logged in and /v/{id} logged out: LCP/CLS/TBT thresholds (make lighthouse of svp-web)
+	@$(IN_WEB) lighthouse
 
-# Bundle budgets on the output of next build, gzip, checked by size-limit with web/.size-limit.json. Each route has
-# two budgets. The first covers what the route adds to Next's
-# runtime: the chunks the build's client reference manifest lists for the route's layouts, page and error boundaries
-# (the scripts of its HTML), plus the chunks those load lazily (hls.js on the feed and /v/[id]). The second covers the
-# whole first load, that set plus the runtime (rootMainFiles of build-manifest.json: React, react-dom, Next's router,
-# the same on every route), so a runtime that grows fails the check too. The nomodule polyfill, which current browsers
-# skip, is left out of both. Turbopack names chunks by a content hash, so each set is copied to .next/size-limit/<set>/
-# first, where the config's globs find it. The copy drops each chunk's last line, the sourceMappingURL comment, as the
-# image's build does (deploy/docker/web.Dockerfile): the budgets count the bytes the image serves, debug id included.
-define WEB_SIZE_CHUNKS
-const fs = require("node:fs");
-const runtime = JSON.parse(fs.readFileSync(".next/build-manifest.json", "utf8")).rootMainFiles;
-function routeChunks(page) {
-  globalThis.__RSC_MANIFEST = {};
-  require(process.cwd() + "/.next/server/app/" + page + "_client-reference-manifest.js");
-  const chunks = new Set(Object.values(globalThis.__RSC_MANIFEST["/" + page].entryJSFiles).flat());
-  for (const chunk of chunks) {
-    const refs = fs.readFileSync(".next/" + chunk, "utf8").match(/static\/chunks\/[\w-]+\.js/g) ?? [];
-    for (const ref of refs) if (!runtime.includes(ref)) chunks.add(ref);
-  }
-  return [...chunks].filter((chunk) => !runtime.includes(chunk));
-}
-const sets = {
-  runtime,
-  feed: routeChunks("(main)/page"),
-  login: routeChunks("(auth)/login/page"),
-  upload: routeChunks("(main)/upload/page"),
-  video: routeChunks("v/[id]/page"),
-};
-fs.rmSync(".next/size-limit", { recursive: true, force: true });
-for (const [name, chunks] of Object.entries(sets)) {
-  fs.mkdirSync(".next/size-limit/" + name, { recursive: true });
-  for (const chunk of chunks) {
-    const served = fs.readFileSync(".next/" + chunk, "utf8").replace(/^\/\/# sourceMappingURL=.*\n?/gm, "");
-    fs.writeFileSync(".next/size-limit/" + name + "/" + chunk.split("/").pop(), served);
-  }
-}
-endef
-export WEB_SIZE_CHUNKS
-
-# The standalone server of next build, the one the image runs, started once and asked for /healthz: a module its
-# instrumentation hook loads but the build left out (a require the bundler and the trace cannot follow) passes the
-# unit tests and next build, yet makes every route of the image answer 500. On 127.0.0.1 only, at a free port the
-# check picks itself; the server gets a fixed environment, not this shell's, whose hosts end in .invalid: /healthz
-# reads neither Redis nor the gateway, so nothing is reached. Stopped by its own handle once it answers.
-define WEB_STANDALONE_BOOT
-const { spawn } = require("node:child_process");
-const { once } = require("node:events");
-const net = require("node:net");
-(async () => {
-  const probe = net.createServer().listen(0, "127.0.0.1");
-  await once(probe, "listening");
-  const port = String(probe.address().port);
-  probe.close();
-  const server = spawn(process.execPath, ["server.js"], {
-    cwd: ".next/standalone",
-    env: {
-      NODE_ENV: "production",
-      NEXT_TELEMETRY_DISABLED: "1",
-      HOSTNAME: "127.0.0.1",
-      PORT: port,
-      GATEWAY_URL: "http://gateway.invalid",
-      REDIS_URL: "redis://redis.invalid:6379/9",
-      APP_ORIGIN: "http://localhost:" + port,
-      MEDIA_ORIGIN: "https://media.invalid",
-      UPLOAD_ORIGIN: "https://upload.invalid",
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  const output = [];
-  server.stdout.on("data", (chunk) => output.push(chunk));
-  server.stderr.on("data", (chunk) => output.push(chunk));
-  let exit = null;
-  const exited = once(server, "exit").then(([code, signal]) => (exit = signal ?? code));
-  let status = "no answer within 30 s";
-  const deadline = Date.now() + 30000;
-  while (Date.now() < deadline) {
-    if (exit !== null) {
-      status = "none, the server exited (" + exit + ")";
-      break;
-    }
-    try {
-      status = (await fetch("http://127.0.0.1:" + port + "/healthz", { signal: AbortSignal.timeout(5000) })).status;
-      break;
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    }
-  }
-  server.kill();
-  await exited;
-  if (status === 200) {
-    console.log("standalone server: GET /healthz 200");
-    return;
-  }
-  process.stderr.write(Buffer.concat(output));
-  console.error("standalone server: GET /healthz " + status);
-  process.exitCode = 1;
-})();
-endef
-export WEB_STANDALONE_BOOT
-
-web-check: ## Lint, format check, typecheck, unit tests (Redis db 15 as for test), production build, a start of its standalone server and bundle budgets of the web client
-	@$(WEB) pnpm lint && pnpm format:check && pnpm typecheck && \
-		SVP_TEST_REDIS_URL='$(SVP_TEST_REDIS_URL)' pnpm test && pnpm build && \
-		node -e "$$WEB_STANDALONE_BOOT" && node -e "$$WEB_SIZE_CHUNKS" && pnpm size
-
-# Both need the compose stack (make up) and the Playwright browsers (pnpm exec playwright install chromium webkit in
-# web/). LOCAL LAB ONLY: the seed (web/e2e/seed.sh) and every Playwright worker (web/e2e/fixtures.ts) delete the
-# gateway's register rate limit keys in Redis db 10, as make smoke does.
-web-e2e: ## Playwright end-to-end tests of the web client on Chromium and WebKit against the stack of make up (pnpm e2e)
-	@$(WEB) pnpm e2e
-
-measure-web: ## Run web-e2e and print time to first frame after a swipe (p50/p95 per browser) and the memory of container web at rest and after; JSON in web/test-results/
-	@$(WEB) bash e2e/measure-web.sh
-
-# Needs the stack (make up), ffmpeg and jq; LOCAL LAB ONLY like web-e2e (the seed runs first).
-measure-upload: ## Upload a ~100 MB video from Chromium through /upload; print time, throughput, page CPU and time to READY; JSON in web/test-results/
-	@$(WEB) bash e2e/measure-upload.sh
-
-# Needs the stack (make up) and Playwright's Chromium (pnpm exec playwright install chromium in web/); one run per page,
-# so the numbers carry noise. Not in CI until the stack runs there. LOCAL LAB ONLY like web-e2e: web/lighthouse/run.sh
-# registers a fresh user and deletes the gateway's register rate limit keys in Redis db 10 first.
-web-lighthouse: ## Lighthouse (mobile, one run per page) of the feed logged in and /v/{id} logged out: LCP/CLS/TBT thresholds, reports in web/test-results/lighthouse/
-	@$(WEB) bash lighthouse/run.sh
-
-# Needs the stack with GlitchTip (make up OBS=lgtm, which writes SENTRY_SOURCEMAPS_TOKEN to .env); builds the stage
-# sourcemaps of the web image from the working tree, which the build cache answers with the maps of the image make up
-# built (deploy/observability/glitchtip/sourcemaps.sh).
-web-sourcemaps: ## Upload the source maps of the web client's browser bundle, from the build the stack of make up OBS=lgtm runs, to its GlitchTip (http://127.0.0.1:8000); checks first that the web serves that build
-	@$(WEB) bash ../deploy/observability/glitchtip/sourcemaps.sh compose
+# Only for a web client built from that clone (make up WEB_FROM=clone OBS=lgtm): a release keeps the build id CI gave
+# it, and its maps come from CI.
+web-sourcemaps: ## Upload the source maps of the web client's browser bundle, from the build the stack of make up OBS=lgtm WEB_FROM=clone runs, to its GlitchTip (http://127.0.0.1:8000); checks first that the web serves that build (make sourcemaps of svp-web)
+	@$(IN_WEB) sourcemaps
 
 # Docker and compose targets live in their own file (stage 1, compose card).
 -include deploy/compose/compose.mk

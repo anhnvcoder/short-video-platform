@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Canary of the web client on cluster svp (make drill-k8s-web-canary), on the dev path: the web's Helm release from
-# the working tree, no git. With drill traffic running (deploy/k8s/drills/traffic.sh, which requests /login and one
-# static asset; started here unless one runs, and then stopped) and, during each canary, browser clients of their own
-# (web/e2e/canary/clients.ts, Chromium of web/node_modules: users logged in through the login page, client-side
-# navigations, a Server Action, GET /api/feed/explore every second; read its header for what it counts):
-#   0. builds: the web image of the working tree (A, build id web_build_id, the one make k8s-up runs: checked) and a
-#      second build of the same source with build id <A>-canary (B), so its deploymentId, Server Action ids and chunks
-#      can differ from A's: a real other build, which an annotation on the same image is not (no skew to meet).
+# the working tree, no git, its image built from the clone of svp-web (web_dir of deploy/k8s/lib.sh). With drill
+# traffic running (deploy/k8s/drills/traffic.sh, which requests /login and one static asset; started here unless one
+# runs, and then stopped) and, during each canary, browser clients of their own (e2e/canary/clients.ts of that clone,
+# with the Node of its .nvmrc and the Chromium of its node_modules: users logged in through the login page,
+# client-side navigations, a Server Action, GET /api/feed/explore every second; read its header for what it counts):
+#   0. builds: the web image of the clone (A, build id web_build_id, the one make k8s-up WEB_FROM=clone runs:
+#      checked) and a second build of the same source with build id <A>-canary (B), so its deploymentId, Server Action
+#      ids and chunks can differ from A's: a real other build, which an annotation on the same image is not (no skew to
+#      meet).
 #      Built by build_image of deploy/k8s/lib.sh and pushed to the registry k3d-svp-registry as dev-<image ID>
 #      (the dev path's tag; Kyverno's policy is Audit there). B with A's image ID fails here, before any canary.
 #   1. good revision: image B. The clients start on stable A, the first of them an old tab that opens /me before the
@@ -44,7 +46,7 @@
 # paused or aborted and HTTPRoute web is 100/0. When GATEWAY_URL does not read back, it prints what to run by hand.
 # The clients and the drill traffic it started are stopped by their pids.
 #
-# Usage: through make (SVP_STACK=k3d, CURL_CA_BUNDLE, NODE_EXTRA_CA_CERTS, Node of web/ first on PATH). About 20
+# Usage: through make (SVP_STACK=k3d, CURL_CA_BUNDLE, NODE_EXTRA_CA_CERTS). About 20
 # minutes. LOCAL LAB ONLY: the drill, the traffic and each start of the clients delete the register rate limit keys in
 # the cluster's Valkey db 10 (deploy/compose/lib.sh).
 set -euo pipefail
@@ -97,13 +99,14 @@ put_a_back() {
   url=$(hc get values "$rollout" --namespace "$ns" --all -o json | jq -r '.env.GATEWAY_URL // "-"') || url="(not readable)"
   if [ "$url" != http://gateway:8080 ]; then
     echo "FAIL  GATEWAY_URL of release $rollout is $url, not http://gateway:8080: build A not put back (its upgrade would keep that URL);" \
-      "by hand: make k8s-up, which puts the values of the working tree and its build back through a canary" >&2
+      "by hand: make k8s-up WEB_FROM=clone, which puts the values of the working tree and the clone's build back" \
+      "through a canary" >&2
     return 1
   fi
   echo "note  putting the image of release $rollout back to $tag_a (build A, the one the drill started from)" >&2
   if ! hc upgrade "$rollout" "$chart" --namespace "$ns" --reuse-values --server-side=false \
     --set-string "image.tag=$tag_a" --set-string env.GATEWAY_URL=http://gateway:8080 >/dev/null; then
-    echo "FAIL  helm upgrade $rollout back to image $tag_a; run make k8s-up, which puts the working tree's build back" >&2
+    echo "FAIL  helm upgrade $rollout back to image $tag_a; run make k8s-up WEB_FROM=clone, which puts the clone's build back" >&2
     return 1
   fi
   while :; do
@@ -370,15 +373,15 @@ check_good_runs() {
 }
 
 # start_clients LABEL OLD_TAB: starts the browser clients for the canary LABEL (OLD_TAB 1: the first is the old tab)
-# in the background, from web/ with the Node of the make target, into $work/clients-LABEL; returns once they are set
-# up. Each start registers fresh users, so the register rate limit keys are reset first (LOCAL LAB ONLY).
+# in the background, from the clone of svp-web with the Node of its .nvmrc, into $work/clients-LABEL; returns once
+# they are set up. Each start registers fresh users, so the register rate limit keys are reset first (LOCAL LAB ONLY).
 start_clients() {
   local dir="$work/clients-$1" n=$clients_n deadline=$((SECONDS + 180))
   if [ "$2" = 1 ]; then n=$((n + 1)); fi
   mkdir -p "$dir"
   reset_register_limit >/dev/null
   # exec in the subshell, so $! is node's own pid.
-  (cd "$repo_root/web" && exec node e2e/canary/clients.ts "$web_base" "$base" "$media_origin" "$dir" "$n" "$2") \
+  (cd "$web_src" && exec node e2e/canary/clients.ts "$web_base" "$base" "$media_origin" "$dir" "$n" "$2") \
     >"$dir/out" 2>&1 &
   clients_pid=$!
   until [ -e "$dir/ready" ]; do
@@ -481,25 +484,35 @@ good_canary() {
 
 rollout_json
 [ "$(rget '.status.phase')" = Healthy ] ||
-  fail "rollout $ns/$rollout is $(rget '.status.phase'), not Healthy; run make k8s-up first"
+  fail "rollout $ns/$rollout is $(rget '.status.phase'), not Healthy; run make k8s-up WEB_FROM=clone first"
 hc status "$rollout" --namespace "$ns" >/dev/null 2>&1 || fail "no Helm release $rollout in $ns (the dev path, make k8s-up)"
-command -v node >/dev/null || fail "node not found; run the drill through make drill-k8s-web-canary"
+# The browser clients' code and Node: the clone of svp-web and the major of its .nvmrc. The newest nvm install of that
+# major goes first on PATH when there is one (nvm leaves PATH to the shell, whose default may be another major), as
+# the Makefile of svp-web picks it; without one (CI's setup-node) PATH is used as it is.
+web_src=$(web_dir) || exit 1
+node_major=$(cat "$web_src/.nvmrc" 2>/dev/null) || fail "$web_src/.nvmrc not found: no Node major for the browser clients"
+node_bin=$(ls -d "${NVM_DIR:-$HOME/.nvm}/versions/node/v$node_major."*/bin 2>/dev/null | sort -V | tail -n 1) || node_bin=
+[ -z "$node_bin" ] || PATH=$node_bin:$PATH
+[ "$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null)" = "$node_major" ] ||
+  fail "the browser clients need Node $node_major (.nvmrc of $web_src), found $(node --version 2>/dev/null || echo none): nvm install $node_major"
+[ -d "$web_src/node_modules" ] ||
+  fail "$web_src has no node_modules: run make install there, then pnpm exec playwright install chromium"
 values=$(hc get values "$rollout" --namespace "$ns" --all -o json) || fail "read the values of release $rollout"
 tag_now=$(jq -r '.image.tag' <<<"$values")
 p99_ms=$(jq -r '.canaryLimits.p99Ms' <<<"$values")
 error_ratio=$(jq -r '.canaryLimits.errorRatio' <<<"$values")
 [ "$(jq -r '.env.GATEWAY_URL' <<<"$values")" = http://gateway:8080 ] ||
-  fail "GATEWAY_URL of release $rollout is not http://gateway:8080 (an interrupted drill?); run make k8s-up first"
+  fail "GATEWAY_URL of release $rollout is not http://gateway:8080 (an interrupted drill?); run make k8s-up WEB_FROM=clone first"
 
 # 0. The two builds.
-build_a=$(web_build_id) || fail "compute the build id of web/"
+build_a=$(web_build_id) || fail "compute the build id of $web_src"
 build_b="$build_a-canary"
-echo "0. builds: A $build_a (the working tree's, as make k8s-up builds it), B $build_b (same source, built again)"
+echo "0. builds: A $build_a (the clone's, as make k8s-up WEB_FROM=clone builds it), B $build_b (same source, built again)"
 build_image web "$repo_root" || fail "build the web image A"
 image_a=$image_id
 tag_a="dev-${image_a:0:12}"
 [ "$tag_now" = "$tag_a" ] ||
-  fail "release $rollout runs image tag $tag_now, not the working tree's build $tag_a; run make k8s-up first"
+  fail "release $rollout runs image tag $tag_now, not the build $tag_a of $web_src; run make k8s-up WEB_FROM=clone first"
 build_image web "$repo_root" "$build_b" || fail "build the web image B"
 image_b=$image_id
 [ "$image_b" != "$image_a" ] ||

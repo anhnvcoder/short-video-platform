@@ -37,8 +37,8 @@
 #      say it was sent; the check that the stack maps is e2e/glitchtip.e2e.ts (SVP_E2E_GLITCHTIP=1).
 # The temporary directory and the port-forward go away when the script ends, however it ends.
 #
-# Usage: sourcemaps.sh compose|k3d [MAPS_DIR] (run from the Makefile, which puts Node and pnpm of the web first on
-# PATH).
+# Usage: sourcemaps.sh compose|k3d [MAPS_DIR] (run from the Makefile of svp-web, make sourcemaps or make
+# k8s-sourcemaps, which puts the Node and pnpm of its clone first on PATH).
 set -euo pipefail
 
 # shellcheck source=deploy/k8s/lib.sh
@@ -89,7 +89,7 @@ compose)
   running=$(docker_ ps --filter label=com.docker.compose.project=svp --filter label=com.docker.compose.service=web \
     --format '{{.Image}}') || fail "read the image of the web container"
   [ -n "$maps_dir" ] || case $running in "" | svp/web:dev) ;; *)
-    fail "the web of the stack runs release $running, built by CI with a build id of its own: its maps are not built here (make web-sourcemaps applies to a web that make up built)"
+    fail "the web of the stack runs release $running, built by CI with a build id of its own: its maps are not built here (make web-sourcemaps applies to a web that make up WEB_FROM=clone built)"
     ;;
   esac
   glitchtip_up || fail "GlitchTip does not answer at $glitchtip; run make up OBS=lgtm first"
@@ -118,7 +118,7 @@ k3d)
     running=$(kc -n svp get "$(workload_kind svp web)" web \
       -o jsonpath='{.spec.template.spec.containers[?(@.name=="web")].image}') || fail "read the image of svp/web"
     case $running in "" | k3d-svp-registry:5111/*) ;; *)
-      fail "the web of cluster svp runs release $running, built by CI with a build id of its own: give its maps as SOURCEMAPS_DIR (CI exports them beside the image)"
+      fail "the web of cluster svp runs release $running, built by CI with a build id of its own: give its maps as SOURCEMAPS_DIR (CI exports them beside the image), or build the web with make k8s-up WEB_FROM=clone"
       ;;
     esac
     build_id=$(web_build_id) || fail "compute the build id of the web"

@@ -13,11 +13,12 @@
 # run builds for (use_build_source of common.sh: the source whose repository runs the job), so an image no source of
 # this run publishes is refused before anything is built. The code is that of code_root: this checkout, or the
 # checkout of another release source's repository named by SVP_CODE_ROOT, whose CI runs this script from a pinned
-# checkout of this one; its HEAD must be the commit of the run (check_code_tree). In this checkout the web image builds
-# from the context web/ (build_context of deploy/k8s/lib.sh); in another repository's tree, the image builds from its
-# top with the Dockerfile there, and its Dockerfile, pnpm-lock.yaml and .trivyignore.yaml must be there. The web image
-# gets SVP_BUILD_ID set to the first 12 hex digits of the commit, the image's tag: both architectures of a commit get
-# the same id, which Next uses as its deploymentId and the server as its release name.
+# checkout of this one; its HEAD must be the commit of the run (check_code_tree). This checkout builds only its six
+# services (built_services of deploy/k8s/lib.sh) and the drill images: web, still a service of its release source
+# while prd runs that release, has no source here. In another repository's tree, the image builds from its top with
+# the Dockerfile there, and its Dockerfile, pnpm-lock.yaml and .trivyignore.yaml must be there. The web image gets
+# SVP_BUILD_ID set to the first 12 hex digits of the commit, the image's tag: both architectures of a commit get the
+# same id, which Next uses as its deploymentId and the server as its release name.
 # trivy then reads the package.json of every package in the image's node_modules, so npm packages go
 # through the same CRITICAL and secret gate, and syft lists them in the SBOM. ARCH (amd64, arm64) must be this host's
 # architecture. OUT receives:
@@ -98,8 +99,9 @@ drill-vulnerable) file=$script_root/deploy/ci/drill/vulnerable.Dockerfile ;;
 drill-unsigned) file=$script_root/$(dockerfile gateway) build_args=(--build-arg SERVICE=gateway) ;;
 *)
   if [ "$code_root" = "$script_root" ]; then
+    printf '%s\n' "${built_services[@]}" | grep -qxF -- "$image" ||
+      fail "$image is not an image this repository builds (${built_services[*]}): its source is another repository's"
     file=$code_root/$(dockerfile "$image")
-    context=$code_root/$(build_context "$image")
   else
     # Another repository's tree is one image: its Dockerfile at the top, the whole tree its context.
     require_code_files Dockerfile pnpm-lock.yaml .trivyignore.yaml
