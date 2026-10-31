@@ -108,10 +108,19 @@ fi
 # --- Argo CD's syncs of REV: "app started finished" per history entry, oldest first.
 apps_json=$(kc -n argocd get applications.argoproj.io -o json) || fail "read the Applications of namespace argocd"
 # git_revs: the commit SHAs among a history entry's or sync result's revisions (a chart source's are versions).
-git_revs='def git_revs: [.revision, (.revisions // [])[]] | map(select(type == "string" and test("^[0-9a-f]{40}$")));'
+# gitops_rev: the commit of svp-gitops a history entry synced. An Application of the root is multi-source (its chart from
+# the code repository, its values from svp-gitops) and revisions lists one revision per source, in the order of sources,
+# so the one of svp-gitops is picked by the repoURL at the same index, not by position; an entry without sources
+# (single-source) has just revision, of svp-gitops only when its source is. Null when the entry has no commit of svp-gitops.
+git_revs='def git_revs: [.revision, (.revisions // [])[]] | map(select(type == "string" and test("^[0-9a-f]{40}$")));
+  def gitops_rev: . as $e
+    | (if $e.sources == null then (if ($e.source.repoURL // "") | test("/svp-gitops(\\.git)?/?$") then $e.revision else null end)
+       else ([range(0; $e.sources | length) | select($e.sources[.].repoURL | test("/svp-gitops(\\.git)?/?$"))][0]) as $i
+         | if $i == null then null else ($e.revisions // [])[$i] end end)
+    | if type == "string" and test("^[0-9a-f]{40}$") then . else null end;'
 syncs=$(printf '%s' "$apps_json" | jq -r --arg sha "$sha" "$git_revs"'
   .items[] | .metadata.name as $app | (.status.history // [])[]
-  | select(git_revs | index($sha))
+  | select(gitops_rev == $sha)
   | "\($app) \(.deployStartedAt // .deployedAt) \(.deployedAt)"')
 # A running sync is matched on the revision it asked for and on the one it resolved that to (syncResult): a sync asked
 # for a branch (a manual sync of main) names REV only in its result.
@@ -125,7 +134,7 @@ later_than_rev() { [ "$1" != "$sha" ] && git -C "$gitops" merge-base --is-ancest
 if [ -z "$syncs" ]; then
   if [ -n "$running" ]; then waiting "Argo CD is syncing $short: ${running% }"; fi
   # Every Application follows main: once one has synced a later commit, none will sync REV any more.
-  for rev in $(printf '%s' "$apps_json" | jq -r "$git_revs"'[.items[].status.history[]? | git_revs[]] | unique[]'); do
+  for rev in $(printf '%s' "$apps_json" | jq -r "$git_revs"'[.items[].status.history[]? | gitops_rev | values] | unique[]'); do
     if later_than_rev "$rev"; then
       fail "$short cannot be measured: no Application has a sync of it in its history (Argo CD keeps the last 10 of each), and Argo CD has since synced ${rev:0:12}, a later commit; $short was pushed together with it or replaced before Argo CD's next poll. Measure ${rev:0:12} if it releases a service"
     fi
@@ -246,7 +255,7 @@ for image in "${changed[@]}"; do
   digest=${image#*@}
   # The service's own Application (named after it) must have synced REV last: a later sync may have rolled its pods.
   latest=$(printf '%s' "$apps_json" | jq -r --arg app "$svc" "$git_revs"'
-    .items[] | select(.metadata.name == $app) | [.status.history[]?] | last // {} | git_revs[0] // ""')
+    .items[] | select(.metadata.name == $app) | [.status.history[]?] | last // {} | gitops_rev // ""')
   if [ "$latest" != "$sha" ]; then
     if later_than_rev "$latest"; then
       fail "$short cannot be measured: Application $svc has synced ${latest:0:12}, a later commit, since; its pods may come from that sync. Measure the latest release commit"
@@ -255,7 +264,7 @@ for image in "${changed[@]}"; do
   fi
   # "started finished" of the first sync of REV by the service's Application: the one that applied the new pod template.
   deploy_window=$(printf '%s' "$apps_json" | jq -r --arg app "$svc" --arg sha "$sha" "$git_revs"'
-    .items[] | select(.metadata.name == $app) | [.status.history[]? | select(git_revs | index($sha))] | first // empty
+    .items[] | select(.metadata.name == $app) | [.status.history[]? | select(gitops_rev == $sha)] | first // empty
     | "\(.deployStartedAt // .deployedAt) \(.deployedAt)"')
   [ -n "$deploy_window" ] || fail "Application $svc has no sync of $short in its history"
   read -r deploy_start deploy_end <<<"$deploy_window"

@@ -649,6 +649,101 @@ grep -qF 'argocd_root_app "$gitops_url" "$sha" "$env" "$chart_repo_url"' "$here/
   ok "gitops.sh: the root is applied at the commit checked, follows the branch after the wait; release_wait follows main" ||
   fail "gitops.sh: the root is applied at the commit checked, follows the branch after the wait; release_wait follows main"
 
+# --- deploy/k8s/drills/gitops.sh (make measure-gitops) over a fake kubectl. The Applications of the root are
+# multi-source: status.history[].revisions lists the commit of the code repository (the chart) first and the commit of
+# svp-gitops (the values) second, in the order of sources. The drill must compare REV with the revision of the source
+# whose repoURL is svp-gitops, not with the first one. The scripts run from a copy (mg) so that the JSON the drill
+# writes does not land in this checkout. The clone has three commits: parent, rev (releases web) and later (docs).
+mg=$work/mg
+mkdir -p "$mg/deploy/k8s/drills" "$mg/deploy/ci" "$work/bin-mg"
+cp "$here/../k8s/lib.sh" "$mg/deploy/k8s/lib.sh"
+cp "$here/../k8s/drills/gitops.sh" "$mg/deploy/k8s/drills/gitops.sh"
+cp "$here/platform.sh" "$mg/deploy/ci/platform.sh"
+mgc=$work/mg-gitops
+git init -q "$mgc"
+git -C "$mgc" remote add origin https://github.com/anhnvcoder/svp-gitops.git
+mkdir -p "$mgc/envs/stg/images" "$mgc/base/services"
+image_file 1 >"$mgc/envs/stg/images/web.yaml"
+printf 'migrate: false\n' >"$mgc/base/services/web.yaml"
+pinned=$mgc pinned_commit parent >/dev/null
+mg_parent=$(git -C "$mgc" rev-parse HEAD)
+image_file 2 >"$mgc/envs/stg/images/web.yaml"
+pinned=$mgc pinned_commit "release web" >/dev/null
+mg_rev=$(git -C "$mgc" rev-parse HEAD)
+echo docs >"$mgc/README.md"
+pinned=$mgc pinned_commit docs >/dev/null
+mg_later=$(git -C "$mgc" rev-parse HEAD)
+git -C "$mgc" update-ref refs/remotes/origin/main "$mg_later"
+mg_chart1=1111111111111111111111111111111111111111
+mg_chart2=2222222222222222222222222222222222222222
+mg_chart_url=https://github.com/anhnvcoder/short-video-platform.git
+mg_gitops_url=https://github.com/anhnvcoder/svp-gitops.git
+cat >"$work/bin-mg/kubectl" <<'EOS'
+#!/usr/bin/env bash
+[ "$1 $2" = "--context k3d-svp" ] || exit 2
+shift 2
+case "$*" in
+  "get --raw /readyz" | "-n argocd get applications.argoproj.io svp-root") exit 0 ;;
+  "-n argocd get applications.argoproj.io -o json") cat "$FAKE_MG_DIR/apps.json" ;;
+  "-n svp get rollouts.argoproj.io web --ignore-not-found -o json" | "-n svp get job web-migrate --ignore-not-found -o json") ;;
+  "-n svp get pods -l app.kubernetes.io/name=web,app.kubernetes.io/component=server -o json") cat "$FAKE_MG_DIR/pods.json" ;;
+  "-n svp logs pod/web-1 --all-containers=true") ;;
+  *) echo "unexpected: $*" >&2; exit 2 ;;
+esac
+EOS
+printf '#!/usr/bin/env bash\nexit 1\n' >"$work/bin-mg/gh"
+chmod 755 "$work/bin-mg/kubectl" "$work/bin-mg/gh"
+jq -n --arg d "sha256:$(printf '%064d' 0 | tr 0 2)" '{items: [{metadata: {name: "web-1", creationTimestamp: "2026-10-31T06:50:40Z"},
+  spec: {containers: [{image: ("r@" + $d)}]},
+  status: {containerStatuses: [{restartCount: 0}], conditions: [{type: "Ready", status: "True", lastTransitionTime: "2026-10-31T06:50:55Z"}]}}]}' \
+  >"$work/mg-pods.json"
+# mg_apps CHART1 GITOPS1 CHART2 GITOPS2: the Applications as JSON; web (multi-source) has two history entries, the
+# second synced at 06:50:30Z to 06:51:00Z; single (single-source, its revision a commit of svp-gitops) and chart
+# (multi-source, its chart a version, not a commit) synced REV.
+mg_apps() {
+  jq -n --arg c1 "$1" --arg g1 "$2" --arg c2 "$3" --arg g2 "$4" --arg rev "$mg_rev" --arg cu "$mg_chart_url" --arg gu "$mg_gitops_url" '
+    def multi($c; $g; $id; $s; $e): {id: $id, sources: [{repoURL: $cu, path: "deploy/helm/svp-service"}, {repoURL: $gu, ref: "values"}],
+      revisions: [$c, $g], deployStartedAt: $s, deployedAt: $e};
+    {items: [
+      {metadata: {name: "web"}, status: {history: [
+        multi($c1; $g1; 1; "2026-10-31T06:10:00Z"; "2026-10-31T06:10:20Z"),
+        multi($c2; $g2; 2; "2026-10-31T06:50:30Z"; "2026-10-31T06:51:00Z")]}},
+      {metadata: {name: "single"}, status: {history: [
+        {id: 1, source: {repoURL: $gu}, revision: $rev, deployStartedAt: "2026-10-31T06:50:31Z", deployedAt: "2026-10-31T06:50:40Z"}]}},
+      {metadata: {name: "chart"}, status: {history: [
+        {id: 1, sources: [{repoURL: "https://charts.example.invalid", chart: "c"}, {repoURL: $gu, ref: "values"}],
+         revisions: ["1.2.3", $rev], deployStartedAt: "2026-10-31T06:50:32Z", deployedAt: "2026-10-31T06:50:50Z"}]}}]}'
+}
+# mg_case NAME CHART2 GITOPS2: measure-gitops REV over the fake; output in NAME.out, exit status in NAME.rc.
+mg_case() {
+  local rc=0
+  mg_apps "$mg_chart1" "$mg_parent" "$2" "$3" >"$work/mg-apps.json"
+  rm -rf "$mg/.k8s"
+  env -u GITHUB_ACTIONS -u CI -u GITLAB_CI -u JENKINS_URL -u TF_BUILD PATH="$work/bin-mg:$PATH" SVP_GITOPS_DIR="$mgc" \
+    FAKE_MG_DIR="$work" bash "$mg/deploy/k8s/drills/gitops.sh" "$mg_rev" >"$work/$1.out" 2>&1 </dev/null || rc=$?
+  echo "$rc" >"$work/$1.rc"
+}
+ln -sf mg-apps.json "$work/apps.json" && ln -sf mg-pods.json "$work/pods.json"
+mg_case mg-synced "$mg_chart2" "$mg_rev"
+mg_json=$mg/.k8s/drills/gitops-${mg_rev:0:12}.json
+[ "$(cat "$work/mg-synced.rc")" = 0 ] && [ -f "$mg_json" ] &&
+  [ "$(jq -r '.sync_apps | join(" ")' "$mg_json")" = "chart single web" ] &&
+  [ "$(jq -r '.sync_started + " " + .sync_finished' "$mg_json")" = "2026-10-31T06:50:30Z 2026-10-31T06:51:00Z" ] &&
+  [ "$(jq -r '.last_pod_ready' "$mg_json")" = 2026-10-31T06:50:55Z ] &&
+  ok "measure-gitops: a multi-source Application is compared by its svp-gitops commit, the chart's commit first in revisions" ||
+  fail "measure-gitops: a multi-source Application is compared by its svp-gitops commit, the chart's commit first in revisions (exit $(cat "$work/mg-synced.rc"): $(cat "$work/mg-synced.out"))"
+mg_case mg-waiting "$mg_chart2" "$mg_parent"
+[ "$(cat "$work/mg-waiting.rc")" = 2 ] &&
+  grep -qxF "WAIT  Application web has not synced ${mg_rev:0:12} yet (its last sync: ${mg_parent:0:12})" "$work/mg-waiting.out" &&
+  ok "measure-gitops: a multi-source Application whose last sync is an earlier commit of svp-gitops is waited for, that commit named" ||
+  fail "measure-gitops: a multi-source Application whose last sync is an earlier commit of svp-gitops is waited for, that commit named (exit $(cat "$work/mg-waiting.rc"): $(cat "$work/mg-waiting.out"))"
+mg_case mg-later "$mg_chart2" "$mg_later"
+[ "$(cat "$work/mg-later.rc")" = 1 ] &&
+  grep -qxF "FAIL  ${mg_rev:0:12} cannot be measured: Application web has synced ${mg_later:0:12}, a later commit, since; its pods may come from that sync. Measure the latest release commit" \
+    "$work/mg-later.out" &&
+  ok "measure-gitops: a multi-source Application that synced a later commit of svp-gitops fails the measure, that commit named" ||
+  fail "measure-gitops: a multi-source Application that synced a later commit of svp-gitops fails the measure, that commit named (exit $(cat "$work/mg-later.rc"): $(cat "$work/mg-later.out"))"
+
 # --- The fake results of a k3d run.
 out=$work/out
 mkdir -p "$out/logs" "$out/samples"
