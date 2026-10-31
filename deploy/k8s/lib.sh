@@ -17,7 +17,7 @@ export K3D_IMAGE_TOOLS=ghcr.io/k3d-io/k3d-tools:5.9.0@sha256:c57abce697e66feeb82
 # The local registry: k3d prefixes the name, so the container is k3d-svp-registry; inside it listens on
 # 5000, published on 127.0.0.1:5111 only.
 # renovate: datasource=docker depName=docker.io/library/registry
-registry_image=docker.io/library/registry:3.1.2@sha256:ddf754342cfc8acc51a56d5d0ab6af06826461864460636d8bd5c546dab2a7b8
+registry_image=docker.io/library/registry:3.1.2@sha256:d4032d4cc323c1731c707931ecada07a53076eac38e3b61ae57533f170f2c6c3
 # Deadline of `k3d cluster create` and `k3d cluster start`, which otherwise wait forever for a node's "up and running"
 # log line (k3d v5.9.0 sets one only when --timeout > 0). k3d applies it to each step of a create (network, containers
 # with their image pulls, start) on its own, so 300 s covers a first run that still pulls the k3s image on a slow link.

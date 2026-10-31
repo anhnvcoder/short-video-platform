@@ -12,7 +12,7 @@ PROTOC_GEN_GO_GRPC_VERSION := v1.6.2
 # renovate: datasource=go depName=github.com/sqlc-dev/sqlc
 SQLC_VERSION               := v1.31.1
 # renovate: datasource=go depName=github.com/golangci/golangci-lint/v2
-GOLANGCI_LINT_VERSION      := v2.14.0
+GOLANGCI_LINT_VERSION      := v2.15.0
 # renovate: datasource=go depName=github.com/zricethezav/gitleaks/v8
 GITLEAKS_VERSION           := v8.30.1
 # SLO rule generator: Sloth turns the SLO spec into Prometheus recording and burn-rate alert rules. `go install` leaves
@@ -41,7 +41,7 @@ GOVULNCHECK_VERSION        := v1.9.0
 # Helm's archive is checked against the sha256 published with the release (helm-<version>-linux-amd64.tar.gz.sha256sum),
 # so the two lines change together; `go install` of Helm is not a documented way and reports a wrong version.
 # renovate: datasource=go depName=github.com/bufbuild/buf
-BUF_VERSION                := v1.74.0
+BUF_VERSION                := v1.75.0
 # renovate: datasource=github-releases depName=helm/helm
 HELM_VERSION               := v4.3.1
 HELM_LINUX_AMD64_SHA256    := 0403a88ae20913d11b10a2467b50087721fea7581736da6b9d3992f5357fe54b
@@ -64,7 +64,7 @@ COSIGN_IMAGE := ghcr.io/sigstore/cosign/cosign:v3.1.3@sha256:9e5c2f2edc343511604
 # start inside the cluster to measure the system rather than the home network. The k6 of Homebrew is not pinned. v2: the v1
 # line only gets security fixes.
 # renovate: datasource=docker depName=grafana/k6
-K6_IMAGE := grafana/k6:2.3.0@sha256:9c2dee7f8ed74d317e4027c06a10f169b625638189de8d4555d0b3486a5aeb34
+K6_IMAGE := grafana/k6:2.3.0@sha256:2dd4756ec6e14e62778916e1eb850108e4b499304c02df56760fa0bdb0fba0b8
 # DAST of the gateway against its OpenAPI contract (make dast), from the official image pinned by digest, the same on a
 # dev machine and in the CI job stack.
 # renovate: datasource=docker depName=schemathesis/schemathesis
