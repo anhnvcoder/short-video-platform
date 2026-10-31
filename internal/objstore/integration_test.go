@@ -30,7 +30,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
 )
 
 // The integration tests run against the local object store of `make up`, through

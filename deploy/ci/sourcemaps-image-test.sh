@@ -10,7 +10,7 @@
 #   - a dry run of a tag not pushed: says it would push, pushes nothing, sends no credentials;
 #   - a run that is not the signing workflow of the source (a machine, another workflow), and a run of a repository that
 #     is no release source: nothing pushed;
-#   - the signing workflow of svp-web: pushed with the credentials of docker login as <prefix>web-sourcemaps:amd64-<hex
+#   - the signing workflow of svp-frontend: pushed with the credentials of docker login as <prefix>web-sourcemaps:amd64-<hex
 #     of image-digest>, one gzipped tar layer, the artifact type and the source annotation; read back by image_maps of
 #     gitops-sourcemaps.sh (its own checks of the manifest and the layer), which unpacks the very tree of DIR/_next;
 #   - the same tree again, packed into other bytes: nothing pushed, the tag read with credentials; another tree under the
@@ -153,11 +153,11 @@ variant() {
   echo "$work/$1"
 }
 
-web_subject=https://github.com/anhnvcoder/svp-web/.github/workflows/images.yml@refs/heads/main
-web_url=https://github.com/anhnvcoder/svp-web
-repo=ghcr.io/anhnvcoder/svp-web/web-sourcemaps
+web_subject=https://github.com/anhnvcoder/svp-frontend/.github/workflows/images.yml@refs/heads/main
+web_url=https://github.com/anhnvcoder/svp-frontend
+repo=ghcr.io/anhnvcoder/svp-frontend/web-sourcemaps
 tagfile=$work/registry/$(tr '/:@' '___' <<<"$repo:amd64-$hex")
-# push BUILDER [NAME=VALUE...] -- ARGS...: sourcemaps-image.sh push ARGS in a made-up run of svp-web's workflow BUILDER.
+# push BUILDER [NAME=VALUE...] -- ARGS...: sourcemaps-image.sh push ARGS in a made-up run of svp-frontend's workflow BUILDER.
 push() {
   local builder=$1 rc=0 out extra=()
   shift
@@ -204,12 +204,17 @@ push_case "no ARCH" "$web_subject" 1 "usage: sourcemaps-image.sh push" -- "$good
 push_case "a dry run of a tag not pushed" local 0 "would push" -- --dry-run amd64 "$good"
 [ ! -f "$tagfile" ] && [ "$(count "$work/registry/oras.log" 'auth=yes')" = 0 ] &&
   ok "the dry run pushed nothing and sent no credentials" || fail "the dry run pushed or sent credentials"
-push_case "a run on a machine" local 1 "source maps go under ghcr.io/anhnvcoder/svp-web/ only from $web_subject" -- \
+push_case "a run on a machine" local 1 "source maps go under ghcr.io/anhnvcoder/svp-frontend/ only from $web_subject" -- \
   amd64 "$good"
-push_case "a run of another workflow" https://github.com/anhnvcoder/svp-web/.github/workflows/ci.yml@refs/heads/main 1 \
+push_case "a run of another workflow" https://github.com/anhnvcoder/svp-frontend/.github/workflows/ci.yml@refs/heads/main 1 \
   "only from $web_subject" -- amd64 "$good"
 push_case "a run of a repository that is no release source" "$web_subject" 1 "repository of 0 release sources" \
-  FAKE_CI_REPO=https://github.com/someone/svp-web -- amd64 "$good"
+  FAKE_CI_REPO=https://github.com/someone/svp-frontend -- amd64 "$good"
+# A run of the web client's repository under its former name is one of the retired source oldweb: it pushes nothing.
+push_case "a run of the retired source's repository" \
+  https://github.com/anhnvcoder/svp-web/.github/workflows/images.yml@refs/heads/main 1 \
+  "the repository of release source oldweb, which is retired" FAKE_CI_REPO=https://github.com/anhnvcoder/svp-web -- \
+  amd64 "$good"
 [ ! -f "$tagfile" ] && ok "a run that may not push pushed nothing" || fail "a run that may not push pushed"
 
 # --- The signing workflow.
@@ -217,7 +222,7 @@ push_case "the signing workflow, a new tag" "$web_subject" 0 "pushed: the source
 layer=$(jq -r '.layers[0].digest' "$tagfile" 2>/dev/null || true)
 if [ -f "$tagfile" ] && jq -e '.artifactType == "application/vnd.anhnvcoder.svp.web-sourcemaps.v1"
   and (.layers | length) == 1 and .layers[0].mediaType == "application/vnd.oci.image.layer.v1.tar+gzip"
-  and .annotations["org.opencontainers.image.source"] == "https://github.com/anhnvcoder/svp-web"' "$tagfile" >/dev/null; then
+  and .annotations["org.opencontainers.image.source"] == "https://github.com/anhnvcoder/svp-frontend"' "$tagfile" >/dev/null; then
   ok "pushed one gzipped tar layer, with its artifact type and the source annotation, tagged amd64-<hex>"
 else
   fail "the pushed manifest is not the expected one: $(cat "$tagfile" 2>/dev/null)"
@@ -231,7 +236,7 @@ grep -q "^auth=yes manifest fetch $repo:amd64-$hex " "$work/registry/oras.log" &
 (
   # shellcheck source=deploy/ci/gitops-sourcemaps.sh
   . "$tree/deploy/ci/gitops-sourcemaps.sh"
-  web_prefix=ghcr.io/anhnvcoder/svp-web/ web_repo=ghcr.io/anhnvcoder/svp-web/web
+  web_prefix=ghcr.io/anhnvcoder/svp-frontend/ web_repo=ghcr.io/anhnvcoder/svp-frontend/web
   web_index=sha256:$(printf 'i%.0s' $(seq 64)) rev="origin/main of svp-gitops"
   ghcr_get() { cp "$work/registry/$(tr '/:@' '___' <<<"ghcr.io/$1:${2#manifests/}")" "$3"; }
   ghcr_blob() { cp "$work/registry/$(tr '/:@' '___' <<<"ghcr.io/$1@$2")" "$3"; }

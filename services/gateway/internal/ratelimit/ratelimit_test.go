@@ -11,7 +11,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/anhnvcoder/short-video-platform/internal/redistest"
+	"github.com/anhnvcoder/svp-backend/internal/redistest"
 )
 
 // testLimit has a 200 ms interval, so the Redis cases wait at most that long for a refill.

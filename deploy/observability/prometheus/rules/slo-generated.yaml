@@ -160,7 +160,7 @@ groups:
       severity: page
       sloth_severity: page
     annotations:
-      runbook_url: https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/feed-availability-budget-burn.md
+      runbook_url: https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/feed-availability-budget-burn.md
       summary: 'gateway: feed requests (GET /feed/following, /feed/explore) burn the
         99.9% availability budget'
       title: (page) {{$labels.sloth_service}} {{$labels.sloth_slo}} SLO error budget
@@ -342,7 +342,7 @@ groups:
       severity: page
       sloth_severity: page
     annotations:
-      runbook_url: https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/upload-init-availability-budget-burn.md
+      runbook_url: https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/upload-init-availability-budget-burn.md
       summary: 'gateway: upload init requests (POST /videos) burn the 99.9% availability
         budget'
       title: (page) {{$labels.sloth_service}} {{$labels.sloth_slo}} SLO error budget
@@ -524,7 +524,7 @@ groups:
       severity: page
       sloth_severity: page
     annotations:
-      runbook_url: https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/feed-latency-budget-burn.md
+      runbook_url: https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/feed-latency-budget-burn.md
       summary: 'gateway: feed requests slower than 150 ms burn the 99% latency budget'
       title: (page) {{$labels.sloth_service}} {{$labels.sloth_slo}} SLO error budget
         burn rate is too fast.
@@ -704,7 +704,7 @@ groups:
       severity: page
       sloth_severity: page
     annotations:
-      runbook_url: https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/video-ready-latency-budget-burn.md
+      runbook_url: https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/video-ready-latency-budget-burn.md
       summary: 'video-service: videos not READY within 120 s burn the 95% budget'
       title: (page) {{$labels.sloth_service}} {{$labels.sloth_slo}} SLO error budget
         burn rate is too fast.
@@ -884,7 +884,7 @@ groups:
       severity: page
       sloth_severity: page
     annotations:
-      runbook_url: https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/web-availability-budget-burn.md
+      runbook_url: https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/web-availability-budget-burn.md
       summary: 'web: server responses (pages, Server Actions, /rum) burn the 99.9%
         availability budget'
       title: (page) {{$labels.sloth_service}} {{$labels.sloth_slo}} SLO error budget

@@ -13,7 +13,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 
-	"github.com/anhnvcoder/short-video-platform/internal/sentryx"
+	"github.com/anhnvcoder/svp-backend/internal/sentryx"
 )
 
 // TestNoPprofOnDefaultMux is threat model OPS-1: no package of the gateway registers

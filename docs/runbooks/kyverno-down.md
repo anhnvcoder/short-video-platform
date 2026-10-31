@@ -6,8 +6,9 @@
 ## Ý nghĩa và tác động tới người dùng
 
 Kyverno kiểm mọi Pod ở namespace `svp` qua `ImageValidatingPolicy` `svp-images` (chart `deploy/helm/svp-policy`): chỉ image
-của một nguồn phát hành trong `deploy/helm/svp-policy/files/sources.json` (`backend`: `ghcr.io/anhnvcoder/short-video-platform/<tên>`,
-`web`: `ghcr.io/anhnvcoder/svp-web/web`; một glob mỗi tên được phát hành, không glob cả prefix) theo digest, ký keyless bởi
+của một nguồn phát hành trong `deploy/helm/svp-policy/files/sources.json` (`backend`: `ghcr.io/anhnvcoder/svp-backend/<tên>`,
+`web`: `ghcr.io/anhnvcoder/svp-frontend/web`, và trong lúc chuyển tên repo hai nguồn nghỉ hưu `oldbackend`, `oldweb` dưới prefix cũ
+`short-video-platform/`, `svp-web/` ([ADR-0036](../adr/0036-repo-rename.md) §3); một glob mỗi tên được phát hành, không glob cả prefix) theo digest, ký keyless bởi
 `images.yml@refs/heads/main` của repo nguồn đó, attestation `vuln` đủ hai nền tảng, không CRITICAL, không quá 72 giờ
 ([ADR-0015](../adr/0015-cicd-devsecops-stage5.md) §8, [ADR-0033](../adr/0033-svp-web-repo.md) §2). Hai chế độ:
 

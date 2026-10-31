@@ -361,8 +361,8 @@ const file_svp_feed_v1_feed_service_proto_rawDesc = "" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken2\xc9\x01\n" +
 	"\vFeedService\x12_\n" +
 	"\x10GetFollowingFeed\x12$.svp.feed.v1.GetFollowingFeedRequest\x1a%.svp.feed.v1.GetFollowingFeedResponse\x12Y\n" +
-	"\x0eGetExploreFeed\x12\".svp.feed.v1.GetExploreFeedRequest\x1a#.svp.feed.v1.GetExploreFeedResponseB\xb7\x01\n" +
-	"\x0fcom.svp.feed.v1B\x10FeedServiceProtoP\x01ZDgithub.com/anhnvcoder/short-video-platform/gen/go/svp/feed/v1;feedv1\xa2\x02\x03SFX\xaa\x02\vSvp.Feed.V1\xca\x02\vSvp\\Feed\\V1\xe2\x02\x17Svp\\Feed\\V1\\GPBMetadata\xea\x02\rSvp::Feed::V1b\x06proto3"
+	"\x0eGetExploreFeed\x12\".svp.feed.v1.GetExploreFeedRequest\x1a#.svp.feed.v1.GetExploreFeedResponseB\xae\x01\n" +
+	"\x0fcom.svp.feed.v1B\x10FeedServiceProtoP\x01Z;github.com/anhnvcoder/svp-backend/gen/go/svp/feed/v1;feedv1\xa2\x02\x03SFX\xaa\x02\vSvp.Feed.V1\xca\x02\vSvp\\Feed\\V1\xe2\x02\x17Svp\\Feed\\V1\\GPBMetadata\xea\x02\rSvp::Feed::V1b\x06proto3"
 
 var (
 	file_svp_feed_v1_feed_service_proto_rawDescOnce sync.Once

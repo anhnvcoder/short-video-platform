@@ -44,7 +44,7 @@ slos:
         labels:
           severity: page
         annotations:
-          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/feed-availability-budget-burn.md"
+          runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/feed-availability-budget-burn.md"
       ticket_alert:
         labels:
           severity: ticket
@@ -67,7 +67,7 @@ slos:
         labels:
           severity: page
         annotations:
-          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/upload-init-availability-budget-burn.md"
+          runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/upload-init-availability-budget-burn.md"
       ticket_alert:
         labels:
           severity: ticket
@@ -91,7 +91,7 @@ slos:
         labels:
           severity: page
         annotations:
-          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/feed-latency-budget-burn.md"
+          runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/feed-latency-budget-burn.md"
       ticket_alert:
         labels:
           severity: ticket
@@ -117,7 +117,7 @@ slos:
         labels:
           severity: page
         annotations:
-          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/video-ready-latency-budget-burn.md"
+          runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/video-ready-latency-budget-burn.md"
       ticket_alert:
         labels:
           severity: ticket
@@ -146,7 +146,7 @@ slos:
         labels:
           severity: page
         annotations:
-          runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/web-availability-budget-burn.md"
+          runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/web-availability-budget-burn.md"
       ticket_alert:
         labels:
           severity: ticket

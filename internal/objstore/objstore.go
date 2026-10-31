@@ -28,7 +28,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials/endpointcreds"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
-	"github.com/anhnvcoder/short-video-platform/internal/envcfg"
+	"github.com/anhnvcoder/svp-backend/internal/envcfg"
 
 	// Deprecated upstream, with no promise of further fixes; kept for now because it builds against
 	// the pinned AWS SDK. Revisit it before upgrading the AWS SDK or moving to the cloud.

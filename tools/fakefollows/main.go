@@ -32,10 +32,10 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 	"google.golang.org/protobuf/proto"
 
-	userv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
-	"github.com/anhnvcoder/short-video-platform/internal/kafkax"
-	"github.com/anhnvcoder/short-video-platform/internal/outbox"
+	userv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/user/v1"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
+	"github.com/anhnvcoder/svp-backend/internal/kafkax"
+	"github.com/anhnvcoder/svp-backend/internal/outbox"
 )
 
 // topic is user-service's follow topic (services/user-service/internal/server.TopicUserFollows).

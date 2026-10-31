@@ -60,7 +60,7 @@ cat >>"$tree/deploy/ci/platform.sh" <<'EOF'
 # Test only (contract-test.sh): with FAKE_CI set, the context of a CI run comes from FAKE_CI_* variables.
 if [ -n "${FAKE_CI:-}" ]; then
   ci_builder_id() { printf '%s\n' "$FAKE_CI_BUILDER"; }
-  ci_repo_url() { echo https://github.com/anhnvcoder/short-video-platform; }
+  ci_repo_url() { echo https://github.com/anhnvcoder/svp-backend; }
   ci_commit() { echo 0123456789abcdef0123456789abcdef01234567; }
 fi
 EOF
@@ -244,8 +244,8 @@ EOF
 chmod +x "$work/bin/docker" "$work/bin/cosign"
 echo '{"auths":{}}' >"$work/home/.docker/config.json"
 
-subject=https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main
-repo=ghcr.io/anhnvcoder/short-video-platform/api/gateway
+subject=https://github.com/anhnvcoder/svp-backend/.github/workflows/images.yml@refs/heads/main
+repo=ghcr.io/anhnvcoder/svp-backend/api/gateway
 tagfile=$work/registry/$(tr '/:@' '___' <<<"$repo:1.0.0")
 # publish BUILDER [NAME=VALUE...] -- ARGS...: contract.sh publish ARGS in a made-up run of workflow BUILDER.
 publish() {
@@ -279,16 +279,23 @@ pub_case "publish: a dry run of a version not published" local 0 "would push" --
 
 pub_case "publish: a run on a machine" local 1 "a contract is published only by $subject" --
 pub_case "publish: a run of another workflow" \
-  https://github.com/anhnvcoder/short-video-platform/.github/workflows/contract.yml@refs/heads/main 1 \
+  https://github.com/anhnvcoder/svp-backend/.github/workflows/contract.yml@refs/heads/main 1 \
   "a contract is published only by" --
 [ ! -f "$tagfile" ] && ok "publish: a run that cannot sign pushed nothing" || fail "publish: a run that cannot sign pushed"
 
+# The same version published before the rename under the former prefix, with other content: the contract's path is
+# under the prefix of source backend now, where nothing is published yet, so the first run pushes and signs it there.
+old_tagfile=$work/registry/$(tr '/:@' '___' <<<"ghcr.io/anhnvcoder/short-video-platform/api/gateway:1.0.0")
+echo '{"artifactType": "application/vnd.anhnvcoder.svp.api-contract.v1", "layers": [{"digest": "sha256:other"}]}' \
+  >"$old_tagfile"
 pub_case "publish: the signing workflow, a new version" "$subject" 0 "published and signed: $repo@sha256:" --
+grep -qF '"sha256:other"' "$old_tagfile" && ok "publish: the release under the former prefix is left as it is" ||
+  fail "publish: the release under the former prefix was changed"
 want_layer=sha256:$(shasum -a 256 "$spec" | cut -d' ' -f1)
 digest=sha256:$(shasum -a 256 "$tagfile" 2>/dev/null | cut -d' ' -f1)
 if [ -f "$tagfile" ] && jq -e --arg l "$want_layer" '.artifactType == "application/vnd.anhnvcoder.svp.api-contract.v1"
   and (.layers | length) == 1 and .layers[0].mediaType == "application/vnd.oai.openapi" and .layers[0].digest == $l
-  and .annotations["org.opencontainers.image.source"] == "https://github.com/anhnvcoder/short-video-platform"
+  and .annotations["org.opencontainers.image.source"] == "https://github.com/anhnvcoder/svp-backend"
   and .annotations["org.opencontainers.image.version"] == "1.0.0"' "$tagfile" >/dev/null; then
   ok "publish: pushed one OpenAPI layer of this spec, with its artifact type and annotations"
 else

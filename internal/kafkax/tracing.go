@@ -12,10 +12,10 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/anhnvcoder/short-video-platform/internal/sentryx"
+	"github.com/anhnvcoder/svp-backend/internal/sentryx"
 )
 
-const tracerName = "github.com/anhnvcoder/short-video-platform/internal/kafkax"
+const tracerName = "github.com/anhnvcoder/svp-backend/internal/kafkax"
 
 type recordCarrier struct{ r *kgo.Record }
 

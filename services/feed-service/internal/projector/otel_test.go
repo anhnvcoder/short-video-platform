@@ -12,9 +12,9 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	eventv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/event/v1"
-	videov1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/video/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
+	eventv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/event/v1"
+	videov1 "github.com/anhnvcoder/svp-backend/gen/go/svp/video/v1"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
 )
 
 // meteredProjector returns a Projector on the test database whose metrics go to a meter provider

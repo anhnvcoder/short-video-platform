@@ -7,7 +7,7 @@
 package userv1
 
 import (
-	v1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/event/v1"
+	v1 "github.com/anhnvcoder/svp-backend/gen/go/svp/event/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -243,8 +243,8 @@ const file_svp_user_v1_events_proto_rawDesc = "" +
 	"\vfollower_id\x18\x01 \x01(\tR\n" +
 	"followerId\x12\x1f\n" +
 	"\vfollowee_id\x18\x02 \x01(\tR\n" +
-	"followeeIdB\xb2\x01\n" +
-	"\x0fcom.svp.user.v1B\vEventsProtoP\x01ZDgithub.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1;userv1\xa2\x02\x03SUX\xaa\x02\vSvp.User.V1\xca\x02\vSvp\\User\\V1\xe2\x02\x17Svp\\User\\V1\\GPBMetadata\xea\x02\rSvp::User::V1b\x06proto3"
+	"followeeIdB\xa9\x01\n" +
+	"\x0fcom.svp.user.v1B\vEventsProtoP\x01Z;github.com/anhnvcoder/svp-backend/gen/go/svp/user/v1;userv1\xa2\x02\x03SUX\xaa\x02\vSvp.User.V1\xca\x02\vSvp\\User\\V1\xe2\x02\x17Svp\\User\\V1\\GPBMetadata\xea\x02\rSvp::User::V1b\x06proto3"
 
 var (
 	file_svp_user_v1_events_proto_rawDescOnce sync.Once

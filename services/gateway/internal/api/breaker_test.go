@@ -11,10 +11,10 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	engagementv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/engagement/v1"
-	userv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1"
-	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/breaker"
-	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/httpx"
+	engagementv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/engagement/v1"
+	userv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/user/v1"
+	"github.com/anhnvcoder/svp-backend/services/gateway/internal/breaker"
+	"github.com/anhnvcoder/svp-backend/services/gateway/internal/httpx"
 )
 
 // TestEngagementBreakerOpen: once engagement-service's breaker opens, likes fail at once with

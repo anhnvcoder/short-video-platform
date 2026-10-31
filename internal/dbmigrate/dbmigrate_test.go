@@ -17,9 +17,9 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3/lock"
 
-	"github.com/anhnvcoder/short-video-platform/internal/dbmigrate"
-	"github.com/anhnvcoder/short-video-platform/internal/pgretry/pgretrytest"
-	"github.com/anhnvcoder/short-video-platform/internal/pgtest"
+	"github.com/anhnvcoder/svp-backend/internal/dbmigrate"
+	"github.com/anhnvcoder/svp-backend/internal/pgretry/pgretrytest"
+	"github.com/anhnvcoder/svp-backend/internal/pgtest"
 )
 
 const createItems = `-- +goose Up

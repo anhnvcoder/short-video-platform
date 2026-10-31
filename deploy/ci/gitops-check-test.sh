@@ -20,24 +20,31 @@
 #     chart making Applications of another platform and one reading a platform's values after the environment's each
 #     fail with their own message;
 #   - the release sources of the image files (gitops-check.sh --tree, on a throwaway copy of this repository with a
-#     commit from before the table of release sources and one with it, and a throwaway clone of svp-web): stg pinning
-#     the commit with the table runs web of svp-web while prd pins the commit before it, in one tree, and passes; the
-#     same tree without any release of svp-web passes with no clone of svp-web at all; a web tag that is no commit on
-#     main of svp-web, a release of svp-web where the charts' table knows no such source, and SVP_SOURCE_DIR_WEB
-#     naming a clone of another repository each fail with their own message; values-check.sh refuses an image file
-#     naming the repository of another service before it verifies any release;
+#     commit from before the table of release sources, one with the table of before the repositories were renamed and
+#     one with the table of the working tree, and a throwaway repository of the web client that the old and the new URL
+#     of either renamed repository reach, as the host's redirects do): stg pinning the old table runs web of svp-web
+#     while prd pins the commit before the table, in one tree, and passes, the tag read through a clone from the old
+#     URL; stg pinning the working tree's table passes with the releases of the retired sources (tags read through the
+#     old URLs) and with those of the new ones; the same tree without any release of another source passes with no
+#     clone at all; a web tag that is no commit on main (new URL, and old URL of the retired source), a release of
+#     svp-web where the charts' table knows no such source, and SVP_SOURCE_DIR_WEB naming a clone of another
+#     repository each fail with their own message, while one naming a clone whose origin is the URL passes;
+#     values-check.sh refuses an image file naming the repository of another service before it verifies any release;
 #   - the author of a pull request (gitops-check.sh --tree TREE BASE on the same throwaway repositories, the author in
-#     SVP_CHANGE_REQUEST_AUTHOR): the bot of svp-web takes web.yaml over from backend and moves it to another release
-#     of its own; it writing a release of backend, changing gateway.yaml, charts.yaml, envs/prd/ (whose charts, from
-#     before the table, know no such bot), an overlay of stg or base/, deleting web.yaml and adding the image file of
-#     a service it does not publish each fail; the bot of backend promotes stg with charts.yaml and prd, but changing
-#     the workflow of the check or taking web back from svp-web fails; a person is not limited; a bot that promotes no
-#     source fails on envs/ and passes on base/; an author that is no login fails, a run of no pull request skips;
+#     SVP_CHANGE_REQUEST_AUTHOR, no SVP_SOURCE_DIR_*): the bot of svp-web takes web.yaml over from backend and moves it
+#     to another release of its own; across the rename, the bot of backend promotes the charts with the new table and
+#     takes the six services over from the retired oldbackend, the bot of the web client takes web over from the
+#     retired oldweb, while either writing a release of a retired source fails; the bot of svp-web writing a release of
+#     backend, changing gateway.yaml, charts.yaml, envs/prd/ (whose charts, from before the table, know no such bot),
+#     an overlay of stg or base/, deleting web.yaml and adding the image file of a service it does not publish each
+#     fail; the bot of backend promotes stg with charts.yaml and prd, but changing the workflow of the check or taking
+#     web back from svp-web fails; a person is not limited; a bot that promotes no source fails on envs/ and passes on
+#     base/; an author that is no login fails, a run of no pull request skips;
 #     the sender of the event (SVP_CHANGE_REQUEST_SENDER): the bot of svp-web pushing onto the pull request of the bot
 #     of backend and a bot pushing onto a person's fail, a person pushing onto a bot's pull request and the author
 #     itself pass, a sender that is no login fails;
-#   - envs/prd/ against the records of stg (gitops-check.sh --records, a fake gh listing the records): exactly the set
-#     of one record passes; a set mixed from two records, the seven releases of a record with other charts, and a set
+#   - envs/prd/ against the records of stg (gitops-check.sh --records, a fake gh listing the records, older ones naming
+#     their run under the code repository's former name): exactly the set of one record passes; a set mixed from two records, the seven releases of a record with other charts, and a set
 #     merged into envs/stg/images/ of main that no record holds each fail with their own message; a record whose
 #     commit is not on main of svp-gitops is left out; the whole check stops at that step for a mixed set.
 #   - tag_provenance_mismatch of common.sh, which step 5 reads the release checks with (offline, synthetic checks):
@@ -414,11 +421,17 @@ if [ "$layered" != "$tree" ]; then
 fi
 
 # --- the release sources of the image files (step 1 alone: gitops-check.sh --tree). A throwaway copy of this
-# repository: k0 holds the policy's values as they were before the table of release sources (its one source backend
-# is read from them), k1 the table; origin/main is k1. A throwaway clone of svp-web: w0 on its main, w1 on a branch.
+# repository on its branch main: k0 holds the policy's values as they were before the table of release sources (its
+# one source backend is read from them), k1 the table of two sources as it was before the repositories were renamed
+# (backend under short-video-platform, also publishing web; web under svp-web), k2 the table of the working tree;
+# origin/main is k2. A throwaway repository stands for the web client's: w0 on its main, w1 on another branch. As on
+# the host, which redirects a renamed repository's old URL, git reaches both through the URLs of either name: the
+# anonymous clones of the check (the URL a table gives) land on these repositories (url.<path>.insteadOf), and nothing
+# else is reachable (GIT_ALLOW_PROTOCOL=file).
 services=(gateway user-service video-service engagement-service feed-service media-worker web)
 code=$work/code
-mkdir -p "$code/deploy/k8s" "$code/deploy/helm/svp-policy" "$code/deploy/helm/svp-cluster" "$code/deploy/observability/otelcol"
+mkdir -p "$code/deploy/k8s" "$code/deploy/helm/svp-policy/files" "$code/deploy/helm/svp-cluster" \
+  "$code/deploy/observability/otelcol"
 cp -R "$here" "$code/deploy/ci"
 cp "$repo_root/deploy/k8s/lib.sh" "$code/deploy/k8s/"
 printf 'podSecurityVersion: v1.36\n' >"$code/deploy/helm/svp-cluster/values.yaml"
@@ -433,36 +446,62 @@ imageVerification:
   requireProvenance: false
 VALUES
 cg() { git -C "$code" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false "$@"; }
-cg init -q && cg add -A && cg commit -q -m "before the table"
+cg init -q -b main && cg add -A && cg commit -q -m "before the table"
 k0=$(cg rev-parse HEAD)
 cp "$repo_root/deploy/helm/svp-policy/values.yaml" "$code/deploy/helm/svp-policy/values.yaml"
-cp -R "$repo_root/deploy/helm/svp-policy/files" "$code/deploy/helm/svp-policy/"
+# The table of the code repository before the rename (history: these names are what it held then).
+cat >"$code/deploy/helm/svp-policy/files/sources.json" <<'TABLE'
+{"sources": [
+  {"name": "backend", "repository": "https://github.com/anhnvcoder/short-video-platform",
+   "imagePrefix": "ghcr.io/anhnvcoder/short-video-platform/",
+   "services": ["gateway", "user-service", "video-service", "engagement-service", "feed-service", "media-worker", "web"],
+   "drillImages": ["drill-vulnerable", "drill-unsigned"], "issuer": "https://token.actions.githubusercontent.com",
+   "subject": "https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main",
+   "provenanceRef": "refs/heads/main", "promoter": "svp-gitops-promoter"},
+  {"name": "web", "repository": "https://github.com/anhnvcoder/svp-web", "imagePrefix": "ghcr.io/anhnvcoder/svp-web/",
+   "services": ["web"], "drillImages": [], "issuer": "https://token.actions.githubusercontent.com",
+   "subject": "https://github.com/anhnvcoder/svp-web/.github/workflows/images.yml@refs/heads/main",
+   "provenanceRef": "refs/heads/main", "promoter": "svp-web-promoter"}]}
+TABLE
 cg add -A && cg commit -q -m "the table of release sources"
 k1=$(cg rev-parse HEAD)
-cg update-ref refs/remotes/origin/main "$k1"
-web=$work/svp-web
-git init -q "$web"
-wg() { git -C "$web" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false "$@"; }
-wg remote add origin https://github.com/anhnvcoder/svp-web
+cp "$repo_root/deploy/helm/svp-policy/files/sources.json" "$code/deploy/helm/svp-policy/files/sources.json"
+cg add -A && cg commit -q -m "the table of the working tree"
+k2=$(cg rev-parse HEAD)
+cg update-ref refs/remotes/origin/main "$k2"
+fe=$work/frontend
+git init -q -b main "$fe"
+wg() { git -C "$fe" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false "$@"; }
 wg commit -q --allow-empty -m w0 && w0=$(wg rev-parse HEAD)
-wg commit -q --allow-empty -m w1 && w1=$(wg rev-parse HEAD)
-wg update-ref refs/remotes/origin/main "$w0"
+wg checkout -q -b side && wg commit -q --allow-empty -m w1 && w1=$(wg rev-parse HEAD) && wg checkout -q main
+# A clone of the web client's repository whose origin is its new URL, word for word, for SVP_SOURCE_DIR_WEB.
+web=$work/svp-frontend
+git clone -q "$fe" "$web"
+git -C "$web" remote set-url origin https://github.com/anhnvcoder/svp-frontend
 other=$work/other
 git init -q "$other"
-git -C "$other" remote add origin https://github.com/someone/svp-web
-# sources_tree WEB_STG: a copy of the tree with stg at k1 and prd at k0 of the throwaway repository, every release of
-# backend built at k0, web of stg WEB_STG ("repository tag"), of prd backend's.
+git -C "$other" remote add origin https://github.com/someone/svp-frontend
+# The host's redirects: the old and the new URL of each renamed repository reach the same repository.
+redirect=(GIT_CONFIG_COUNT=3
+  GIT_CONFIG_KEY_0="url.file://$fe.insteadOf" GIT_CONFIG_VALUE_0=https://github.com/anhnvcoder/svp-web.git
+  GIT_CONFIG_KEY_1="url.file://$fe.insteadOf" GIT_CONFIG_VALUE_1=https://github.com/anhnvcoder/svp-frontend.git
+  GIT_CONFIG_KEY_2="url.file://$code.insteadOf" GIT_CONFIG_VALUE_2=https://github.com/anhnvcoder/short-video-platform.git)
+# sources_tree STG_REV WEB_STG [STG_PREFIX]: a copy of the tree with stg at STG_REV and prd at k0 of the throwaway
+# repository; every release of the six services built at k0, under STG_PREFIX in stg
+# (ghcr.io/anhnvcoder/short-video-platform/ by default) and under that prefix in prd; web of stg WEB_STG
+# ("repository tag"), of prd backend's.
 sources_tree() {
-  local t env rev svc repo tag
+  local t env rev svc repo tag prefix=${3:-ghcr.io/anhnvcoder/short-video-platform/}
   t=$(copy)
   for env in stg prd; do
-    rev=$k1
+    rev=$1
     [ "$env" = stg ] || rev=$k0
     printf 'revision: %s\npodSecurityVersion: v1.36\ncollectorConfigSha256: %s\n' "$rev" \
       "$(shasum -a 256 <"$code/deploy/observability/otelcol/k8s-config.yaml" | cut -d' ' -f1)" >"$t/envs/$env/charts.yaml"
     for svc in "${services[@]}"; do
       repo=ghcr.io/anhnvcoder/short-video-platform/$svc tag=${k0:0:12}
-      if [ "$env/$svc" = stg/web ]; then read -r repo tag <<<"$1"; fi
+      [ "$env" != stg ] || repo=$prefix$svc
+      if [ "$env/$svc" = stg/web ]; then read -r repo tag <<<"$2"; fi
       printf 'image:\n  repository: %s\n  tag: "%s"\n  digest: "sha256:%064d"\n' "$repo" "$tag" 0 \
         >"$t/envs/$env/images/$svc.yaml"
     done
@@ -485,30 +524,42 @@ tree_check() {
     fail "$name: no '$msg' in:"$'\n'"$(sed 's/^/      /' <<<"$out")"
   fi
 }
-t=$(sources_tree "ghcr.io/anhnvcoder/svp-web/web ${w0:0:12}")
-tree_check "sources: web of svp-web in stg (charts with the table), backend's in prd (charts before it)" 0 \
-  "ok    envs/stg/images/: seven releases, each of a release source the policy of ${k1:0:12} admits" "$t" \
-  SVP_SOURCE_DIR_WEB="$web"
-t=$(sources_tree "ghcr.io/anhnvcoder/short-video-platform/web ${k0:0:12}")
-tree_check "sources: no release of svp-web, no clone of svp-web needed" 0 \
+t=$(sources_tree "$k1" "ghcr.io/anhnvcoder/svp-web/web ${w0:0:12}")
+tree_check "sources: web of svp-web in stg (charts with the table before the rename), backend's in prd (charts before it), its tag read through the old URL" 0 \
+  "ok    envs/stg/images/: seven releases, each of a release source the policy of ${k1:0:12} admits" "$t" "${redirect[@]}"
+t=$(sources_tree "$k2" "ghcr.io/anhnvcoder/svp-web/web ${w0:0:12}")
+tree_check "sources: the charts of the rename with the releases of the two retired sources, their tags read through the old URLs" 0 \
+  "ok    envs/stg/images/: seven releases, each of a release source the policy of ${k2:0:12} admits" "$t" "${redirect[@]}"
+t=$(sources_tree "$k2" "ghcr.io/anhnvcoder/svp-frontend/web ${w0:0:12}" ghcr.io/anhnvcoder/svp-backend/)
+tree_check "sources: the charts of the rename with the releases of the new sources" 0 \
+  "ok    envs/stg/images/: seven releases, each of a release source the policy of ${k2:0:12} admits" "$t" "${redirect[@]}"
+t=$(sources_tree "$k1" "ghcr.io/anhnvcoder/short-video-platform/web ${k0:0:12}")
+tree_check "sources: no release of another source, no clone needed" 0 \
   "ok    envs/prd/images/: seven releases, each of a release source the policy of ${k0:0:12} admits" "$t"
-t=$(sources_tree "ghcr.io/anhnvcoder/svp-web/web ${w1:0:12}")
-tree_check "sources: a web tag that is no commit on main of svp-web" 1 \
-  "envs/stg/images/web.yaml: tag ${w1:0:12} is no commit on main of https://github.com/anhnvcoder/svp-web (release source web)" \
-  "$t" SVP_SOURCE_DIR_WEB="$web"
-t=$(sources_tree "ghcr.io/anhnvcoder/svp-web/web ${w0:0:12}")
+t=$(sources_tree "$k2" "ghcr.io/anhnvcoder/svp-frontend/web ${w1:0:12}" ghcr.io/anhnvcoder/svp-backend/)
+tree_check "sources: a web tag that is no commit on main of svp-frontend" 1 \
+  "envs/stg/images/web.yaml: tag ${w1:0:12} is no commit on main of https://github.com/anhnvcoder/svp-frontend (release source web)" \
+  "$t" "${redirect[@]}"
+t=$(sources_tree "$k2" "ghcr.io/anhnvcoder/svp-web/web ${w1:0:12}")
+tree_check "sources: a web tag of the retired source that is no commit on main, read through the old URL" 1 \
+  "envs/stg/images/web.yaml: tag ${w1:0:12} is no commit on main of https://github.com/anhnvcoder/svp-web (release source oldweb)" \
+  "$t" "${redirect[@]}"
+t=$(sources_tree "$k1" "ghcr.io/anhnvcoder/svp-web/web ${w0:0:12}")
 cp "$t/envs/stg/images/web.yaml" "$t/envs/prd/images/web.yaml"
 tree_check "sources: a release of svp-web where the charts know no such source" 1 \
   "envs/prd/images/web.yaml: the image must be a release of ghcr.io/anhnvcoder/short-video-platform/web with its tag and digest" \
-  "$t" SVP_SOURCE_DIR_WEB="$web"
-t=$(sources_tree "ghcr.io/anhnvcoder/svp-web/web ${w0:0:12}")
+  "$t" "${redirect[@]}"
+t=$(sources_tree "$k2" "ghcr.io/anhnvcoder/svp-frontend/web ${w0:0:12}" ghcr.io/anhnvcoder/svp-backend/)
+tree_check "sources: SVP_SOURCE_DIR_WEB names a clone whose origin is the source's URL, used instead of a clone" 0 \
+  "ok    envs/stg/images/: seven releases, each of a release source the policy of ${k2:0:12} admits" "$t" \
+  SVP_SOURCE_DIR_WEB="$web"
 tree_check "sources: SVP_SOURCE_DIR_WEB names a clone of another repository" 1 \
-  "SVP_SOURCE_DIR_WEB=$other is not a clone of https://github.com/anhnvcoder/svp-web (its origin is 'https://github.com/someone/svp-web')" \
+  "SVP_SOURCE_DIR_WEB=$other is not a clone of https://github.com/anhnvcoder/svp-frontend (its origin is 'https://github.com/someone/svp-frontend')" \
   "$t" SVP_SOURCE_DIR_WEB="$other"
 # values-check.sh on such a tree, as a machine runs it (env -i: no CI job's variables): the gateway's file naming the
 # repository of user-service is refused before any release is verified (no other file carries a digest, so cosign is
 # never asked).
-t=$(sources_tree "ghcr.io/anhnvcoder/short-video-platform/web ${k0:0:12}")
+t=$(sources_tree "$k1" "ghcr.io/anhnvcoder/short-video-platform/web ${k0:0:12}")
 for f in "$t"/envs/*/images/*.yaml; do sed -i.bak 's/^  digest: .*/  digest: ""/' "$f" && rm "$f.bak"; done
 printf 'image:\n  repository: ghcr.io/anhnvcoder/short-video-platform/user-service\n  tag: "%s"\n  digest: "sha256:%064d"\n' \
   "${k0:0:12}" 0 >"$t/envs/stg/images/gateway.yaml"
@@ -523,11 +574,12 @@ else
 fi
 
 # --- step 1c, the author of a pull request (gitops-check.sh --tree DIR BASE of the throwaway repository, as a machine
-# runs it: env -i, so no CI job's variables, the author in SVP_CHANGE_REQUEST_AUTHOR). The tree becomes a git
-# repository: a0 runs web of backend in stg (before the takeover), a1 web of svp-web; each case commits one change on
-# top of one of them. stg pins k1 (the table, which knows the bot of svp-web), prd k0 (one source backend, read from
-# the values).
-at=$(sources_tree "ghcr.io/anhnvcoder/short-video-platform/web ${k0:0:12}")
+# runs it: env -i, so no CI job's variables, the author in SVP_CHANGE_REQUEST_AUTHOR, no SVP_SOURCE_DIR_*, as the
+# workflow of svp-gitops runs it). The tree becomes a git repository: a0 runs web of backend in stg at k1 (before the
+# takeover), a1 web of svp-web at k1, a2 the charts of the rename (k2) with the six releases of the retired backend and
+# web of the retired svp-web; each case commits one change on top of one of them. prd pins k0 (one source backend, read
+# from the values).
+at=$(sources_tree "$k1" "ghcr.io/anhnvcoder/short-video-platform/web ${k0:0:12}")
 ag() { git -C "$at" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false "$@"; }
 ag init -q && ag add -A && ag commit -q -m "web of backend"
 a0=$(ag rev-parse HEAD)
@@ -539,7 +591,16 @@ image() {
 image envs/stg/images/web.yaml ghcr.io/anhnvcoder/svp-web/web "${w0:0:12}" a1
 ag commit -q -am "web of svp-web"
 a1=$(ag rev-parse HEAD)
+# charts REV: envs/stg/charts.yaml of the tree pinning REV.
+charts() {
+  printf 'revision: %s\npodSecurityVersion: v1.36\ncollectorConfigSha256: %s\n' "$1" \
+    "$(shasum -a 256 <"$code/deploy/observability/otelcol/k8s-config.yaml" | cut -d' ' -f1)" >"$at/envs/stg/charts.yaml"
+}
+charts "$k2"
+ag commit -q -am "the charts of the rename"
+a2=$(ag rev-parse HEAD)
 web_bot='svp-web-promoter[bot]' backend_bot='svp-gitops-promoter[bot]'
+six=(gateway user-service video-service engagement-service feed-service media-worker)
 # from BASE: the tree back at BASE, on a branch of its own, for the next case's change.
 from() { ag checkout -q -f -B "case" "$1"; }
 # author_case NAME WANT_RC MESSAGE AUTHOR [BASE] [SENDER]: the change of the tree committed, then gitops-check.sh
@@ -549,7 +610,7 @@ author_case() {
   local name=$1 want=$2 msg=$3 out rc=0 sender=()
   [ -z "${6:-}" ] || sender=(SVP_CHANGE_REQUEST_SENDER="$6")
   ag add -A && ag commit -q -m "$name" --allow-empty
-  out=$(env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" GIT_ALLOW_PROTOCOL=file SVP_SOURCE_DIR_WEB="$web" \
+  out=$(env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" GIT_ALLOW_PROTOCOL=file "${redirect[@]}" \
     SVP_CHANGE_REQUEST_AUTHOR="$4" ${sender[@]+"${sender[@]}"} "$code/deploy/ci/gitops-check.sh" --tree "$at" \
     "${5:-$a0}" 2>&1) || rc=$?
   if [ "$want" = 0 ] && [ "$rc" != 0 ]; then
@@ -564,7 +625,7 @@ author_case() {
 }
 from "$a0"
 image envs/stg/images/web.yaml ghcr.io/anhnvcoder/svp-web/web "${w0:0:12}" t1
-author_case "the bot of svp-web takes web over from backend" 0 \
+author_case "the bot of svp-web takes web over from backend (the table before the rename)" 0 \
   "ok    envs/stg/images/web.yaml: $web_bot, the bot of release source web, takes web over from release source backend" \
   "$web_bot"
 from "$a1"
@@ -572,6 +633,32 @@ image envs/stg/images/web.yaml ghcr.io/anhnvcoder/svp-web/web "${w0:0:12}" t2
 author_case "the bot of svp-web moves web to another of its releases" 0 \
   "ok    the pull request of $web_bot, the promoter of a release source: its 1 changed files are all files its source may change" \
   "$web_bot" "$a1"
+# The rename: the bot of backend promotes the charts with the table of the retired sources and takes the six services
+# over from the retired backend; the bot of the web client takes web over from the retired svp-web.
+from "$a1"
+charts "$k2"
+for svc in "${six[@]}"; do image "envs/stg/images/$svc.yaml" "ghcr.io/anhnvcoder/svp-backend/$svc" "${k2:0:12}" "r-$svc"; done
+author_case "the bot of backend promotes the charts of the rename and takes the six services over from oldbackend" 0 \
+  "ok    envs/stg/images/gateway.yaml: $backend_bot, the bot of release source backend, takes gateway over from release source oldbackend, which is retired (no promoter at ${k2:0:12})" \
+  "$backend_bot" "$a1"
+author_case "the same pull request: all seven files are its source's" 0 \
+  "ok    the pull request of $backend_bot, the promoter of a release source: its 7 changed files are all files its source may change" \
+  "$backend_bot" "$a1"
+from "$a2"
+image envs/stg/images/web.yaml ghcr.io/anhnvcoder/svp-frontend/web "${w0:0:12}" r-web
+author_case "the bot of svp-frontend takes web over from oldweb" 0 \
+  "ok    envs/stg/images/web.yaml: $web_bot, the bot of release source web, takes web over from release source oldweb, which is retired (no promoter at ${k2:0:12})" \
+  "$web_bot" "$a2"
+from "$a2"
+image envs/stg/images/web.yaml ghcr.io/anhnvcoder/svp-web/web "${w0:0:12}" r-oldweb
+author_case "the bot of svp-frontend writes a release under the prefix of oldweb" 1 \
+  "envs/stg/images/web.yaml: $web_bot, the bot of release source web, wrote image 'ghcr.io/anhnvcoder/svp-web/web': it writes releases of its own source only, ghcr.io/anhnvcoder/svp-frontend/web" \
+  "$web_bot" "$a2"
+from "$a2"
+image envs/stg/images/gateway.yaml ghcr.io/anhnvcoder/short-video-platform/gateway "${k0:0:12}" r-oldbackend
+author_case "the bot of backend writes a release of oldbackend" 1 \
+  "envs/stg/images/gateway.yaml: $backend_bot, the bot of release source backend, wrote image 'ghcr.io/anhnvcoder/short-video-platform/gateway': it writes releases of its own source only, ghcr.io/anhnvcoder/svp-backend/gateway" \
+  "$backend_bot" "$a2"
 from "$a0"
 image envs/stg/images/web.yaml ghcr.io/anhnvcoder/short-video-platform/web "${k0:0:12}" t3
 author_case "the bot of svp-web writes a release of backend" 1 \
@@ -624,7 +711,7 @@ author_case "the bot of backend promotes stg with charts.yaml and prd (prd's cha
 from "$a1"
 image envs/stg/images/web.yaml ghcr.io/anhnvcoder/short-video-platform/web "${k0:0:12}" t7
 author_case "the bot of backend takes web back from svp-web" 1 \
-  "envs/stg/images/web.yaml: the image before (ghcr.io/anhnvcoder/svp-web/web) is a release of source web: $backend_bot, the bot of release source backend, takes a service over only from backend" \
+  "envs/stg/images/web.yaml: the image before (ghcr.io/anhnvcoder/svp-web/web) is a release of source web: $backend_bot, the bot of release source backend, takes a service over only from backend, whose repository holds the charts, or from a retired source" \
   "$backend_bot" "$a1"
 from "$a1"
 image envs/stg/images/web.yaml ghcr.io/anhnvcoder/short-video-platform/web "${k0:0:12}" t8
@@ -710,12 +797,14 @@ other_digest() { echo "sha256:$(printf '%s' "$1" | shasum -a 256 | cut -c1-64)";
 set_x=$(jq -c -n --argjson i "$stg_images" --argjson c "$charts_x" '{images: $i, charts: $c}')
 set_y=$(jq -c --arg g "$(other_digest y-gateway)" --arg w "$(other_digest y-web)" \
   '.images.gateway.digest = $g | .images.web.digest = $w' <<<"$set_x")
-# record ID REF SET: a record as the host lists it, made by the app.
+# record ID REF SET: a record as the host lists it, made by the app; one older than #22 names its run under the former
+# name of the code repository, as a record made before the rename does.
 record() {
   jq -c -n --argjson id "$1" --arg ref "$2" --argjson set "$3" '{id: $id, sha: $ref, ref: $ref,
     created_at: "2026-10-30T00:00:00Z", creator: {login: "svp-gitops-promoter[bot]"},
     payload: ($set + {environment: "stg", ref: $ref, deployed_at: "2026-10-30T00:00:00Z",
-      run_url: "https://github.com/anhnvcoder/short-video-platform/actions/runs/\($id)", steps: []})}'
+      run_url: "https://github.com/anhnvcoder/\(if $id < 22 then "short-video-platform" else "svp-backend" end)/actions/runs/\($id)",
+      steps: []})}'
 }
 { record 23 "$side" "$set_y"; record 22 "$b0" "$set_y"; record 21 "$b0" "$set_x"; } | jq -s . >"$work/gh/deployments.json"
 # prd_case SET: envs/prd/ of the repository at origin/main, then SET written there, committed.

@@ -1,4 +1,4 @@
-# Images of the six backend services (the web client's are svp-web's): build only what changed,
+# Images of the six backend services (the web client's are svp-frontend's): build only what changed,
 # on native amd64 and arm64 runners; scan the local image with trivy, and its SBOM with grype, and block secrets and
 # CRITICAL vulnerabilities BEFORE anything is pushed; push exactly what was scanned; join a multi-arch index; sign it keyless with cosign and
 # attest the SBOM (syft), the scan result and the build provenance; promote the signed digests to stg through a pull request in the
@@ -44,7 +44,7 @@ on:
         type: string
         default: ""
       drill:
-        description: "Build the two admission drill images drill-vulnerable and drill-unsigned (never run)"
+        description: "Build the three admission drill images drill-vulnerable, drill-unsigned and drill-no-provenance (never run)"
         type: boolean
         default: false
       promote_prd:
@@ -315,7 +315,7 @@ jobs:
       - &cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
-          cosign-release: v3.1.3
+          cosign-release: v3.1.4
       - name: Sign and attest
         env:
           IMAGE: ${{ matrix.image }}
@@ -430,7 +430,7 @@ jobs:
 
   contract:
     # Publishes info.version of services/gateway/openapi.yaml as an OCI artifact (deploy/ci/contract.sh publish):
-    # ghcr.io/anhnvcoder/short-video-platform/api/gateway:<version>, signed keyless by this workflow on main, the
+    # ghcr.io/anhnvcoder/svp-backend/api/gateway:<version>, signed keyless by this workflow on main, the
     # identity every verifier of the contract checks. Runs on every build run of main (push, or a dispatch that neither
     # rescans, drills nor promotes to prd): a version already published with this very file is left alone (signed if
     # its signature is missing), the same version with other content fails and nothing is overwritten. Those runs share
@@ -501,10 +501,13 @@ jobs:
           retention-days: 7
 
   # Admission drill images: drill-vulnerable (an old base with CRITICAL on both architectures, signed
-  # and attested like a release) and drill-unsigned (a clean build pushed with no signature). They exist only so the
+  # and attested like a release), drill-unsigned (a clean build pushed with no signature) and drill-no-provenance (the
+  # same clean build, signed and attested vuln like a release, with no build provenance). They exist only so the
   # cluster can be shown refusing them; no chart points to them and they never run. They go through the very same
-  # steps as a release (YAML aliases of the build and merge jobs), so CRITICAL and the signature are the only
-  # differences; only drill-vulnerable gets past the CRITICAL gate, and the secret gate holds for both.
+  # steps as a release (YAML aliases of the build and merge jobs), so CRITICAL, the signature and the provenance are
+  # the only differences; only drill-vulnerable gets past the CRITICAL gate, and the secret gate holds for all three.
+  # No image file of svp-gitops names them, so the daily rescan never attests them again: a drill reads them within
+  # the policy's maximum age after this dispatch.
   drill-build:
     needs: plan
     if: >-
@@ -537,7 +540,8 @@ jobs:
     steps: *merge
 
   drill-sign:
-    # drill-vulnerable only: drill-unsigned stays unsigned on purpose. No build provenance: a drill image is no release.
+    # drill-vulnerable and drill-no-provenance: drill-unsigned stays unsigned on purpose. No build provenance for either
+    # (sign-image.sh attests it for releases only): a drill image is no release, and drill-no-provenance exists to lack it.
     needs: [plan, drill-merge]
     if: >-
       ${{ !cancelled() && needs.plan.outputs.mode == 'drill'
@@ -549,8 +553,9 @@ jobs:
       packages: write
       id-token: write
     strategy:
+      fail-fast: false
       matrix:
-        image: [drill-vulnerable]
+        image: [drill-vulnerable, drill-no-provenance]
     steps: *sign
 
   sarif:
@@ -613,12 +618,12 @@ jobs:
           exit "$over"
       - name: Upload the trivy SARIF
         if: ${{ !cancelled() && steps.split.outputs.trivy == 'true' }}
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: ${{ runner.temp }}/sarif-trivy
       - name: Upload the grype SARIF
         if: ${{ !cancelled() && steps.split.outputs.grype == 'true' }}
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: ${{ runner.temp }}/sarif-grype
 

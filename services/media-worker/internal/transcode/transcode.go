@@ -28,7 +28,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
 )
 
 var (
@@ -324,7 +324,7 @@ func (e *toolError) Unwrap() error { return e.err }
 // (SIGKILL) and Wait reaps it before runTool returns. Each run is a span named after the tool,
 // without its arguments: they hold the job's paths.
 func runTool(ctx context.Context, timeout time.Duration, stdout io.Writer, dirs []string, name string, args ...string) (err error) {
-	ctx, span := otel.Tracer("github.com/anhnvcoder/short-video-platform/services/media-worker/internal/transcode").Start(ctx, name)
+	ctx, span := otel.Tracer("github.com/anhnvcoder/svp-backend/services/media-worker/internal/transcode").Start(ctx, name)
 	defer func() {
 		if err != nil {
 			span.SetStatus(codes.Error, name+" failed")

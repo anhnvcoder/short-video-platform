@@ -3,7 +3,7 @@
 # REPORT is the JSON of `trivy image --scanners vuln,secret` run
 # with every severity and .trivyignore.yaml; LABEL names the image in the output (for example gateway linux/arm64).
 # scan-gate.sh --fs LABEL REPORT: the same rules for the JSON of `trivy fs` on a lockfile (make lockfile-scan of
-# svp-web, which runs this script from its checkout of this repository): the web image shows trivy only the few npm
+# svp-frontend, which runs this script from its checkout of this repository): the web image shows trivy only the few npm
 # packages left in its node_modules, since the bundler folds the server's dependencies into its chunks, so the lockfile
 # is where every npm package and its version can still be seen. A blocked lockfile fails the check that ran it; there
 # is no push to stop.

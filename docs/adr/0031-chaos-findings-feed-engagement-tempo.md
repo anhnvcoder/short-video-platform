@@ -13,7 +13,7 @@ nêu tên.
 
 **feed-service một replica.**
 
-- Lượt [40712072895](https://github.com/anhnvcoder/short-video-platform/actions/runs/40712072895), thí nghiệm (a) kill pod (`pod-kill`,
+- Lượt [40712072895](https://github.com/anhnvcoder/svp-backend/actions/runs/40712072895), thí nghiệm (a) kill pod (`pod-kill`,
   `mode: one`, `gracePeriod: 0`) dưới k6 1 pod: feed-service lúc đó HPA 1–2 theo CPU 70 %, không PDB
   ([ADR-0014](0014-kubernetes-local-stage4.md) §10), lúc kill chỉ có 1 replica; pod thay Ready sau 2 s. Feed 5xx **0,28 %** trong cửa sổ
   10 phút quanh lần kill (giả thuyết < 0,1 %), k6 explore và following lỗi 0,33 % cả lượt, p99 9,6 → 9,5 ms, không cảnh báo page.
@@ -22,7 +22,7 @@ nêu tên.
   0,8–1,2 (mục Kiểm chứng), và `retryThrottling` ngừng thử lại sau vài lỗi (ADR-0010 §4): tổng chờ khoảng 0,15 s, tối đa 0,18 s, hết trước 2 s
   không có pod nào Ready.
 - Một pod feed-service trên runner (mẫu 30 s của `kubectl top`, `pods.tsv` của sampler): working set tối đa **35 MiB**, CPU tối đa
-  116m ở `k6-cloud-mini` [40620333867](https://github.com/anhnvcoder/short-video-platform/actions/runs/40620333867) (ở lượt đó HPA đã
+  116m ở `k6-cloud-mini` [40620333867](https://github.com/anhnvcoder/svp-backend/actions/runs/40620333867) (ở lượt đó HPA đã
   chạy pod thứ hai suốt phần sau của lượt), 24 MiB và 56m ở lượt chaos trên. Request 100m / 64 Mi, limit 1 / 256 Mi.
 
 **engagement-service khi Postgres chậm.**
@@ -46,7 +46,7 @@ nêu tên.
 
 - Container `tempo` của `svp-obs/tempo-0` (Tempo 3.1.0 single binary, metrics-generator `service-graphs` + `span-metrics`, request
   128 Mi, limit **768 Mi**, `deploy/k8s/values/tempo.yaml`) là pod `OOMKilled` duy nhất ở cả hai lượt chaos
-  ([40691107770](https://github.com/anhnvcoder/short-video-platform/actions/runs/40691107770) và 40712072895; mỗi thí nghiệm một lượt
+  ([40691107770](https://github.com/anhnvcoder/svp-backend/actions/runs/40691107770) và 40712072895; mỗi thí nghiệm một lượt
   k6 1 pod, khoảng 55 req/s): lượt k6 của bản thử (khoảng 11 phút) không OOM, dòng OOM đầu tiên của kernel nằm trong lượt k6 của (a), cuối
   lượt Tempo đã restart 16 và 10 lần, `CrashLoopBackOff`.
 - `k6-cloud-mini` 40620333867: mức 1 và 2 pod (mỗi mức lên 2 phút, giữ 10) không OOM; mức 4 pod (khoảng 220 req/s) Tempo chết trong 1–2
@@ -313,27 +313,27 @@ Lượt runner ngày 2026-10-29 trên nhánh `feat/stage6b-chaos-fixes`, commit 
 
 | Kịch bản | Lượt | Kết quả lượt |
 | --- | --- | --- |
-| `chaos` | [40810755085](https://github.com/anhnvcoder/short-video-platform/actions/runs/40810755085) | 11/11 bước `ok` (bản thử, (a), (b), (c), ba `tempo-ingest-chaos-*`, gỡ); runner đủ mọi tiêu chí: `no_oom=true`, không container `OOMKilled`, 0 dòng OOM của kernel, `MemAvailable` thấp nhất 8 209 MiB |
-| `dev-k3d` | [40810781486](https://github.com/anhnvcoder/short-video-platform/actions/runs/40810781486) | 14/14 bước `ok` (gồm `drill-k8s-pdb` mở rộng cho feed-service, `drill-k8s-web-obs`, RAM nghỉ đầu và cuối) |
-| `k6-cloud-mini` | [40810768238](https://github.com/anhnvcoder/short-video-platform/actions/runs/40810768238) (`98715d9`), [40820505634](https://github.com/anhnvcoder/short-video-platform/actions/runs/40820505634) (`c7ca403`) | Mức 1, 2 đạt ở cả hai lượt; mức 4 trượt (lượt 1 chỉ 2/4 pod có summary vì Job xoá pod khi một pod trượt; lượt 2 đủ 4/4); `tempo-ingest-1`, `-2`, `-4` đạt ở cả hai lượt |
+| `chaos` | [40810755085](https://github.com/anhnvcoder/svp-backend/actions/runs/40810755085) | 11/11 bước `ok` (bản thử, (a), (b), (c), ba `tempo-ingest-chaos-*`, gỡ); runner đủ mọi tiêu chí: `no_oom=true`, không container `OOMKilled`, 0 dòng OOM của kernel, `MemAvailable` thấp nhất 8 209 MiB |
+| `dev-k3d` | [40810781486](https://github.com/anhnvcoder/svp-backend/actions/runs/40810781486) | 14/14 bước `ok` (gồm `drill-k8s-pdb` mở rộng cho feed-service, `drill-k8s-web-obs`, RAM nghỉ đầu và cuối) |
+| `k6-cloud-mini` | [40810768238](https://github.com/anhnvcoder/svp-backend/actions/runs/40810768238) (`98715d9`), [40820505634](https://github.com/anhnvcoder/svp-backend/actions/runs/40820505634) (`c7ca403`) | Mức 1, 2 đạt ở cả hai lượt; mức 4 trượt (lượt 1 chỉ 2/4 pod có summary vì Job xoá pod khi một pod trượt; lượt 2 đủ 4/4); `tempo-ingest-1`, `-2`, `-4` đạt ở cả hai lượt |
 
 **§1 feed-service hai replica: đạt.**
 
 - Giả thuyết: mất một pod feed-service còn một pod phục vụ; feed 5xx < 0,1 % trong 10 phút quanh lần kill (như gateway).
-- (a) `chaos` [40810755085](https://github.com/anhnvcoder/short-video-platform/actions/runs/40810755085) (`k8s-drills/chaos-*.json`, `.a.feed_service`): 2 replica Ready lúc kill (04:00:04Z), pod
+- (a) `chaos` [40810755085](https://github.com/anhnvcoder/svp-backend/actions/runs/40810755085) (`k8s-drills/chaos-*.json`, `.a.feed_service`): 2 replica Ready lúc kill (04:00:04Z), pod
   thay Ready sau 3 s, feed 5xx **0** trong 10 phút (lượt trước 0,28 % với 1 replica), p99 feed 13,3 ms 5 phút trước, 13,1 ms sau 30 s
   đầu, 5xx của Envoy 0 trong 5 phút sau, không cảnh báo page. Cùng lượt (a) gateway: 2 replica, pod thay Ready sau 2 s, feed 5xx 0.
   Node của hai pod feed lúc kill: **chưa đo** (kết quả của (a) không ghi node).
-- `drill-k8s-pdb` `dev-k3d` [40810781486](https://github.com/anhnvcoder/short-video-platform/actions/runs/40810781486) (`logs/05-drill-k8s-pdb.log`): trước diễn tập hai pod feed ở hai node
+- `drill-k8s-pdb` `dev-k3d` [40810781486](https://github.com/anhnvcoder/svp-backend/actions/runs/40810781486) (`logs/05-drill-k8s-pdb.log`): trước diễn tập hai pod feed ở hai node
   (`k3d-svp-server-0`, `k3d-svp-agent-0`); PDB `minAvailable 1`, `disruptionsAllowed 1`; pod đầu evict **201**; `disruptionsAllowed 0`
   khi pod thay còn Pending trên node đã cordon; pod thứ hai evict **429** (vi phạm disruption budget); sau uncordon deployment về 2 pod
   Ready, pod thứ hai chưa bao giờ bị evict, hai pod lại ở hai node. Gateway cùng lượt: 201, 429, về 2 pod ở hai node.
 - Tải giữa hai pod (rủi ro đã ghi ở Quyết định): CPU từng pod feed theo `kubectl top` (`samples/pods.tsv` của
-  [40820505634](https://github.com/anhnvcoder/short-video-platform/actions/runs/40820505634), trung bình trong cửa sổ giữ) 44m / 28m ở mức 1, 88m / 37m ở mức 2, 150m / 72m ở mức 4: một pod nhận
+  [40820505634](https://github.com/anhnvcoder/svp-backend/actions/runs/40820505634), trung bình trong cửa sổ giữ) 44m / 28m ở mức 1, 88m / 37m ở mức 2, 150m / 72m ở mức 4: một pod nhận
   khoảng gấp đôi pod kia, đúng kiểu ghim kết nối qua ClusterIP. Số request theo pod **chưa đo**. Chưa thành lỗi ở các mức đã chạy
   (mức 4 trượt vì CPU của runner, dưới đây), nhưng là phát hiện cho Hệ quả "Xem lại khi".
 - RAM: working set mỗi pod feed 11–13 MiB lúc nghỉ, tối đa 28 MiB trong `chaos`, 31 MiB ở mức 4 pod (dưới limit 256 Mi). RAM nghỉ của
-  cluster dev ở điểm 60 s ([40810781486](https://github.com/anhnvcoder/short-video-platform/actions/runs/40810781486), `ram-rest-start.json`): MEM USAGE trừ `active_file` 5 066 MiB, tổng pod
+  cluster dev ở điểm 60 s ([40810781486](https://github.com/anhnvcoder/svp-backend/actions/runs/40810781486), `ram-rest-start.json`): MEM USAGE trừ `active_file` 5 066 MiB, tổng pod
   2 812 MiB (`svp` 266, `svp-obs` 1 280, `svp-data` 611), (b) của ADR-0014 §2 đạt; cuối kịch bản 5 488 / 3 264 MiB. Hai lượt `dev-k3d`
   trước đổi (ADR-0021, Kết quả lượt 4, 5): 6 084 và 5 972 MiB, pod 3 163 và 3 024 MiB: pod feed thêm không làm RAM nghỉ vượt ngân sách
   (chênh giữa các lượt lớn hơn 12 MiB của pod thêm, nên không tách được phần của nó).
@@ -342,7 +342,7 @@ Lượt runner ngày 2026-10-29 trên nhánh `feat/stage6b-chaos-fixes`, commit 
 
 - Giả thuyết (ADR-0020 §7 (b)): engagement-service trễ 200 ± 20 ms trong 5 phút, feed vẫn 200 (bỏ `stats`), 5xx < 0,1 %, p99 ≤ 150 ms;
   like, view không 5xx; breaker không mở.
-- (b) `chaos` [40810755085](https://github.com/anhnvcoder/short-video-platform/actions/runs/40810755085) (`.b`): like + view 5xx **0** trên khoảng 2 255 request trong 5 phút trễ (lượt trước
+- (b) `chaos` [40810755085](https://github.com/anhnvcoder/svp-backend/actions/runs/40810755085) (`.b`): like + view 5xx **0** trên khoảng 2 255 request trong 5 phút trễ (lượt trước
   556 / 2 149); breaker tối đa 0, `CircuitBreakerOpen` không cháy; feed 5xx 0, p99 149,2 ms (vẫn sát 150 ms như lượt trước), explore 200
   với 20 mục, 0 mục có `stats`, `stats` trở lại 1 s sau khi gỡ. k6 của cả lượt (gồm thí nghiệm, `k6/cloud-20261029T043719Z`): like
   3 074 request, lỗi 0,033 % (1 request), p99 618 ms (lượt trước 18,5 % lỗi, p99 3 004 ms bằng hạn 3 s của gateway); view 6 147, 0 lỗi,
@@ -360,11 +360,11 @@ Lượt runner ngày 2026-10-29 trên nhánh `feat/stage6b-chaos-fixes`, commit 
   đầu mức 4). Lượt này không chạy lại cấu hình cũ có chuỗi RAM, nên phần đóng góp của từng tham số không tách được: giả thuyết về
   nguyên nhân khớp với kết quả, chưa được chứng minh riêng.
 - Working set đỉnh của container `tempo` (`samples/pods.tsv`, mẫu 30 s) so với limit 1 Gi (`GOMEMLIMIT` 800 MiB): `chaos` bản thử
-  467 MiB, (a) 648, (b) 644, (c) 754 MiB; `k6-cloud-mini` [40820505634](https://github.com/anhnvcoder/short-video-platform/actions/runs/40820505634) mức 1 687, mức 2 560, mức 4 **784 MiB**
+  467 MiB, (a) 648, (b) 644, (c) 754 MiB; `k6-cloud-mini` [40820505634](https://github.com/anhnvcoder/svp-backend/actions/runs/40820505634) mức 1 687, mức 2 560, mức 4 **784 MiB**
   (lượt 1: tối đa 703 MiB cả lượt). Chuỗi lên xuống răng cưa (đầu mỗi cửa sổ 166–223 MiB). Lúc nghỉ ở `dev-k3d` 75 MiB (điểm 60 s), 105 MiB
   cuối kịch bản, tối đa 389 MiB trong kịch bản.
 - Tốc độ span (exporter `otlp_grpc/tempo` của Collector, `k8s-drills/tempo-ingest-*.json`): k6 1 pod 726, 2 pod 1 444, 4 pod 3 036
-  span/s ([40820505634](https://github.com/anhnvcoder/short-video-platform/actions/runs/40820505634); lượt 1: 725, 1 444, 2 882); `chaos` (k6 1 pod) 695–723 span/s. Gấp khoảng 2 lần ước lượng
+  span/s ([40820505634](https://github.com/anhnvcoder/svp-backend/actions/runs/40820505634); lượt 1: 725, 1 444, 2 882); `chaos` (k6 1 pod) 695–723 span/s. Gấp khoảng 2 lần ước lượng
   của Bối cảnh (250–350 ở 1 pod, 1 000–1 400 ở 4 pod). Byte/s vào Tempo **chưa đo**; Tempo không bỏ span nào nên tốc độ ở mức 4 vẫn dưới
   trần ingest.
 - Mất dữ liệu, mọi cửa sổ ((a), (b), (c), mức 1, 2, 4 của hai lượt): receiver của Collector từ chối 0, lỗi 0; exporter gửi lỗi 0, không

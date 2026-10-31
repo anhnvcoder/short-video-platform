@@ -17,7 +17,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
-	"github.com/anhnvcoder/short-video-platform/internal/authtoken"
+	"github.com/anhnvcoder/svp-backend/internal/authtoken"
 )
 
 // FuzzClientAddr reads hops as two numbers: hops%3 is the proxies trusted, (hops/3)%3 the number

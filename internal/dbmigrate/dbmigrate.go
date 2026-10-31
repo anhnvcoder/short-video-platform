@@ -18,7 +18,7 @@ import (
 	"github.com/pressly/goose/v3"
 	"github.com/pressly/goose/v3/lock"
 
-	"github.com/anhnvcoder/short-video-platform/internal/pgretry"
+	"github.com/anhnvcoder/svp-backend/internal/pgretry"
 )
 
 // versionSchema holds goose's version table. Up creates it as the migrating role, which then

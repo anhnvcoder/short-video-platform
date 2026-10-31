@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/httpx"
+	"github.com/anhnvcoder/svp-backend/services/gateway/internal/httpx"
 )
 
 func TestClientIP(t *testing.T) {

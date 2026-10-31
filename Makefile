@@ -12,7 +12,7 @@ PROTOC_GEN_GO_GRPC_VERSION := v1.6.2
 # renovate: datasource=go depName=github.com/sqlc-dev/sqlc
 SQLC_VERSION               := v1.31.1
 # renovate: datasource=go depName=github.com/golangci/golangci-lint/v2
-GOLANGCI_LINT_VERSION      := v2.14.0
+GOLANGCI_LINT_VERSION      := v2.15.0
 # renovate: datasource=go depName=github.com/zricethezav/gitleaks/v8
 GITLEAKS_VERSION           := v8.30.1
 # SLO rule generator: Sloth turns the SLO spec into Prometheus recording and burn-rate alert rules. `go install` leaves
@@ -41,7 +41,7 @@ GOVULNCHECK_VERSION        := v1.9.0
 # Helm's archive is checked against the sha256 published with the release (helm-<version>-linux-amd64.tar.gz.sha256sum),
 # so the two lines change together; `go install` of Helm is not a documented way and reports a wrong version.
 # renovate: datasource=go depName=github.com/bufbuild/buf
-BUF_VERSION                := v1.74.0
+BUF_VERSION                := v1.75.0
 # renovate: datasource=github-releases depName=helm/helm
 HELM_VERSION               := v4.3.1
 HELM_LINUX_AMD64_SHA256    := 0403a88ae20913d11b10a2467b50087721fea7581736da6b9d3992f5357fe54b
@@ -64,7 +64,7 @@ COSIGN_IMAGE := ghcr.io/sigstore/cosign/cosign:v3.1.3@sha256:9e5c2f2edc343511604
 # start inside the cluster to measure the system rather than the home network. The k6 of Homebrew is not pinned. v2: the v1
 # line only gets security fixes.
 # renovate: datasource=docker depName=grafana/k6
-K6_IMAGE := grafana/k6:2.3.0@sha256:9c2dee7f8ed74d317e4027c06a10f169b625638189de8d4555d0b3486a5aeb34
+K6_IMAGE := grafana/k6:2.3.0@sha256:2dd4756ec6e14e62778916e1eb850108e4b499304c02df56760fa0bdb0fba0b8
 # DAST of the gateway against its OpenAPI contract (make dast), from the official image pinned by digest, the same on a
 # dev machine and in the CI job stack.
 # renovate: datasource=docker depName=schemathesis/schemathesis
@@ -312,28 +312,28 @@ hooks: ## Point git at .githooks (run once per clone)
 	git config core.hooksPath .githooks
 
 # The web client's end-to-end tests, measurements and source map upload against the stack of make up are code of
-# svp-web (its e2e/, lighthouse/ and Makefile). Each target here runs the target of svp-web its help names, in the
+# svp-frontend (its e2e/, lighthouse/ and Makefile). Each target here runs the target of svp-frontend its help names, in the
 # clone web_dir of deploy/k8s/lib.sh names (<workspace>/frontend, or SVP_WEB_DIR, which CI points at the clone of make
 # web-clone), with that clone's Node, pnpm and Playwright browsers, against this checkout's stack, scripts and .env
 # (SVP_BACKEND_DIR); results go to test-results/ of the clone. LOCAL LAB ONLY: the e2e seed and every Playwright worker,
 # measure-upload and Lighthouse delete the gateway's register rate limit keys in Redis db 10, as make smoke does.
 IN_WEB = dir=$$(bash -c '$(K8S_LIB) && web_dir') && SVP_BACKEND_DIR='$(CURDIR)' $(MAKE) --no-print-directory -C "$$dir"
 
-web-e2e: ## Playwright end-to-end tests of the web client on Chromium and WebKit against the stack of make up (make e2e of svp-web)
+web-e2e: ## Playwright end-to-end tests of the web client on Chromium and WebKit against the stack of make up (make e2e of svp-frontend)
 	@$(IN_WEB) e2e
 
-measure-web: ## Run the web client's e2e tests and print time to first frame after a swipe (p50/p95 per browser) and the memory of container web at rest and after (make measure-web of svp-web)
+measure-web: ## Run the web client's e2e tests and print time to first frame after a swipe (p50/p95 per browser) and the memory of container web at rest and after (make measure-web of svp-frontend)
 	@$(IN_WEB) measure-web
 
-measure-upload: ## Upload a ~100 MB video from Chromium through /upload; print time, throughput, page CPU and time to READY; needs ffmpeg and jq (make measure-upload of svp-web)
+measure-upload: ## Upload a ~100 MB video from Chromium through /upload; print time, throughput, page CPU and time to READY; needs ffmpeg and jq (make measure-upload of svp-frontend)
 	@$(IN_WEB) measure-upload
 
-web-lighthouse: ## Lighthouse (mobile, one run per page) of the feed logged in and /v/{id} logged out: LCP/CLS/TBT thresholds (make lighthouse of svp-web)
+web-lighthouse: ## Lighthouse (mobile, one run per page) of the feed logged in and /v/{id} logged out: LCP/CLS/TBT thresholds (make lighthouse of svp-frontend)
 	@$(IN_WEB) lighthouse
 
 # Only for a web client built from that clone (make up WEB_FROM=clone OBS=lgtm): a release keeps the build id CI gave
 # it, and its maps come from CI.
-web-sourcemaps: ## Upload the source maps of the web client's browser bundle, from the build the stack of make up OBS=lgtm WEB_FROM=clone runs, to its GlitchTip (http://127.0.0.1:8000); checks first that the web serves that build (make sourcemaps of svp-web)
+web-sourcemaps: ## Upload the source maps of the web client's browser bundle, from the build the stack of make up OBS=lgtm WEB_FROM=clone runs, to its GlitchTip (http://127.0.0.1:8000); checks first that the web serves that build (make sourcemaps of svp-frontend)
 	@$(IN_WEB) sourcemaps
 
 # Docker and compose targets live in their own file (stage 1, compose card).

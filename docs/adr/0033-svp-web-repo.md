@@ -3,7 +3,11 @@
 - Trạng thái: Chấp nhận (người học duyệt 2026-10-30, chọn (a) ở cả sáu dòng "Cần người học chọn"; các điểm thiết kế còn lại theo
   đề xuất). Bước 1–5 của mục 9 xong 2026-10-30: PR-1 merge (`28bf2ca`, PR #43; sửa tiếp PR #45, #48), repo `svp-web` với lịch sử chụp
   ở `28bf2ca`, check của `svp-gitops` theo nguồn (PR #20), bản phát hành đầu của `svp-web` chạy ở stg (PR #22 của `svp-gitops`); PR-2
-  (cắt `web/`) hiện thực 2026-10-31, chưa merge; promote prd có web của `svp-web` và PR-3 chưa (mục Kết quả, Hiện thực ở)
+  (cắt `web/`) hiện thực 2026-10-31, chưa merge; promote prd có web của `svp-web` và PR-3 chưa (mục Kết quả, Hiện thực ở); §10
+  (Renovate của `svp-web`: không automerge; bản `patch`, `digest` của gói npm, Node, base image và service container của CI tự merge khi
+  `ci-ok`, `images-ok` xanh; action, `.backend-commit`, `api/contract.json`, minor, major giữ tay) chỉnh bởi
+  [0035](0035-renovate-automerge.md);
+  tên repo (`svp-web` thành `svp-frontend`, repo backend thành `svp-backend`), prefix và identity của hai nguồn (§2), check không đọc bản clone repo web (§3) và bước 8 của §9 (gỡ `web` khỏi nguồn backend cũ, làm trong bảng chuyển) chỉnh bởi [0036](0036-repo-rename.md)
 - Ngày: 2026-10-30
 
 ## Bối cảnh
@@ -680,7 +684,7 @@ PR-1 của mục 9 (phần chuẩn bị ở repo này), merge 2026-10-30 (`28bf2
   nguồn bị phép 1 từ chối; bản phát hành của một nguồn đặt dưới prefix của nguồn kia bị phép chữ ký từ chối nêu nguồn đó; bản của nguồn
   khác `backend` được nhận; phần nào cần bản phát hành `svp-web` chưa có thì SKIP) và biến `SUPPLYCHAIN_*` kiểm theo
   `<imagePrefix>(services|drillImages)` của bảng nguồn.
-- Cài đặt GitHub do người học làm: [`docs/runbooks/svp-web-setup.md`](../runbooks/svp-web-setup.md).
+- Cài đặt GitHub do người học làm: [`docs/runbooks/svp-frontend-setup.md`](../runbooks/svp-frontend-setup.md).
 
 Sau PR-1, hai script mà CI `svp-web` gọi từ checkout ghim (PR #48, `f59c4ca`, merge 2026-10-30; `.backend-commit` của `svp-web` ghim
 commit này):
@@ -718,7 +722,7 @@ PR-2 của mục 9 (cắt `web/`, 2026-10-31, nhánh `feat/stage6b-svp-web-cut`,
   `scripts/contract.sh` (`make generate`), `.github/workflows/ci.yml` (`check`, `config`, `gitleaks`, `stack`, `sarif`, `ci-ok`),
   `.github/workflows/images.yml` (`plan`, build, ký, provenance, image `web-sourcemaps`, `promote` với App `svp-web-promoter`, `rescan`,
   `images-ok`), `.github/rulesets/main.json`, `renovate.json`, `.trivyignore.yaml`, `README.md`, `CLAUDE.md`.
-- Cài đặt GitHub (người học, theo [`docs/runbooks/svp-web-setup.md`](../runbooks/svp-web-setup.md)): App `svp-web-promoter`, environment
+- Cài đặt GitHub (người học, theo [`docs/runbooks/svp-frontend-setup.md`](../runbooks/svp-frontend-setup.md)): App `svp-web-promoter`, environment
   `promote` của `svp-web` và package `svp-web/web`, `svp-web/web-sourcemaps`, `short-video-platform/api/gateway` public đã dùng ở các lượt
   của mục Kết quả.
 

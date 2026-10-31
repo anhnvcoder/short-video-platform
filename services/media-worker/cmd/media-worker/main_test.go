@@ -10,7 +10,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 
-	"github.com/anhnvcoder/short-video-platform/internal/objstore"
+	"github.com/anhnvcoder/svp-backend/internal/objstore"
 )
 
 func setRequired(t *testing.T) {

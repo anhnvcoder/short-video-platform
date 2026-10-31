@@ -15,11 +15,11 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	engagementv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/engagement/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/redistest"
-	"github.com/anhnvcoder/short-video-platform/internal/redisx"
-	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/httpx"
-	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/ratelimit"
+	engagementv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/engagement/v1"
+	"github.com/anhnvcoder/svp-backend/internal/redistest"
+	"github.com/anhnvcoder/svp-backend/internal/redisx"
+	"github.com/anhnvcoder/svp-backend/services/gateway/internal/httpx"
+	"github.com/anhnvcoder/svp-backend/services/gateway/internal/ratelimit"
 )
 
 // redisEnv is an env whose rate limits run on the test Redis, under keys the test deletes itself.

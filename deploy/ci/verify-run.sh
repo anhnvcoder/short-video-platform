@@ -9,8 +9,8 @@
 # sources (each has its own owner, and seven in one file would be too long to review). A scenario file sets build (the
 # name of its first target, which builds what the others use), job_minutes_default (the job's limit when
 # SVP_VERIFY_JOB_MINUTES is not set) and k3d (1 when its targets run on cluster k3d-svp, 0 otherwise), may set web (1
-# when its targets build, test or measure the web client, so the run clones svp-web and takes SVP_VERIFY_WEB_REF, see
-# The clones below; unset is 0), may define helpers of its own (exported when a step runs them through bash -c), and
+# when its targets build, test or measure the web client, so the run clones svp-frontend and takes SVP_VERIFY_WEB_REF,
+# see The clones below; unset is 0), may define helpers of its own (exported when a step runs them through bash -c), and
 # defines scenario_targets, its targets in order through step and skip below. It may read names (every target of its list, once listed) and call chosen (below)
 # while its targets run. It sets no other variable of this script, and its own are local to its functions
 # with names apart from this script's: step and skip see a caller's locals (bash scopes dynamically), so a local n in
@@ -33,25 +33,27 @@
 #   - make gitops-clone, for every scenario: main of the deployment configuration svp-gitops cloned anonymously into
 #     .gitops/svp-gitops of the checkout (the web release of staging for make up and make k8s-up, base/ and
 #     components.json for make k8s-up, all of it for make k8s-gitops-up);
-#   - for a scenario whose file sets web=1: make web-clone, svp-web, the web client's repository, cloned anonymously
-#     from github.com/anhnvcoder/svp-web into .web/svp-web of the checkout, so no fork's code can reach the run, and
-#     checked out at SVP_VERIFY_WEB_REF (the dispatch's input web_ref), a branch or a full commit SHA of it; empty, at
-#     the commit of the web release staging runs (image.tag of envs/stg/images/web.yaml in that clone of svp-gitops),
-#     so the web's tests and measurements run the code of the image they meet. It hands web_dir, the clone's folder
-#     relative to the checkout, to the job's later steps (ci_output of deploy/ci/platform.sh), which install Node and
-#     pnpm as its .nvmrc and package.json pin them, its packages (make install there) and Playwright's browsers.
+#   - for a scenario whose file sets web=1: make web-clone, svp-frontend, the web client's repository, cloned
+#     anonymously from github.com/anhnvcoder/svp-frontend into .web/svp-frontend of the checkout, so no fork's code can
+#     reach the run, and checked out at SVP_VERIFY_WEB_REF (the dispatch's input web_ref), a branch or a full commit SHA
+#     of it; empty, at the commit of the web release staging runs (image.tag of envs/stg/images/web.yaml in that clone
+#     of svp-gitops), so the web's tests and measurements run the code of the image they meet. It hands web_dir, the
+#     clone's folder relative to the checkout, to the job's later steps (ci_output of deploy/ci/platform.sh), which
+#     install Node and pnpm as its .nvmrc and package.json pin them, its packages (make install there) and
+#     Playwright's browsers.
 # A failed clone (no such branch or commit) exits 1, so the job runs no later step and no target starts. A scenario
 # whose file does not set web=1 given SVP_VERIFY_WEB_REF, or a value that is neither a full SHA nor a valid branch
 # name of letters, digits, ., _, / and -, stops the script before anything starts (exit 2), in both modes. On the VM:
-# verify-run.sh --clones SCENARIO, then for a web scenario Node, pnpm, make install and the browsers in .web/svp-web,
-# then verify-run.sh SCENARIO.
+# verify-run.sh --clones SCENARIO, then for a web scenario Node, pnpm, make install and the browsers in
+# .web/svp-frontend, then verify-run.sh SCENARIO.
 #
 # Before the first target: make gitops-clone again (main as it is by now) and SVP_GITOPS_DIR exported to it for every
-# target (deploy/k8s/lib.sh, gitops_dir); for a web scenario SVP_WEB_DIR exported to .web/svp-web, as --clones left it
-# (never fetched or moved here: its packages are installed for that commit), for every target (web_dir): every target
+# target (deploy/k8s/lib.sh, gitops_dir); for a web scenario SVP_WEB_DIR exported to .web/svp-frontend, as --clones left
+# it (never fetched or moved here: its packages are installed for that commit), for every target (web_dir): every target
 # that builds the web builds that commit, every target that tests or measures it runs that commit's code, and the
 # source map upload runs the Sentry CLI of its packages. No target can pass without them: when the clone of
-# svp-gitops fails, or a web scenario has no clone of svp-web there (--clones did not run), nothing starts (exit 1).
+# svp-gitops fails, or a web scenario has no clone of svp-frontend there (--clones did not run), nothing starts
+# (exit 1).
 #
 # The first target builds what the others use (the scenario file's build: up for compose-obs, k8s-gitops-up for gitops,
 # k8s-up for the other k3d scenarios). When it is not ok, every later target is skipped at once with the note
@@ -182,7 +184,7 @@ if [ -n "$clones" ]; then
     # its checkout to fall back on.
     gitops_clone_dir=$(. "$repo/deploy/k8s/lib.sh" && echo "$gitops_ci_clone") || exit 1
     SVP_GITOPS_DIR=$gitops_clone_dir make -s web-clone ${web_ref:+WEB_REF="$web_ref"} || {
-      echo "FAIL  verify-run: make web-clone${web_ref:+ WEB_REF=$web_ref} (the web client's repository svp-web);" \
+      echo "FAIL  verify-run: make web-clone${web_ref:+ WEB_REF=$web_ref} (the web client's repository svp-frontend);" \
         "nothing started" >&2
       exit 1
     }
@@ -436,7 +438,7 @@ esac
 # the two steps makes those maps another release's, and target gitops-sourcemaps then fails, as it uploads nothing
 # unless every chunk the web serves has its debug ID in the maps; so no wrong map is ever uploaded. Pinning that
 # commit here would leave the clone off main, which the release wait after the scenario follows. The same release
-# leaves the web's code (the clone of svp-web, at the release --clones read) one release behind the web image the
+# leaves the web's code (the clone of svp-frontend, at the release --clones read) one release behind the web image the
 # stack or cluster runs; the targets that test or measure it then run as an older client would.
 make -s gitops-clone || {
   echo "FAIL  verify-run: make gitops-clone (the deployment configuration svp-gitops); nothing started" >&2
@@ -446,7 +448,7 @@ SVP_GITOPS_DIR=$(. "$repo/deploy/k8s/lib.sh" && echo "$gitops_ci_clone") || exit
 export SVP_GITOPS_DIR
 if [ "$web" = 1 ]; then
   SVP_WEB_DIR=$(. "$repo/deploy/k8s/lib.sh" && web_is_clone "$web_ci_clone" && echo "$web_ci_clone") || {
-    echo "FAIL  verify-run: no clone of svp-web in .web/svp-web for scenario $scenario: run verify-run.sh --clones" \
+    echo "FAIL  verify-run: no clone of svp-frontend in .web/svp-frontend for scenario $scenario: run verify-run.sh --clones" \
       "$scenario first; nothing started" >&2
     exit 1
   }

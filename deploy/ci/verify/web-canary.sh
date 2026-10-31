@@ -6,7 +6,7 @@
 build=k8s-up
 job_minutes_default=330
 k3d=1
-# make k8s-up WEB_FROM=clone and the drill build the web image from the clone of svp-web (verify-run.sh), whose
+# make k8s-up WEB_FROM=clone and the drill build the web image from the clone of svp-frontend (verify-run.sh), whose
 # browser clients the drill runs: web_ref of the dispatch, or the commit of the web release staging runs.
 web=1
 

@@ -1214,7 +1214,7 @@ giá: không phát hiện được Valkey treo mà cổng vẫn mở, lab chấp
     có thể đọc ref do Application khác lấy tới 60 s trước. Vì vậy push → Argo CD thấy commit **thường ≤ 60 s, tệ nhất
     ~120 s**; diễn tập GitOps so số đo với cận này. Giảm `timeout.reconciliation` thì cả hai cận giảm theo, đổi lấy thêm
     `ls-remote` tới GitHub.
-- **Repo:** `https://github.com/anhnvcoder/short-video-platform.git` qua **HTTPS ẩn danh** (sửa 2026-10-28,
+- **Repo:** `https://github.com/anhnvcoder/svp-backend.git` qua **HTTPS ẩn danh** (sửa 2026-10-28,
   [ADR-0021](0021-deferred-verification-stage6b.md) §6): repo public từ giai đoạn 5 nên đọc không cần credential; `gitops.sh`
   không tạo Secret repo, `make k8s-gitops-up` không nhận deploy key; cùng một URL ở `repoURL` của `deploy/argocd/apps/values.yaml`,
   `sourceRepos` của AppProject `svp` và `repo_url` của `gitops.sh`. Trước đó: `git@github.com:…` qua SSH bằng deploy key chỉ đọc

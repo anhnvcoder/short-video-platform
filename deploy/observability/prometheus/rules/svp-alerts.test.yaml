@@ -29,7 +29,7 @@ tests:
               target: engagement-service
             exp_annotations:
               summary: "gateway: circuit breaker to engagement-service has not been closed for 1 minute"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/circuit-breaker-open.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/circuit-breaker-open.md"
       - eval_time: 120s
         alertname: CircuitBreakerOpen
         exp_alerts:
@@ -40,7 +40,7 @@ tests:
               target: engagement-service
             exp_annotations:
               summary: "gateway: circuit breaker to engagement-service has not been closed for 1 minute"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/circuit-breaker-open.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/circuit-breaker-open.md"
       - eval_time: 135s
         alertname: CircuitBreakerOpen
         exp_alerts: []
@@ -160,7 +160,7 @@ tests:
               target: engagement-service
             exp_annotations:
               summary: "gateway: circuit breaker to engagement-service has not been closed for 1 minute"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/circuit-breaker-open.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/circuit-breaker-open.md"
       - eval_time: 120s
         alertname: CircuitBreakerOpen
         exp_alerts:
@@ -171,7 +171,7 @@ tests:
               target: engagement-service
             exp_annotations:
               summary: "gateway: circuit breaker to engagement-service has not been closed for 1 minute"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/circuit-breaker-open.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/circuit-breaker-open.md"
       - eval_time: 150s
         alertname: CircuitBreakerOpen
         exp_alerts: []
@@ -216,7 +216,7 @@ tests:
               loop: outbox-relay
             exp_annotations:
               summary: "video-service: background loop outbox-relay has not succeeded for 2 minutes"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/background-loop-stalled.md"
       - eval_time: 255s
         alertname: BackgroundLoopStalled
         exp_alerts:
@@ -227,7 +227,7 @@ tests:
               loop: outbox-relay
             exp_annotations:
               summary: "video-service: background loop outbox-relay has not succeeded for 2 minutes"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/background-loop-stalled.md"
       - eval_time: 270s
         alertname: BackgroundLoopStalled
         exp_alerts: []
@@ -254,7 +254,7 @@ tests:
               loop: outbox-relay
             exp_annotations:
               summary: "video-service: background loop outbox-relay has not succeeded for 2 minutes"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/background-loop-stalled.md"
 
   # outbox-relay: first success before the limit does not fire.
   - interval: 15s
@@ -354,7 +354,7 @@ tests:
               loop: outbox-cleanup
             exp_annotations:
               summary: "user-service: background loop outbox-cleanup has not succeeded for 32 minutes"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/background-loop-stalled.md"
       - eval_time: 2055s
         alertname: BackgroundLoopStalled
         exp_alerts:
@@ -365,7 +365,7 @@ tests:
               loop: outbox-cleanup
             exp_annotations:
               summary: "user-service: background loop outbox-cleanup has not succeeded for 32 minutes"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/background-loop-stalled.md"
       - eval_time: 2070s
         alertname: BackgroundLoopStalled
         exp_alerts: []
@@ -392,7 +392,7 @@ tests:
               loop: outbox-cleanup
             exp_annotations:
               summary: "user-service: background loop outbox-cleanup has not succeeded for 32 minutes"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/background-loop-stalled.md"
 
   # outbox-cleanup: first success before the limit does not fire.
   - interval: 15s
@@ -492,7 +492,7 @@ tests:
               loop: upload-sweep
             exp_annotations:
               summary: "video-service: background loop upload-sweep has not succeeded for 18 minutes"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/background-loop-stalled.md"
       - eval_time: 1215s
         alertname: BackgroundLoopStalled
         exp_alerts:
@@ -503,7 +503,7 @@ tests:
               loop: upload-sweep
             exp_annotations:
               summary: "video-service: background loop upload-sweep has not succeeded for 18 minutes"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/background-loop-stalled.md"
       - eval_time: 1230s
         alertname: BackgroundLoopStalled
         exp_alerts: []
@@ -530,7 +530,7 @@ tests:
               loop: upload-sweep
             exp_annotations:
               summary: "video-service: background loop upload-sweep has not succeeded for 18 minutes"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/background-loop-stalled.md"
 
   # upload-sweep: first success before the limit does not fire.
   - interval: 15s
@@ -630,7 +630,7 @@ tests:
               loop: timeline-prune
             exp_annotations:
               summary: "feed-service: background loop timeline-prune has not succeeded for 3 hours 10 minutes"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/background-loop-stalled.md"
       - eval_time: 11535s
         alertname: BackgroundLoopStalled
         exp_alerts:
@@ -641,7 +641,7 @@ tests:
               loop: timeline-prune
             exp_annotations:
               summary: "feed-service: background loop timeline-prune has not succeeded for 3 hours 10 minutes"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/background-loop-stalled.md"
       - eval_time: 11550s
         alertname: BackgroundLoopStalled
         exp_alerts: []
@@ -668,7 +668,7 @@ tests:
               loop: timeline-prune
             exp_annotations:
               summary: "feed-service: background loop timeline-prune has not succeeded for 3 hours 10 minutes"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/background-loop-stalled.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/background-loop-stalled.md"
 
   # timeline-prune: first success before the limit does not fire.
   - interval: 15s
@@ -759,7 +759,7 @@ tests:
               service_instance_id: a
             exp_annotations:
               summary: "gateway a: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/rate-limit-fallback-active.md"
       - eval_time: 300s
         alertname: RateLimitFallbackActive
         exp_alerts:
@@ -768,7 +768,7 @@ tests:
               service_instance_id: a
             exp_annotations:
               summary: "gateway a: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/rate-limit-fallback-active.md"
       - eval_time: 600s
         alertname: RateLimitFallbackActive
         exp_alerts:
@@ -777,7 +777,7 @@ tests:
               service_instance_id: a
             exp_annotations:
               summary: "gateway a: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/rate-limit-fallback-active.md"
 
   # The game day shape: 3 fallback decisions a minute among 1 200 (0.25%) for 30 minutes neither page nor open a ticket.
   # The count alone (6 in 2 m) clears the floor of 3; only the share keeps it quiet.
@@ -860,7 +860,7 @@ tests:
               service_instance_id: a
             exp_annotations:
               summary: "gateway a: at least 1% of rate limit decisions in 30 minutes ran on the in-memory fallback"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/rate-limit-fallback-active.md"
 
   # Two gateway instances, only b loses Redis (as the first test): the page names b, a healthy instance does not dilute it.
   - interval: 15s
@@ -885,7 +885,7 @@ tests:
               service_instance_id: b
             exp_annotations:
               summary: "gateway b: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/rate-limit-fallback-active.md"
       - eval_time: 600s
         alertname: RateLimitFallbackActive
         exp_alerts:
@@ -894,7 +894,7 @@ tests:
               service_instance_id: b
             exp_annotations:
               summary: "gateway b: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/rate-limit-fallback-active.md"
 
   # The shape of RL-2 in drill-obs-threats: the series are born above 0 (6 fallback decisions before the first export,
   # none on Redis) and then stay flat, so `increase` is 0. The new-series branch pages after `for` and resolves once
@@ -920,7 +920,7 @@ tests:
               service_instance_id: a
             exp_annotations:
               summary: "gateway a: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/rate-limit-fallback-active.md"
       - eval_time: 150s
         alertname: RateLimitFallbackActive
         exp_alerts:
@@ -929,7 +929,7 @@ tests:
               service_instance_id: a
             exp_annotations:
               summary: "gateway a: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/rate-limit-fallback-active.md"
       - eval_time: 165s
         alertname: RateLimitFallbackActive
         exp_alerts: []
@@ -982,7 +982,7 @@ tests:
               service_instance_id: new
             exp_annotations:
               summary: "gateway new: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/rate-limit-fallback-active.md"
       - eval_time: 225s
         alertname: RateLimitFallbackActive
         exp_alerts:
@@ -991,7 +991,7 @@ tests:
               service_instance_id: new
             exp_annotations:
               summary: "gateway new: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/rate-limit-fallback-active.md"
       - eval_time: 240s
         alertname: RateLimitFallbackActive
         exp_alerts: []
@@ -1081,7 +1081,7 @@ tests:
               service_instance_id: a
             exp_annotations:
               summary: "gateway a: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/rate-limit-fallback-active.md"
       - eval_time: 300s
         alertname: RateLimitFallbackActive
         exp_alerts:
@@ -1090,7 +1090,7 @@ tests:
               service_instance_id: a
             exp_annotations:
               summary: "gateway a: rate limiting runs mostly on the in-memory fallback, Redis is unreachable"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/rate-limit-fallback-active.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/rate-limit-fallback-active.md"
 
   # A counter reset on a healthy instance (Redis counter restarts from 0) does not page.
   - interval: 15s
@@ -1126,7 +1126,7 @@ tests:
               group: feed-service
             exp_annotations:
               summary: "feed-service: consumer group feed-service sent records from video.lifecycle.v1 to its dead-letter topic"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/kafka-dlq-records.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/kafka-dlq-records.md"
       - eval_time: 615s
         alertname: KafkaDLQRecords
         exp_alerts:
@@ -1137,7 +1137,7 @@ tests:
               group: feed-service
             exp_annotations:
               summary: "feed-service: consumer group feed-service sent records from video.lifecycle.v1 to its dead-letter topic"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/kafka-dlq-records.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/kafka-dlq-records.md"
       - eval_time: 630s
         alertname: KafkaDLQRecords
         exp_alerts: []
@@ -1163,7 +1163,7 @@ tests:
               group: feed-service
             exp_annotations:
               summary: "feed-service: consumer group feed-service sent records from video.lifecycle.v1 to its dead-letter topic"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/kafka-dlq-records.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/kafka-dlq-records.md"
       - eval_time: 645s
         alertname: KafkaDLQRecords
         exp_alerts:
@@ -1174,7 +1174,7 @@ tests:
               group: feed-service
             exp_annotations:
               summary: "feed-service: consumer group feed-service sent records from video.lifecycle.v1 to its dead-letter topic"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/kafka-dlq-records.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/kafka-dlq-records.md"
       - eval_time: 660s
         alertname: KafkaDLQRecords
         exp_alerts: []
@@ -1198,7 +1198,7 @@ tests:
               redpanda_group: feed-service
             exp_annotations:
               summary: "Kafka consumer group feed-service has had lag for 2 minutes"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/kafka-consumer-lag-high.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/kafka-consumer-lag-high.md"
       - eval_time: 210s
         alertname: KafkaConsumerLagHigh
         exp_alerts: []
@@ -1323,7 +1323,7 @@ tests:
             exp_annotations:
               summary: "web: server responses (pages, Server Actions, /rum) burn the 99.9% availability budget"
               title: "(page) svp web-availability SLO error budget burn rate is too fast."
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/web-availability-budget-burn.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/web-availability-budget-burn.md"
           - exp_labels:
               severity: ticket
               sloth_severity: ticket
@@ -1458,7 +1458,7 @@ tests:
               pod: svp-pg-1
             exp_annotations:
               summary: "Postgres svp-pg-1: archiving WAL to the backup object store has been failing for 5 minutes"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/postgres-wal-archiving-failing.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/postgres-wal-archiving-failing.md"
       - eval_time: 615s
         alertname: PostgresWALArchivingFailing
         exp_alerts: []
@@ -1497,7 +1497,7 @@ tests:
               pod: svp-pg-1
             exp_annotations:
               summary: "Postgres svp-pg-1: the newest base backup is more than 26 hours old"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/postgres-backup-too-old.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/postgres-backup-too-old.md"
       - eval_time: 29h
         alertname: PostgresBackupTooOld
         exp_alerts: []
@@ -1524,7 +1524,7 @@ tests:
               pod: svp-pg-1
             exp_annotations:
               summary: "Postgres svp-pg-1: no base backup for an hour"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/postgres-backup-too-old.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/postgres-backup-too-old.md"
 
   # No series at all (compose, or the cluster before PodMonitor svp-pg is scraped): neither backup alert fires.
   - interval: 1m
@@ -1561,7 +1561,7 @@ tests:
               dest_namespace: svp
             exp_annotations:
               summary: "Argo CD Application gateway (svp): Degraded, Missing or Unknown for 10 minutes"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/argocd-application-degraded.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/argocd-application-degraded.md"
       - eval_time: 16m
         alertname: ArgoCDApplicationNotConverged
         exp_alerts: []
@@ -1584,7 +1584,7 @@ tests:
               dest_namespace: svp
             exp_annotations:
               summary: "Argo CD Application gateway (svp): Degraded, Missing or Unknown for 10 minutes"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/argocd-application-degraded.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/argocd-application-degraded.md"
 
   # Degraded for 8 minutes, then Healthy again (a pod that crashed while its node restarted): never fires.
   - interval: 1m
@@ -1643,7 +1643,7 @@ tests:
               dest_namespace: svp
             exp_annotations:
               summary: "Argo CD Application gateway (svp): not Synced and Healthy for 30 minutes"
-              runbook_url: "https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/argocd-application-degraded.md"
+              runbook_url: "https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/argocd-application-degraded.md"
       - eval_time: 31m
         alertname: ArgoCDApplicationDegraded
         exp_alerts: []

@@ -19,7 +19,7 @@
 # CI's clone of the deployment configuration svp-gitops (make gitops-clone)
 .gitops/
 
-# CI's clone of the web client's source svp-web (make web-clone)
+# CI's clone of the web client's source svp-frontend (make web-clone)
 .web/
 
 # Load test results of make load-local / make load-ci (deploy/k6/load.sh)

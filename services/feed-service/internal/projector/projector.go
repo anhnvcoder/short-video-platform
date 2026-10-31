@@ -21,13 +21,13 @@ import (
 	"go.opentelemetry.io/otel/metric/noop"
 	"google.golang.org/protobuf/proto"
 
-	userv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1"
-	videov1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/video/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
-	"github.com/anhnvcoder/short-video-platform/internal/kafkax"
-	"github.com/anhnvcoder/short-video-platform/internal/logx"
-	"github.com/anhnvcoder/short-video-platform/internal/objstore"
-	"github.com/anhnvcoder/short-video-platform/services/feed-service/internal/store"
+	userv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/user/v1"
+	videov1 "github.com/anhnvcoder/svp-backend/gen/go/svp/video/v1"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
+	"github.com/anhnvcoder/svp-backend/internal/kafkax"
+	"github.com/anhnvcoder/svp-backend/internal/logx"
+	"github.com/anhnvcoder/svp-backend/internal/objstore"
+	"github.com/anhnvcoder/svp-backend/services/feed-service/internal/store"
 )
 
 // Topics and consumer group of the feed read model. One group reads both topics; their three
@@ -77,7 +77,7 @@ type Projector struct {
 
 // New returns a Projector writing to pool, with its metrics on the global meter provider.
 func New(pool *pgxpool.Pool, logger *slog.Logger) *Projector {
-	meter := otel.Meter("github.com/anhnvcoder/short-video-platform/services/feed-service/internal/projector")
+	meter := otel.Meter("github.com/anhnvcoder/svp-backend/services/feed-service/internal/projector")
 	freshness, err := meter.Float64Histogram("svp.feed.freshness", metric.WithUnit("s"),
 		metric.WithDescription("Time from video.ready to the commit of its fan-out to the followers' timelines."),
 		metric.WithExplicitBucketBoundaries(freshnessBuckets...))

@@ -164,8 +164,8 @@ web_environment() {
 }
 check_errors() {
   local file project stack id status sources env_want env_file env_event n=0 results_dir
-  # The results of the e2e run are in the clone of svp-web it ran from, the one web_dir names.
-  results_dir=$(web_dir)/test-results || fail "no clone of svp-web, where make k8s-web-e2e writes its results"
+  # The results of the e2e run are in the clone of svp-frontend it ran from, the one web_dir names.
+  results_dir=$(web_dir)/test-results || fail "no clone of svp-frontend, where make k8s-web-e2e writes its results"
   env_want=$(web_environment)
   token=$(kc -n svp-obs get secret glitchtip-api --ignore-not-found -o jsonpath='{.data.SENTRY_AUTH_TOKEN}' |
     base64 -d) || fail "read Secret svp-obs/glitchtip-api"

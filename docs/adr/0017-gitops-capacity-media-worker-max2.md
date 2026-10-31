@@ -4,7 +4,7 @@
   giai đoạn 6b "Kiểm chứng dồn" (runner CI 16 GB hay VM thuê theo giờ, không dịch vụ AWS/GCP); quyết định không đổi. Ghi chú
   2026-10-25: đường dev đã đo trên runner `ubuntu-24.04` 4 vCPU ([0021](0021-deferred-verification-stage6b.md), mục Kết quả): hai
   worker cùng transcode giữ (c) ở hai lượt, RAM nghỉ (b) đạt ở điểm 60 s; đỉnh (a) không đạt ngân sách của laptop, chấp nhận.
-  Ghi chú 2026-10-28: đường GitOps trên runner (ADR-0021 phần 3, kịch bản `gitops`, [40620627534](https://github.com/anhnvcoder/short-video-platform/actions/runs/40620627534)): hai lượt KEDA giữ (c), mỗi
+  Ghi chú 2026-10-28: đường GitOps trên runner (ADR-0021 phần 3, kịch bản `gitops`, [40620627534](https://github.com/anhnvcoder/svp-backend/actions/runs/40620627534)): hai lượt KEDA giữ (c), mỗi
   lượt có cửa sổ 6 mẫu liền hai worker cùng transcode (D1 đạt); RAM nghỉ (b) và đỉnh (a) không đạt, cluster vượt ngân sách
   thật; cắt theo thứ tự hay ghi nhận là quyết định còn mở của người học
 - Ngày: 2026-10-21
@@ -118,9 +118,9 @@ Chọn **C** (người học chọn ngày 2026-10-21).
     (b) chỉ đạt sau 70–90 phút (5,92–6,20 GiB). Chưa áp bước cắt nào; phần này kiểm lại ở giai đoạn 6b.
     Kết quả trên runner (2026-10-25, [ADR-0021](0021-deferred-verification-stage6b.md) D2, D9; số của amd64 không VM, so với
     ngân sách, không thay số của máy): **đường dev** (b) đạt ở điểm 60 s hai lượt, MEM USAGE trừ `active_file` 6 084 và 5 972
-    MiB, tổng pod 3 163 và 3 024 MiB ([40145677985](https://github.com/anhnvcoder/short-video-platform/actions/runs/40145677985),
-    [40151447243](https://github.com/anhnvcoder/short-video-platform/actions/runs/40151447243)); đỉnh (a) 9 994 và 8 878 MiB, không đạt ổn định 8,7 GiB, chấp nhận không cắt
-    (ngân sách là của Docker VM trên laptop; xem lại khi chọn cỡ node ở giai đoạn 7). **Đường GitOps** (2026-10-28, [40620627534](https://github.com/anhnvcoder/short-video-platform/actions/runs/40620627534),
+    MiB, tổng pod 3 163 và 3 024 MiB ([40145677985](https://github.com/anhnvcoder/svp-backend/actions/runs/40145677985),
+    [40151447243](https://github.com/anhnvcoder/svp-backend/actions/runs/40151447243)); đỉnh (a) 9 994 và 8 878 MiB, không đạt ổn định 8,7 GiB, chấp nhận không cắt
+    (ngân sách là của Docker VM trên laptop; xem lại khi chọn cỡ node ở giai đoạn 7). **Đường GitOps** (2026-10-28, [40620627534](https://github.com/anhnvcoder/svp-backend/actions/runs/40620627534),
     ADR-0021 D2): điểm 60 s MEM USAGE trừ `active_file` 7 510 MiB (ngưỡng 6 656 MiB), tổng pod 4 073 MiB; cuối kịch bản 8 789
     MiB, pod 5 547 MiB (trên 4,7 GiB); đỉnh (a) trung vị 11 049,5 / 11 170,5 MiB ở hai lượt KEDA. Theo quy tắc của ADR-0021 §2,
     **(b) không đạt cho đường GitOps trên runner**: cluster vượt ngân sách thật, không phải do Docker VM; phần chênh so với đường
@@ -132,12 +132,12 @@ Chọn **C** (người học chọn ngày 2026-10-21).
     logic scale 1 ↔ 2, scale down êm và transcode đúng một lần; lượt có 2 worker cùng transcode làm node server đứng ~40 s
     là giới hạn của máy lab, ghi là rủi ro mở. Hai worker cùng transcode trên node thật kiểm ở giai đoạn 6b.
     Kết quả trên runner 4 vCPU (2026-10-25, ADR-0021 D1, **đường dev**): `drill-k8s-keda N=9` PASS hai lượt có hai worker cùng
-    transcode (137 s ở [40145677985](https://github.com/anhnvcoder/short-video-platform/actions/runs/40145677985), khoảng 80 s ở
-    [40151447243](https://github.com/anhnvcoder/short-video-platform/actions/runs/40151447243)), (c) giữ (`RestartCount` 0, `StartedAt` không đổi),
+    transcode (137 s ở [40145677985](https://github.com/anhnvcoder/svp-backend/actions/runs/40145677985), khoảng 80 s ở
+    [40151447243](https://github.com/anhnvcoder/svp-backend/actions/runs/40151447243)), (c) giữ (`RestartCount` 0, `StartedAt` không đổi),
     không node `NotReady`, CPU bận của máy tới 99 %: khác máy, k3s đứng được khi 4 vCPU bão hoà. Lượt thứ ba
-    ([40160414327](https://github.com/anhnvcoder/short-video-platform/actions/runs/40160414327)) PASS, (c) giữ, nhưng không có khoảng hai worker cùng
+    ([40160414327](https://github.com/anhnvcoder/svp-backend/actions/runs/40160414327)) PASS, (c) giữ, nhưng không có khoảng hai worker cùng
     transcode: diễn tập không bảo đảm khoảng đó, độ dài của nó tuỳ cách chia partition. Hai lượt trên cluster GitOps, mỗi lượt
-    ≥ 6 mẫu liền hai worker cùng transcode: đạt (2026-10-28, [40620627534](https://github.com/anhnvcoder/short-video-platform/actions/runs/40620627534), ADR-0021 D1) sau khi diễn tập dàn đều video theo
+    ≥ 6 mẫu liền hai worker cùng transcode: đạt (2026-10-28, [40620627534](https://github.com/anhnvcoder/svp-backend/actions/runs/40620627534), ADR-0021 D1) sau khi diễn tập dàn đều video theo
     partition và chờ hai pod cùng có job liền 60 s trước khi ghim: hai pod cùng transcode 60 / 63 s, chuỗi dài nhất 7 / 14 mẫu, (c)
     giữ (`k3d-svp-server-0` `RestartCount` 0, `StartedAt` không đổi), không node `NotReady`.
 - Xem lại khi:

@@ -45,7 +45,7 @@ postgres:
     targetTime: ""
 
 valkey:
-  image: docker.io/valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+  image: docker.io/valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
   # CPU limit one core, not 200m: the CFS quota is enforced per 100 ms period, and at 200m Valkey was throttled 4-14
   # periods a minute while idle. A throttled period stalls it for longer than the gateway's 50 ms rate-limit store
   # timeout, so a login burst left the shared bucket for each pod's fallback counter. Valkey runs commands on one
@@ -60,7 +60,7 @@ s3:
   # nothing of the store is rendered here. Postgres archives into s3, so external needs postgres.mode external too.
   mode: cluster
   # The object store, the same image as compose's s3 (RustFS), pinned by the digest of its multi-arch index.
-  image: docker.io/rustfs/rustfs:1.0.3@sha256:9ca9559533b537d10482fe923288b676ad08f92a7069d9a17327fbae3cab688b
+  image: docker.io/rustfs/rustfs:1.0.4@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2
   storage: 5Gi
   resources:
     requests: {cpu: 100m, memory: 256Mi}
@@ -71,7 +71,7 @@ s3:
   # POST to uploads, GET and HEAD at media, nothing else. The browser talks to the store cross-origin, hls.js loading
   # playlists and segments with XHR and the upload page posting the file with XHR (its progress listener makes that a
   # preflight) (threat model WEB-10). Only the web client's origin in the cluster: the web clients of compose and
-  # make dev of svp-web (http://localhost:3001, :3002) use compose's store, never this one. Commas without spaces.
+  # make dev of svp-frontend (http://localhost:3001, :3002) use compose's store, never this one. Commas without spaces.
   corsAllowedOrigins: https://svp.localhost:8443
 
 redpanda:

@@ -43,7 +43,7 @@ jobs:
       # Major 15 like the dev machine's Postgres and the cluster's; superuser postgres/postgres, the default
       # SVP_TEST_POSTGRES_URL of the Makefile. Tests create their own svp_*_test databases from it.
       postgres:
-        image: docker.io/library/postgres:15.19-trixie@sha256:c961aa287d8698297cb26cdfadfbe9fd2cbaf77e53cfffe9636e8d8a1e4d842c
+        image: docker.io/library/postgres:15.19-trixie@sha256:64b99032e218b66b1d1a6334995056e1aa57f50a0c522cc856e72dff0e4b0d63
         env:
           POSTGRES_PASSWORD: postgres
         # The runner hands this string to docker create -p as it is, so the port is published on loopback only.
@@ -56,7 +56,7 @@ jobs:
           --health-retries 20
       # Same 8.8 line as the dev machine's Redis; tests use db 15 (default SVP_TEST_REDIS_URL of the Makefile).
       redis:
-        image: docker.io/library/redis:8.8.3-trixie@sha256:eb1aa641bc5380ed14442398e45a5a51aeaaac919fab811e4f134eb77c71dd2d
+        image: docker.io/library/redis:8.8.3-trixie@sha256:418e397fd48d66e450af13baab123397f2d2580b07ef310c3a5dbe96c3d731f1
         ports:
           - 127.0.0.1:6379:6379
         options: >-
@@ -391,7 +391,7 @@ jobs:
   # end-to-end tests, the k6 profile ci (error thresholds only: a shared runner says nothing about latency), Lighthouse
   # and Schemathesis against the gateway's OpenAPI contract. The six backend services are built from the pull
   # request's code; the web client is the release staging runs (make up's default, named in main of svp-gitops and
-  # pulled anonymously from GHCR), and its end-to-end tests and Lighthouse run are the code of svp-web at that very
+  # pulled anonymously from GHCR), and its end-to-end tests and Lighthouse run are the code of svp-frontend at that very
   # release's commit (make web-clone), so a change of the backend that breaks the web client shows here. A report, not a
   # check: ci-ok does not need it, so a red stack (a flaky end-to-end test on a shared runner) never blocks a merge;
   # whoever reads the pull request sees its result under this name. It builds and runs the pull request's code like
@@ -409,10 +409,10 @@ jobs:
       contents: read
     # The deployment configuration that names the web release of staging: main of svp-gitops, which make gitops-clone
     # clones anonymously into this folder (gitignored) below, as in job config. The web client's code at that release's
-    # commit: svp-web, which make web-clone clones anonymously into the other folder (gitignored).
+    # commit: svp-frontend, which make web-clone clones anonymously into the other folder (gitignored).
     env:
       SVP_GITOPS_DIR: ${{ github.workspace }}/.gitops/svp-gitops
-      SVP_WEB_DIR: ${{ github.workspace }}/.web/svp-web
+      SVP_WEB_DIR: ${{ github.workspace }}/.web/svp-frontend
     services:
       # The images of job check. There the tests reach them on loopback only; here the compose containers reach them as
       # host.docker.internal, which compose's host-gateway maps to the gateway of Docker's default bridge (docker0,
@@ -420,7 +420,7 @@ jobs:
       # redis-cli of the scripts run on the runner), never on every interface. The compose services log in to Postgres
       # with the role passwords make up bootstraps (the image asks for a password on every TCP connection).
       postgres:
-        image: docker.io/library/postgres:15.19-trixie@sha256:c961aa287d8698297cb26cdfadfbe9fd2cbaf77e53cfffe9636e8d8a1e4d842c
+        image: docker.io/library/postgres:15.19-trixie@sha256:64b99032e218b66b1d1a6334995056e1aa57f50a0c522cc856e72dff0e4b0d63
         env:
           POSTGRES_PASSWORD: postgres
         ports:
@@ -433,7 +433,7 @@ jobs:
           --health-retries 20
       # The gateway (db 10), feed-service (db 14) and the web's sessions (db 9) of this run only.
       redis:
-        image: docker.io/library/redis:8.8.3-trixie@sha256:eb1aa641bc5380ed14442398e45a5a51aeaaac919fab811e4f134eb77c71dd2d
+        image: docker.io/library/redis:8.8.3-trixie@sha256:418e397fd48d66e450af13baab123397f2d2580b07ef310c3a5dbe96c3d731f1
         ports:
           - 127.0.0.1:6379:6379
           - 172.17.0.1:6379:6379
@@ -462,28 +462,28 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends postgresql-client redis-tools ffmpeg jq
-      # Both public repositories, over HTTPS without credentials: no token, no secret. svp-web at the commit of the web
+      # Both public repositories, over HTTPS without credentials: no token, no secret. svp-frontend at the commit of the web
       # release of staging (image.tag of envs/stg/images/web.yaml in that clone of svp-gitops).
       - run: make gitops-clone
       - run: make web-clone
-      # The Node major of the clone's .nvmrc and the pnpm of its packageManager, as svp-web's own CI and Dockerfile
+      # The Node major of the clone's .nvmrc and the pnpm of its packageManager, as svp-frontend's own CI and Dockerfile
       # take them: Node 25 and later ship no Corepack, and the repository allows no third-party action
       # (pnpm/action-setup). No cache: setup-node's pnpm cache needs pnpm on PATH before Node is there.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: .web/svp-web/.nvmrc
+          node-version-file: .web/svp-frontend/.nvmrc
       - name: Install pnpm
-        working-directory: .web/svp-web
+        working-directory: .web/svp-frontend
         run: |
           version=$(node -p 'require("./package.json").packageManager.split("@")[1]')
           npm install -g "pnpm@$version"
       # Its packages exactly as its pnpm-lock.yaml pins them, then the browsers of its playwright.config.ts at that
       # version, with their system libraries (apt, through sudo).
       - name: Install the web client's packages
-        working-directory: .web/svp-web
+        working-directory: .web/svp-frontend
         run: make install
       - name: Install the Playwright browsers
-        working-directory: .web/svp-web
+        working-directory: .web/svp-frontend
         run: pnpm exec playwright install --with-deps chromium webkit
       - run: make env
       - run: make up
@@ -540,7 +540,7 @@ jobs:
           name: k6-summary
           path: ${{ runner.temp }}/k6-summary/
           if-no-files-found: ignore
-      # The reports lighthouse/run.sh of svp-web wrote at the top of test-results/lighthouse/ of the clone after
+      # The reports lighthouse/run.sh of svp-frontend wrote at the top of test-results/lighthouse/ of the clone after
       # replacing the session cookie in them (it deletes them when a cookie value is still found), copied out of the
       # clone's folder, a hidden one, which upload-artifact would leave out. Its .lighthouseci/ subfolder, with the
       # results before that replacement, is matched by neither pattern. Skipped when the step was cancelled mid-run or
@@ -612,17 +612,17 @@ jobs:
           pattern: sarif-*
           path: sarif
       - if: hashFiles('sarif/sarif-golangci-lint/golangci-lint.sarif') != ''
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: sarif/sarif-golangci-lint/golangci-lint.sarif
           category: golangci-lint
       - if: hashFiles('sarif/sarif-gitleaks/gitleaks.sarif') != ''
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: sarif/sarif-gitleaks/gitleaks.sarif
           category: gitleaks
       - if: hashFiles('sarif/sarif-trivy-config/trivy-config.sarif') != ''
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: sarif/sarif-trivy-config/trivy-config.sarif
           category: trivy-config

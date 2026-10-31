@@ -9,9 +9,9 @@ import (
 
 	"google.golang.org/grpc/codes"
 
-	videov1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/video/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
-	"github.com/anhnvcoder/short-video-platform/internal/pagetoken"
+	videov1 "github.com/anhnvcoder/svp-backend/gen/go/svp/video/v1"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
+	"github.com/anhnvcoder/svp-backend/internal/pagetoken"
 )
 
 const methodListAuthorVideos = "/svp.video.v1.VideoService/ListAuthorVideos"

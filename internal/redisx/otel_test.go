@@ -14,8 +14,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace/noop"
 
-	"github.com/anhnvcoder/short-video-platform/internal/redistest"
-	"github.com/anhnvcoder/short-video-platform/internal/redisx"
+	"github.com/anhnvcoder/svp-backend/internal/redistest"
+	"github.com/anhnvcoder/svp-backend/internal/redisx"
 )
 
 // TestSpansOmitKeysAndArgs runs against the local Redis: a script call (EVALSHA, then EVAL on

@@ -134,7 +134,7 @@ func New(client *redis.Client, prefix string, opts ...Option) *Limiter {
 	for _, opt := range opts {
 		opt(l)
 	}
-	decisions, err := otel.Meter("github.com/anhnvcoder/short-video-platform/services/gateway/internal/ratelimit").
+	decisions, err := otel.Meter("github.com/anhnvcoder/svp-backend/services/gateway/internal/ratelimit").
 		Int64Counter("svp.ratelimit.decisions")
 	if err != nil {
 		// The SDK still returns a working instrument along with the error.

@@ -17,13 +17,13 @@ import (
 	"github.com/twmb/franz-go/pkg/kmsg"
 	"google.golang.org/protobuf/proto"
 
-	engagementv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/engagement/v1"
-	eventv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/event/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
-	"github.com/anhnvcoder/short-video-platform/internal/kafkax"
-	"github.com/anhnvcoder/short-video-platform/internal/logx"
-	"github.com/anhnvcoder/short-video-platform/internal/pgtest"
-	"github.com/anhnvcoder/short-video-platform/services/engagement-service/migrations"
+	engagementv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/engagement/v1"
+	eventv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/event/v1"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
+	"github.com/anhnvcoder/svp-backend/internal/kafkax"
+	"github.com/anhnvcoder/svp-backend/internal/logx"
+	"github.com/anhnvcoder/svp-backend/internal/pgtest"
+	"github.com/anhnvcoder/svp-backend/services/engagement-service/migrations"
 )
 
 const recreatedMsg = "stored offset is beyond the end of the partition, topic was recreated: counting from the batch"

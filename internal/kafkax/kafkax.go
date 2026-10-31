@@ -20,7 +20,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/anhnvcoder/short-video-platform/internal/envcfg"
+	"github.com/anhnvcoder/svp-backend/internal/envcfg"
 )
 
 // The SASL credentials every client of the process authenticates with. Both unset or empty: no

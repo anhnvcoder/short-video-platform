@@ -19,7 +19,7 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
 
-	"github.com/anhnvcoder/short-video-platform/internal/callerid"
+	"github.com/anhnvcoder/svp-backend/internal/callerid"
 )
 
 // Server limits (threat model RL-4): Go's http.Server has no timeout by default.

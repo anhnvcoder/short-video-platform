@@ -15,7 +15,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
+	"github.com/anhnvcoder/svp-backend/internal/grpcerr"
 )
 
 // StatusClientClosedRequest is the non-standard status (from nginx) for a request the client

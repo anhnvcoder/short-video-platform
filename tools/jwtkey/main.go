@@ -21,7 +21,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/anhnvcoder/short-video-platform/internal/authtoken"
+	"github.com/anhnvcoder/svp-backend/internal/authtoken"
 )
 
 func main() {

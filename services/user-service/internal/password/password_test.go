@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anhnvcoder/short-video-platform/internal/secret"
+	"github.com/anhnvcoder/svp-backend/internal/secret"
 )
 
 func TestHashThenVerify(t *testing.T) {

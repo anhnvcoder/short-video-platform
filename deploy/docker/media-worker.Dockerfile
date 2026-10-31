@@ -27,7 +27,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Runtime stage: the tag keeps the 3.24 branch; the ffmpeg package is not pinned, since Alpine
 # drops old builds from its repository once a fix lands, so a rebuild takes the branch's patches. The base itself is
 # pinned by digest; Renovate proposes the next 3.24 build.
-FROM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+FROM alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 RUN apk add --no-cache ffmpeg \
     && install -d -o 65532 -g 65532 -m 0750 /work
 COPY --from=build /app /app

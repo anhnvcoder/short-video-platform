@@ -15,8 +15,9 @@
 > GitOps (vai stg, [ADR-0024](adr/0024-multi-environment.md)), canary web, k6 thu nhỏ, Velero và Chaos Mesh trên runner
 > ([ADR-0021](adr/0021-deferred-verification-stage6b.md)); phần 4 (2026-10-29 đến 2026-10-30) tách cấu hình triển khai sang repo
 > `svp-gitops` ([§5.5](#55-hai-repo-code-và-cấu-hình-triển-khai-giai-đoạn-6b-phần-4)), phần 4b (2026-10-30 đến 2026-10-31) tách web
-> client sang repo `svp-web` với hợp đồng REST có version ([§5.6](#56-ba-repo-và-hợp-đồng-api-giai-đoạn-6b-phần-4b)). Giai đoạn 7 (biến
-> thể AWS, [ADR-0034](adr/0034-aws-stage7.md), [§5.7](#57-biến-thể-aws-giai-đoạn-7)) thiết kế ngày 2026-10-31, chưa dựng. ADR 0001–0020, contract ở [`proto/`](../proto/)
+> client sang repo `svp-frontend` với hợp đồng REST có version ([§5.6](#56-ba-repo-và-hợp-đồng-api-giai-đoạn-6b-phần-4b)); ngày 2026-10-31 repo code
+> đổi tên `svp-backend`, repo web `svp-frontend` ([ADR-0036](adr/0036-repo-rename.md)). Giai đoạn 7 (biến thể AWS,
+> [ADR-0034](adr/0034-aws-stage7.md), [§5.7](#57-biến-thể-aws-giai-đoạn-7)) thiết kế ngày 2026-10-31, chưa dựng. ADR 0001–0020, contract ở [`proto/`](../proto/)
 > ([§8](#8-contract)), threat model ở [`threat-model.md`](threat-model.md). `make up` chạy luồng đồng bộ (đăng ký, đăng
 > nhập, tạo và đọc video, follow), luồng upload bất đồng bộ (presigned POST lên object store, outbox → Redpanda, media-worker
 > transcode ra HLS, video `READY` hoặc `FAILED`, job dọn upload bỏ dở), luồng feed (follow qua outbox, feed-service
@@ -45,7 +46,7 @@ và trỏ tới.
 | F6 | Feed "khám phá": video mới nhất toàn hệ thống, cho người chưa follow ai |
 | F7 | Like, unlike; ghi lượt xem; hiện số lượt xem, số like và mình đã like chưa |
 
-**Web client** (từ giai đoạn 5b, [ADR-0016](adr/0016-web-client.md); từ giai đoạn 6b phần 4b ở repo riêng `svp-web`,
+**Web client** (từ giai đoạn 5b, [ADR-0016](adr/0016-web-client.md); từ giai đoạn 6b phần 4b ở repo riêng `svp-frontend`,
 [§5.6](#56-ba-repo-và-hợp-đồng-api-giai-đoạn-6b-phần-4b)): Next.js phục vụ F1–F7 trong trình
 duyệt; phần A có đăng ký, đăng nhập, feed dọc phát HLS, like, lượt xem, follow; phần B
 ([ADR-0018](adr/0018-web-profiles-public-video-upload.md)) thêm hồ sơ tối thiểu (handle không đổi, tên hiển thị đổi được),
@@ -430,7 +431,7 @@ flowchart LR
 
 - **Hai workflow** (ADR-0015 §1, §2): `ci.yml` chạy đủ mục Kiểm tra (Go test trên Postgres và Redis là service
   container, lệch code sinh, `buf breaking`, cấu hình, chart, digest bên thứ ba, gitleaks toàn lịch sử; từ giai đoạn 6b thêm cổng
-  CRITICAL cho lockfile npm của web, ở job `web` tới giai đoạn 6b phần 4b, rồi ở CI của `svp-web`); `images.yml`
+  CRITICAL cho lockfile npm của web, ở job `web` tới giai đoạn 6b phần 4b, rồi ở CI của `svp-frontend`); `images.yml`
   build image. Mỗi file một check tổng (`ci-ok`, `images-ok`), là hai check bắt buộc của ruleset `main`. Từ giai đoạn 6b có
   workflow thứ ba `verify.yml` ngoài check bắt buộc (§5.4, [ADR-0021](adr/0021-deferred-verification-stage6b.md)); logic của cả
   ba nằm ở `Makefile` và `deploy/ci/`, mọi chỗ chạm nền tảng CI qua adapter `deploy/ci/platform.sh`
@@ -441,10 +442,10 @@ flowchart LR
 - **Build** (§3, §4, §6): chỉ service có thay đổi so với lần push `main` thành công cuối (tập đường dẫn `image_paths` của
   `deploy/k8s/lib.sh`; đổi đường build, quét, ký thì cả sáu; từ giai đoạn 5b phần C `web` là image thứ bảy, build từ context
   `web/`, trivy quét cả gói npm của `node_modules`, ADR-0019 §1; từ giai đoạn 6b phần 4b image `web` build, ký, promote ở CI của
-  `svp-web` bằng cùng script, §5.6). Mỗi service build native trên runner amd64 và arm64, trivy
+  `svp-frontend` bằng cùng script, §5.6). Mỗi service build native trên runner amd64 và arm64, trivy
   quét tar cục bộ của từng kiến trúc: bí mật (mọi severity) và lỗ hổng CRITICAL chặn **trước** push, HIGH chỉ báo
   (SARIF lên tab Security của `main`); ngoại lệ chỉ qua `.trivyignore.yaml` có lý do, tối đa 30 ngày. Push đúng image đã
-  quét (so config digest), rồi ghép index đa kiến trúc `ghcr.io/anhnvcoder/short-video-platform/<svc>:<12 hex commit>`.
+  quét (so config digest), rồi ghép index đa kiến trúc `ghcr.io/anhnvcoder/svp-backend/<svc>:<12 hex commit>`.
 - **Ký và attestation** (§7): cosign keyless bằng OIDC của GitHub (chứng chỉ Fulcio, ghi Rekor; không khoá dài hạn), ký
   digest index với identity `images.yml@refs/heads/main`; attestation `vuln` trên index gộp kết quả quét hai nền tảng,
   SBOM SPDX của syft trên từng manifest con. Rescan hằng ngày quét lại mọi digest đang phát hành bằng DB mới và thay
@@ -465,7 +466,8 @@ flowchart LR
   tĩnh trong CI bằng bước 4 của `deploy/ci/gitops-check.sh` (`make helm-check`, check của `svp-gitops`), chưa kiểm chữ ký nhà cung cấp.
 - **Renovate** (§10): App Mend cho repo này và `svp-gitops`, mở PR hằng tuần cho Go module, action (SHA), base image, công cụ của
   `Makefile` (repo này), chart upstream, image ghim trong `base/`, commit checker (`svp-gitops`, bỏ qua `envs/**`); chờ bản phát hành
-  3 ngày, không automerge.
+  3 ngày; repo này tự merge bản `patch`, `digest` của Go module, base image và image dịch vụ khi `ci-ok`, `images-ok` xanh, còn lại (và
+  mọi PR của `svp-gitops`) duyệt tay ([ADR-0035](adr/0035-renovate-automerge.md)).
 - **Chi phí:** repo public nên runner (cả arm64) và package GHCR public không tính tiền; ngân sách thời gian mỗi workflow
   dưới 10 phút (kiểm sau push). Kyverno thêm 0,13–0,16 GiB RAM: cluster dev nghỉ 6,40 GiB, đỉnh 7,92 GiB khi media-worker
   scale lên (đo 2026-10-21, cách đo ADR-0014 §2); cluster GitOps đo sau push.
@@ -512,7 +514,7 @@ flowchart LR
 - **Lỗi:** trình duyệt không có SDK Sentry: một reporter nhỏ gửi báo cáo JSON (tên, message, stack, pathname, debug ID của
   chunk) tới `/monitoring` cùng origin; server dựng event và gửi GlitchTip bằng `@sentry/nextjs` ở server, cùng bộ luật che
   với lỗi server nhưng ngân sách gửi riêng, nhỏ hơn, để báo cáo rác không đẩy lỗi server ra ngoài (WEB-9, WEB-20). Source map trình duyệt sinh kèm debug ID, không nằm trong image, tải lên GlitchTip bằng
-  `make web-sourcemaps` (compose) hay `make k8s-web-sourcemaps` (k3d); image phát hành của `svp-web` có image
+  `make web-sourcemaps` (compose) hay `make k8s-web-sourcemaps` (k3d); image phát hành của `svp-frontend` có image
   `web-sourcemaps` cạnh nó trên GHCR, kịch bản `gitops` kéo về tải lên (§5.6).
 - **RUM:** `web-vitals` gửi LCP, INP, CLS, FCP, TTFB trong một beacon khi trang bị ẩn (`visibilitychange` → hidden, cả khi rời
   trang: sự kiện đó đến sau `pagehide` và sau lúc `web-vitals` chốt CLS, INP; gửi ở `pagehide` thì thiếu hai số này); `/rum` kiểm schema, map đường sang
@@ -589,7 +591,7 @@ giai đoạn 6b (runner CI 16 GB hay VM thuê theo giờ, không dịch vụ AWS
 
 ```mermaid
 flowchart LR
-    subgraph code["repo short-video-platform (code)"]
+    subgraph code["repo svp-backend (code)"]
         src["code, test, Dockerfile,<br/>chart deploy/helm/*"]
         img["images.yml: build, quét,<br/>ký, provenance"]
         ver["verify.yml: kịch bản gitops,<br/>job record-stg"]
@@ -629,26 +631,26 @@ flowchart LR
 - **Đường dev:** đọc working tree của bản clone `svp-gitops` cạnh repo (`../gitops`, hay `SVP_GITOPS_DIR`), không tự clone hay
   fetch; CI clone ẩn danh bằng `make gitops-clone`. Thay đổi cần cả code lẫn cấu hình thành hai PR theo thứ tự (cấu hình tương
   thích bản cũ trước).
-- **Đã kiểm** (2026-10-29): kịch bản `gitops` [40954609229](https://github.com/anhnvcoder/short-video-platform/actions/runs/40954609229)
+- **Đã kiểm** (2026-10-29): kịch bản `gitops` [40954609229](https://github.com/anhnvcoder/svp-backend/actions/runs/40954609229)
   trên nhánh tách repo (26/26 Application Synced/Healthy đọc hai repo ẩn danh, provenance bắt buộc ở stg, smoke chặt), `dev-k3d`
-  [40937054425](https://github.com/anhnvcoder/short-video-platform/actions/runs/40937054425) đọc bản clone, check đầu của
+  [40937054425](https://github.com/anhnvcoder/svp-backend/actions/runs/40937054425) đọc bản clone, check đầu của
   `svp-gitops` [40902199532](https://github.com/anhnvcoder/svp-gitops/actions/runs/40902199532). RAM của lượt `gitops` đó: nghỉ
   cuối 7 241 MiB (bỏ active_file), vượt ngưỡng 6,5 GiB; đỉnh `ram-peak-2` median 8 954 MiB, vượt 8,7 GiB (không kết luận đạt,
   [ADR-0021](adr/0021-deferred-verification-stage6b.md)). **Kiểm sau push:** auto-merge PR bot, `record-stg`, promote prd, DORA.
 
 ### 5.6 Ba repo và hợp đồng API (giai đoạn 6b phần 4b)
 
-[ADR-0033](adr/0033-svp-web-repo.md), cài đặt GitHub ở [`runbooks/svp-web-setup.md`](runbooks/svp-web-setup.md). Web client tách
+[ADR-0033](adr/0033-svp-web-repo.md), cài đặt GitHub ở [`runbooks/svp-frontend-setup.md`](runbooks/svp-frontend-setup.md). Web client tách
 khỏi repo code để mô phỏng team FE và team BE riêng (hệ thống một người không cần tách; cái giá ở ADR-0033 mục 11).
 
 ```mermaid
 flowchart LR
-    subgraph be["repo short-video-platform (backend)"]
+    subgraph be["repo svp-backend (backend)"]
         spec["services/gateway/openapi.yaml<br/>info.version semver"]
         beimg["images.yml: sáu image,<br/>job contract"]
         ci["deploy/ci/*.sh, Makefile,<br/>bảng nguồn sources.json"]
     end
-    subgraph fe["repo svp-web (web)"]
+    subgraph fe["repo svp-frontend (web)"]
         pin["api/contract.json,<br/>.backend-commit"]
         feimg["images.yml: image web,<br/>web-sourcemaps"]
     end
@@ -663,31 +665,36 @@ flowchart LR
     feimg -->|"PR bot/promote-stg-web<br/>(svp-web-promoter)"| stg
 ```
 
-- **Ranh giới:** backend giữ service Go, hợp đồng REST, stack compose, cluster k3d, chart và script CI; `svp-web` giữ mã web, test
+- **Ranh giới:** backend giữ service Go, hợp đồng REST, stack compose, cluster k3d, chart và script CI; `svp-frontend` giữ mã web, test
   Vitest và e2e, `Dockerfile` ở gốc, CI và image web; `svp-gitops` giữ cái gì chạy ở mỗi env (§5.5). Workspace trên máy: `backend/`,
-  `frontend/` (bản clone `svp-web`), `gitops/` cạnh nhau; script của backend đọc mã web qua `web_dir` (`SVP_WEB_DIR` hay
-  `../frontend`), `svp-web` đọc harness của backend qua `SVP_BACKEND_DIR` (mặc định `../backend`).
+  `frontend/` (bản clone `svp-frontend`), `gitops/` cạnh nhau; script của backend đọc mã web qua `web_dir` (`SVP_WEB_DIR` hay
+  `../frontend`), `svp-frontend` đọc harness của backend qua `SVP_BACKEND_DIR` (mặc định `../backend`).
 - **Hợp đồng:** `services/gateway/openapi.yaml` là nguồn duy nhất, `info.version` theo semver; `make api-contract-check` (job
   `api-contract`, bắt buộc ở PR) dùng oasdiff đòi tăng đúng mức (breaking là major, có changelog là minor). Mỗi version phát hành
-  một lần bằng job `contract` của `images.yml` trên `main`: OCI artifact `ghcr.io/anhnvcoder/short-video-platform/api/gateway:<version>`
-  đẩy bằng ORAS, ký keyless, không ghi đè. `svp-web` ghim `repository`, `version`, `digest` ở `api/contract.json`; `make generate`
+  một lần bằng job `contract` của `images.yml` trên `main`: OCI artifact `ghcr.io/anhnvcoder/svp-backend/api/gateway:<version>`
+  đẩy bằng ORAS, ký keyless, không ghi đè. `svp-frontend` ghim `repository`, `version`, `digest` ở `api/contract.json`; `make generate`
   kiểm digest, version, chữ ký của nguồn `backend` rồi mới sinh `gen/api.d.ts`. Breaking đi ba bước: thêm cái mới (minor), chuyển
   web, bỏ cái cũ (major).
 - **Nguồn phát hành:** mỗi repo phát hành image dưới prefix riêng, ký bằng workflow của chính nó (`deploy/helm/svp-policy/files/sources.json`:
-  `backend` sáu service Go và `web` cũ, `web` chỉ `ghcr.io/anhnvcoder/svp-web/web`); Kyverno chọn attestor theo prefix, check của
-  `svp-gitops` giới hạn file mỗi bot được đổi (tác giả PR). Danh sách build của backend (`built_services`, sáu) tách khỏi danh sách
+  `backend` sáu service Go dưới `ghcr.io/anhnvcoder/svp-backend/`, `web` chỉ `ghcr.io/anhnvcoder/svp-frontend/web`); Kyverno chọn attestor
+  theo prefix, check của `svp-gitops` giới hạn file mỗi bot được đổi (tác giả PR).
+- **Đổi tên repo** (2026-10-31, [ADR-0036](adr/0036-repo-rename.md)): `short-video-platform` → `svp-backend`, `svp-web` → `svp-frontend`;
+  identity ký và prefix image mang tên repo nên đổi theo. Bảng nguồn của bản chuyển giữ hai **nguồn nghỉ hưu** `oldbackend`, `oldweb`
+  (URL, prefix, identity cũ, không `promoter`): được nhận, không ai build, promote hay rescan; PR bot của nguồn mới tiếp quản file image
+  của chúng; gỡ khi mọi env chạy bản dưới prefix mới. Lịch sử dưới tên cũ (`run_url` của bản ghi stg, DORA) đọc lâu dài qua danh sách tên
+  cũ một chỗ trong `deploy/ci/platform.sh`. Danh sách build của backend (`built_services`, sáu) tách khỏi danh sách
   bảy bản triển khai (`svp_services`) mà promote prd, bản ghi stg, rescan đọc.
-- **Script CI dùng chung:** `svp-web` checkout `deploy/ci/` của backend ở commit ghim `.backend-commit` (chỗ ghim duy nhất, Renovate
+- **Script CI dùng chung:** `svp-frontend` checkout `deploy/ci/` của backend ở commit ghim `.backend-commit` (chỗ ghim duy nhất, Renovate
   nâng) và chạy với `SVP_CODE_ROOT` trỏ cây của nó; logic build, quét, ký, attest, promote, rescan chỉ có một bản.
-- **Kiểm chéo:** job `stack` của `svp-web` dựng compose của backend ở commit stg chạy với sáu image stg theo digest
-  (`make up IMAGES=stg WEB_FROM=clone`) và chạy e2e của PR; job `stack` của backend chạy web bản stg và e2e của `svp-web` ở commit đó.
+- **Kiểm chéo:** job `stack` của `svp-frontend` dựng compose của backend ở commit stg chạy với sáu image stg theo digest
+  (`make up IMAGES=stg WEB_FROM=clone`) và chạy e2e của PR; job `stack` của backend chạy web bản stg và e2e của `svp-frontend` ở commit đó.
   Cả hai chỉ báo; e2e không chặn một PR backend làm hỏng web mà oasdiff không thấy.
 - **Đã kiểm** (2026-10-30): hợp đồng `1.0.0` phát hành và kéo ẩn danh (lượt `images.yml`
-  [41079830814](https://github.com/anhnvcoder/short-video-platform/actions/runs/41079830814)); bản web đầu của `svp-web`
-  ([41111181126](https://github.com/anhnvcoder/svp-web/actions/runs/41111181126)) ký, provenance, PR promote #22 của `svp-gitops` tự merge;
-  kịch bản `gitops` trên `main` [41112757906](https://github.com/anhnvcoder/short-video-platform/actions/runs/41112757906): Kyverno
+  [41079830814](https://github.com/anhnvcoder/svp-backend/actions/runs/41079830814)); bản web đầu của `svp-frontend`
+  ([41111181126](https://github.com/anhnvcoder/svp-frontend/actions/runs/41111181126)) ký, provenance, PR promote #22 của `svp-gitops` tự merge;
+  kịch bản `gitops` trên `main` [41112757906](https://github.com/anhnvcoder/svp-backend/actions/runs/41112757906): Kyverno
   Enforce nhận web mới, từ chối chéo identity, source map từ image `web-sourcemaps`, bản ghi stg. **Kiểm sau push:** promote prd
-  hai nguồn, rescan của `svp-web`, Renovate nâng hợp đồng.
+  hai nguồn, rescan của `svp-frontend`, Renovate nâng hợp đồng.
 
 ### 5.7 Biến thể AWS (giai đoạn 7)
 

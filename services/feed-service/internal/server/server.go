@@ -25,11 +25,11 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	feedv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/feed/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/callerid"
-	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
-	"github.com/anhnvcoder/short-video-platform/internal/pagetoken"
-	"github.com/anhnvcoder/short-video-platform/services/feed-service/internal/store"
+	feedv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/feed/v1"
+	"github.com/anhnvcoder/svp-backend/internal/callerid"
+	"github.com/anhnvcoder/svp-backend/internal/grpcerr"
+	"github.com/anhnvcoder/svp-backend/internal/pagetoken"
+	"github.com/anhnvcoder/svp-backend/services/feed-service/internal/store"
 )
 
 // Page sizes (AIP-158, feed_service.proto).

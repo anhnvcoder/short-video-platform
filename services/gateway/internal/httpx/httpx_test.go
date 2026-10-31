@@ -12,8 +12,8 @@ import (
 
 	"google.golang.org/grpc/metadata"
 
-	"github.com/anhnvcoder/short-video-platform/internal/callerid"
-	"github.com/anhnvcoder/short-video-platform/internal/logx"
+	"github.com/anhnvcoder/svp-backend/internal/callerid"
+	"github.com/anhnvcoder/svp-backend/internal/logx"
 )
 
 // captureLog points slog.Default at a logx JSON handler writing to the returned buffer until

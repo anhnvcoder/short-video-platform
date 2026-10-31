@@ -8,8 +8,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	engagementv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/engagement/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
+	engagementv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/engagement/v1"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
 )
 
 // Without a caller GetStats returns the same counters as with one, and liked_by_me is false for

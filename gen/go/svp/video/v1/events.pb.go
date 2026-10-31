@@ -7,7 +7,7 @@
 package videov1
 
 import (
-	v1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/event/v1"
+	v1 "github.com/anhnvcoder/svp-backend/gen/go/svp/event/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	durationpb "google.golang.org/protobuf/types/known/durationpb"
@@ -329,8 +329,8 @@ const file_svp_video_v1_events_proto_rawDesc = "" +
 	"\bduration\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\bduration\x12!\n" +
 	"\fplaylist_key\x18\x05 \x01(\tR\vplaylistKey\x12#\n" +
 	"\rthumbnail_key\x18\x06 \x01(\tR\fthumbnailKey\x12=\n" +
-	"\fpublished_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\vpublishedAtB\xb9\x01\n" +
-	"\x10com.svp.video.v1B\vEventsProtoP\x01ZFgithub.com/anhnvcoder/short-video-platform/gen/go/svp/video/v1;videov1\xa2\x02\x03SVX\xaa\x02\fSvp.Video.V1\xca\x02\fSvp\\Video\\V1\xe2\x02\x18Svp\\Video\\V1\\GPBMetadata\xea\x02\x0eSvp::Video::V1b\x06proto3"
+	"\fpublished_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\vpublishedAtB\xb0\x01\n" +
+	"\x10com.svp.video.v1B\vEventsProtoP\x01Z=github.com/anhnvcoder/svp-backend/gen/go/svp/video/v1;videov1\xa2\x02\x03SVX\xaa\x02\fSvp.Video.V1\xca\x02\fSvp\\Video\\V1\xe2\x02\x18Svp\\Video\\V1\\GPBMetadata\xea\x02\x0eSvp::Video::V1b\x06proto3"
 
 var (
 	file_svp_video_v1_events_proto_rawDescOnce sync.Once

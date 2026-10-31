@@ -17,7 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 
-	"github.com/anhnvcoder/short-video-platform/internal/pgretry"
+	"github.com/anhnvcoder/svp-backend/internal/pgretry"
 )
 
 // ConnectTimeout bounds each new connection, dial and authentication included, when the URL sets

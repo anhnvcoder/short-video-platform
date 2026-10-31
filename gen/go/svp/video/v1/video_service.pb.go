@@ -777,8 +777,8 @@ const file_svp_video_v1_video_service_proto_rawDesc = "" +
 	"\x0eCompleteUpload\x12#.svp.video.v1.CompleteUploadRequest\x1a$.svp.video.v1.CompleteUploadResponse\x12I\n" +
 	"\bGetVideo\x12\x1d.svp.video.v1.GetVideoRequest\x1a\x1e.svp.video.v1.GetVideoResponse\x12[\n" +
 	"\x0eGetPublicVideo\x12#.svp.video.v1.GetPublicVideoRequest\x1a$.svp.video.v1.GetPublicVideoResponse\x12a\n" +
-	"\x10ListAuthorVideos\x12%.svp.video.v1.ListAuthorVideosRequest\x1a&.svp.video.v1.ListAuthorVideosResponseB\xbf\x01\n" +
-	"\x10com.svp.video.v1B\x11VideoServiceProtoP\x01ZFgithub.com/anhnvcoder/short-video-platform/gen/go/svp/video/v1;videov1\xa2\x02\x03SVX\xaa\x02\fSvp.Video.V1\xca\x02\fSvp\\Video\\V1\xe2\x02\x18Svp\\Video\\V1\\GPBMetadata\xea\x02\x0eSvp::Video::V1b\x06proto3"
+	"\x10ListAuthorVideos\x12%.svp.video.v1.ListAuthorVideosRequest\x1a&.svp.video.v1.ListAuthorVideosResponseB\xb6\x01\n" +
+	"\x10com.svp.video.v1B\x11VideoServiceProtoP\x01Z=github.com/anhnvcoder/svp-backend/gen/go/svp/video/v1;videov1\xa2\x02\x03SVX\xaa\x02\fSvp.Video.V1\xca\x02\fSvp\\Video\\V1\xe2\x02\x18Svp\\Video\\V1\\GPBMetadata\xea\x02\x0eSvp::Video::V1b\x06proto3"
 
 var (
 	file_svp_video_v1_video_service_proto_rawDescOnce sync.Once
