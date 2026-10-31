@@ -1,0 +1,6 @@
+# Example values of an EKS cluster whose Postgres is Amazon RDS, to render and check the external mode (helm template
+# -f this file). Placeholders only: the real CIDRs (the database subnets) come from the cluster's Terraform outputs.
+postgres:
+  mode: external
+  external:
+    cidrs: [10.0.48.0/24, 10.0.49.0/24]

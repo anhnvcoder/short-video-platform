@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -23,7 +25,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/credentials/endpointcreds"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+
+	"github.com/anhnvcoder/short-video-platform/internal/envcfg"
 
 	// Deprecated upstream, with no promise of further fixes; kept for now because it builds against
 	// the pinned AWS SDK. Revisit it before upgrading the AWS SDK or moving to the cloud.
@@ -74,6 +79,31 @@ func notKeyChar(r rune) bool {
 	return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '.' && r != '_' && r != '-'
 }
 
+// Credential modes, the values of S3_CREDENTIALS.
+const (
+	// CredentialsStatic signs with a fixed access key: the local object store, compose, k3d, tests.
+	CredentialsStatic = "static"
+	// CredentialsContainer signs with short-lived credentials fetched from the credential endpoint
+	// of the container, as EKS Pod Identity hands them out: no long-lived key exists anywhere.
+	CredentialsContainer = "container"
+)
+
+const (
+	// maxPresignTTL is the longest life PresignPost gives a form.
+	maxPresignTTL = 15 * time.Minute
+	// credentialRefreshWindow is how long before its expiry a fetched credential stops signing
+	// forms. A form stops working when the credential that signed it expires, so the window is
+	// longer than the longest form, plus a margin for clock skew and the time the client takes to
+	// start the upload: every form is signed with a credential that outlives it, as long as the
+	// endpoint hands out credentials with more than this left.
+	credentialRefreshWindow = maxPresignTTL + 5*time.Minute
+	// callCredentialWindow is how long before its expiry a fetched credential stops signing calls
+	// to storage. A call is used at once, so it only needs a margin for clock skew and the time the
+	// request takes; the long window of forms would drop a credential that still works and turn a
+	// failed refresh into failed calls 20 minutes early.
+	callCredentialWindow = time.Minute
+)
+
 // Config holds what New needs; the services fill it from the S3_* variables, so the same image runs
 // under compose, Kubernetes and the cloud with only the environment changing.
 type Config struct {
@@ -81,12 +111,107 @@ type Config struct {
 	Endpoint string
 	// PublicEndpoint is the URL put into presigned forms, e.g. http://127.0.0.1:9000. Signing
 	// does not call it. Empty means Endpoint.
-	PublicEndpoint  string
-	Region          string
+	PublicEndpoint string
+	Region         string
+	// Credentials is CredentialsStatic (empty means the same) or CredentialsContainer.
+	Credentials string
+	// AccessKeyID and SecretAccessKey are the key of CredentialsStatic, and must be empty with
+	// CredentialsContainer.
 	AccessKeyID     string
 	SecretAccessKey string
-	UploadsBucket   string
-	MediaBucket     string
+	// ContainerCredentialsURI and ContainerTokenFile are the credential endpoint and the file
+	// holding the token sent to it, for CredentialsContainer only. The file is read on every fetch:
+	// the token in it is rotated.
+	ContainerCredentialsURI string
+	ContainerTokenFile      string
+	// VirtualHosted puts the bucket into the host name (https://<bucket>.s3.<region>.amazonaws.com),
+	// the addressing S3 itself expects; false keeps path-style (<endpoint>/<bucket>), which the
+	// local object store needs since its buckets have no host names of their own.
+	VirtualHosted bool
+	UploadsBucket string
+	MediaBucket   string
+}
+
+// ReadAccessEnv fills in how c signs and addresses requests, from the environment:
+//
+//	S3_CREDENTIALS  static (default) or container
+//	                static: S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY are required
+//	                container: AWS_CONTAINER_CREDENTIALS_FULL_URI and
+//	                AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE are required (EKS Pod Identity sets
+//	                both), and S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY must be unset
+//	S3_PATH_STYLE   true (default) or false (virtual-hosted, for S3 itself)
+//
+// Errors name the variable, never its value.
+func (c *Config) ReadAccessEnv() error {
+	mode := envcfg.String("S3_CREDENTIALS", CredentialsStatic)
+	switch mode {
+	case CredentialsStatic:
+		for _, r := range []struct {
+			name string
+			dst  *string
+		}{{"S3_ACCESS_KEY_ID", &c.AccessKeyID}, {"S3_SECRET_ACCESS_KEY", &c.SecretAccessKey}} {
+			v, err := envcfg.Required(r.name)
+			if err != nil {
+				return err
+			}
+			*r.dst = v
+		}
+	case CredentialsContainer:
+		// A key left over would sit unused next to the credential actually used, and look like the
+		// one that signs.
+		for _, name := range []string{"S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"} {
+			if envcfg.String(name, "") != "" {
+				return fmt.Errorf("%s must not be set when S3_CREDENTIALS is %s", name, CredentialsContainer)
+			}
+		}
+		uri, err := envcfg.Required("AWS_CONTAINER_CREDENTIALS_FULL_URI")
+		if err != nil {
+			return err
+		}
+		if err := checkContainerURI(uri); err != nil {
+			return fmt.Errorf("AWS_CONTAINER_CREDENTIALS_FULL_URI %w", err)
+		}
+		tokenFile, err := envcfg.Required("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE")
+		if err != nil {
+			return err
+		}
+		c.ContainerCredentialsURI, c.ContainerTokenFile = uri, tokenFile
+	default:
+		return fmt.Errorf("S3_CREDENTIALS must be %s or %s", CredentialsStatic, CredentialsContainer)
+	}
+	c.Credentials = mode
+
+	switch envcfg.String("S3_PATH_STYLE", "true") {
+	case "true":
+		c.VirtualHosted = false
+	case "false":
+		c.VirtualHosted = true
+	default:
+		return errors.New("S3_PATH_STYLE must be true or false")
+	}
+	return nil
+}
+
+// The addresses of the EKS Pod Identity agent on every node.
+var (
+	podIdentityAgentIPv4 = netip.MustParseAddr("169.254.170.23")
+	podIdentityAgentIPv6 = netip.MustParseAddr("fd00:ec2::23")
+)
+
+// checkContainerURI accepts only plain http to the EKS Pod Identity agent (169.254.170.23 or
+// fd00:ec2::23) or to a loopback address (a narrower form of the check the AWS SDKs apply to this
+// variable): the token goes out in the Authorization header, so a mistyped URI must not send it to
+// any other host. The error does not carry the URI.
+func checkContainerURI(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "http" || u.User != nil {
+		return errors.New("must be an http URL of the EKS Pod Identity agent or a loopback address")
+	}
+	ip, err := netip.ParseAddr(u.Hostname())
+	if err != nil || (!ip.IsLoopback() && ip != podIdentityAgentIPv4 && ip != podIdentityAgentIPv6) {
+		return errors.New("must name the EKS Pod Identity agent (169.254.170.23 or fd00:ec2::23) or a loopback address")
+	}
+	return nil
 }
 
 // Store reads and writes objects with one credential.
@@ -104,13 +229,11 @@ type Store struct {
 //
 // Every call sent to the storage (HEAD, GET, PUT, DELETE, list) gets a client span from the
 // global tracer provider, with the bucket and key as attributes, and carries the trace context
-// in its headers. Signing a presigned form sends nothing and gets no span.
+// in its headers. Signing a presigned form sends nothing to the storage and gets no span.
 func New(cfg Config) (*Store, error) {
 	required := []struct{ name, value string }{
 		{"Endpoint", cfg.Endpoint},
 		{"Region", cfg.Region},
-		{"AccessKeyID", cfg.AccessKeyID},
-		{"SecretAccessKey", cfg.SecretAccessKey},
 		{"UploadsBucket", cfg.UploadsBucket},
 		{"MediaBucket", cfg.MediaBucket},
 	}
@@ -119,30 +242,87 @@ func New(cfg Config) (*Store, error) {
 			return nil, fmt.Errorf("objstore: %s is empty", r.name)
 		}
 	}
+	callCreds, formCreds, err := newCredentials(cfg)
+	if err != nil {
+		return nil, err
+	}
 	public := cfg.PublicEndpoint
 	if public == "" {
 		public = cfg.Endpoint
 	}
 	// Built from s3.Options rather than config.LoadDefaultConfig, which would also read
-	// ~/.aws and the AWS_* variables and could pick up credentials other than the S3_* ones.
+	// ~/.aws and the AWS_* variables and could pick up credentials other than the configured ones.
 	opts := s3.Options{
 		Region:                     cfg.Region,
 		BaseEndpoint:               aws.String(cfg.Endpoint),
-		UsePathStyle:               true,
-		Credentials:                credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
+		UsePathStyle:               !cfg.VirtualHosted,
+		Credentials:                callCreds,
 		RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired,
 		ResponseChecksumValidation: aws.ResponseChecksumValidationWhenRequired,
 	}
 	client := s3.New(opts, func(o *s3.Options) { otelaws.AppendMiddlewares(&o.APIOptions) })
 	// A second client only for signing: the SDK builds the form URL from the client's endpoint.
-	// Without the tracing middleware: signing is local.
-	publicClient := s3.New(opts, func(o *s3.Options) { o.BaseEndpoint = aws.String(public) })
+	// Without the tracing middleware: signing is local. It has its own credential cache, which
+	// replaces a credential long before the one of calls does.
+	publicClient := s3.New(opts, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(public)
+		o.Credentials = formCreds
+	})
 	return &Store{
 		client:        client,
 		presign:       s3.NewPresignClient(publicClient),
 		uploadsBucket: cfg.UploadsBucket,
 		mediaBucket:   cfg.MediaBucket,
 	}, nil
+}
+
+// newCredentials returns the credential providers of cfg.Credentials, one for calls to storage and
+// one for signing forms, checking that exactly the fields of that mode are set.
+func newCredentials(cfg Config) (calls, forms aws.CredentialsProvider, err error) {
+	switch cfg.Credentials {
+	case "", CredentialsStatic:
+		if cfg.AccessKeyID == "" {
+			return nil, nil, errors.New("objstore: AccessKeyID is empty")
+		}
+		if cfg.SecretAccessKey == "" {
+			return nil, nil, errors.New("objstore: SecretAccessKey is empty")
+		}
+		static := credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, "")
+		return static, static, nil
+	case CredentialsContainer:
+		if cfg.AccessKeyID != "" || cfg.SecretAccessKey != "" {
+			return nil, nil, errors.New("objstore: AccessKeyID and SecretAccessKey must be empty with container credentials")
+		}
+		if cfg.ContainerTokenFile == "" {
+			return nil, nil, errors.New("objstore: ContainerTokenFile is empty")
+		}
+		if err := checkContainerURI(cfg.ContainerCredentialsURI); err != nil {
+			return nil, nil, fmt.Errorf("objstore: ContainerCredentialsURI %w", err)
+		}
+		tokenFile := cfg.ContainerTokenFile
+		// No proxy: the token is for the agent alone, whatever HTTP_PROXY says.
+		httpClient := awshttp.NewBuildableClient().WithTransportOptions(func(t *http.Transport) { t.Proxy = nil })
+		provider := endpointcreds.New(cfg.ContainerCredentialsURI, func(o *endpointcreds.Options) {
+			o.HTTPClient = httpClient
+			o.AuthorizationTokenProvider = endpointcreds.TokenProviderFunc(func() (string, error) {
+				token, err := os.ReadFile(tokenFile) //nolint:gosec // the path comes from the platform, not from a request
+				if err != nil {
+					return "", fmt.Errorf("read the container authorization token: %w", err)
+				}
+				return string(token), nil
+			})
+		})
+		// Without a cache the SDK would fetch a credential for every request. Two caches, so each
+		// keeps a credential for as long as its own use allows: a form must not outlive the
+		// credential that signed it, a call only needs one valid while it is sent. Each cache
+		// fetches once per credential lifetime.
+		cache := func(window time.Duration) aws.CredentialsProvider {
+			return aws.NewCredentialsCache(provider, func(o *aws.CredentialsCacheOptions) { o.ExpiryWindow = window })
+		}
+		return cache(callCredentialWindow), cache(credentialRefreshWindow), nil
+	default:
+		return nil, nil, fmt.Errorf("objstore: Credentials must be %s or %s", CredentialsStatic, CredentialsContainer)
+	}
 }
 
 // bucket returns the bucket holding key, which must have something after its prefix.
@@ -167,8 +347,9 @@ type PresignedPost struct {
 }
 
 // PresignPost signs a form that lets its holder write exactly key, with a body of 1 to
-// sizeBytes bytes and Content-Type contentType, until ttl from now (UP-1). Only keys under
-// uploads/ can be signed. Signing is local: nothing is sent.
+// sizeBytes bytes and Content-Type contentType, until ttl from now (UP-1); ttl is at most 15
+// minutes. Only keys under uploads/ can be signed. Signing is local: nothing is sent, except that
+// with container credentials the first form, and one after each refresh, fetches a credential.
 func (s *Store) PresignPost(ctx context.Context, key string, sizeBytes int64, contentType string, ttl time.Duration) (*PresignedPost, error) {
 	if !strings.HasPrefix(key, UploadsPrefix) {
 		return nil, ErrInvalidKey
@@ -177,8 +358,8 @@ func (s *Store) PresignPost(ctx context.Context, key string, sizeBytes int64, co
 	if err != nil {
 		return nil, err
 	}
-	if sizeBytes < 1 || contentType == "" || ttl <= 0 {
-		return nil, errors.New("objstore: presign needs a size of at least 1, a content type and a positive ttl")
+	if sizeBytes < 1 || contentType == "" || ttl <= 0 || ttl > maxPresignTTL {
+		return nil, fmt.Errorf("objstore: presign needs a size of at least 1, a content type and a ttl of at most %s", maxPresignTTL)
 	}
 	req, err := s.presign.PresignPostObject(ctx, &s3.PutObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)},
 		func(o *s3.PresignPostOptions) {

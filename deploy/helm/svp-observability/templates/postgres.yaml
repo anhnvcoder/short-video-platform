@@ -11,7 +11,10 @@ Prometheus operator watches svp-obs only (base/kube-prometheus-stack.yaml of svp
 CloudNativePG can make itself (spec.monitoring.enablePodMonitor) would be made in svp-data and never read. Prometheus
 finds the pods with its own cluster-wide right to list pods; policy prometheus opens its egress to 9187, and policy
 postgres of chart svp-data the ingress.
+
+None with postgres.mode external: no CloudNativePG instance to scrape.
 */}}
+{{- if not (include "svp-observability.postgresExternal" .) }}
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:
@@ -26,3 +29,4 @@ spec:
       cnpg.io/podRole: instance
   podMetricsEndpoints:
     - port: metrics
+{{- end }}

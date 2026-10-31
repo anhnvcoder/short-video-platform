@@ -69,15 +69,71 @@ kyverno:
 podSecurityVersion: v1.36
 
 # Docker network of the k3d nodes (subnet in deploy/k8s/k3d.yaml): the API server listens on the server node's 6443.
+# On EKS the VPC's CIDR: the API server's addresses behind Service kubernetes are the control plane's network
+# interfaces in the VPC, and the API server's webhook calls come from there too.
 nodeSubnet: 10.200.0.0/24
-# ClusterIP of Service kubernetes (first address of k3s's service range 10.43.0.0/16).
+# ClusterIP of Service kubernetes (first address of k3s's service range 10.43.0.0/16; on EKS the first address of the
+# cluster's service range).
 kubeAPIServiceIP: 10.43.0.1
+# Port the API server listens on at those addresses (allow-kube-api opens it towards nodeSubnet): 6443 on k3s, 443 on EKS.
+kubeAPIPort: 6443
 
 # Hostnames of the two HTTPS listeners of Gateway svp; *.localhost resolves to loopback on the host. wildcardHost: the
 # API and storage (api., s3.); apexHost: the web client. A wildcard does not cover the name it is under, so
 # svp.localhost has a listener and a certificate of its own (templates/gateway.yaml).
 wildcardHost: "*.svp.localhost"
 apexHost: svp.localhost
+
+# Who signs the two certificates of Gateway svp (templates/certificates.yaml). selfSigned: a local CA of cert-manager,
+# trusted by clients that load it (`make k8s-ca`), for a cluster no one reaches from the internet. acme: Let's Encrypt,
+# DNS-01 on the Route 53 hosted zone hostedZoneId that holds wildcardHost and apexHost; cert-manager's controller takes
+# its AWS credentials from its pod (EKS Pod Identity), so no key is in a Secret. server: production, or staging to try
+# the issuer without spending production's limit on certificates for the same names (5 per 7 days); clients trust no
+# staging certificate. email: the ACME account's contact, required.
+tls:
+  issuer: selfSigned
+  acme:
+    server: production
+    email: ""
+    hostedZoneId: ""
+    region: ""
+
+# The Service of the Envoy fleet (EnvoyProxy svp, templates/gateway.yaml) and, on a cluster that enforces
+# NetworkPolicy in envoy-gateway-system's pods (EKS), what may reach those pods.
+envoy:
+  service:
+    # Cluster on k3d (templates/gateway.yaml says why). With an NLB of AWS Load Balancer Controller sending to pod
+    # addresses (target type ip), no packet goes through kube-proxy and this has no effect.
+    externalTrafficPolicy: Cluster
+    # Annotations of the Service, which on EKS make AWS Load Balancer Controller create the NLB: type external, target
+    # type ip, and target group attribute preserve_client_ip.enabled=true. The render fails with an NLB that would hand
+    # Envoy the load balancer's address instead of the client's: the gateway's rate limits and logs key on that address.
+    annotations: {}
+  # NetworkPolicy envoy of envoy-gateway-system (templates/networkpolicies.yaml), for a cluster whose Envoy faces the
+  # internet: only these reach the Envoy pods of Gateway svp, in: its HTTPS port from every address (clients come with
+  # their own address), its metrics port from svp-obs (Prometheus), and the port of the NLB's health check (annotation
+  # service.beta.kubernetes.io/aws-load-balancer-healthcheck-port, when it names one) from healthCheckCIDR, the VPC's
+  # CIDR where the NLB's nodes are. Off on k3d: no policy selects those pods, which any pod may reach.
+  networkPolicy:
+    enabled: false
+    healthCheckCIDR: ""
+
+# CloudNativePG (component cloudnative-pg, wave 2) runs Postgres svp-pg in svp-data: its RBAC and the certificate of its
+# webhook are made here (templates/cnpg-rbac.yaml, cnpg-webhook-certificate.yaml). false where Postgres is a managed one
+# outside the cluster (postgres.mode external of chart svp-data) and no operator is installed.
+cloudnativePG:
+  enabled: true
+
+# The object store: cluster, s3 of chart svp-data with its users' static keys; external, a managed store (Amazon S3)
+# that the services reach with the credentials of their pod (EKS Pod Identity), so no Secret holds a key for it
+# (templates/external-secrets.yaml leaves those out).
+s3:
+  mode: cluster
+
+# StorageClass gp3 (templates/storageclass.yaml), the default class of an EKS cluster: encrypted gp3 volumes of the EBS
+# CSI driver, which makes no class of its own, and EKS has no default class. Off on k3d, whose default is local-path.
+storageClass:
+  enabled: false
 
 # The Secrets of the GitOps path (stg, prd): one ExternalSecret per Secret the services and the platform read, each
 # built by External Secrets Operator (component external-secrets, wave 0, GitOps path only) from a store of values

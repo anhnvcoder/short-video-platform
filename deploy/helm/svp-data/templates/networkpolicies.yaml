@@ -8,6 +8,9 @@ and Envoy live in platform namespaces, which deny nothing outbound. The one pod 
 is Postgres, whose backups go to the object store s3 (policy postgres-backup).
 
 Ports are the pods' ports: NetworkPolicy sees the packet after a Service has been translated to a pod.
+
+With postgres.mode external there is no Postgres pod: the pg-bootstrap Job reaches the managed Postgres at
+postgres.external.cidrs instead. With s3.mode external there is no object store pod and no s3-init Job.
 */}}
 {{- define "svp-data.svpPods" -}}
 - namespaceSelector:
@@ -25,6 +28,9 @@ Ports are the pods' ports: NetworkPolicy sees the packet after a Service has bee
       app.kubernetes.io/name: svp-data-init
       app.kubernetes.io/component: {{ . }}
 {{- end }}
+{{- $pgExternal := include "svp-data.postgresExternal" . }}
+{{- $s3External := include "svp-data.s3External" . }}
+{{- if not $pgExternal }}
 # Postgres: the database of each service (its pods and its migrate Job), GlitchTip's (its pod and its init Job), the
 # bootstrap Job; the operator reads each instance's status on 8000; Prometheus scrapes the instance's exporter on 9187
 # (PodMonitor svp-pg of chart svp-observability: cnpg_* and the Barman Cloud plugin's barman_cloud_* metrics).
@@ -96,6 +102,7 @@ spec:
         - protocol: TCP
           port: 9000
 ---
+{{- end }}
 # Valkey: rate limits of the gateway, the explore cache of feed-service, the web client's sessions.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -154,6 +161,7 @@ spec:
         - protocol: TCP
           port: 9644
 ---
+{{- if not $s3External }}
 # The object store s3: video-service and media-worker with their own users, Envoy for presigned uploads and playback
 # from the host, the init Job, and the pods of Postgres svp-pg (instance and recovery Job) for its backups, as user
 # svp-pg-backup.
@@ -178,13 +186,16 @@ spec:
               app.kubernetes.io/name: envoy
               gateway.envoyproxy.io/owning-gateway-name: svp
         {{- include "svp-data.initJob" "s3-init" | nindent 8 }}
+        {{- if not $pgExternal }}
         - podSelector:
             matchLabels:
               cnpg.io/cluster: svp-pg
+        {{- end }}
       ports:
         - protocol: TCP
           port: 9000
 ---
+{{- end }}
 # The init Jobs reach only the server each one sets up.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -199,13 +210,21 @@ spec:
   policyTypes: [Egress]
   egress:
     - to:
+        {{- if $pgExternal }}
+        {{- range .Values.postgres.external.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+        {{- else }}
         - podSelector:
             matchLabels:
               cnpg.io/cluster: svp-pg
+        {{- end }}
       ports:
         - protocol: TCP
           port: 5432
 ---
+{{- if not $s3External }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -226,6 +245,7 @@ spec:
         - protocol: TCP
           port: 9000
 ---
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

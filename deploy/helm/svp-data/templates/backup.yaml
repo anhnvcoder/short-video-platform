@@ -9,7 +9,10 @@ the same cluster, on the same disk, as the data, and the store here has no KMS: 
 
 Within the bucket each archive generation has its own prefix, the plugin's serverName (postgres.backup.serverName,
 templates/postgres.yaml).
+
+None with postgres.mode external: the managed Postgres keeps its own backups.
 */}}
+{{- if not (include "svp-data.postgresExternal" .) }}
 apiVersion: barmancloud.cnpg.io/v1
 kind: ObjectStore
 metadata:
@@ -69,3 +72,4 @@ spec:
   method: plugin
   pluginConfiguration:
     name: barman-cloud.cloudnative-pg.io
+{{- end }}

@@ -79,7 +79,7 @@ spec:
             cidr: {{ $.Values.nodeSubnet }}
       ports:
         - protocol: TCP
-          port: 6443
+          port: {{ $.Values.kubeAPIPort }}
     - to:
         - ipBlock:
             cidr: {{ $.Values.kubeAPIServiceIP }}/32
@@ -92,7 +92,10 @@ spec:
 Kyverno's admission controller. In: the API server's admission
 calls on the webhook port. The API server runs on the server node: a call to a pod on that node comes from the node
 itself, one to a pod on the agent leaves through the server's VXLAN interface (values: kyverno.vxlanAddresses), so only
-those addresses and the nodes' network are let in, no pod. Out: TCP 443 to public addresses only, for the registries and Sigstore's TUF
+those addresses and the nodes' network are let in, no pod. On EKS nodeSubnet is the VPC's CIDR: the control plane's
+network interfaces sit in the same private subnets as the nodes, so no narrower range holds them, and VPC CNI gives
+every pod an address of the VPC, so every pod is let in on the webhook port too. Accepted: the project's namespaces
+deny egress by default, so only pods of the platform namespaces (Envoy's among them) gain that reach. Out: TCP 443 to public addresses only, for the registries and Sigstore's TUF
 repository it verifies images against; every private range is left out (values: kyverno.privateRanges), so neither the
 local registry nor anything else on the nodes' network or the host is reachable. The reports controller needs only the
 API server.
@@ -185,4 +188,51 @@ spec:
       ports:
         - protocol: TCP
           port: 80
+{{- end }}
+{{- if .Values.envoy.networkPolicy.enabled }}
+{{- $healthCheckPort := index .Values.envoy.service.annotations "service.beta.kubernetes.io/aws-load-balancer-healthcheck-port" | default "traffic-port" }}
+{{- if and (ne $healthCheckPort "traffic-port") (not .Values.envoy.networkPolicy.healthCheckCIDR) }}
+{{- fail "envoy.networkPolicy.healthCheckCIDR: required when the NLB's health check has a port of its own" }}
+{{- end }}
+---
+# The Envoy pods of Gateway svp, on a cluster whose Envoy faces the internet: once a policy selects them, nothing else
+# reaches them, so a pod of the cluster cannot reach Envoy's other ports. In: 10443, the port Envoy Gateway gives the
+# listeners' 443 in the pod (a port under 1024 gets 10000 added, so Envoy needs no privilege to bind it), from every
+# address: the NLB keeps each client's own; the metrics port from Prometheus in svp-obs (the canary's analysis reads
+# them); the NLB's health check on a port of its own from the VPC, where the NLB's nodes are (on traffic-port it
+# checks 10443, already open). The kubelet's probes come from the node, which a NetworkPolicy cannot block. Out: not
+# restricted (Envoy reaches its controller and every backend).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: envoy
+  namespace: envoy-gateway-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: envoy
+      gateway.envoyproxy.io/owning-gateway-name: svp
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 10443
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: svp-obs
+      ports:
+        - protocol: TCP
+          port: 19001
+    {{- if ne $healthCheckPort "traffic-port" }}
+    - from:
+        - ipBlock:
+            cidr: {{ .Values.envoy.networkPolicy.healthCheckCIDR }}
+      ports:
+        - protocol: TCP
+          port: {{ $healthCheckPort | int }}
+    {{- end }}
 {{- end }}

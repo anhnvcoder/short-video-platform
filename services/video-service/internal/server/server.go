@@ -174,6 +174,14 @@ func (s *Server) InitUpload(ctx context.Context, req *videov1.InitUploadRequest)
 	}
 
 	id := ids.New()
+	// Signed before the video is stored: signing can fetch a credential over the network, and a
+	// video stored for a form that was never handed out would count against MaxOpenUploads until
+	// the form would have expired. A form signed for a video that is then refused is dropped
+	// unseen. The key comes from the id the server generated, never from the request (UP-4).
+	form, err := s.storage.PresignPost(ctx, objstore.UploadsPrefix+id, req.GetSizeBytes(), contentType, uploadFormTTL)
+	if err != nil {
+		return nil, s.internal(ctx, "presign upload form", err)
+	}
 	err = s.createVideo(ctx, store.CreateVideoParams{
 		ID:          uuid.MustParse(id),
 		AuthorID:    caller,
@@ -193,11 +201,6 @@ func (s *Server) InitUpload(ctx context.Context, req *videov1.InitUploadRequest)
 	ctx = logx.With(ctx, slog.String("video_id", id))
 	s.logger.InfoContext(ctx, "video created")
 
-	// The key comes from the id the server generated, never from the request (UP-4).
-	form, err := s.storage.PresignPost(ctx, objstore.UploadsPrefix+id, req.GetSizeBytes(), contentType, uploadFormTTL)
-	if err != nil {
-		return nil, s.internal(ctx, "presign upload form", err)
-	}
 	return &videov1.InitUploadResponse{
 		VideoId:    id,
 		UploadUrl:  form.URL,

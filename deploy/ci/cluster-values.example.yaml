@@ -1,0 +1,26 @@
+# Example of the value cluster of root Application svp-root on the platform eks: what depends on the AWS account or on
+# one session, which never goes to git. The infrastructure repository's output cluster_values gives the real map, the
+# GitOps bootstrap sets it on the root, and the templates platforms/eks/<name>.values.tpl of svp-gitops turn it into the
+# values of each component. deploy/ci/gitops-check.sh renders the platform eks with this file in its place, so every
+# key of the contract is here, each with a value of the right form that names nothing real: a private VPC range
+# (RFC 1918), documentation address ranges for the public ones (RFC 5737), identifiers and an account of zeros, the
+# reserved domain example (RFC 2606).
+# A key added to the contract is added here, to that output, to the templates and to the table of the contract.
+name: svp-stg
+region: ap-southeast-1
+vpcId: vpc-00000000000000000
+vpcCidr: 10.0.0.0/16
+serviceCidr: 172.20.0.0/16
+dbCidrs:
+  - 10.0.48.0/24
+  - 10.0.49.0/24
+domain: stg.svp.example
+hostedZoneId: Z00000000000000000000
+acmeEmail: acme@svp.example
+rdsAddress: svp-stg.000000000000.ap-southeast-1.rds.amazonaws.com
+uploadsBucket: svp-stg-uploads-000000000000
+mediaBucket: svp-stg-media-000000000000
+mediaDomain: d000000000000.cloudfront.net
+s3Cidrs:
+  - 198.51.100.0/24
+  - 203.0.113.0/24

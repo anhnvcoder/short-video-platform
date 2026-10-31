@@ -28,17 +28,23 @@
 # before error tracking) is left alone: its next upgrade rolls it with the new template, which reads the Secret then.
 #
 # Needs only GlitchTip ready (its init Job has run); run by deploy/k8s/install.sh after chart svp-observability, by
-# `make k8s-glitchtip-init` on its own, and by the GitOps path once Argo CD reports GlitchTip healthy. Idempotent: the
-# DSN and tokens do not change between runs (bootstrap.py never makes a second key or token), so a second run applies
-# the same Secrets, which keep their resourceVersion, and restarts nothing.
+# `make k8s-glitchtip-init` on its own (`make eks-glitchtip-init` on an EKS cluster, SVP_KUBE_CONTEXT svp-stg or
+# svp-prd, whose GitOps staging has svp-secrets too), and by the GitOps path once Argo CD reports GlitchTip healthy.
+# Idempotent: the DSN and tokens do not change between runs (bootstrap.py never makes a second key or token), so a
+# second run applies the same Secrets, which keep their resourceVersion, and restarts nothing.
 set -euo pipefail
 
 # shellcheck source=deploy/k8s/lib.sh
 . "$(dirname "$0")/lib.sh"
+# Written for a cloud cluster too: kc may reach the EKS cluster SVP_KUBE_CONTEXT names (deploy/k8s/lib.sh).
+kube_cloud_ok=1
+make_cluster="make k8s-up"
+! cloud_context || make_cluster="make eks-gitops-up CONTEXT=$kube_context"
 
-kc get --raw /readyz >/dev/null 2>&1 || fail "cluster svp is not reachable (context k3d-svp); run make k8s-up"
+kc get --raw /readyz >/dev/null 2>&1 ||
+  fail "cluster ${kube_context#k3d-} is not reachable (context $kube_context); run $make_cluster"
 kc -n svp-obs rollout status deployment/glitchtip --timeout=300s >/dev/null ||
-  fail "GlitchTip (deployment svp-obs/glitchtip) ready within 300s; install it with make k8s-up"
+  fail "GlitchTip (deployment svp-obs/glitchtip) ready within 300s; install it with $make_cluster"
 
 # The first active key of project svp and the oldest tokens labelled svp-drill and svp-sourcemaps: what bootstrap.py
 # hands out. Prefixed lines, so nothing else Django may print can be taken for them. The values are printed to this
@@ -68,7 +74,7 @@ if sourcemaps_token is not None:
     print("svp-sourcemaps-token=" + sourcemaps_token.token)
 PY
 creds=$(kc -n svp-obs exec deployment/glitchtip -c glitchtip -- python manage.py shell -c "$read_creds") ||
-  fail "read the DSN and API tokens inside GlitchTip (kubectl --context k3d-svp -n svp-obs logs deployment/glitchtip)"
+  fail "read the DSN and API tokens inside GlitchTip (kubectl --context $kube_context -n svp-obs logs deployment/glitchtip)"
 dsn=$(printf '%s\n' "$creds" | sed -n 's/^svp-dsn=//p')
 token=$(printf '%s\n' "$creds" | sed -n 's/^svp-token=//p')
 sourcemaps_token=$(printf '%s\n' "$creds" | sed -n 's/^svp-sourcemaps-token=//p')

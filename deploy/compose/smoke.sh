@@ -25,7 +25,10 @@
 # The same steps run against the local k3d cluster svp with `make k8s-smoke`: base
 # https://api.svp.localhost:8443, CURL_CA_BUNDLE=.k8s/ca.crt so curl trusts the cluster's CA for
 # the API and the storage alike, and SVP_STACK=k3d so lib.sh resets the limit in the cluster's
-# Valkey (kubectl, context k3d-svp) instead of the host's Redis.
+# Valkey (kubectl, context k3d-svp) instead of the host's Redis. Against an EKS cluster of the
+# project with `make eks-smoke`: base https://api.<domain>, whose certificates are public ones (no
+# CURL_CA_BUNDLE), and SVP_STACK=eks with SVP_KUBE_CONTEXT svp-stg or svp-prd, the cluster whose
+# Valkey lib.sh resets the limit in.
 set -euo pipefail
 
 base=${1:-http://127.0.0.1:8080}

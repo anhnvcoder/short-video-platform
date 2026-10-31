@@ -5,7 +5,11 @@ from the peers in ingressFrom only (Envoy for the gateway, the gateway for a gRP
 egressTo only, so a compromised pod reaches only what its service really talks to, never the internet. A service
 with an empty ingressFrom (media-worker) is reached by no pod at all. The servers in svp-data and svp-obs have their
 own ingress policies for these pods.
+A peer of externalPeers is reached by address instead (a managed database or object store outside the cluster).
 */}}
+{{- range $name, $_ := .Values.externalPeers }}
+{{- if not (hasKey $.Values.peers $name) }}{{ fail (printf "externalPeers: unknown peer %q" $name) }}{{ end }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -36,6 +40,10 @@ spec:
     {{- if not (hasKey $.Values.peers .) }}{{ fail (printf "egressTo: unknown peer %q" .) }}{{ end }}
     {{- $peer := index $.Values.peers . }}
     # {{ . }}
+    {{- $external := index $.Values.externalPeers . }}
+    {{- if $external }}
+    {{- include "svp-service.externalEgress" (dict "name" . "entries" $external) | trim | nindent 4 }}
+    {{- else }}
     - to:
         {{- include "svp-service.peerSelector" $peer | nindent 8 }}
       ports:
@@ -43,4 +51,5 @@ spec:
         - protocol: TCP
           port: {{ . }}
         {{- end }}
+    {{- end }}
     {{- end }}

@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/otel"
+
+	"github.com/anhnvcoder/short-video-platform/internal/objstore"
 )
 
 func setRequired(t *testing.T) {
@@ -17,7 +19,8 @@ func setRequired(t *testing.T) {
 	t.Setenv("S3_ENDPOINT", "http://s3:9000")
 	t.Setenv("S3_ACCESS_KEY_ID", "svp-media-worker")
 	t.Setenv("S3_SECRET_ACCESS_KEY", "test-secret-value")
-	for _, name := range []string{"S3_REGION", "S3_UPLOADS_BUCKET", "S3_MEDIA_BUCKET", "WORK_DIR"} {
+	for _, name := range []string{"S3_REGION", "S3_UPLOADS_BUCKET", "S3_MEDIA_BUCKET", "WORK_DIR", "S3_CREDENTIALS",
+		"S3_PATH_STYLE", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE"} {
 		t.Setenv(name, "")
 	}
 }
@@ -46,6 +49,51 @@ func TestLoadConfigMissingNamesVariable(t *testing.T) {
 			_, err := loadConfig()
 			if err == nil || !strings.Contains(err.Error(), name) {
 				t.Errorf("err = %v, want one naming %s", err, name)
+			}
+		})
+	}
+}
+
+// On EKS: the credential of Pod Identity, the bucket in the host name, and no static key.
+func TestLoadConfigContainerCredentials(t *testing.T) {
+	setRequired(t)
+	t.Setenv("S3_ACCESS_KEY_ID", "")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "")
+	t.Setenv("S3_ENDPOINT", "https://s3.ap-southeast-1.amazonaws.com")
+	t.Setenv("S3_CREDENTIALS", "container")
+	t.Setenv("S3_PATH_STYLE", "false")
+	t.Setenv("AWS_CONTAINER_CREDENTIALS_FULL_URI", "http://169.254.170.23/v1/credentials")
+	t.Setenv("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", "/var/run/secrets/pods.eks.amazonaws.com/serviceaccount/eks-pod-identity-token")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := cfg.store
+	if s.Credentials != objstore.CredentialsContainer || !s.VirtualHosted || s.AccessKeyID != "" ||
+		s.ContainerCredentialsURI != "http://169.254.170.23/v1/credentials" {
+		t.Errorf("store config = %+v", s)
+	}
+	if _, err := objstore.New(s); err != nil {
+		t.Errorf("objstore.New() of the container config: %v", err)
+	}
+}
+
+func TestLoadConfigRejectsBadAccessSettings(t *testing.T) {
+	for _, tc := range []struct{ variable, value string }{
+		{"S3_CREDENTIALS", "env"},
+		// The static key of setRequired is still set.
+		{"S3_CREDENTIALS", "container"},
+		{"S3_PATH_STYLE", "0"},
+	} {
+		t.Run(tc.variable+"="+tc.value, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv(tc.variable, tc.value)
+			_, err := loadConfig()
+			if err == nil || !strings.Contains(err.Error(), tc.variable) {
+				t.Fatalf("err = %v, want one naming %s", err, tc.variable)
+			}
+			if strings.Contains(err.Error(), "test-secret-value") {
+				t.Errorf("err %q prints the secret", err)
 			}
 		})
 	}

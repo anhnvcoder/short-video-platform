@@ -1,0 +1,23 @@
+{{- /*
+StorageClass gp3, the default class of an EKS cluster (storageClass.enabled; off on k3d, whose default is local-path).
+The EBS CSI driver's add-on makes no StorageClass and EKS marks none as the default, while the charts' volume claims
+name no class (Redpanda, Prometheus, ...) and take the default: without this one they stay Pending. Volumes are gp3,
+encrypted with the account's EBS key, made in the zone of the node the pod is scheduled on (WaitForFirstConsumer, so a
+pod and its volume never end up in two zones), may grow, and are deleted with their claim, so that removing the claims
+before the cluster is destroyed leaves no volume behind.
+*/}}
+{{- if .Values.storageClass.enabled }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  encrypted: "true"
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+{{- end }}

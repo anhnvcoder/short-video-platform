@@ -37,14 +37,36 @@ readOnlyRootFilesystem: true
 capabilities:
   drop: [ALL]
 {{- end }}
+{{- /*
+"true" when Postgres is outside the cluster (postgres.mode external), "" when CloudNativePG runs it; fails on any other
+mode, or on external without the CIDRs.
+*/}}
+{{- define "svp-observability.postgresExternal" -}}
+{{- if not (has .Values.postgres.mode (list "cluster" "external")) }}
+{{- fail (printf "postgres.mode is %q: cluster (CloudNativePG in the cluster) or external (a managed Postgres)" (toString .Values.postgres.mode)) }}
+{{- end }}
+{{- if eq .Values.postgres.mode "external" }}
+{{- if not .Values.postgres.external.cidrs }}
+{{- fail "postgres.mode external needs postgres.external.cidrs, the CIDRs of the managed Postgres's addresses" }}
+{{- end }}
+{{- print "true" }}
+{{- end }}
+{{- end }}
 {{- define "svp-observability.postgresPeer" -}}
 - to:
+    {{- if include "svp-observability.postgresExternal" . }}
+    {{- range .Values.postgres.external.cidrs }}
+    - ipBlock:
+        cidr: {{ . }}
+    {{- end }}
+    {{- else }}
     - namespaceSelector:
         matchLabels:
           kubernetes.io/metadata.name: {{ .Values.postgres.namespace }}
       podSelector:
         matchLabels:
           {{- toYaml .Values.postgres.labels | nindent 10 }}
+    {{- end }}
   ports:
     - {protocol: TCP, port: {{ .Values.postgres.port }}}
 {{- end }}

@@ -11,6 +11,14 @@
 #     parent), so the image's tag is no ancestor of it;
 #   - a wrong collectorConfigSha256;
 #   - a short targetRevision (main, not refs/heads/main) for the sources of svp-gitops in argocd/apps/values.yaml;
+#   - the platform layer (gitops-check.sh --root, steps 1 and 2): a copy of TREE given platforms/ and a root chart
+#     patched to take value platform (TREE itself once it has platforms/) passes, stg on k3d and eks and prd on eks,
+#     with a line saying why prd is not rendered on k3d, and its render of stg on k3d is TREE's render of stg; a file
+#     of a platform setting a release's image, a template rendering one, a file naming no component, a file of k3d for
+#     a component of eks alone, cluster set in argocd/apps/values.yaml or in a file of a platform, an unknown platform
+#     directory, a component on an unknown platform, platforms in components.json of a tree without platforms/, a root
+#     chart making Applications of another platform and one reading a platform's values after the environment's each
+#     fail with their own message;
 #   - the release sources of the image files (gitops-check.sh --tree, on a throwaway copy of this repository with a
 #     commit from before the table of release sources and one with it, and a throwaway clone of svp-web): stg pinning
 #     the commit with the table runs web of svp-web while prd pins the commit before it, in one tree, and passes; the
@@ -229,6 +237,182 @@ sed -i.bak 's|^targetRevision: .*|targetRevision: main|' "$t/argocd/apps/values.
 check "a short targetRevision" "$t" \
   "every source of https://github.com/anhnvcoder/svp-gitops.git must name a full ref (refs/heads/<branch>) or a commit as targetRevision, not main"
 
+# --- the platform layer (gitops-check.sh --root: steps 1 and 2, no network). A tree with it: TREE itself when it has
+# platforms/, otherwise layered, a copy of TREE given the layer as the check expects it, its root chart patched to take
+# value platform: platforms/k3d/ holding README.md alone, platforms/eks/ the values of svp-cluster and templates on value
+# cluster for svp-data and for a component of eks alone, which components.json adds (aws-load-balancer-controller),
+# cloudnative-pg and plugin-barman-cloud on k3d alone. Its render of stg on k3d must be the render of TREE in stg.
+# check_root NAME WANT_RC MESSAGE DIR: gitops-check.sh --root on DIR; MESSAGE on its output.
+check_root() {
+  local out rc=0
+  out=$("$here/gitops-check.sh" --root "$4" 2>&1) || rc=$?
+  if [ "$2" = 0 ] && [ "$rc" != 0 ]; then
+    fail "$1: gitops-check.sh --root failed:"$'\n'"$(sed 's/^/      /' <<<"$out")"
+  elif [ "$2" != 0 ] && [ "$rc" = 0 ]; then
+    fail "$1: gitops-check.sh --root passed"
+  elif [[ $out == *"$3"* ]]; then
+    ok "$1"
+  else
+    fail "$1: no '$3' in:"$'\n'"$(sed 's/^/      /' <<<"$out")"
+  fi
+}
+# replace_once FILE OLD NEW: OLD, found exactly once in FILE, becomes NEW; status 1 when it is not there once.
+replace_once() {
+  local out
+  out=$(OLD=$2 NEW=$3 awk '{ s = s $0 "\n" } END {
+    old = ENVIRON["OLD"]; i = index(s, old)
+    if (i == 0 || index(substr(s, i + length(old)), old)) exit 1
+    printf "%s%s%s", substr(s, 1, i - 1), ENVIRON["NEW"], substr(s, i + length(old)) }' "$1") || return 1
+  printf '%s\n' "$out" >"$1"
+}
+# layered_root DIR: the root chart of DIR (a copy of TREE without the layer) takes value platform (k3d or eks): an
+# Application per component that runs there, values files base/ < platforms/<platform>/<name>.yaml < envs/<env>/ <
+# envs/<env>/images/, then a valuesObject from platforms/<platform>/<name>.values.tpl, rendered on the root's values.
+layered_root() {
+  local t=$1/argocd/apps/templates/applications.yaml
+  replace_once "$t" '{{- $env := toString (required "env is not set: the name of a directory of envs/ (the bootstrap sets stg)" .Values.env) }}' \
+'{{- $env := toString (required "env is not set: the name of a directory of envs/ (the bootstrap sets stg)" .Values.env) }}
+{{- $platform := toString (required "platform is not set" .Values.platform) }}
+{{- if not (has $platform (list "k3d" "eks")) }}{{ fail (printf "platform is %q" $platform) }}{{ end }}
+{{- $platformFiles := dict }}
+{{- $platformTemplates := dict }}
+{{- range $file, $content := .Files.Glob (printf "files/platforms/%s/*" $platform) }}
+{{- $base := base $file }}
+{{- if hasSuffix ".values.tpl" $base }}{{ $_ := set $platformTemplates (trimSuffix ".values.tpl" $base) (toString $content) }}
+{{- else if hasSuffix ".yaml" $base }}{{ $_ := set $platformFiles (trimSuffix ".yaml" $base) (printf "platforms/%s/%s" $platform $base) }}
+{{- end }}
+{{- end }}' &&
+    replace_once "$t" '{{- range $components }}
+---' '{{- range $components }}
+{{- if or (not (hasKey . "platforms")) (has $platform .platforms) }}
+---' &&
+    replace_once "$t" '        maxDuration: 3m
+{{- end }}' '        maxDuration: 3m
+{{- end }}
+{{- end }}' &&
+    replace_once "$t" '        releaseName: {{ .name }}' '        releaseName: {{ .name }}
+        {{- with get $platformTemplates .name }}
+        valuesObject:
+          {{- tpl . $ | fromYaml | toYaml | nindent 10 }}
+        {{- end }}' &&
+    replace_once "$t" '        {{- if or .values $overlay $image }}' '        {{- $platformFile := get $platformFiles .name }}
+        {{- if or .values $platformFile $overlay $image }}' &&
+    replace_once "$t" '          {{- with $overlay }}' '          {{- with $platformFile }}
+          - $values/{{ . }}
+          {{- end }}
+          {{- with $overlay }}' &&
+    replace_once "$t" '    {{- if or .values (get $overlays .name) (get $images .name) }}' \
+      '    {{- if or .values (get $platformFiles .name) (get $overlays .name) (get $images .name) }}'
+}
+if [ -d "$tree/platforms" ]; then
+  layered=$tree
+  echo "note  $tree has platforms/ already: the cases of a tree without it and of its render on k3d are left out"
+else
+  layered=$(copy)
+  mkdir -p "$layered/platforms/k3d" "$layered/platforms/eks"
+  ln -s ../../../platforms "$layered/argocd/apps/files/platforms"
+  echo '# Values of the platform k3d: none, its clusters run the base.' >"$layered/platforms/k3d/README.md"
+  printf 'storageClass:\n  enabled: true\n' >"$layered/platforms/eks/svp-cluster.yaml"
+  printf '%s\n' 'postgres:' '  mode: external' '  external:' '    host: {{ .Values.cluster.rdsAddress | quote }}' \
+    '    cidrs: {{ .Values.cluster.dbCidrs | toJson }}' >"$layered/platforms/eks/svp-data.values.tpl"
+  echo 'clusterName: {{ .Values.cluster.name | quote }}' >"$layered/platforms/eks/aws-load-balancer-controller.values.tpl"
+  echo 'replicaCount: 2' >"$layered/base/aws-load-balancer-controller.yaml"
+  jq '.components |= map(if .name == "cloudnative-pg" or .name == "plugin-barman-cloud" then . + {platforms: ["k3d"]} else . end)
+    | .components += [{name: "aws-load-balancer-controller", namespace: "kube-system", wave: 2,
+      repo: "https://aws.github.io/eks-charts", chart: "aws-load-balancer-controller", version: "3.0.0",
+      values: "base/aws-load-balancer-controller.yaml", platforms: ["eks"]}]' "$tree/argocd/apps/components.json" \
+    >"$layered/argocd/apps/components.json"
+  if layered_root "$layered"; then
+    a=$(helm template svp-root "$tree/argocd/apps" --namespace argocd --set-string env=stg --set nodeArch=arm64 \
+      2>"$work/err") || a="render failed: $(cat "$work/err")"
+    b=$(helm template svp-root "$layered/argocd/apps" --namespace argocd --set-string env=stg --set nodeArch=arm64 \
+      --set-string platform=k3d 2>"$work/err") || b="render failed: $(cat "$work/err")"
+    if [ "$a" = "$b" ]; then
+      ok "platforms: the render of stg on k3d is the render of stg without the layer"
+    else
+      fail "platforms: the render of stg on k3d is not the render of stg without the layer:"$'\n'"$(diff <(echo "$a") <(echo "$b") | sed 's/^/      /')"
+    fi
+  else
+    fail "platforms: the root chart of $tree is not the one the fixture patches (argocd/apps/templates/applications.yaml)"
+  fi
+  t=$(copy)
+  jq '.components |= map(if .name == "cloudnative-pg" then . + {platforms: ["k3d"]} else . end)' \
+    "$tree/argocd/apps/components.json" >"$t/argocd/apps/components.json"
+  check_root "platforms: platforms of a component in a tree without platforms/" 1 \
+    "components.json names platforms of a component, but the tree has no platforms/" "$t"
+fi
+# lcopy: a fresh copy of the layered tree.
+lcopy() {
+  local saved=$tree dir
+  tree=$layered
+  dir=$(copy)
+  tree=$saved
+  echo "$dir"
+}
+check_root "platforms: a tree with the layer, stg on k3d and eks, prd on eks" 0 \
+  "ok    argocd/apps for prd on eks on arm64 and amd64 nodes: one Application per component that runs there" "$(lcopy)"
+check_root "platforms: prd on k3d is not rendered, and says why" 0 \
+  "skip  prd on k3d: prd runs on EKS alone, never on a lab cluster" "$(lcopy)"
+t=$(lcopy)
+printf 'image:\n  tag: "000000000000"\n' >"$t/platforms/eks/gateway.yaml"
+check_root "platforms: a file of a platform that sets the image of a release" 1 \
+  "platforms/eks/gateway.yaml sets image: a release's image is envs/<env>/images/gateway.yaml" "$t"
+t=$(lcopy)
+printf 'image:\n  tag: "000000000000"\n' >"$t/platforms/eks/gateway.values.tpl"
+check_root "platforms: a template of a platform that renders the image of a release" 1 \
+  "platforms/eks/gateway.values.tpl renders image for stg on eks" "$t"
+t=$(lcopy)
+echo 'replicas: 2' >"$t/platforms/eks/nope.yaml"
+check_root "platforms: a file of a platform that names no component" 1 \
+  "platforms/eks/nope.yaml: a file of a platform is README.md, <name>.yaml or <name>.values.tpl, <name> a component of components.json" "$t"
+eks_only=$(jq -r '.components[] | select(.platforms == ["eks"]) | .name' "$layered/argocd/apps/components.json" | head -n 1)
+if [ -n "$eks_only" ]; then
+  t=$(lcopy)
+  echo 'replicas: 2' >"$t/platforms/k3d/$eks_only.yaml"
+  check_root "platforms: a file of k3d for a component of eks alone" 1 \
+    "platforms/k3d/$eks_only.yaml: component $eks_only does not run on k3d" "$t"
+fi
+t=$(lcopy)
+printf 'cluster:\n  name: svp-stg\n' >>"$t/argocd/apps/values.yaml"
+check_root "platforms: the root's values in git set cluster" 1 \
+  "argocd/apps/values.yaml sets cluster: the bootstrap alone sets it" "$t"
+t=$(lcopy)
+printf 'cluster:\n  vpcId: vpc-00000000000000000\n' >"$t/platforms/eks/svp-data.yaml"
+check_root "platforms: a file of a platform sets cluster" 1 "platforms/eks/svp-data.yaml sets cluster" "$t"
+t=$(lcopy)
+mkdir "$t/platforms/aks"
+echo '# another platform' >"$t/platforms/aks/README.md"
+check_root "platforms: an unknown platform" 1 "platforms/ holds 'aks eks k3d': the platforms are exactly eks and k3d" "$t"
+t=$(lcopy)
+jq '.components |= map(if .name == "keda" then . + {platforms: ["aks"]} else . end)' \
+  "$layered/argocd/apps/components.json" >"$t/argocd/apps/components.json"
+check_root "platforms: a component on an unknown platform" 1 \
+  "components.json: platforms of keda must list platforms of 'eks k3d', each once" "$t"
+if [ "$layered" != "$tree" ]; then
+  # The root chart that leaves platforms out of components.json: an Application of eks alone on k3d.
+  t=$(lcopy)
+  replace_once "$t/argocd/apps/templates/applications.yaml" '{{- if or (not (hasKey . "platforms")) (has $platform .platforms) }}' \
+    '{{- if true }}'
+  check_root "platforms: a root chart that makes Applications of another platform" 1 \
+    "argocd/apps for stg on k3d on arm64 nodes makes the Applications" "$t"
+  # The root chart that reads the values of the platform after the overlay of the environment.
+  t=$(lcopy)
+  replace_once "$t/argocd/apps/templates/applications.yaml" '          {{- with $platformFile }}
+          - $values/{{ . }}
+          {{- end }}
+          {{- with $overlay }}
+          - $values/{{ . }}
+          {{- end }}' '          {{- with $overlay }}
+          - $values/{{ . }}
+          {{- end }}
+          {{- with $platformFile }}
+          - $values/{{ . }}
+          {{- end }}'
+  cp "$t/platforms/eks/svp-cluster.yaml" "$t/platforms/eks/gateway.yaml"
+  check_root "platforms: a root chart that reads a platform's values after the environment's" 1 \
+    "Application gateway reads the values files 'base/services/gateway.yaml envs/stg/gateway.yaml platforms/eks/gateway.yaml envs/stg/images/gateway.yaml', want 'base/services/gateway.yaml platforms/eks/gateway.yaml envs/stg/gateway.yaml envs/stg/images/gateway.yaml'" "$t"
+fi
+
 # --- the release sources of the image files (step 1 alone: gitops-check.sh --tree). A throwaway copy of this
 # repository: k0 holds the policy's values as they were before the table of release sources (its one source backend
 # is read from them), k1 the table; origin/main is k1. A throwaway clone of svp-web: w0 on its main, w1 on a branch.
@@ -355,7 +539,7 @@ image() {
 image envs/stg/images/web.yaml ghcr.io/anhnvcoder/svp-web/web "${w0:0:12}" a1
 ag commit -q -am "web of svp-web"
 a1=$(ag rev-parse HEAD)
-web_bot=svp-web-promoter[bot] backend_bot=svp-gitops-promoter[bot]
+web_bot='svp-web-promoter[bot]' backend_bot='svp-gitops-promoter[bot]'
 # from BASE: the tree back at BASE, on a branch of its own, for the next case's change.
 from() { ag checkout -q -f -B "case" "$1"; }
 # author_case NAME WANT_RC MESSAGE AUTHOR [BASE] [SENDER]: the change of the tree committed, then gitops-check.sh

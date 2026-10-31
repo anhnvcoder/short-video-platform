@@ -7,10 +7,12 @@
 #
 # The connection comes from PGHOST, PGPORT, PGUSER, PGPASSWORD, PGSSLMODE and PGDATABASE; the role passwords from
 # SVP_<SERVICE>_{MIGRATOR,APP}_DB_PASSWORD. Every password stays in the environment, never on a command line, and
-# none is printed.
+# none is printed. SVP_PG_MODE=external: the server is a managed Postgres outside the cluster (Amazon RDS, logged in to
+# as its master user, which is not a superuser), not CloudNativePG's svp-pg.
 set -euo pipefail
 
 wait_seconds=${SVP_WAIT_SECONDS:?}
+mode=${SVP_PG_MODE:-cluster}
 services=(user video engagement feed glitchtip)
 
 # Read every password before changing anything: a missing one stops the Job with nothing half applied.
@@ -44,6 +46,15 @@ for svc in "${services[@]}"; do
     psql -X -q -v db="svp_${svc}" -v migrator="svp_${svc}_migrator" -v app="svp_${svc}_app" -f /init/bootstrap.sql
   echo "pg-bootstrap: database svp_${svc} and roles svp_${svc}_migrator, svp_${svc}_app ok"
 done
+
+# A managed Postgres has neither the operator's roles nor its database app. Its own databases postgres and template1 are
+# closed to PUBLIC as on svp-pg; the master user keeps CONNECT on them as their owner, or, where it does not own one,
+# the REVOKE changes nothing and only warns. Its internal roles (rdsadmin on RDS) are superusers, which skip the check.
+if [[ $mode == external ]]; then
+  psql -X -q -1 -v ON_ERROR_STOP=1 -v VERBOSITY=terse -c 'REVOKE CONNECT ON DATABASE postgres, template1 FROM PUBLIC'
+  echo "pg-bootstrap: CONNECT on databases postgres and template1 revoked from PUBLIC"
+  exit 0
+fi
 
 # bootstrap.sql takes CONNECT away from PUBLIC on the svp_* databases only. The three databases initdb and CloudNativePG
 # make, postgres, app and template1, keep Postgres's default grant of CONNECT to PUBLIC, so every service role could log

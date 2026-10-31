@@ -132,6 +132,8 @@ type fakeStorage struct {
 	deleted []string
 	// failDeletes is the number of coming Delete or DeletePrefix calls that fail.
 	failDeletes int
+	// presignErr, when set, is returned by PresignPost instead of a form.
+	presignErr error
 }
 
 // Signing credentials of the fake; the endpoint is never called.
@@ -168,6 +170,23 @@ func (f *fakeStorage) Head(_ context.Context, key string) (objstore.ObjectInfo, 
 		return objstore.ObjectInfo{}, fmt.Errorf("head %s: %w", key, objstore.ErrNotFound)
 	}
 	return obj, nil
+}
+
+func (f *fakeStorage) PresignPost(ctx context.Context, key string, sizeBytes int64, contentType string, ttl time.Duration) (*objstore.PresignedPost, error) {
+	f.mu.Lock()
+	err := f.presignErr
+	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return f.Store.PresignPost(ctx, key, sizeBytes, contentType, ttl)
+}
+
+// setPresignErr makes PresignPost fail with err from now on; nil signs again.
+func (f *fakeStorage) setPresignErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.presignErr = err
 }
 
 func (f *fakeStorage) Delete(_ context.Context, key string) error {

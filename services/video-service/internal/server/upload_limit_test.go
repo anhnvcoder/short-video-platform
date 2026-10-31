@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/anhnvcoder/short-video-platform/internal/ids"
 )
@@ -45,6 +47,34 @@ func TestInitUploadLimitsOpenUploads(t *testing.T) {
 
 	if _, err := initUpload(t, s, ids.New(), validRequest()); err != nil {
 		t.Errorf("InitUpload of another user: %v", err)
+	}
+}
+
+// A form that cannot be signed (the credential endpoint is down) stores no video, so failed calls
+// do not use up the caller's open uploads.
+func TestInitUploadSigningFailureStoresNothing(t *testing.T) {
+	needDB(t)
+	s, storage, logs := newServerWithStorage()
+	author := ids.New()
+	storage.setPresignErr(errors.New("objstore: presign post: get credentials: agent unreachable"))
+	for range MaxOpenUploads + 1 {
+		_, err := initUpload(t, s, author, validRequest())
+		if status.Code(err) != codes.Internal {
+			t.Fatalf("InitUpload() with signing failing: %v, want INTERNAL", err)
+		}
+	}
+	if n := uploadingCount(t, author); n != 0 {
+		t.Errorf("author has %d videos UPLOADING after failed signing, want 0", n)
+	}
+	if recs := logs.records(t, "video created"); len(recs) != 0 {
+		t.Errorf("logged %d \"video created\" lines for videos never stored", len(recs))
+	}
+
+	storage.setPresignErr(nil)
+	for i := range MaxOpenUploads {
+		if _, err := initUpload(t, s, author, validRequest()); err != nil {
+			t.Fatalf("upload %d after signing recovered: %v", i+1, err)
+		}
 	}
 }
 

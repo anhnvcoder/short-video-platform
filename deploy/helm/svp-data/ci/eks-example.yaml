@@ -1,0 +1,10 @@
+# Example values of an EKS cluster whose Postgres is Amazon RDS and whose object store is Amazon S3, to render and check
+# the external modes (helm template -f this file). Placeholders only: the real host and CIDRs come from the cluster's
+# Terraform outputs, never from git, and .example never resolves.
+postgres:
+  mode: external
+  external:
+    host: svp-stg-pg.rds.example
+    cidrs: [10.0.48.0/24, 10.0.49.0/24]
+s3:
+  mode: external
