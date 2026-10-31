@@ -1,8 +1,11 @@
 {{- /*
 Kyverno v1.19.1 ImageValidatingPolicy. Every release source of files/sources.json (one per repository that builds and
-signs images: name, repository, imagePrefix, services, drillImages, issuer, subject, provenanceRef, promoter) has its
-own image prefix and its own attestor, and each image is checked against the source whose prefix it is under, never
-another's: an identity of one source cannot sign an image under another's prefix. The checks run in order and stop at
+signs images: name, repository, imagePrefix, services, drillImages, issuer, subject, provenanceRef, and promoter, the
+GitHub App that promotes its releases) has its own image prefix and its own attestor, and each image is checked
+against the source whose prefix it is under, never another's: an identity of one source cannot sign an image under
+another's prefix. A source without promoter is retired: a repository that no longer builds (it was renamed, and its
+successor is another source), whose releases already signed are still admitted while an environment or a rollback may
+run them, but which nothing builds, promotes or rescans any more. The checks run in order and stop at
 the first that fails, each with its own message naming the images it refused and, from check 2 on, the source each
 belongs to:
   1. every image of the pod is <imagePrefix><name>@sha256:<64 hex>, <name> one of the services or drill images of the
@@ -74,7 +77,12 @@ render wrong (a value breaking out of a CEL string, two sources one image could 
 {{- if not (kindIs "map" $s) }}
 {{- fail "files/sources.json: every entry of sources is an object" }}
 {{- end }}
-{{- range $key := list "name" "repository" "imagePrefix" "issuer" "subject" "provenanceRef" "promoter" }}
+{{- /* promoter is the one optional key: a source without it is retired. When given it is checked as the others. */}}
+{{- $keys := list "name" "repository" "imagePrefix" "issuer" "subject" "provenanceRef" }}
+{{- if hasKey $s "promoter" }}
+{{- $keys = append $keys "promoter" }}
+{{- end }}
+{{- range $key := $keys }}
 {{- $v := get $s $key }}
 {{- if not (and (kindIs "string" $v) $v) }}
 {{- fail (printf "files/sources.json: source %v has no %s string" $s.name $key) }}
@@ -101,10 +109,12 @@ render wrong (a value breaking out of a CEL string, two sources one image could 
 {{- fail (printf "files/sources.json: two sources are named %s" $s.name) }}
 {{- end }}
 {{- $names = append $names $s.name }}
+{{- if hasKey $s "promoter" }}
 {{- if has $s.promoter $promoters }}
 {{- fail (printf "files/sources.json: two sources are promoted by %s" $s.promoter) }}
 {{- end }}
 {{- $promoters = append $promoters $s.promoter }}
+{{- end }}
 {{- if not (and (kindIs "slice" $s.services) $s.services (kindIs "slice" $s.drillImages)) }}
 {{- fail (printf "files/sources.json: source %s needs a non-empty list services and a list drillImages" $s.name) }}
 {{- end }}

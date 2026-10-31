@@ -20,16 +20,16 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	userv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/authtoken"
-	"github.com/anhnvcoder/short-video-platform/internal/callerid"
-	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
-	"github.com/anhnvcoder/short-video-platform/internal/logx"
-	"github.com/anhnvcoder/short-video-platform/internal/outbox"
-	"github.com/anhnvcoder/short-video-platform/internal/secret"
-	"github.com/anhnvcoder/short-video-platform/services/user-service/internal/password"
-	"github.com/anhnvcoder/short-video-platform/services/user-service/internal/store"
+	userv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/user/v1"
+	"github.com/anhnvcoder/svp-backend/internal/authtoken"
+	"github.com/anhnvcoder/svp-backend/internal/callerid"
+	"github.com/anhnvcoder/svp-backend/internal/grpcerr"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
+	"github.com/anhnvcoder/svp-backend/internal/logx"
+	"github.com/anhnvcoder/svp-backend/internal/outbox"
+	"github.com/anhnvcoder/svp-backend/internal/secret"
+	"github.com/anhnvcoder/svp-backend/services/user-service/internal/password"
+	"github.com/anhnvcoder/svp-backend/services/user-service/internal/store"
 )
 
 // PublicMethods are the RPCs that need no caller; pass them to callerid.UnaryServerInterceptor.

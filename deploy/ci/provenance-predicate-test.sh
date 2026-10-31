@@ -14,12 +14,13 @@
 #     format with --replace, the provenance being the predicate of this run; a builder other than the signing identity
 #     (a machine, another workflow) or a context that cannot make the predicate: nothing signed at all;
 #   - sign-image.sh on the drill image drill-vulnerable: signed and vuln attested, no provenance, even on a machine;
-#   - a run of svp-web (another release source's repository, running these scripts from a checkout of this one): the
-#     predicate names svp-web's repository and commit, on CI and on a machine with SVP_CODE_ROOT; its web release is
-#     signed with the provenance of svp-web; nothing is signed when its builder is the backend's subject, when the image
-#     is under the backend's prefix (or the backend's run signs under svp-web's), when the image is no service or
-#     drill image of svp-web's source, or when the run's repository is no source at all;
-#   - push-image.sh and merge-index.sh of that run refuse an image svp-web does not publish, and a tree whose HEAD is
+#     on drill-no-provenance the same without --allow-critical, which it refuses before anything is signed;
+#   - a run of svp-frontend (another release source's repository, running these scripts from a checkout of this one): the
+#     predicate names svp-frontend's repository and commit, on CI and on a machine with SVP_CODE_ROOT; its web release is
+#     signed with the provenance of svp-frontend; nothing is signed when its builder is the backend's subject, when the image
+#     is under the backend's prefix (or the backend's run signs under svp-frontend's), when the image is no service or
+#     drill image of svp-frontend's source, or when the run's repository is no source at all;
+#   - push-image.sh and merge-index.sh of that run refuse an image svp-frontend does not publish, and a tree whose HEAD is
 #     not the run's commit, before docker is called.
 # Runs on macOS and Linux: no network, no Docker, no cluster.
 #
@@ -76,7 +77,7 @@ g() {
 g init -q && g add -A && g commit -qm base
 head_commit=$(g rev-parse HEAD)
 
-subject=https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main
+subject=https://github.com/anhnvcoder/svp-backend/.github/workflows/images.yml@refs/heads/main
 commit=0123456789abcdef0123456789abcdef01234567
 # run [NAME=VALUE...] COMMAND...: COMMAND with no variable of this shell but PATH (fakes first), HOME and the fakes'.
 run() {
@@ -87,12 +88,12 @@ run() {
 # push_run [NAME=VALUE...] COMMAND...: COMMAND in a made-up push run of images.yml on main.
 push_run() {
   run FAKE_CI=1 FAKE_CI_BUILDER="$subject" \
-    FAKE_CI_INVOCATION=https://github.com/anhnvcoder/short-video-platform/actions/runs/77/attempts/2 \
-    FAKE_CI_REPOSITORY=https://github.com/anhnvcoder/short-video-platform FAKE_CI_REF=refs/heads/main \
+    FAKE_CI_INVOCATION=https://github.com/anhnvcoder/svp-backend/actions/runs/77/attempts/2 \
+    FAKE_CI_REPOSITORY=https://github.com/anhnvcoder/svp-backend FAKE_CI_REF=refs/heads/main \
     FAKE_CI_COMMIT=$commit FAKE_CI_WORKFLOW_PATH=.github/workflows/images.yml FAKE_CI_WORKFLOW_REF=refs/heads/main "$@"
 }
 predicate=$tree/deploy/ci/provenance-predicate.sh
-want_push='{"buildDefinition":{"buildType":"https://actions.github.io/buildtypes/workflow/v1","externalParameters":{"workflow":{"ref":"refs/heads/main","repository":"https://github.com/anhnvcoder/short-video-platform","path":".github/workflows/images.yml"}},"resolvedDependencies":[{"uri":"git+https://github.com/anhnvcoder/short-video-platform@refs/heads/main","digest":{"gitCommit":"0123456789abcdef0123456789abcdef01234567"}}]},"runDetails":{"builder":{"id":"https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main"},"metadata":{"invocationId":"https://github.com/anhnvcoder/short-video-platform/actions/runs/77/attempts/2"}}}'
+want_push='{"buildDefinition":{"buildType":"https://actions.github.io/buildtypes/workflow/v1","externalParameters":{"workflow":{"ref":"refs/heads/main","repository":"https://github.com/anhnvcoder/svp-backend","path":".github/workflows/images.yml"}},"resolvedDependencies":[{"uri":"git+https://github.com/anhnvcoder/svp-backend@refs/heads/main","digest":{"gitCommit":"0123456789abcdef0123456789abcdef01234567"}}]},"runDetails":{"builder":{"id":"https://github.com/anhnvcoder/svp-backend/.github/workflows/images.yml@refs/heads/main"},"metadata":{"invocationId":"https://github.com/anhnvcoder/svp-backend/actions/runs/77/attempts/2"}}}'
 
 # --- provenance-predicate.sh
 out=$work/provenance.json
@@ -135,7 +136,7 @@ same "no OUT: usage, exit 2" 2 "$rc"
 
 run "$predicate" "$out" >/dev/null
 same "on a machine: run values local, commit HEAD of the checkout" \
-  "{\"buildDefinition\":{\"buildType\":\"https://actions.github.io/buildtypes/workflow/v1\",\"externalParameters\":{\"workflow\":{\"ref\":\"local\",\"repository\":\"https://github.com/anhnvcoder/short-video-platform\",\"path\":\"local\"}},\"resolvedDependencies\":[{\"uri\":\"git+https://github.com/anhnvcoder/short-video-platform@local\",\"digest\":{\"gitCommit\":\"$head_commit\"}}]},\"runDetails\":{\"builder\":{\"id\":\"local\"},\"metadata\":{\"invocationId\":\"local\"}}}" \
+  "{\"buildDefinition\":{\"buildType\":\"https://actions.github.io/buildtypes/workflow/v1\",\"externalParameters\":{\"workflow\":{\"ref\":\"local\",\"repository\":\"https://github.com/anhnvcoder/svp-backend\",\"path\":\"local\"}},\"resolvedDependencies\":[{\"uri\":\"git+https://github.com/anhnvcoder/svp-backend@local\",\"digest\":{\"gitCommit\":\"$head_commit\"}}]},\"runDetails\":{\"builder\":{\"id\":\"local\"},\"metadata\":{\"invocationId\":\"local\"}}}" \
   "$(jq -c . "$out")"
 
 # --- sign-image.sh, with a fake docker serving the index and a fake cosign. cosign logs one line per call and keeps a
@@ -186,7 +187,7 @@ done
 # when empty).
 image() {
   rm -rf "$work/index" && mkdir -p "$work/index"
-  echo "${2:-ghcr.io/anhnvcoder/short-video-platform/}$1" >"$work/index/repository"
+  echo "${2:-ghcr.io/anhnvcoder/svp-backend/}$1" >"$work/index/repository"
   echo "$index_digest" >"$work/index/digest"
 }
 # sign [NAME=VALUE...] -- [--allow-critical]: sign-image.sh on the image of the index directory, in the run changed by
@@ -205,7 +206,7 @@ sign() {
   echo "$rc"
 }
 legacy="--yes --new-bundle-format=false --use-signing-config=false"
-repo=ghcr.io/anhnvcoder/short-video-platform/gateway
+repo=ghcr.io/anhnvcoder/svp-backend/gateway
 
 image gateway
 same "a release: signed and attested" 0 "$(sign push_run --)"
@@ -237,8 +238,16 @@ for how in push_run run; do
   same "the drill image ($how): vuln, no provenance" "sign spdxjson spdxjson vuln" \
     "$(sed -E 's/^(sign).*/\1/; s/^attest .*--type ([a-z0-9]+) .*/\1/' "$work/cosign.log" | tr '\n' ' ' | sed 's/ $//')"
 done
+image drill-no-provenance
+for how in push_run run; do
+  same "drill-no-provenance ($how): signed and attested" 0 "$(sign $how --)"
+  same "drill-no-provenance ($how): vuln, never provenance" "sign spdxjson spdxjson vuln" \
+    "$(sed -E 's/^(sign).*/\1/; s/^attest .*--type ([a-z0-9]+) .*/\1/' "$work/cosign.log" | tr '\n' ' ' | sed 's/ $//')"
+done
+same "drill-no-provenance with --allow-critical: refused" 1 "$(sign push_run -- --allow-critical)"
+same "drill-no-provenance with --allow-critical: nothing signed" "" "$(cat "$work/cosign.log")"
 
-# --- A run of svp-web: its own repository, commit and identity; a checkout laid out as svp-web, with that origin.
+# --- A run of svp-frontend: its own repository, commit and identity; a checkout laid out as svp-frontend, with that origin.
 web=$work/web
 mkdir -p "$web"
 printf 'FROM scratch\n' >"$web/Dockerfile"
@@ -249,70 +258,70 @@ gw() {
     -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"
 }
 gw init -q && gw add -A && gw commit -qm web
-gw remote add origin https://github.com/anhnvcoder/svp-web.git
+gw remote add origin https://github.com/anhnvcoder/svp-frontend.git
 web_commit=$(gw rev-parse HEAD)
-web_subject=https://github.com/anhnvcoder/svp-web/.github/workflows/images.yml@refs/heads/main
-# web_run [NAME=VALUE...] COMMAND...: COMMAND in a made-up push run of svp-web's images.yml on main, its code in $web.
+web_subject=https://github.com/anhnvcoder/svp-frontend/.github/workflows/images.yml@refs/heads/main
+# web_run [NAME=VALUE...] COMMAND...: COMMAND in a made-up push run of svp-frontend's images.yml on main, its code in $web.
 web_run() {
   run FAKE_CI=1 FAKE_CI_BUILDER="$web_subject" \
-    FAKE_CI_INVOCATION=https://github.com/anhnvcoder/svp-web/actions/runs/88/attempts/1 \
-    FAKE_CI_REPOSITORY=https://github.com/anhnvcoder/svp-web FAKE_CI_REF=refs/heads/main \
+    FAKE_CI_INVOCATION=https://github.com/anhnvcoder/svp-frontend/actions/runs/88/attempts/1 \
+    FAKE_CI_REPOSITORY=https://github.com/anhnvcoder/svp-frontend FAKE_CI_REF=refs/heads/main \
     FAKE_CI_COMMIT="$web_commit" FAKE_CI_WORKFLOW_PATH=.github/workflows/images.yml \
     FAKE_CI_WORKFLOW_REF=refs/heads/main SVP_CODE_ROOT="$web" "$@"
 }
 want_web=$(jq -c --arg c "$web_commit" '
-  .buildDefinition.externalParameters.workflow.repository = "https://github.com/anhnvcoder/svp-web"
-  | .buildDefinition.resolvedDependencies[0] = {uri: "git+https://github.com/anhnvcoder/svp-web@refs/heads/main",
+  .buildDefinition.externalParameters.workflow.repository = "https://github.com/anhnvcoder/svp-frontend"
+  | .buildDefinition.resolvedDependencies[0] = {uri: "git+https://github.com/anhnvcoder/svp-frontend@refs/heads/main",
       digest: {gitCommit: $c}}
-  | .runDetails.builder.id = "https://github.com/anhnvcoder/svp-web/.github/workflows/images.yml@refs/heads/main"
-  | .runDetails.metadata.invocationId = "https://github.com/anhnvcoder/svp-web/actions/runs/88/attempts/1"' \
+  | .runDetails.builder.id = "https://github.com/anhnvcoder/svp-frontend/.github/workflows/images.yml@refs/heads/main"
+  | .runDetails.metadata.invocationId = "https://github.com/anhnvcoder/svp-frontend/actions/runs/88/attempts/1"' \
   <<<"$want_push")
 web_run "$predicate" "$out" >/dev/null
-same "svp-web's run: the predicate names svp-web's repository, ref, commit and builder" "$want_web" "$(jq -c . "$out")"
+same "svp-frontend's run: the predicate names svp-frontend's repository, ref, commit and builder" "$want_web" "$(jq -c . "$out")"
 run SVP_CODE_ROOT="$web" "$predicate" "$out" >/dev/null
-same "svp-web on a machine (SVP_CODE_ROOT): svp-web's repository and the HEAD of its checkout" \
-  "https://github.com/anhnvcoder/svp-web $web_commit" \
+same "svp-frontend on a machine (SVP_CODE_ROOT): svp-frontend's repository and the HEAD of its checkout" \
+  "https://github.com/anhnvcoder/svp-frontend $web_commit" \
   "$(jq -r '"\(.buildDefinition.externalParameters.workflow.repository) \(.buildDefinition.resolvedDependencies[0].digest.gitCommit)"' "$out")"
 
-image web ghcr.io/anhnvcoder/svp-web/
-same "svp-web's web release: signed and attested" 0 "$(sign web_run --)"
-same "svp-web's web release: sign, SBOMs, vuln, provenance" "sign spdxjson spdxjson vuln slsaprovenance1" \
+image web ghcr.io/anhnvcoder/svp-frontend/
+same "svp-frontend's web release: signed and attested" 0 "$(sign web_run --)"
+same "svp-frontend's web release: sign, SBOMs, vuln, provenance" "sign spdxjson spdxjson vuln slsaprovenance1" \
   "$(sed -E 's/^(sign).*/\1/; s/^attest .*--type ([a-z0-9]+) .*/\1/' "$work/cosign.log" | tr '\n' ' ' | sed 's/ $//')"
-same "svp-web's web release: the provenance attested is svp-web's" "$want_web" \
+same "svp-frontend's web release: the provenance attested is svp-frontend's" "$want_web" \
   "$(jq -c . "$work/attested/slsaprovenance1.json")"
-same "svp-web's run with the backend's builder.id: refused" 1 "$(sign web_run FAKE_CI_BUILDER="$subject" --)"
-same "svp-web's run with the backend's builder.id: nothing signed" "" "$(cat "$work/cosign.log")"
+same "svp-frontend's run with the backend's builder.id: refused" 1 "$(sign web_run FAKE_CI_BUILDER="$subject" --)"
+same "svp-frontend's run with the backend's builder.id: nothing signed" "" "$(cat "$work/cosign.log")"
 grep -qF "releases of source web are signed only as $web_subject" "$work/err" &&
-  ok "svp-web's run with the backend's builder.id: names the source's subject" ||
-  fail "svp-web's run with the backend's builder.id: names the source's subject ($(cat "$work/err"))"
-same "the backend's run, its builder, on svp-web's image: refused" 1 "$(sign push_run --)"
-same "the backend's run on svp-web's image: nothing signed" "" "$(cat "$work/cosign.log")"
-grep -qF "ghcr.io/anhnvcoder/svp-web/web is not under ghcr.io/anhnvcoder/short-video-platform/" "$work/err" &&
-  ok "the backend's run on svp-web's image: names the prefix" ||
-  fail "the backend's run on svp-web's image: names the prefix ($(cat "$work/err"))"
+  ok "svp-frontend's run with the backend's builder.id: names the source's subject" ||
+  fail "svp-frontend's run with the backend's builder.id: names the source's subject ($(cat "$work/err"))"
+same "the backend's run, its builder, on svp-frontend's image: refused" 1 "$(sign push_run --)"
+same "the backend's run on svp-frontend's image: nothing signed" "" "$(cat "$work/cosign.log")"
+grep -qF "ghcr.io/anhnvcoder/svp-frontend/web is not under ghcr.io/anhnvcoder/svp-backend/" "$work/err" &&
+  ok "the backend's run on svp-frontend's image: names the prefix" ||
+  fail "the backend's run on svp-frontend's image: names the prefix ($(cat "$work/err"))"
 
 image web
-same "svp-web's run on the backend's web: refused" 1 "$(sign web_run --)"
-same "svp-web's run on the backend's web: nothing signed" "" "$(cat "$work/cosign.log")"
-grep -qF "is not under ghcr.io/anhnvcoder/svp-web/, the prefix of release source web" "$work/err" &&
-  ok "svp-web's run on the backend's web: names svp-web's prefix" ||
-  fail "svp-web's run on the backend's web: names svp-web's prefix ($(cat "$work/err"))"
-image gateway ghcr.io/anhnvcoder/svp-web/
-same "svp-web's run on a gateway under its prefix: refused" 1 "$(sign web_run --)"
+same "svp-frontend's run on the backend's web: refused" 1 "$(sign web_run --)"
+same "svp-frontend's run on the backend's web: nothing signed" "" "$(cat "$work/cosign.log")"
+grep -qF "is not under ghcr.io/anhnvcoder/svp-frontend/, the prefix of release source web" "$work/err" &&
+  ok "svp-frontend's run on the backend's web: names svp-frontend's prefix" ||
+  fail "svp-frontend's run on the backend's web: names svp-frontend's prefix ($(cat "$work/err"))"
+image gateway ghcr.io/anhnvcoder/svp-frontend/
+same "svp-frontend's run on a gateway under its prefix: refused" 1 "$(sign web_run --)"
 grep -qF "gateway is not an image of release source web (web)" "$work/err" &&
-  ok "svp-web's run on a gateway under its prefix: names what it publishes" ||
-  fail "svp-web's run on a gateway under its prefix: names what it publishes ($(cat "$work/err"))"
-image drill-vulnerable ghcr.io/anhnvcoder/svp-web/
-same "svp-web's run on a drill image under its prefix: refused" 1 "$(sign web_run -- --allow-critical)"
-same "svp-web's run on a drill image under its prefix: nothing signed" "" "$(cat "$work/cosign.log")"
-image web ghcr.io/anhnvcoder/svp-web/
+  ok "svp-frontend's run on a gateway under its prefix: names what it publishes" ||
+  fail "svp-frontend's run on a gateway under its prefix: names what it publishes ($(cat "$work/err"))"
+image drill-vulnerable ghcr.io/anhnvcoder/svp-frontend/
+same "svp-frontend's run on a drill image under its prefix: refused" 1 "$(sign web_run -- --allow-critical)"
+same "svp-frontend's run on a drill image under its prefix: nothing signed" "" "$(cat "$work/cosign.log")"
+image web ghcr.io/anhnvcoder/svp-frontend/
 same "a run of a repository no release source names: refused" 1 \
   "$(sign web_run FAKE_CI_REPOSITORY=https://github.com/octo/repo --)"
 grep -qF "this run is of https://github.com/octo/repo, which is the repository of 0 release sources" "$work/err" &&
   ok "a run of a repository no release source names: says so" ||
   fail "a run of a repository no release source names: says so ($(cat "$work/err"))"
 
-# push-image.sh and merge-index.sh of svp-web's run: an image it does not publish, or a tree that is not the run's
+# push-image.sh and merge-index.sh of svp-frontend's run: an image it does not publish, or a tree that is not the run's
 # commit, is refused before docker is called.
 # refused_early NAME WANT_MESSAGE COMMAND...: COMMAND exits 1 naming WANT_MESSAGE, docker never called.
 refused_early() {
@@ -327,17 +336,17 @@ refused_early() {
   fi
 }
 mkdir -p "$work/leg-out"
-refused_early "push-image.sh of svp-web's run, image gateway" "gateway is not an image of release source web" \
+refused_early "push-image.sh of svp-frontend's run, image gateway" "gateway is not an image of release source web" \
   web_run "$tree/deploy/ci/push-image.sh" gateway amd64 "$work/leg-out"
-refused_early "merge-index.sh of svp-web's run, image gateway" "gateway is not an image of release source web" \
+refused_early "merge-index.sh of svp-frontend's run, image gateway" "gateway is not an image of release source web" \
   web_run "$tree/deploy/ci/merge-index.sh" gateway "$work/leg-amd64" "$work/leg-arm64" "$work/index-out"
-refused_early "push-image.sh of svp-web's run, a tree at another commit" \
-  "HEAD of $web is $web_commit, but this run builds $commit of https://github.com/anhnvcoder/svp-web" \
+refused_early "push-image.sh of svp-frontend's run, a tree at another commit" \
+  "HEAD of $web is $web_commit, but this run builds $commit of https://github.com/anhnvcoder/svp-frontend" \
   web_run FAKE_CI_COMMIT="$commit" "$tree/deploy/ci/push-image.sh" web amd64 "$work/leg-out"
-refused_early "merge-index.sh of svp-web's run without SVP_CODE_ROOT (the backend's checkout)" \
+refused_early "merge-index.sh of svp-frontend's run without SVP_CODE_ROOT (the backend's checkout)" \
   "HEAD of $tree is $head_commit, but this run builds $web_commit" \
   web_run SVP_CODE_ROOT= "$tree/deploy/ci/merge-index.sh" web "$work/leg-amd64" "$work/leg-arm64" "$work/index-out"
-refused_early "build-image.sh of svp-web's run, a tree without its .trivyignore.yaml" \
+refused_early "build-image.sh of svp-frontend's run, a tree without its .trivyignore.yaml" \
   "$web has no file .trivyignore.yaml" \
   web_run FAKE_CI_COMMIT="$web_commit" bash -c 'mv "$1/.trivyignore.yaml" "$1/.away" &&
     { "$2" web amd64 "$3"; rc=$?; mv "$1/.away" "$1/.trivyignore.yaml"; exit $rc; }' _ "$web" \

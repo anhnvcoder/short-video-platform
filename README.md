@@ -3,7 +3,8 @@
 Nền tảng video ngắn mini: upload video, transcode ra HLS, feed "đang theo dõi" và "khám phá", like, lượt xem. Mục đích là
 học DevOps và Solution Architect: làm xuyên suốt từ thiết kế, code, hạ tầng, quan sát, độ tin cậy tới cloud. Mỗi giai đoạn kết
 thúc bằng hệ thống chạy được, có số đo và có ADR cho các quyết định. Thiết kế và lý do nằm ở
-[`docs/architecture.md`](docs/architecture.md).
+[`docs/architecture.md`](docs/architecture.md). Repo là [`anhnvcoder/svp-backend`](https://github.com/anhnvcoder/svp-backend) (tên
+`short-video-platform` tới ngày 2026-10-31, [ADR-0036](docs/adr/0036-repo-rename.md)).
 
 ## Chạy thử nhanh
 
@@ -37,14 +38,14 @@ Chỉ chạy một bộ observability một lúc vì máy 16 GB RAM không đủ
 ## Ba repo: backend, web client, cấu hình triển khai
 
 Repo này giữ code backend, test, Dockerfile, chart Helm (`deploy/helm/`), stack compose, cluster k3d và CI build, quét, ký sáu image
-service Go. **Web client** (Next.js và BFF) ở repo [`anhnvcoder/svp-web`](https://github.com/anhnvcoder/svp-web)
+service Go. **Web client** (Next.js và BFF) ở repo [`anhnvcoder/svp-frontend`](https://github.com/anhnvcoder/svp-frontend)
 ([ADR-0033](docs/adr/0033-svp-web-repo.md)): mã, test, CI và image web của riêng nó; hai bên nói chuyện qua hợp đồng REST
-`services/gateway/openapi.yaml` có version, phát hành có chữ ký thành `ghcr.io/anhnvcoder/short-video-platform/api/gateway:<version>`
+`services/gateway/openapi.yaml` có version, phát hành có chữ ký thành `ghcr.io/anhnvcoder/svp-backend/api/gateway:<version>`
 (`make api-contract-check` kiểm luật version ở PR). Việc cần mã web ở đây (`make up WEB_FROM=clone`, `make web-e2e`, Lighthouse, canary
-web) đọc bản clone `svp-web` ở `../frontend` (hay `SVP_WEB_DIR`):
+web) đọc bản clone `svp-frontend` ở `../frontend` (hay `SVP_WEB_DIR`):
 
 ```sh
-git clone https://github.com/anhnvcoder/svp-web.git ../frontend
+git clone https://github.com/anhnvcoder/svp-frontend.git ../frontend
 ```
 
 Bản clone cũ có thư mục `web/` (file bị ignore còn lại từ trước khi web tách repo) thì xoá: `rm -rf web`.
@@ -85,7 +86,7 @@ Sổ lệnh đầy đủ (kiểm tra gồm `make vulncheck`, `make fuzz`, `make 
 | `gen/` | Code Go sinh từ `proto/` (`gen/go`); commit cùng thay đổi, không sửa tay. Code sinh từ SQL (sqlc) nằm ở `services/*/internal/store`. |
 | `tools/` | Công cụ nhỏ: `fakefollows` (tạo follow giả cho diễn tập), `jwtkey` (sinh khoá JWT), `vulngate` (gate của govulncheck trong `make vulncheck`). |
 | `deploy/compose/` | Stack compose `make up`, script smoke và diễn tập. |
-| `deploy/docker/` | Dockerfile của service Go và media-worker (Dockerfile web ở gốc `svp-web`). |
+| `deploy/docker/` | Dockerfile của service Go và media-worker (Dockerfile web ở gốc `svp-frontend`). |
 | `deploy/postgres/`, `deploy/redpanda/`, `deploy/s3/` | Bootstrap database, topic Kafka (compose), bucket, user, policy và CORS của object storage (RustFS, service `s3`). ACL Kafka của cluster k3d nằm trong chart Helm. |
 | `deploy/observability/` | Collector, Prometheus và rule SLO, Alertmanager, Grafana LGTM, GlitchTip, Elastic (so sánh). |
 | `deploy/k8s/` | Cluster k3d: script `install.sh`, `gitops.sh` (đường GitOps), `k8s.mk`, PSA, `drills/` (diễn tập), `cloud/` (manifest cho cluster đo thật, phủ chỉ cho runner ở `cloud/runner/`). Values, overlay và digest của các môi trường nằm ở `svp-gitops`. |
@@ -125,10 +126,10 @@ Bảng service: database và Redis db của từng service nằm ở `CLAUDE.md`
 | 3 | Quan sát: OpenTelemetry, LGTM, GlitchTip, SLO và cảnh báo burn rate | [0011](docs/adr/0011-observability-stage3.md), [0012](docs/adr/0012-elastic-vs-grafana-stage3.md) |
 | 4 | Kubernetes trên k3d với Helm, Envoy Gateway, Argo CD, canary | [0014](docs/adr/0014-kubernetes-local-stage4.md), [0017](docs/adr/0017-gitops-capacity-media-worker-max2.md) |
 | 5 | CI/CD và chuỗi cung ứng: image đa kiến trúc, ký, quét, Kyverno, promote bằng PR GitOps | [0015](docs/adr/0015-cicd-devsecops-stage5.md) |
-| 5b | Web client Next.js (BFF, session, hồ sơ, upload từ trình duyệt, web trên k3d); từ giai đoạn 6b phần 4b ở repo `svp-web` | [0016](docs/adr/0016-web-client.md), [0018](docs/adr/0018-web-profiles-public-video-upload.md), [0019](docs/adr/0019-web-k3d-supply-chain-observability.md), [0033](docs/adr/0033-svp-web-repo.md) |
+| 5b | Web client Next.js (BFF, session, hồ sơ, upload từ trình duyệt, web trên k3d); từ giai đoạn 6b phần 4b ở repo `svp-frontend` | [0016](docs/adr/0016-web-client.md), [0018](docs/adr/0018-web-profiles-public-video-upload.md), [0019](docs/adr/0019-web-k3d-supply-chain-observability.md), [0033](docs/adr/0033-svp-web-repo.md) |
 | 6 | Độ tin cậy: k6 theo SLO, SLO web, backup và phục hồi Postgres, runbook, game day | [0020](docs/adr/0020-reliability-stage6.md) |
 
 Các ADR sau giai đoạn 6 (kiểm chứng dồn trên runner, object store của đường local, CI trung lập nền tảng, nhiều môi trường
 dev, stg, prd, repo cấu hình GitOps riêng, Secret của đường GitOps bằng External Secrets Operator, build provenance SLSA,
 DORA metrics, output HLS bất biến theo version, DevSecOps bổ sung: govulncheck, fuzz, DAST, CodeQL, grype, sửa các phát
-hiện của chaos và k6, tách web client sang repo `svp-web`) có trong [`docs/adr/`](docs/adr/).
+hiện của chaos và k6, tách web client sang repo `svp-frontend`) có trong [`docs/adr/`](docs/adr/).

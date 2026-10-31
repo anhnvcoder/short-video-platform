@@ -11,8 +11,8 @@ import (
 
 	"go.opentelemetry.io/otel"
 
-	"github.com/anhnvcoder/short-video-platform/internal/objstore"
-	"github.com/anhnvcoder/short-video-platform/internal/sentryx"
+	"github.com/anhnvcoder/svp-backend/internal/objstore"
+	"github.com/anhnvcoder/svp-backend/internal/sentryx"
 )
 
 func setStorageEnv(t *testing.T, env map[string]string) {

@@ -204,7 +204,7 @@ services:
       # The browser talks to the store cross-origin: hls.js loads playlists and segments with XHR,
       # and the upload page posts the file with XHR (its progress listener makes that a CORS
       # preflight). Only the web client's origins may read the answers: `make up` (3001) and
-      # `make dev` of svp-web (3002). Commas without spaces (WEB-10).
+      # `make dev` of svp-frontend (3002). Commas without spaces (WEB-10).
       S3_CORS_ALLOWED_ORIGINS: http://localhost:3001,http://localhost:3002
     volumes:
       - ../s3:/init:ro
@@ -447,7 +447,7 @@ services:
     profiles: [core]
     # `make up` sets the four SVP_WEB_* variables: a release it has pulled already (WEB_FROM=stg,
     # the default, or image), which compose neither pulls nor builds then, or built from the web
-    # client's source (WEB_FROM=clone: web_dir of deploy/k8s/lib.sh, the clone of svp-web). This
+    # client's source (WEB_FROM=clone: web_dir of deploy/k8s/lib.sh, the clone of svp-frontend). This
     # repository holds no web source, so the defaults build nothing: the commands that do not set
     # them (ps, logs, down, a drill that recreates another service) never create web.
     image: ${SVP_WEB_IMAGE:-svp/web:dev}

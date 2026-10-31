@@ -8,7 +8,7 @@
 build=k8s-up
 job_minutes_default=330
 k3d=1
-# make k8s-up WEB_FROM=clone builds the web image from the clone of svp-web (verify-run.sh), so make
+# make k8s-up WEB_FROM=clone builds the web image from the clone of svp-frontend (verify-run.sh), so make
 # k8s-web-sourcemaps can build its source maps, and the e2e tests run the same commit: web_ref of the dispatch, or the
 # commit of the web release staging runs.
 web=1

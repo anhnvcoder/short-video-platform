@@ -2,7 +2,7 @@
 # push-image.sh IMAGE ARCH OUT: step 4 of one leg, only in the
 # main job and only after build-image.sh passed the gate on the same OUT. Pushes the local image that was scanned as
 # <prefix>IMAGE:<12 hex of the commit>-ARCH, where prefix is the imagePrefix of the release source this run builds for
-# (ghcr.io/anhnvcoder/short-video-platform/ for this repository; use_build_source of common.sh, which refuses an IMAGE
+# (ghcr.io/anhnvcoder/svp-backend/ for this repository; use_build_source of common.sh, which refuses an IMAGE
 # that source does not publish before anything is pushed) and the commit HEAD of code_root (check_code_tree), reads
 # the pushed manifest back from GHCR
 # and compares its config digest with the scanned one (Metadata.ImageID of OUT/trivy.json): Docker compresses the

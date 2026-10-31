@@ -111,8 +111,8 @@ rm -f "$jwtnew"; ls -l .env        # .env vẫn mode 600 (-rw-------)
 
 **Khi nghi lộ khoá:** làm bước 0, 1, 2 rồi bước 3 **ngay**, không chờ 1 giờ: mọi access token ký bằng khoá cũ (kể cả token giả
 mạo) bị 401 từ lúc đó. Cái giá là người dùng web **phải đăng nhập lại**: BFF chỉ refresh khi access token còn dưới 30 s
-(`server/session-access.ts` của repo `svp-web`), nên phiên có token cũ còn hạn lâu hơn gửi nó đi, gateway trả 401, và web coi phiên là hỏng
-(`server/feed.ts`, `server/api-proxy.ts` của `svp-web`: `SessionAccess.end`): xoá phiên và thu hồi cả họ refresh token; trang feed
+(`server/session-access.ts` của repo `svp-frontend`), nên phiên có token cũ còn hạn lâu hơn gửi nó đi, gateway trả 401, và web coi phiên là hỏng
+(`server/feed.ts`, `server/api-proxy.ts` của `svp-frontend`: `SessionAccess.end`): xoá phiên và thu hồi cả họ refresh token; trang feed
 chuyển về đăng nhập. Client gọi API thẳng và tự giữ refresh token thì gọi `POST /auth/refresh` sau 401 là được token mới. Ghi
 lại thời điểm để đối chiếu log.
 

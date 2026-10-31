@@ -35,17 +35,17 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
 
-	engagementv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/engagement/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/dbmigrate"
-	"github.com/anhnvcoder/short-video-platform/internal/envcfg"
-	"github.com/anhnvcoder/short-video-platform/internal/grpcserver"
-	"github.com/anhnvcoder/short-video-platform/internal/kafkax"
-	"github.com/anhnvcoder/short-video-platform/internal/logx"
-	"github.com/anhnvcoder/short-video-platform/internal/pgpool"
-	"github.com/anhnvcoder/short-video-platform/internal/sentryx"
-	"github.com/anhnvcoder/short-video-platform/internal/telemetry"
-	"github.com/anhnvcoder/short-video-platform/services/engagement-service/internal/server"
-	"github.com/anhnvcoder/short-video-platform/services/engagement-service/migrations"
+	engagementv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/engagement/v1"
+	"github.com/anhnvcoder/svp-backend/internal/dbmigrate"
+	"github.com/anhnvcoder/svp-backend/internal/envcfg"
+	"github.com/anhnvcoder/svp-backend/internal/grpcserver"
+	"github.com/anhnvcoder/svp-backend/internal/kafkax"
+	"github.com/anhnvcoder/svp-backend/internal/logx"
+	"github.com/anhnvcoder/svp-backend/internal/pgpool"
+	"github.com/anhnvcoder/svp-backend/internal/sentryx"
+	"github.com/anhnvcoder/svp-backend/internal/telemetry"
+	"github.com/anhnvcoder/svp-backend/services/engagement-service/internal/server"
+	"github.com/anhnvcoder/svp-backend/services/engagement-service/migrations"
 )
 
 const (

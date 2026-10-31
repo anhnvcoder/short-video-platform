@@ -56,7 +56,7 @@ s3:
   # POST to uploads, GET and HEAD at media, nothing else. The browser talks to the store cross-origin, hls.js loading
   # playlists and segments with XHR and the upload page posting the file with XHR (its progress listener makes that a
   # preflight) (threat model WEB-10). Only the web client's origin in the cluster: the web clients of compose and
-  # make dev of svp-web (http://localhost:3001, :3002) use compose's store, never this one. Commas without spaces.
+  # make dev of svp-frontend (http://localhost:3001, :3002) use compose's store, never this one. Commas without spaces.
   corsAllowedOrigins: https://svp.localhost:8443
 
 redpanda:

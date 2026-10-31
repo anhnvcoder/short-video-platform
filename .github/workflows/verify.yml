@@ -5,7 +5,7 @@
 # ruleset requires it, and nothing but the dispatch and the weekly schedule triggers it.
 #
 #   gh workflow run verify.yml --ref <main or feat/stage6b-...> -f scenario=<scenario> [-f targets='<name> ...']
-#     [-f web_ref=<branch or full commit SHA of svp-web>]
+#     [-f web_ref=<branch or full commit SHA of svp-frontend>]
 #
 # Scenarios (deploy/ci/verify/<scenario>.sh lists the targets of each): compose-obs (job compose), dev-k3d, web-canary,
 # k6-cloud-mini, chaos and velero (job k3d, the k3d cluster of the dev path), gitops (job gitops, the cluster Argo CD
@@ -24,11 +24,11 @@
 #   deploy/ci/verify-run.sh checks them again with a case; if: compares the scenario as an expression, never in a
 #   shell. A scheduled run has no inputs: each job's SCENARIO falls back to its own scenario, the targets are empty
 #   (every one) and so is web_ref (the web client's code at the commit of the web release staging runs);
-# - the web client's code is svp-web, its repository: the step "Clone svp-gitops and svp-web" (verify-run.sh --clones)
-#   clones it from github.com/anhnvcoder/svp-web only (make web-clone), so a fork's code never runs here, for the
+# - the web client's code is svp-frontend, its repository: the step "Clone svp-gitops and svp-frontend" (verify-run.sh --clones)
+#   clones it from github.com/anhnvcoder/svp-frontend only (make web-clone), so a fork's code never runs here, for the
 #   scenarios that build, test or measure the web (compose-obs, dev-k3d, web-canary, gitops), before Node, pnpm, its
 #   packages and Playwright's browsers are installed as that clone pins them; at web_ref, checked in each job's first
-#   step, a branch or a full commit SHA of svp-web, or without it at the commit of the web release staging runs;
+#   step, a branch or a full commit SHA of svp-frontend, or without it at the commit of the web release staging runs;
 # - make env writes a .env of fresh random secrets that lives on this runner until the job ends; the cluster makes more
 #   (GlitchTip's tokens, its CA). deploy/ci/verify-mask.sh masks them in the log as soon as they exist, every target's
 #   output goes to a file on the runner instead of the log, and deploy/ci/verify-collect.sh copies into the artifact
@@ -63,7 +63,7 @@ on:
         required: false
         default: ""
       web_ref:
-        description: "compose-obs, dev-k3d, web-canary, gitops: the web client's code from svp-web (github.com/anhnvcoder/svp-web), main, another of its branches or a full commit SHA; empty is the commit of the web release staging runs (deploy/ci/verify-run.sh)"
+        description: "compose-obs, dev-k3d, web-canary, gitops: the web client's code from svp-frontend (github.com/anhnvcoder/svp-frontend), main, another of its branches or a full commit SHA; empty is the commit of the web release staging runs (deploy/ci/verify-run.sh)"
         type: string
         required: false
         default: ""
@@ -148,7 +148,7 @@ jobs:
           # web_ref: empty, a full commit SHA or a branch name (not printed back: a line starting with :: is a command).
           if [ -n "$SVP_VERIFY_WEB_REF" ] && ! [[ $SVP_VERIFY_WEB_REF =~ ^[0-9a-f]{40}$ ]] &&
             ! { [[ $SVP_VERIFY_WEB_REF =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] && git check-ref-format "refs/heads/$SVP_VERIFY_WEB_REF"; }; then
-            echo "::error::web_ref is neither a full commit SHA nor a branch name of svp-web"; exit 1
+            echo "::error::web_ref is neither a full commit SHA nor a branch name of svp-frontend"; exit 1
           fi
           echo "SVP_VERIFY_OUT=$RUNNER_TEMP/verify" >>"$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/verify"
@@ -163,10 +163,10 @@ jobs:
           go-version: 1.27.3
           cache-dependency-path: go.sum
       - run: make ci-bridge-check
-      # svp-gitops (the web release of staging that make up runs) and svp-web (the web client's code that make
-      # web-lighthouse and make measure-upload run), anonymously over HTTPS; web_dir names the clone of svp-web. A failed
+      # svp-gitops (the web release of staging that make up runs) and svp-frontend (the web client's code that make
+      # web-lighthouse and make measure-upload run), anonymously over HTTPS; web_dir names the clone of svp-frontend. A failed
       # clone stops the job here: no later step but the ones that always run.
-      - name: Clone svp-gitops and svp-web
+      - name: Clone svp-gitops and svp-frontend
         id: clones
         run: deploy/ci/verify-run.sh --clones "$SCENARIO"
       # Node and pnpm as the clone pins them (its .nvmrc, the packageManager field of its package.json).
@@ -253,7 +253,7 @@ jobs:
           # web_ref: empty, a full commit SHA or a branch name (not printed back: a line starting with :: is a command).
           if [ -n "$SVP_VERIFY_WEB_REF" ] && ! [[ $SVP_VERIFY_WEB_REF =~ ^[0-9a-f]{40}$ ]] &&
             ! { [[ $SVP_VERIFY_WEB_REF =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] && git check-ref-format "refs/heads/$SVP_VERIFY_WEB_REF"; }; then
-            echo "::error::web_ref is neither a full commit SHA nor a branch name of svp-web"; exit 1
+            echo "::error::web_ref is neither a full commit SHA nor a branch name of svp-frontend"; exit 1
           fi
           echo "SVP_VERIFY_OUT=$RUNNER_TEMP/verify" >>"$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/verify"
@@ -277,9 +277,9 @@ jobs:
       # k3d and Helm for deploy/k8s/install.sh and the drills, which call them by name; kubectl is the runner image's
       # (deploy/ci/verify-host.sh checks its version against k3s).
       - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      # As in job compose. Only dev-k3d and web-canary build, test or measure the web and get a clone of svp-web
+      # As in job compose. Only dev-k3d and web-canary build, test or measure the web and get a clone of svp-frontend
       # (web_dir); k6-cloud-mini, chaos and velero run the web release of staging and need no Node.
-      - name: Clone svp-gitops and svp-web
+      - name: Clone svp-gitops and svp-frontend
         id: clones
         run: deploy/ci/verify-run.sh --clones "$SCENARIO"
       - if: steps.clones.outputs.web_dir != ''
@@ -376,7 +376,7 @@ jobs:
           # web_ref: empty, a full commit SHA or a branch name (not printed back: a line starting with :: is a command).
           if [ -n "$SVP_VERIFY_WEB_REF" ] && ! [[ $SVP_VERIFY_WEB_REF =~ ^[0-9a-f]{40}$ ]] &&
             ! { [[ $SVP_VERIFY_WEB_REF =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] && git check-ref-format "refs/heads/$SVP_VERIFY_WEB_REF"; }; then
-            echo "::error::web_ref is neither a full commit SHA nor a branch name of svp-web"; exit 1
+            echo "::error::web_ref is neither a full commit SHA nor a branch name of svp-frontend"; exit 1
           fi
           echo "SVP_VERIFY_OUT=$RUNNER_TEMP/verify" >>"$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/verify"
@@ -401,8 +401,8 @@ jobs:
         if: steps.tools.outputs.cache-hit != 'true'
         run: make tools ci-tools
       - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      # As in job compose: svp-web for the web's e2e tests and the Sentry CLI of the source map upload.
-      - name: Clone svp-gitops and svp-web
+      # As in job compose: svp-frontend for the web's e2e tests and the Sentry CLI of the source map upload.
+      - name: Clone svp-gitops and svp-frontend
         id: clones
         run: deploy/ci/verify-run.sh --clones "$SCENARIO"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -491,7 +491,7 @@ jobs:
   # becomes a deployment record of environment stg in svp-gitops (deploy/ci/record-stg.sh), which a pull request to
   # envs/prd/ there must match whole and which promote prd of images.yml copies. A dispatch or the weekly run alike;
   # a red wait for a release after the scenario does not keep it from being recorded. Skipped on a branch (the
-  # environment takes main only), on a cancelled run, on a run with web_ref (job gitops then ran code of an svp-web
+  # environment takes main only), on a cancelled run, on a run with web_ref (job gitops then ran code of an svp-frontend
   # branch), and without that output. The token is the app's, for svp-gitops alone and deployments write alone; the job's
   # own token only reads this repository.
   record-stg:

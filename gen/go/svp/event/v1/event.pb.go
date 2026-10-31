@@ -94,9 +94,9 @@ const file_svp_event_v1_event_proto_rawDesc = "" +
 	"\tEventMeta\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12;\n" +
 	"\voccurred_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"occurredAtB\xb8\x01\n" +
+	"occurredAtB\xaf\x01\n" +
 	"\x10com.svp.event.v1B\n" +
-	"EventProtoP\x01ZFgithub.com/anhnvcoder/short-video-platform/gen/go/svp/event/v1;eventv1\xa2\x02\x03SEX\xaa\x02\fSvp.Event.V1\xca\x02\fSvp\\Event\\V1\xe2\x02\x18Svp\\Event\\V1\\GPBMetadata\xea\x02\x0eSvp::Event::V1b\x06proto3"
+	"EventProtoP\x01Z=github.com/anhnvcoder/svp-backend/gen/go/svp/event/v1;eventv1\xa2\x02\x03SEX\xaa\x02\fSvp.Event.V1\xca\x02\fSvp\\Event\\V1\xe2\x02\x18Svp\\Event\\V1\\GPBMetadata\xea\x02\x0eSvp::Event::V1b\x06proto3"
 
 var (
 	file_svp_event_v1_event_proto_rawDescOnce sync.Once

@@ -12,7 +12,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
+	"github.com/anhnvcoder/svp-backend/internal/grpcerr"
 )
 
 // requestWithTrace returns the request a handler behind Trace sees, and its trace-id.

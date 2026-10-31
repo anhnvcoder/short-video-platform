@@ -94,9 +94,10 @@ build_args=()
 context=$code_root
 case $image in
 drill-vulnerable) file=$script_root/deploy/ci/drill/vulnerable.Dockerfile ;;
-# Built exactly like a clean service (the gateway's code) so the only difference with a release is the missing
-# signature.
-drill-unsigned) file=$script_root/$(dockerfile gateway) build_args=(--build-arg SERVICE=gateway) ;;
+# Built exactly like a clean service (the gateway's code) so the only difference with a release is what CI leaves
+# out: drill-unsigned is pushed with no signature, drill-no-provenance is signed and attested vuln like a release but
+# never attested provenance.
+drill-unsigned | drill-no-provenance) file=$script_root/$(dockerfile gateway) build_args=(--build-arg SERVICE=gateway) ;;
 *)
   if [ "$code_root" = "$script_root" ]; then
     printf '%s\n' "${built_services[@]}" | grep -qxF -- "$image" ||

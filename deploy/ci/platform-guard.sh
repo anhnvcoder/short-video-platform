@@ -7,7 +7,7 @@
 # purpose (platform-test.sh, verify-collect-test.sh) and this file, whose own pattern would match. The workflow files
 # under .github/ belong to the platform and are not checked.
 #
-# Another release source's repository (svp-web) runs the same check on its own tree, from the checkout of this
+# Another release source's repository (svp-frontend) runs the same check on its own tree, from the checkout of this
 # repository its workflows pin under .backend/: ROOT names that tree. It has no deploy/, its scripts and Makefile sit
 # anywhere, so every file is read except .github/ (the platform's) and .backend/ (this repository's scripts, checked
 # here). Without ROOT, or with ROOT this repository's own root, the check is the one above.

@@ -23,12 +23,12 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/anhnvcoder/short-video-platform/internal/envcfg"
-	"github.com/anhnvcoder/short-video-platform/internal/kafkax"
-	"github.com/anhnvcoder/short-video-platform/internal/logx"
-	"github.com/anhnvcoder/short-video-platform/internal/objstore"
-	"github.com/anhnvcoder/short-video-platform/internal/telemetry"
-	"github.com/anhnvcoder/short-video-platform/services/media-worker/internal/worker"
+	"github.com/anhnvcoder/svp-backend/internal/envcfg"
+	"github.com/anhnvcoder/svp-backend/internal/kafkax"
+	"github.com/anhnvcoder/svp-backend/internal/logx"
+	"github.com/anhnvcoder/svp-backend/internal/objstore"
+	"github.com/anhnvcoder/svp-backend/internal/telemetry"
+	"github.com/anhnvcoder/svp-backend/services/media-worker/internal/worker"
 )
 
 const serviceName = "media-worker"

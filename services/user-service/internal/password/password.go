@@ -19,7 +19,7 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
-	"github.com/anhnvcoder/short-video-platform/internal/secret"
+	"github.com/anhnvcoder/svp-backend/internal/secret"
 )
 
 // Current parameters: the first argon2id configuration in the OWASP Password Storage Cheat

@@ -11,7 +11,7 @@
   canary web dưới traffic và client trình duyệt (D6, D14, D18) đạt; source map của image CI kiểm sau merge (D5); §9 (source map
   của image CI kéo từ giai đoạn 7 về giai đoạn 6b, artifact `web-sourcemaps-<arch>` của `images.yml`) và §3 (ngưỡng p99 canary
   của web 250 ms theo số k6) chỉnh bởi 0021; §6 (CORS toàn cục của MinIO ở k3d) bị thay một phần bởi
-  [0022](0022-local-object-store-minio-replacement.md) (CORS theo bucket trên RustFS, cùng origin `https://svp.localhost:8443`); từ 2026-10-30 §1 (image `web` build, ký, promote ở CI của `svp-web`, đường `ghcr.io/anhnvcoder/svp-web/web`, `SVP_BUILD_ID` theo commit của `svp-web`; Kyverno chọn attestor theo nguồn phát hành) và §9 (source map của image CI là image `web-sourcemaps` trên GHCR thay artifact của lượt chạy) chỉnh bởi [0033](0033-svp-web-repo.md)
+  [0022](0022-local-object-store-minio-replacement.md) (CORS theo bucket trên RustFS, cùng origin `https://svp.localhost:8443`); từ 2026-10-30 §1 (image `web` build, ký, promote ở CI của `svp-frontend`, đường `ghcr.io/anhnvcoder/svp-frontend/web`, `SVP_BUILD_ID` theo commit của `svp-frontend`; Kyverno chọn attestor theo nguồn phát hành) và §9 (source map của image CI là image `web-sourcemaps` trên GHCR thay artifact của lượt chạy) chỉnh bởi [0033](0033-svp-web-repo.md)
 - Ngày: 2026-10-22
 
 ## Bối cảnh
@@ -189,7 +189,7 @@ Chọn image thứ bảy, build ID theo commit hay nội dung, khoá đặt lúc
     build và thành khoá mã hoá khi biến lúc chạy thiếu (compose với `.env` cũ chưa chạy lại `make env`). Đường tải lại cần
     cho cả hai cách, nên chọn cách không thêm khoá. Xem lại khi số đo ở giai đoạn 6b cho thấy tải lại vì action là đáng kể
     (canary web dưới traffic: phần sau của giai đoạn 6b ([ADR-0021](0021-deferred-verification-stage6b.md) mục 5, kịch bản `web-canary`)).
-    Số đo 2026-10-28 ([40641057955](https://github.com/anhnvcoder/short-video-platform/actions/runs/40641057955), hai build cùng nguồn khác `SVP_BUILD_ID`): ở hai canary tốt 30 trên 133 Server Action trả 409
+    Số đo 2026-10-28 ([40641057955](https://github.com/anhnvcoder/svp-backend/actions/runs/40641057955), hai build cùng nguồn khác `SVP_BUILD_ID`): ở hai canary tốt 30 trên 133 Server Action trả 409
     (22,6 %, trên mức 10 % mà D6 đặt), mỗi client tải lại nhiều nhất 2 lần mỗi canary (giới hạn 2). Đường tải lại giữ đúng giới
     hạn, nhưng tỷ lệ đó mở việc xét khoá cố định bằng ADR riêng (chưa làm).
 
@@ -226,7 +226,7 @@ Chọn image thứ bảy, build ID theo commit hay nội dung, khoá đặt lúc
 - **Resources:** request 100m / 128Mi, limit 1 CPU / 384Mi. Compose đo 53 MiB lúc nghỉ, 96 MiB sau e2e (chưa có OTel và SDK
   Sentry server); limit để chỗ cho hai thứ đó, đo lại ở giai đoạn 6b. Compose giữ `mem_limit: 256m`. Đo lại trên runner
   (2026-10-25, cluster dev, [ADR-0021](0021-deferred-verification-stage6b.md) D9): working set mỗi pod web 85–90 MiB ở điểm nghỉ
-  60 s, 136–139 MiB ở điểm nghỉ cuối, cao nhất 144 MiB trong e2e ([40145677985](https://github.com/anhnvcoder/short-video-platform/actions/runs/40145677985), [40151447243](https://github.com/anhnvcoder/short-video-platform/actions/runs/40151447243)); theo quy tắc
+  60 s, 136–139 MiB ở điểm nghỉ cuối, cao nhất 144 MiB trong e2e ([40145677985](https://github.com/anhnvcoder/svp-backend/actions/runs/40145677985), [40151447243](https://github.com/anhnvcoder/svp-backend/actions/runs/40151447243)); theo quy tắc
   của ADR-0021 mục 8 giữ limit 384Mi, request 128Mi; phần 3 áp lại với số k6.
 - **Tắt êm:** `lifecycle.preStop.sleep` **5 s** (value `preStopSleepSeconds`, hành động `sleep` có sẵn của Kubernetes, không cần
   shell trong image distroless), `terminationGracePeriodSeconds` mặc định 30 s. Server standalone thoát ngay khi nhận SIGTERM;
@@ -299,7 +299,7 @@ Chọn image thứ bảy, build ID theo commit hay nội dung, khoá đặt lúc
 - Đo dưới traffic thật (số 404 asset, số lần tải lại vì chunk và vì action, abort hay promote) dời giai đoạn 6b (mục 12);
   phần sau của giai đoạn 6b ([ADR-0021](0021-deferred-verification-stage6b.md) mục 5, kịch bản `web-canary`). Kết quả mục 12.
 - `canaryLimits.p99Ms` của web: 500 → 250 ms (2026-10-28, quy tắc của ADR-0021 §8 trên p99 upstream của Envoy 50 ms ở mức k6 cao
-  nhất đạt, [40620333867](https://github.com/anhnvcoder/short-video-platform/actions/runs/40620333867)); canary với ngưỡng mới promote bản tốt, không abort oan ([40641057955](https://github.com/anhnvcoder/short-video-platform/actions/runs/40641057955)).
+  nhất đạt, [40620333867](https://github.com/anhnvcoder/svp-backend/actions/runs/40620333867)); canary với ngưỡng mới promote bản tốt, không abort oan ([40641057955](https://github.com/anhnvcoder/svp-backend/actions/runs/40641057955)).
 
 ## 4. NetworkPolicy của web (đóng WEB-13 ở k3d)
 
@@ -661,15 +661,15 @@ Chọn **Valkey chung db 9**, mở rộng phần chấp nhận của IN-7, ở l
 
 - Cluster GitOps chạy image `web` đã ký từ GHCR (cần push, CI phát hành, PR promote merge) và Kyverno Enforce từ chối image web
   chưa ký; source map của image CI (artifact theo kiến trúc, mục 9). Kết quả ([ADR-0021](0021-deferred-verification-stage6b.md)
-  kịch bản `gitops`, [40620627534](https://github.com/anhnvcoder/short-video-platform/actions/runs/40620627534), 2026-10-28): D3 đạt (7/7 bản phát hành đã ký kéo ẩn danh, 25/25 Application Synced/Healthy,
+  kịch bản `gitops`, [40620627534](https://github.com/anhnvcoder/svp-backend/actions/runs/40620627534), 2026-10-28): D3 đạt (7/7 bản phát hành đã ký kéo ẩn danh, 25/25 Application Synced/Healthy,
   Application `web` Healthy, e2e 64/64 hai trình duyệt); D4 đạt (manifest con amd64 của web bị rule chữ ký từ chối); D5 (source
   map của image CI) kiểm sau merge, lượt trên nhánh ghi `skipped` đúng quy tắc.
   Trên cluster dev (runner, 2026-10-25): `make k8s-web-sourcemaps` 32 map, 15 chunk `/login` có debug ID thuộc bản build đang
-  chạy; event GlitchTip của e2e có 10/10 (Chromium) và 13/13 (WebKit) frame map về mã nguồn ([40145677985](https://github.com/anhnvcoder/short-video-platform/actions/runs/40145677985),
-  [40151447243](https://github.com/anhnvcoder/short-video-platform/actions/runs/40151447243)).
+  chạy; event GlitchTip của e2e có 10/10 (Chromium) và 13/13 (WebKit) frame map về mã nguồn ([40145677985](https://github.com/anhnvcoder/svp-backend/actions/runs/40145677985),
+  [40151447243](https://github.com/anhnvcoder/svp-backend/actions/runs/40151447243)).
 - Canary của web dưới traffic diễn tập: promote bản tốt, abort bản lỗi, số 404 của `web-asset` và số lần client tải lại. Canary của
   gateway dưới probe mới đạt hai lượt trên runner (ADR-0021 D18). Kết quả của web (2026-10-28, `make drill-k8s-web-canary`,
-  [40641057955](https://github.com/anhnvcoder/short-video-platform/actions/runs/40641057955)): build B cùng nguồn khác `SVP_BUILD_ID` qua 25 %, 50 % và promote sau 128,9 s; bản lỗi (`GATEWAY_URL` tới Service
+  [40641057955](https://github.com/anhnvcoder/svp-backend/actions/runs/40641057955)): build B cùng nguồn khác `SVP_BUILD_ID` qua 25 %, 50 % và promote sau 128,9 s; bản lỗi (`GATEWAY_URL` tới Service
   không có, BFF trả 502) bị phân tích abort 83,4 s sau khi nhận traffic, route về 100/0, pod stable không đổi; build A trả về bằng
   canary thứ hai, promote 127,4 s. Tab cũ mở trước canary gặp lệch bản thật (action 409, chunk 404, `deploymentId` khác) và tải lại
   2 lần; không client nào tải lại quá 2 lần mỗi canary; `web-asset` 404: 0; Server Action 409 22,6 % (mục 1); không pod web nào
@@ -677,9 +677,9 @@ Chọn **Valkey chung db 9**, mở rộng phần chấp nhận của IN-7, ở l
 - `make drill-k8s-threats` và `make drill-obs-threats` chạy đủ, gồm các ca WEB mới. Ghi chú 2026-10-24: `drill-k8s-threats` đã chạy
   đủ trên cluster dev ở buổi k3d giai đoạn 6 (16/16 mục PASS ở hai lượt, gồm WEB-2, WEB-7, WEB-8, WEB-10, WEB-13; ADR-0020); còn
   `drill-obs-threats` (WEB-9) và cluster GitOps. Kết quả trên runner (ADR-0021 D7, D8): `drill-obs-threats` đạt mọi mục ở
-  `compose-obs` ([40132157276](https://github.com/anhnvcoder/short-video-platform/actions/runs/40132157276); WEB-9: đối chứng có dữ liệu của web ở GlitchTip, Tempo, Prometheus, không giá trị nào
-  của form, phiên hay chữ ký); `drill-k8s-threats` 16/16 mục PASS trên cluster dev, gồm WEB-7 ([40157833740](https://github.com/anhnvcoder/short-video-platform/actions/runs/40157833740)). Trên
-  cluster GitOps (2026-10-28, [40620627534](https://github.com/anhnvcoder/short-video-platform/actions/runs/40620627534)): `drill-k8s-threats` 16/16 mục PASS.
+  `compose-obs` ([40132157276](https://github.com/anhnvcoder/svp-backend/actions/runs/40132157276); WEB-9: đối chứng có dữ liệu của web ở GlitchTip, Tempo, Prometheus, không giá trị nào
+  của form, phiên hay chữ ký); `drill-k8s-threats` 16/16 mục PASS trên cluster dev, gồm WEB-7 ([40157833740](https://github.com/anhnvcoder/svp-backend/actions/runs/40157833740)). Trên
+  cluster GitOps (2026-10-28, [40620627534](https://github.com/anhnvcoder/svp-backend/actions/runs/40620627534)): `drill-k8s-threats` 16/16 mục PASS.
 - Đo RAM của cluster có web (lúc nghỉ, đỉnh) và chỉnh `resources` của web. Kết quả trên runner, cluster dev (ADR-0021 D2, D9):
   RAM nghỉ (b) đạt ở điểm 60 s hai lượt (MEM USAGE trừ `active_file` 6 084 và 5 972 MiB), đỉnh (a) 9 994 và 8 878 MiB không đạt
   ổn định 8,7 GiB, chấp nhận không cắt; `resources` của web giữ limit 384Mi, request 128Mi (mục 2). Cluster GitOps và số k6
@@ -762,13 +762,13 @@ source map của image CI kiểm sau merge.
 
 ## Hiện thực ở
 
-Từ 2026-10-30 ([ADR-0033](0033-svp-web-repo.md)) image `web` build, ký, promote ở `.github/workflows/images.yml` của `svp-web`,
+Từ 2026-10-30 ([ADR-0033](0033-svp-web-repo.md)) image `web` build, ký, promote ở `.github/workflows/images.yml` của `svp-frontend`,
 bằng `deploy/ci/build-image.sh`, `sign-image.sh`, `promote.sh --source web` của repo này chạy từ checkout ghim `.backend/`; bảng nguồn
 `deploy/helm/svp-policy/files/sources.json` (attestor theo prefix ở `templates/imagevalidatingpolicy.yaml`). Từ 2026-10-31 mã web ở
-`svp-web`: mỗi đường `web/<x>` dưới đây là `<x>` của repo đó, `deploy/docker/web.Dockerfile` là `Dockerfile` ở gốc của nó. §9: image
-`web-sourcemaps` do `deploy/ci/sourcemaps-image.sh push` đẩy (gọi từ CI `svp-web`), `deploy/ci/gitops-sourcemaps.sh` kéo ẩn danh;
+`svp-frontend`: mỗi đường `web/<x>` dưới đây là `<x>` của repo đó, `deploy/docker/web.Dockerfile` là `Dockerfile` ở gốc của nó. §9: image
+`web-sourcemaps` do `deploy/ci/sourcemaps-image.sh push` đẩy (gọi từ CI `svp-frontend`), `deploy/ci/gitops-sourcemaps.sh` kéo ẩn danh;
 `web-sourcemaps`, `k8s-web-sourcemaps`, `k8s-web-e2e` của `Makefile`, `deploy/k8s/k8s.mk` là wrapper gọi `make sourcemaps`,
-`k8s-sourcemaps`, `k8s-e2e` của bản clone `svp-web`. Values của release `web` ở `base/services/web.yaml` của `svp-gitops`.
+`k8s-sourcemaps`, `k8s-e2e` của bản clone `svp-frontend`. Values của release `web` ở `base/services/web.yaml` của `svp-gitops`.
 
 - Image `web` trong chuỗi cung ứng (§1): `deploy/docker/web.Dockerfile`, `deploy/ci/build-image.sh` (`SVP_BUILD_ID`),
   `deploy/k8s/k8s.mk`, `deploy/k8s/install.sh`.

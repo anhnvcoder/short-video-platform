@@ -1,4 +1,4 @@
-module github.com/anhnvcoder/short-video-platform
+module github.com/anhnvcoder/svp-backend
 
 go 1.27.3
 

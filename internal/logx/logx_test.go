@@ -24,7 +24,7 @@ import (
 	collectorlog "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	"google.golang.org/grpc"
 
-	"github.com/anhnvcoder/short-video-platform/internal/telemetry"
+	"github.com/anhnvcoder/svp-backend/internal/telemetry"
 )
 
 func decode(t *testing.T, buf *bytes.Buffer) map[string]any {

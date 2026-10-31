@@ -5,7 +5,7 @@ managed:
   enabled: true
   override:
     - file_option: go_package_prefix
-      value: github.com/anhnvcoder/short-video-platform/gen/go
+      value: github.com/anhnvcoder/svp-backend/gen/go
 plugins:
   - local: protoc-gen-go
     out: gen/go

@@ -14,10 +14,10 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	userv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
-	"github.com/anhnvcoder/short-video-platform/internal/secret"
-	"github.com/anhnvcoder/short-video-platform/services/user-service/internal/password"
+	userv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/user/v1"
+	"github.com/anhnvcoder/svp-backend/internal/grpcerr"
+	"github.com/anhnvcoder/svp-backend/internal/secret"
+	"github.com/anhnvcoder/svp-backend/services/user-service/internal/password"
 )
 
 // fakeClock is a clock the test moves by hand; the server reads it from its own goroutines.

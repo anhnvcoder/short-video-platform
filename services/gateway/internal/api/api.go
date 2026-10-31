@@ -18,14 +18,14 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 
-	engagementv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/engagement/v1"
-	feedv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/feed/v1"
-	userv1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/user/v1"
-	videov1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/video/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/authtoken"
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
-	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/httpx"
-	"github.com/anhnvcoder/short-video-platform/services/gateway/internal/ratelimit"
+	engagementv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/engagement/v1"
+	feedv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/feed/v1"
+	userv1 "github.com/anhnvcoder/svp-backend/gen/go/svp/user/v1"
+	videov1 "github.com/anhnvcoder/svp-backend/gen/go/svp/video/v1"
+	"github.com/anhnvcoder/svp-backend/internal/authtoken"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
+	"github.com/anhnvcoder/svp-backend/services/gateway/internal/httpx"
+	"github.com/anhnvcoder/svp-backend/services/gateway/internal/ratelimit"
 )
 
 const (

@@ -101,5 +101,5 @@ trong image `RENOVATE_IMAGE` (`/usr/local/renovate/dist/`: `workers/repository/u
 ## Hiện thực ở
 
 - `renovate.json`: khoá automerge ở gốc, bốn `packageRule` tự merge, `automerge: false` của nhóm `github actions`, `tools`, `cosign`.
-- `renovate.json` của `svp-web`: khoá automerge ở gốc, hai `packageRule` tự merge, `automerge: false` của nhóm `github actions`,
+- `renovate.json` của `svp-frontend`: khoá automerge ở gốc, hai `packageRule` tự merge, `automerge: false` của nhóm `github actions`,
   `backend commit`, `api contract`.

@@ -19,7 +19,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
+	"github.com/anhnvcoder/svp-backend/internal/grpcerr"
 )
 
 const (

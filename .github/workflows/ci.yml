@@ -386,7 +386,7 @@ jobs:
   # end-to-end tests, the k6 profile ci (error thresholds only: a shared runner says nothing about latency), Lighthouse
   # and Schemathesis against the gateway's OpenAPI contract. The six backend services are built from the pull
   # request's code; the web client is the release staging runs (make up's default, named in main of svp-gitops and
-  # pulled anonymously from GHCR), and its end-to-end tests and Lighthouse run are the code of svp-web at that very
+  # pulled anonymously from GHCR), and its end-to-end tests and Lighthouse run are the code of svp-frontend at that very
   # release's commit (make web-clone), so a change of the backend that breaks the web client shows here. A report, not a
   # check: ci-ok does not need it, so a red stack (a flaky end-to-end test on a shared runner) never blocks a merge;
   # whoever reads the pull request sees its result under this name. It builds and runs the pull request's code like
@@ -404,10 +404,10 @@ jobs:
       contents: read
     # The deployment configuration that names the web release of staging: main of svp-gitops, which make gitops-clone
     # clones anonymously into this folder (gitignored) below, as in job config. The web client's code at that release's
-    # commit: svp-web, which make web-clone clones anonymously into the other folder (gitignored).
+    # commit: svp-frontend, which make web-clone clones anonymously into the other folder (gitignored).
     env:
       SVP_GITOPS_DIR: ${{ github.workspace }}/.gitops/svp-gitops
-      SVP_WEB_DIR: ${{ github.workspace }}/.web/svp-web
+      SVP_WEB_DIR: ${{ github.workspace }}/.web/svp-frontend
     services:
       # The images of job check. There the tests reach them on loopback only; here the compose containers reach them as
       # host.docker.internal, which compose's host-gateway maps to the gateway of Docker's default bridge (docker0,
@@ -457,28 +457,28 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends postgresql-client redis-tools ffmpeg jq
-      # Both public repositories, over HTTPS without credentials: no token, no secret. svp-web at the commit of the web
+      # Both public repositories, over HTTPS without credentials: no token, no secret. svp-frontend at the commit of the web
       # release of staging (image.tag of envs/stg/images/web.yaml in that clone of svp-gitops).
       - run: make gitops-clone
       - run: make web-clone
-      # The Node major of the clone's .nvmrc and the pnpm of its packageManager, as svp-web's own CI and Dockerfile
+      # The Node major of the clone's .nvmrc and the pnpm of its packageManager, as svp-frontend's own CI and Dockerfile
       # take them: Node 25 and later ship no Corepack, and the repository allows no third-party action
       # (pnpm/action-setup). No cache: setup-node's pnpm cache needs pnpm on PATH before Node is there.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: .web/svp-web/.nvmrc
+          node-version-file: .web/svp-frontend/.nvmrc
       - name: Install pnpm
-        working-directory: .web/svp-web
+        working-directory: .web/svp-frontend
         run: |
           version=$(node -p 'require("./package.json").packageManager.split("@")[1]')
           npm install -g "pnpm@$version"
       # Its packages exactly as its pnpm-lock.yaml pins them, then the browsers of its playwright.config.ts at that
       # version, with their system libraries (apt, through sudo).
       - name: Install the web client's packages
-        working-directory: .web/svp-web
+        working-directory: .web/svp-frontend
         run: make install
       - name: Install the Playwright browsers
-        working-directory: .web/svp-web
+        working-directory: .web/svp-frontend
         run: pnpm exec playwright install --with-deps chromium webkit
       - run: make env
       - run: make up
@@ -535,7 +535,7 @@ jobs:
           name: k6-summary
           path: ${{ runner.temp }}/k6-summary/
           if-no-files-found: ignore
-      # The reports lighthouse/run.sh of svp-web wrote at the top of test-results/lighthouse/ of the clone after
+      # The reports lighthouse/run.sh of svp-frontend wrote at the top of test-results/lighthouse/ of the clone after
       # replacing the session cookie in them (it deletes them when a cookie value is still found), copied out of the
       # clone's folder, a hidden one, which upload-artifact would leave out. Its .lighthouseci/ subfolder, with the
       # results before that replacement, is matched by neither pattern. Skipped when the step was cancelled mid-run or

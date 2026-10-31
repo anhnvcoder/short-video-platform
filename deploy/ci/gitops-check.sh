@@ -19,26 +19,33 @@
 #      revision or one of its ancestors, so an image never runs with charts older than its code (a new environment
 #      variable the chart does not set yet). A release of another source: its tag is the 12 hex of a commit on main of
 #      that source's repository, read from a clone of it with its whole history: SVP_SOURCE_DIR_<NAME> (the source's
-#      name in upper case, SVP_SOURCE_DIR_WEB) when set, a clone whose origin is that repository; otherwise an
-#      anonymous clone (--filter=blob:none) into the temporary directory, made only when a file names such a release.
+#      name in upper case, SVP_SOURCE_DIR_WEB) when set, a clone whose origin is that repository word for word;
+#      otherwise an anonymous clone (--filter=blob:none) of the source's repository URL into the temporary directory,
+#      made only when a file names such a release. The workflow of svp-gitops sets no SVP_SOURCE_DIR_*: a renamed
+#      repository is named by its old URL in a table of an older revision (and by a retired source) and by its new URL
+#      in a newer one, and one clone has one origin, so each source is cloned from the URL its table gives, which the
+#      host redirects to the repository whatever its name now.
 #      Its configuration reaches it through base/ and the overlays of svp-gitops, not through the charts, so it is not
 #      compared with revision. gitops-check.sh --tree GITOPS_DIR [BASE] runs this step and step 1c alone (their test).
 #   1c. With BASE, on a pull request opened by the bot of a release source (ci_change_request_author of platform.sh,
 #      read from the platform's event; <promoter>[bot] of the table of release sources): each file changed from BASE
 #      to HEAD is judged with the table at the revision the environment holding it pins at HEAD (the revision after
 #      the change). The bot of source N changes only envs/stg/images/<svc>.yaml with <svc> in N's services, the image
-#      after the change a release of N (<imagePrefix><svc> of N), and the image before a release of N or of backend,
-#      the source whose repository holds the charts: a takeover goes one way, from backend; a person moves a service
-#      back. The bot of backend also changes envs/stg/charts.yaml, envs/prd/charts.yaml and envs/prd/images/<svc>.yaml
-#      (prd's content is step 1b's rule). No bot of a source deletes a file under envs/, and no bot of a source
-#      changes a file outside envs/. A bot whose login is no promoter of the table changes nothing under envs/. A pull
-#      request of a person is not limited here. The author does not name who pushed onto the pull request's branch, so
-#      the event's sender (ci_change_request_sender: who opened it, or who pushed the commit checked) counts too: a bot
-#      other than the author fails, whoever the author is (the bot of svp-web pushing onto the pull request of the bot
-#      of backend would otherwise pass as backend's); a person pushing onto a bot's pull request is judged by the
-#      author's rule as before. A pull request whose author or sender cannot be read fails; without BASE, or for a run
-#      of no pull request (a push, a dispatch, a machine without SVP_CHANGE_REQUEST_AUTHOR), the step prints one skip
-#      line; on a machine, SVP_CHANGE_REQUEST_SENDER names the sender, none when unset.
+#      after the change a release of N (<imagePrefix><svc> of N), and the image before a release of N, of backend (the
+#      source whose repository holds the charts), or of a retired source that publishes <svc> (one without promoter:
+#      its repository was renamed, and its successor takes its services over): a takeover goes one way, from backend
+#      or from a retired source; a person moves a service back. No bot is the bot of a retired source, so none writes
+#      its releases. The bot of backend also changes envs/stg/charts.yaml, envs/prd/charts.yaml and
+#      envs/prd/images/<svc>.yaml (prd's content is step 1b's rule). No bot of a source deletes a file under envs/, and
+#      no bot of a source changes a file outside envs/. A bot whose login is no promoter of the table changes nothing
+#      under envs/. A pull request of a person is not limited here. The author does not name who pushed onto the pull
+#      request's branch, so the event's sender (ci_change_request_sender: who opened it, or who pushed the commit
+#      checked) counts too: a bot other than the author fails, whoever the author is (the bot of svp-frontend pushing
+#      onto the pull request of the bot of backend would otherwise pass as backend's); a person pushing onto a bot's
+#      pull request is judged by the author's rule as before. A pull request whose author or sender cannot be read
+#      fails; without BASE, or for a run of no pull request (a push, a dispatch, a machine without
+#      SVP_CHANGE_REQUEST_AUTHOR), the step prints one skip line; on a machine, SVP_CHANGE_REQUEST_SENDER names the
+#      sender, none when unset.
 #   1b. With BASE, when envs/prd/images/ or envs/prd/charts.yaml changed from BASE to HEAD: the seven releases
 #      (repository, tag, digest) and the charts (revision, podSecurityVersion, collectorConfigSha256) of envs/prd/
 #      together are exactly the payload of one record of stg that counts (deploy/ci/release-set.sh records: state
@@ -253,8 +260,12 @@ if [ -n "$records_only" ]; then
 fi
 
 # source_clone NAME REPOSITORY: prints a folder holding the history of REPOSITORY (release source NAME) with its
-# origin/main: SVP_SOURCE_DIR_<NAME in upper case> when set, which must be a clone whose origin is REPOSITORY;
-# otherwise an anonymous clone into the temporary directory, made once (blobs left out: only commits are read).
+# origin/main: SVP_SOURCE_DIR_<NAME in upper case> when set, which must be a clone whose origin is REPOSITORY word for
+# word; otherwise an anonymous clone of REPOSITORY into the temporary directory, made once per source (blobs left out:
+# only commits are read). The check of svp-gitops sets no such variable: after a rename one repository is named by two
+# URLs (the table of an older revision and a retired source give the old one, the newer table the new one), and a
+# clone has one origin; cloning from the URL a table gives always works, since the host redirects an old name to the
+# repository. The variable is for a machine, set for a source whose URL its clone's origin names exactly.
 source_clone() {
   local var dir url
   var=SVP_SOURCE_DIR_$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')
@@ -329,7 +340,8 @@ author_rule() {
     fi
     echo "$src" >"$tmp/author/$env.json"
   done
-  promoters=$(jq -r '.sources[].promoter' "$tmp"/author/*.json | sort -u)
+  # A retired source has no promoter: no login is its bot.
+  promoters=$(jq -r '.sources[] | select(has("promoter")) | .promoter' "$tmp"/author/*.json | sort -u)
   while IFS=$'\t' read -r status path; do
     [ -n "$path" ] || continue
     n=$((n + 1))
@@ -384,8 +396,10 @@ author_rule() {
           echo "ok    $path: $who, moved $svc to another release of its own source"
         elif [ "$bname" = "$chart_source" ]; then
           echo "ok    $path: $who, takes $svc over from release source $chart_source, whose repository holds the charts"
+        elif ! jq -e 'has("promoter")' <<<"$bsrc" >/dev/null; then
+          echo "ok    $path: $who, takes $svc over from release source $bname, which is retired (no promoter at ${rev:0:12})"
         else
-          problem "$path: the image before ($before) is a release of source $bname: $who, takes a service over only from $chart_source, whose repository holds the charts (a person moves it back)"
+          problem "$path: the image before ($before) is a release of source $bname: $who, takes a service over only from $chart_source, whose repository holds the charts, or from a retired source (a person moves it back)"
           bad=1
         fi
       fi
@@ -604,6 +618,15 @@ for env in $envs; do
   echo "ok    argocd/apps in $env on arm64 and amd64 nodes; its sources of svp-gitops name full refs; Argo Rollouts gets plugin $arm_name of ${arm_loc%/*}, the asset built for each"
 done
 
+# placeholder_repo SERVICE REV: the repository of SERVICE's release that a render with base/ alone gets: the first of
+# the release sources that publish it in the table at REV (the working tree's for "worktree"), so the render's image is
+# a service image of those charts, as an environment's would be.
+placeholder_repo() {
+  local rev=$2
+  [ "$rev" != worktree ] || rev=
+  release_repositories "$1" "$rev" | sed 's/ or .*//'
+}
+
 # --- 3. the charts of this repository
 jq -r '.components[] | select(.path) | [.name, .namespace, .path, (.values // "")] | @tsv' "$components" >"$tmp/charts"
 while IFS=$'\t' read -r name ns path values; do
@@ -614,7 +637,8 @@ while IFS=$'\t' read -r name ns path values; do
     [ -z "$values" ] || set -- "$@" -f "$tree/$values"
     # Alone, base/ has no image for a release of chart svp-service: a placeholder renders it as the dev path's does.
     if [ "$path" = "$service_chart" ]; then
-      base_args=("$@" --set-string "image.repository=$ghcr_prefix/$name" --set-string image.tag=000000000000
+      base_args=("$@" --set-string "image.repository=$(placeholder_repo "$name" "$(revision_of "$env")")"
+        --set-string image.tag=000000000000
         --set-string "image.digest=$zero_digest")
     else
       base_args=("$@")
@@ -822,7 +846,7 @@ for rev in $(for env in $envs; do revision_of "$env"; done | sort -u); do
     # base/ has no image for a release of chart svp-service: the placeholder of step 3, a release's form, which the
     # pin check below leaves out like every service image.
     if [ "$path" = "$service_chart" ]; then
-      args+=(--set-string "image.repository=$ghcr_prefix/$name" --set-string image.tag=000000000000
+      args+=(--set-string "image.repository=$(placeholder_repo "$name" "$rev")" --set-string image.tag=000000000000
         --set-string "image.digest=$zero_digest")
     fi
     helm "${args[@]}" >"$out/base/$name.yaml" 2>"$tmp/err" || { cat "$tmp/err" >&2; fail "helm template $name ($label)"; }

@@ -18,14 +18,14 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	mediav1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/media/v1"
-	videov1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/video/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
-	"github.com/anhnvcoder/short-video-platform/internal/kafkax"
-	"github.com/anhnvcoder/short-video-platform/internal/logx"
-	"github.com/anhnvcoder/short-video-platform/internal/objstore"
-	"github.com/anhnvcoder/short-video-platform/internal/outbox"
-	"github.com/anhnvcoder/short-video-platform/services/video-service/internal/store"
+	mediav1 "github.com/anhnvcoder/svp-backend/gen/go/svp/media/v1"
+	videov1 "github.com/anhnvcoder/svp-backend/gen/go/svp/video/v1"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
+	"github.com/anhnvcoder/svp-backend/internal/kafkax"
+	"github.com/anhnvcoder/svp-backend/internal/logx"
+	"github.com/anhnvcoder/svp-backend/internal/objstore"
+	"github.com/anhnvcoder/svp-backend/internal/outbox"
+	"github.com/anhnvcoder/svp-backend/services/video-service/internal/store"
 )
 
 // Topic and consumer group of the transcode results. The topic must be one redpanda-init creates,

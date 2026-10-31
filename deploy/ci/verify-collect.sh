@@ -29,8 +29,8 @@
 # From the checkout (all read from the stack/cluster): .k8s/drills/*.json and traffic-*.log (each line a time, a user,
 # a route, a status and a duration), .k6/<run>/summary.json, the summary of each pod of the k6 Job
 # (.k6/cloud-<time>/pod-<i>.json of deploy/k6/cloud/run.sh logs, whose table is in the target's output),
-# and, from the clone of the web client's repository svp-web the run's web targets ran in (.web/svp-web, the folder of
-# make web-clone), test-results/measure-*.json and glitchtip-*.json, the Lighthouse reports
+# and, from the clone of the web client's repository svp-frontend the run's web targets ran in (.web/svp-frontend, the
+# folder of make web-clone), test-results/measure-*.json and glitchtip-*.json, the Lighthouse reports
 # test-results/lighthouse/*.json and *.html, and the error-context.md Playwright writes for a failed test
 # (test-results/playwright/<test>/: the error and the page's accessibility tree at that moment, text, so the next red
 # e2e test has evidence; its trace stays out). Everything else under those places is listed in files.txt as
@@ -219,8 +219,8 @@ if [ -d "$out" ]; then
 fi
 
 # --- The checkout's results: BASE in the tree, DEST its folder in the artifact. The web client's are in the clone of
-# svp-web in the tree, where its targets write them.
-web_results=.web/svp-web/test-results
+# svp-frontend in the tree, where its targets write them.
+web_results=.web/svp-frontend/test-results
 for pair in .k8s/drills:k8s-drills .k6:k6 "$web_results:web-test-results"; do
   base=${pair%%:*}
   dest=${pair#*:}

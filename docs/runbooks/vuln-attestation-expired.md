@@ -35,8 +35,8 @@ for env in stg prd; do
   for f in $(git -C "$GITOPS" ls-tree --name-only "$rev" "envs/$env/images/"); do
     svc=$(basename "$f" .yaml)
     digest=$(git -C "$GITOPS" show "$rev:$f" | awk '$1 == "digest:" { gsub(/"/, "", $2); print $2; exit }')
-    [ -n "$digest" ] && deploy/ci/verify-release.sh --gitops "$GITOPS" --rev "$rev" --env "$env" \
-      "ghcr.io/anhnvcoder/short-video-platform/$svc" "$digest"
+    repo=$(git -C "$GITOPS" show "$rev:$f" | awk '$1 == "repository:" { gsub(/"/, "", $2); print $2; exit }')
+    [ -n "$digest" ] && deploy/ci/verify-release.sh --gitops "$GITOPS" --rev "$rev" --env "$env" "$repo" "$digest"
   done
 done
 ```

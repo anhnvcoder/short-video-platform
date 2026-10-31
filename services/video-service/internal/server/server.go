@@ -27,15 +27,15 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	videov1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/video/v1"
-	"github.com/anhnvcoder/short-video-platform/internal/callerid"
-	"github.com/anhnvcoder/short-video-platform/internal/grpcerr"
-	"github.com/anhnvcoder/short-video-platform/internal/ids"
-	"github.com/anhnvcoder/short-video-platform/internal/logx"
-	"github.com/anhnvcoder/short-video-platform/internal/objstore"
-	"github.com/anhnvcoder/short-video-platform/internal/outbox"
-	"github.com/anhnvcoder/short-video-platform/internal/pagetoken"
-	"github.com/anhnvcoder/short-video-platform/services/video-service/internal/store"
+	videov1 "github.com/anhnvcoder/svp-backend/gen/go/svp/video/v1"
+	"github.com/anhnvcoder/svp-backend/internal/callerid"
+	"github.com/anhnvcoder/svp-backend/internal/grpcerr"
+	"github.com/anhnvcoder/svp-backend/internal/ids"
+	"github.com/anhnvcoder/svp-backend/internal/logx"
+	"github.com/anhnvcoder/svp-backend/internal/objstore"
+	"github.com/anhnvcoder/svp-backend/internal/outbox"
+	"github.com/anhnvcoder/svp-backend/internal/pagetoken"
+	"github.com/anhnvcoder/svp-backend/services/video-service/internal/store"
 )
 
 const (
@@ -126,7 +126,7 @@ type Server struct {
 // New returns a Server reading and writing through pool and storage. Its metrics go to the
 // global meter provider.
 func New(pool *pgxpool.Pool, storage Storage, logger *slog.Logger) *Server {
-	readyDuration, err := otel.Meter("github.com/anhnvcoder/short-video-platform/services/video-service/internal/server").
+	readyDuration, err := otel.Meter("github.com/anhnvcoder/svp-backend/services/video-service/internal/server").
 		Float64Histogram("svp.video.ready.duration", metric.WithUnit("s"),
 			metric.WithDescription("Time from CompleteUpload to the video becoming READY or FAILED"),
 			metric.WithExplicitBucketBoundaries(readyBuckets...))

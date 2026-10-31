@@ -31,7 +31,7 @@ Số liệu trong runbook (ngưỡng, thời gian đo được) lấy từ ADR h
 - Runbook của cảnh báo: tên alert viết kebab-case, chữ viết tắt giữ thành một khối: `CircuitBreakerOpen` →
   `circuit-breaker-open.md`, `KafkaDLQRecords` → `kafka-dlq-records.md`.
 - Sự cố và quy trình: slug ngắn mô tả dấu hiệu hay việc làm, ví dụ `kyverno-down.md`, `jwt-key-rotation.md`.
-- `runbook_url` của rule là `https://github.com/anhnvcoder/short-video-platform/blob/main/docs/runbooks/<file>.md`: link đọc
+- `runbook_url` của rule là `https://github.com/anhnvcoder/svp-backend/blob/main/docs/runbooks/<file>.md`: link đọc
   từ `main`, nên runbook sửa trên nhánh chỉ có hiệu lực ở link sau khi merge. Thêm cảnh báo page mới thì thêm runbook và
   `runbook_url` trong cùng thay đổi (rule viết tay: `deploy/observability/prometheus/rules/svp-alerts.yaml`; SLO:
   `page_alert.annotations` của `deploy/observability/slo/svp-slos.yaml` rồi `make slo`), và thêm `runbook_url` vào
@@ -131,8 +131,8 @@ Sự cố đã gặp và quy trình:
 | [vuln-attestation-expired.md](vuln-attestation-expired.md) | Kyverno từ chối pod vì attestation `vuln` quá 72 giờ; `make k8s-gitops-up` dừng vì attestation cũ |
 | [jwt-key-rotation.md](jwt-key-rotation.md) | Đổi khoá ký JWT theo `kid` (định kỳ hay khi nghi lộ khoá) |
 | [postgres-restore.md](postgres-restore.md) | Postgres `svp-pg` của k3d mất hay hỏng, cần PITR, hay `make drill-k8s-backup` dừng giữa chừng |
-| [svp-gitops-setup.md](svp-gitops-setup.md) | Dựng hay kiểm cài đặt GitHub của `svp-gitops` (App `svp-gitops-promoter`, environment `promote`, ruleset), promote stg và prd, bản ghi stg, rollback, bump commit chart và checker, xoay khoá App, nghi khoá App bị lộ |
-| [svp-web-setup.md](svp-web-setup.md) | Dựng hay kiểm cài đặt GitHub của repo web `svp-web` (repo rỗng, cài đặt, App `svp-web-promoter`, environment `promote`, package GHCR public, Renovate, CodeQL, ruleset), PR tiếp quản `bot/promote-stg-web`, xoay khoá App web, nghi khoá App web bị lộ |
+| [svp-gitops-setup.md](svp-gitops-setup.md) | Dựng hay kiểm cài đặt GitHub của `svp-gitops` (App `svp-gitops-promoter`, environment `promote`, ruleset), promote stg và prd, bản ghi stg, rollback, bump commit chart và checker, việc tay khi đổi tên repo code và repo web (C6), xoay khoá App, nghi khoá App bị lộ |
+| [svp-frontend-setup.md](svp-frontend-setup.md) | Dựng hay kiểm cài đặt GitHub của repo web `svp-frontend` (repo rỗng, cài đặt, App `svp-web-promoter`, environment `promote`, package GHCR public, Renovate, CodeQL, ruleset), PR tiếp quản `bot/promote-stg-web`, 12 package GHCR mới public sau đổi tên repo (E1), xoay khoá App web, nghi khoá App web bị lộ |
 
 ## Sau sự cố
 

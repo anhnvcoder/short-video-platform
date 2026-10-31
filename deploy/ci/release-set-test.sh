@@ -15,12 +15,15 @@
 #   - lists as large as a real cluster's (the Applications over 1 MiB with their resources and sync results, the pods
 #     over 128 KiB, the most Linux takes in one argument): recorded all the same;
 #   - snapshot writes its file and exits 1 when the cluster could not be recorded now;
-#   - check takes the release-set.json written and refuses one whose release of web has a tag that is no commit; by
-#     the table of release sources it takes web of svp-web too, and refuses web of a repository no source names and
-#     the gateway under the prefix of svp-web, which publishes web alone; check --at-charts judges the releases by the
+#   - check takes the release-set.json written (six releases of backend, web of svp-frontend) and refuses one whose
+#     release of web has a tag that is no commit; by the table of release sources it takes web of the retired oldweb
+#     (svp-web) too, and refuses web of a repository no source names, web under the former backend prefix and the
+#     gateway under the prefix of svp-frontend, which publishes web alone; check --at-charts judges the releases by the
 #     table at the payload's charts revision (a throwaway copy of this repository): backend's web under charts whose
-#     table still has it passes where the working tree's table no longer does, web of svp-web under charts from before
-#     the table fails, and charts at no commit of the clone or with no revision fail saying why;
+#     table (of before the rename) still has it passes where the working tree's table no longer does, web of svp-web
+#     under charts from before the table fails, the releases of the retired sources pass under the charts of the
+#     rename and the new sources' fail under the old table, and charts at no commit of the clone or with no revision
+#     fail saying why;
 #   - record-stg.sh on a machine prints the deployment of R in stg it would make, and refuses the file of another run.
 # Runs on macOS and Linux: no network, no cluster.
 #
@@ -43,9 +46,11 @@ same() {
 has() { grep -qF -- "$2" "$1"; }
 
 services=(gateway user-service video-service engagement-service feed-service media-worker web)
-prefix=ghcr.io/anhnvcoder/short-video-platform
+prefix=ghcr.io/anhnvcoder/svp-backend
+# repo_of SERVICE: the repository of SERVICE's releases in the table of the working tree.
+repo_of() { if [ "$1" = web ]; then echo ghcr.io/anhnvcoder/svp-frontend/web; else echo "$prefix/$1"; fi; }
 gitops_url=https://github.com/anhnvcoder/svp-gitops.git
-code_url=https://github.com/anhnvcoder/short-video-platform.git
+code_url=https://github.com/anhnvcoder/svp-backend.git
 hex() { printf '%s' "$1" | shasum -a 256 | cut -c1-"$2"; }
 digest() { echo "sha256:$(hex "$1" 64)"; }
 tag=6ca2d8a795dd
@@ -83,7 +88,7 @@ gw() { git -C "$config" -c user.name=test -c user.email=test@example.invalid "$@
 git init -q "$config"
 git -C "$config" remote add origin "$gitops_url"
 image_file() {
-  printf '# The release of %s.\nimage:\n  repository: %s/%s\n  tag: "%s"\n  digest: "%s"\n' "$1" "$prefix" "$1" "$tag" "$2"
+  printf '# The release of %s.\nimage:\n  repository: %s\n  tag: "%s"\n  digest: "%s"\n' "$1" "$(repo_of "$1")" "$tag" "$2"
 }
 for svc in "${services[@]}"; do image_file "$svc" "$(digest "A-$svc")" >"$config/envs/stg/images/$svc.yaml"; done
 printf '# Charts.\nrevision: %s\npodSecurityVersion: v1.36\ncollectorConfigSha256: %s\n' "$charts" "$(hex collector 64)" \
@@ -131,14 +136,14 @@ cluster() {
       <<<"$apps")
     for p in $([ "$svc" = gateway ] && echo "$PODS_GATEWAY" || echo "A:true A:true"); do
       rel=${p%%:*} ready=${p#*:}
-      pods=$(jq --arg s "$svc" --arg img "$prefix/$svc:$tag@$(digest "$rel-$svc")" --argjson ready "$ready" \
+      pods=$(jq --arg s "$svc" --arg img "$(repo_of "$svc"):$tag@$(digest "$rel-$svc")" --argjson ready "$ready" \
         '. + [{metadata: {name: "\($s)-\(length)", labels: {"app.kubernetes.io/name": $s,
           "app.kubernetes.io/component": "server"}}, spec: {containers: [{name: $s, image: $img}]},
           status: {conditions: [{type: "Ready", status: (if $ready then "True" else "False" end)}]}}]' <<<"$pods")
     done
   done
   if [ -n "$EXTRA_POD" ]; then
-    pods=$(jq --arg img "$prefix/web@$(digest drill)" '. + [{metadata: {name: "drill-supplychain-unsigned-0",
+    pods=$(jq --arg img "$(repo_of web)@$(digest drill)" '. + [{metadata: {name: "drill-supplychain-unsigned-0",
       labels: {"app.kubernetes.io/name": "drill-supplychain-unsigned"}}, spec: {containers: [{name: "app", image: $img}]},
       status: {conditions: [{type: "Ready", status: "True"}]}}]' <<<"$pods")
   fi
@@ -219,9 +224,10 @@ if rs check "$work/bad.json" >/dev/null 2>"$work/bad.err"; then fail "check: a t
     fail "check: a tag that is no commit is refused, saying why"
 fi
 jq '.images.web.repository = "ghcr.io/anhnvcoder/svp-web/web"' "$out" >"$work/web.json"
-rs check "$work/web.json" >/dev/null 2>&1 && ok "check: web of release source svp-web is a release of web" ||
-  fail "check: web of release source svp-web is a release of web"
-for bad in "web ghcr.io/anhnvcoder/elsewhere/web" "gateway ghcr.io/anhnvcoder/svp-web/gateway"; do
+rs check "$work/web.json" >/dev/null 2>&1 && ok "check: web of the retired source oldweb (svp-web) is a release of web" ||
+  fail "check: web of the retired source oldweb (svp-web) is a release of web"
+for bad in "web ghcr.io/anhnvcoder/elsewhere/web" "gateway ghcr.io/anhnvcoder/svp-frontend/gateway" \
+  "web ghcr.io/anhnvcoder/short-video-platform/web"; do
   read -r svc repo <<<"$bad"
   jq --arg s "$svc" --arg r "$repo" '.images[$s].repository = $r' "$out" >"$work/bad.json"
   if rs check "$work/bad.json" >/dev/null 2>"$work/bad.err"; then fail "check: $svc of $repo is refused"; else
@@ -231,8 +237,9 @@ for bad in "web ghcr.io/anhnvcoder/elsewhere/web" "gateway ghcr.io/anhnvcoder/sv
 done
 
 # check --at-charts, on a throwaway copy of this repository: k0 from before the table of release sources (its one
-# source backend, web included), k1 with the table (web of both sources), and a working tree whose table has web of
-# svp-web alone, as once the old source of web is dropped.
+# source backend, web included), k1 with the table of before the repositories were renamed (web of both sources, under
+# short-video-platform and svp-web), k2 and the working tree with the working tree's table (web of the web source and
+# of the retired oldweb, the six services of backend and of the retired oldbackend).
 code=$work/code
 mkdir -p "$code/deploy/k8s" "$code/deploy/helm/svp-policy"
 cp -R "$here" "$code/deploy/ci"
@@ -250,18 +257,37 @@ cg() { git -C "$code" -c user.name=test -c user.email=test@example.invalid -c co
 cg init -q && cg add -A && cg commit -q -m "before the table"
 k0=$(cg rev-parse HEAD)
 cp "$here/../helm/svp-policy/values.yaml" "$code/deploy/helm/svp-policy/values.yaml"
-cp -R "$here/../helm/svp-policy/files" "$code/deploy/helm/svp-policy/"
+mkdir -p "$code/deploy/helm/svp-policy/files"
+# The table of before the rename (history: these names are what it held then).
+cat >"$code/deploy/helm/svp-policy/files/sources.json" <<'TABLE'
+{"sources": [
+  {"name": "backend", "repository": "https://github.com/anhnvcoder/short-video-platform",
+   "imagePrefix": "ghcr.io/anhnvcoder/short-video-platform/",
+   "services": ["gateway", "user-service", "video-service", "engagement-service", "feed-service", "media-worker", "web"],
+   "drillImages": ["drill-vulnerable", "drill-unsigned"], "issuer": "https://token.actions.githubusercontent.com",
+   "subject": "https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main",
+   "provenanceRef": "refs/heads/main", "promoter": "svp-gitops-promoter"},
+  {"name": "web", "repository": "https://github.com/anhnvcoder/svp-web", "imagePrefix": "ghcr.io/anhnvcoder/svp-web/",
+   "services": ["web"], "drillImages": [], "issuer": "https://token.actions.githubusercontent.com",
+   "subject": "https://github.com/anhnvcoder/svp-web/.github/workflows/images.yml@refs/heads/main",
+   "provenanceRef": "refs/heads/main", "promoter": "svp-web-promoter"}]}
+TABLE
 cg add -A && cg commit -q -m "the table of release sources"
 k1=$(cg rev-parse HEAD)
-jq '(.sources[] | select(.name == "backend") | .services) -= ["web"]' "$here/../helm/svp-policy/files/sources.json" \
-  >"$code/deploy/helm/svp-policy/files/sources.json"
-# at_charts NAME WANT_RC MESSAGE REVISION WEB_REPOSITORY [--at-charts]: check of the copy on release-set.json with
-# those charts' revision and web's repository; MESSAGE on stderr when WANT_RC is not 0.
+cp "$here/../helm/svp-policy/files/sources.json" "$code/deploy/helm/svp-policy/files/sources.json"
+cg add -A && cg commit -q -m "the table of the working tree"
+k2=$(cg rev-parse HEAD)
+old=ghcr.io/anhnvcoder/short-video-platform
+# at_charts NAME WANT_RC MESSAGE REVISION SIX_PREFIX WEB_REPOSITORY [--at-charts]: check of the copy on
+# release-set.json with those charts' revision, the six services under SIX_PREFIX and web's repository; MESSAGE on
+# stderr when WANT_RC is not 0.
 at_charts() {
   local name=$1 want=$2 msg=$3 rc=0
-  jq --arg c "$4" --arg r "$5" '.charts.revision = $c | .images.web.repository = $r' "$out" >"$work/at.json"
+  jq --arg c "$4" --arg p "$5" --arg r "$6" '.charts.revision = $c | .images.web.repository = $r
+    | .images |= with_entries(if .key == "web" then . else .value.repository = "\($p)/\(.key)" end)' "$out" \
+    >"$work/at.json"
   env -i PATH="$PATH" HOME="$work" TMPDIR="${TMPDIR:-/tmp}" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
-    "$code/deploy/ci/release-set.sh" check ${6:+"$6"} "$work/at.json" >/dev/null 2>"$work/at.err" || rc=$?
+    "$code/deploy/ci/release-set.sh" check ${7:+"$7"} "$work/at.json" >/dev/null 2>"$work/at.err" || rc=$?
   if [ "$rc" != "$want" ]; then
     fail "$name: exit $rc, want $want"$'\n'"$(sed 's/^/      /' "$work/at.err")"
   elif [ "$want" != 0 ] && ! has "$work/at.err" "$msg"; then
@@ -270,19 +296,23 @@ at_charts() {
     ok "$name"
   fi
 }
-at_charts "check: backend's web under charts of the table, judged by the working tree's table: refused" 1 \
-  "does not name one release on GHCR" "$k1" "$prefix/web"
-at_charts "check --at-charts: backend's web under charts of the table that still has it" 0 "" "$k1" "$prefix/web" \
+at_charts "check: backend's web under charts of the old table, judged by the working tree's table: refused" 1 \
+  "does not name one release on GHCR" "$k1" "$old" "$old/web"
+at_charts "check --at-charts: backend's web under charts of the table that still has it" 0 "" "$k1" "$old" "$old/web" \
   --at-charts
-at_charts "check --at-charts: web of svp-web under charts of the table" 0 "" "$k1" ghcr.io/anhnvcoder/svp-web/web \
-  --at-charts
+at_charts "check --at-charts: web of svp-web under charts of the table" 0 "" "$k1" "$old" \
+  ghcr.io/anhnvcoder/svp-web/web --at-charts
 at_charts "check --at-charts: web of svp-web under charts from before the table" 1 "does not name one release on GHCR" \
-  "$k0" ghcr.io/anhnvcoder/svp-web/web --at-charts
+  "$k0" "$old" ghcr.io/anhnvcoder/svp-web/web --at-charts
+at_charts "check --at-charts: the releases of the retired sources under the charts of the rename" 0 "" "$k2" "$old" \
+  ghcr.io/anhnvcoder/svp-web/web --at-charts
+at_charts "check --at-charts: the releases of the new sources under the charts of the old table" 1 \
+  "does not name one release on GHCR" "$k1" "$prefix" "$(repo_of web)" --at-charts
 at_charts "check --at-charts: charts at no commit of this clone" 1 \
   "the release sources of its charts' revision cannot be read: $charts is not a commit of this clone" "$charts" \
-  "$prefix/web" --at-charts
+  "$old" "$old/web" --at-charts
 at_charts "check --at-charts: no charts revision" 1 \
-  "its charts are not revision (40 hex), podSecurityVersion and collectorConfigSha256" "" "$prefix/web" --at-charts
+  "its charts are not revision (40 hex), podSecurityVersion and collectorConfigSha256" "" "$old" "$old/web" --at-charts
 
 # record-stg.sh on a machine: the requests it would send, nothing sent; a file of another run refused.
 machine record-stg.sh "$out" >"$work/record.out" 2>&1 && ok "record-stg.sh: a machine prints the record" ||
@@ -290,7 +320,7 @@ machine record-stg.sh "$out" >"$work/record.out" 2>&1 && ok "record-stg.sh: a ma
 has "$work/record.out" "-X POST repos/anhnvcoder/svp-gitops/deployments --input -" &&
   has "$work/record.out" "\"ref\":\"$r1\",\"environment\":\"stg\"" && ok "record-stg.sh: the deployment of R1 in stg" ||
   fail "record-stg.sh: the deployment of R1 in stg"
-jq '.run_url = "https://github.com/anhnvcoder/short-video-platform/actions/runs/1"' "$out" >"$work/other-run.json"
+jq '.run_url = "https://github.com/anhnvcoder/svp-backend/actions/runs/1"' "$out" >"$work/other-run.json"
 if machine record-stg.sh "$work/other-run.json" >/dev/null 2>"$work/record.err"; then
   fail "record-stg.sh: the payload of another run is refused"
 else
@@ -325,7 +355,7 @@ check_err "a sync running: says so" "after the checks: Application gateway: a sy
 case_ "a Deployment not Healthy" 1 DEPLOY_UNHEALTHY=feed-service --
 check_err "a Deployment not Healthy: names it" "before smoke: feed-service: Deployment replicas 2/2, updated 1, available 2, not Healthy"
 case_ "the pod of a drill's Deployment" 0 EXTRA_POD=1 -- EXTRA_POD=1
-same "the pod of a drill: not a release of web" "$prefix/web@$(digest A-web)" \
+same "the pod of a drill: not a release of web" "$(repo_of web)@$(digest A-web)" \
   "$(jq -r '.images.web | "\(.repository)@\(.digest)"' "$work/out/release-set.json")"
 
 case_ "lists over the limit of one argument" 0 BIG=1 -- BIG=1

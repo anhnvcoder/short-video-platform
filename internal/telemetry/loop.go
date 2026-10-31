@@ -17,7 +17,7 @@ type Loop struct{ last atomic.Int64 }
 // NewLoop creates the last-success gauge for a fixed background loop name.
 func NewLoop(name string) *Loop {
 	l := &Loop{}
-	meter := otel.Meter("github.com/anhnvcoder/short-video-platform/internal/telemetry")
+	meter := otel.Meter("github.com/anhnvcoder/svp-backend/internal/telemetry")
 	gauge, err := meter.Int64ObservableGauge("svp.loop.last_success", metric.WithUnit("s"))
 	if err != nil {
 		otel.Handle(err)

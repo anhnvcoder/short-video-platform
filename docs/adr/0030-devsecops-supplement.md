@@ -579,7 +579,7 @@ quyết định riêng, chưa làm.
 
 ## Hiện thực ở
 
-Từ 2026-10-31 mã web ở repo `svp-web` ([ADR-0033](0033-svp-web-repo.md)): mỗi đường `web/<x>` dưới đây là `<x>` của repo đó; `gen/api.d.ts` của web từ đó sinh từ hợp đồng đã phát hành.
+Từ 2026-10-31 mã web ở repo `svp-frontend` ([ADR-0033](0033-svp-web-repo.md)): mỗi đường `web/<x>` dưới đây là `<x>` của repo đó; `gen/api.d.ts` của web từ đó sinh từ hợp đồng đã phát hành.
 
 - `renovate.json`: rule `rangeStrategy: bump` cho directive `go` (mục 1).
 - `Makefile`: `GOVULNCHECK_VERSION`, `GRYPE_IMAGE`, `SCHEMATHESIS_IMAGE` (dòng `# renovate:` ngay trên); `make tools` cài
@@ -610,9 +610,9 @@ Từ 2026-10-31 mã web ở repo `svp-web` ([ADR-0033](0033-svp-web-repo.md)): m
 
 ## Kết quả
 
-Nguồn: lượt CI của PR #28 trên SHA `d58e67d` ngày 2026-10-29: `ci.yml` [40804508919](https://github.com/anhnvcoder/short-video-platform/actions/runs/40804508919),
-`images.yml` [40804508815](https://github.com/anhnvcoder/short-video-platform/actions/runs/40804508815), CodeQL
-[40804504269](https://github.com/anhnvcoder/short-video-platform/actions/runs/40804504269), cả ba xanh, `ci-ok` và `images-ok` đạt;
+Nguồn: lượt CI của PR #28 trên SHA `d58e67d` ngày 2026-10-29: `ci.yml` [40804508919](https://github.com/anhnvcoder/svp-backend/actions/runs/40804508919),
+`images.yml` [40804508815](https://github.com/anhnvcoder/svp-backend/actions/runs/40804508815), CodeQL
+[40804504269](https://github.com/anhnvcoder/svp-backend/actions/runs/40804504269), cả ba xanh, `ci-ok` và `images-ok` đạt;
 số trên máy (Mac arm64) đo ngày 2026-10-28 đến 2026-10-29 lúc hiện thực.
 
 **govulncheck (mục 1).**
@@ -663,7 +663,7 @@ viết tạm (đã xoá): `make fuzz` dừng, in tên target và tệp input, ex
 
 **CodeQL (mục 4).**
 
-- Bật ngày 2026-10-29 bằng lệnh của mục 4 (response trả lượt [40801737073](https://github.com/anhnvcoder/short-video-platform/actions/runs/40801737073)).
+- Bật ngày 2026-10-29 bằng lệnh của mục 4 (response trả lượt [40801737073](https://github.com/anhnvcoder/svp-backend/actions/runs/40801737073)).
   Cấu hình đọc lại: `configured`, query suite `default`, threat model `remote`, lịch `weekly`, ngôn ngữ `actions`, `go`,
   `javascript-typescript` (API liệt kê thêm `javascript`, `typescript`).
 - `sha_pinning_required: true` không chặn workflow động: lượt CodeQL của PR chạy và xanh, ba job `Analyze` (`javascript-typescript`
@@ -690,7 +690,7 @@ viết tạm (đã xoá): `make fuzz` dừng, in tên target và tệp input, ex
 - Thời gian thêm mỗi chân: trên máy 5 s (gateway arm64), 7 s (web arm64) khi DB đã cache, lần tải DB đầu 2 phút 13 s (archive 196 MB,
   3,1 GB trên đĩa); trên CI 2–8 s mỗi chân, cả 14 chân dùng cache `grype-db-2026-10-29`.
 - SARIF grype lên tab Security: lượt PR không có artifact SARIF (job `sarif` chỉ chạy ở `main`): **kiểm sau push**. Final review của
-  thay đổi tìm ra job `sarif` ban đầu đưa cả hai công cụ cho một `upload-sarif`: lượt `main` [40733866890](https://github.com/anhnvcoder/short-video-platform/actions/runs/40733866890)
+  thay đổi tìm ra job `sarif` ban đầu đưa cả hai công cụ cho một `upload-sarif`: lượt `main` [40733866890](https://github.com/anhnvcoder/svp-backend/actions/runs/40733866890)
   (chỉ trivy) ghi "Combining SARIF files" cho 14 file, nên lượt `main` đầu tiên build cả bảy image với grype (28 run) sẽ bị từ chối.
   Sửa thành mỗi công cụ một upload (mục 6). Kiểm trên máy bằng file SARIF giả và chính script của bước: 7 image (14 trivy, 14 grype)
   → hai upload 14 run; rescan 14 file → chỉ upload trivy; 21 run một công cụ → `::error::21 trivy SARIF runs in 21 files: GitHub

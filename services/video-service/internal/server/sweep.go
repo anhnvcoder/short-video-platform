@@ -9,9 +9,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/anhnvcoder/short-video-platform/internal/objstore"
-	"github.com/anhnvcoder/short-video-platform/internal/telemetry"
-	"github.com/anhnvcoder/short-video-platform/services/video-service/internal/store"
+	"github.com/anhnvcoder/svp-backend/internal/objstore"
+	"github.com/anhnvcoder/svp-backend/internal/telemetry"
+	"github.com/anhnvcoder/svp-backend/services/video-service/internal/store"
 )
 
 // sweepLockID is the transaction-scoped advisory lock a sweep batch holds, so only one instance

@@ -7,7 +7,7 @@
 package mediav1
 
 import (
-	v1 "github.com/anhnvcoder/short-video-platform/gen/go/svp/event/v1"
+	v1 "github.com/anhnvcoder/svp-backend/gen/go/svp/event/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	durationpb "google.golang.org/protobuf/types/known/durationpb"
@@ -444,8 +444,8 @@ const file_svp_media_v1_events_proto_rawDesc = "" +
 	"'TRANSCODE_FAILURE_REASON_SOURCE_MISSING\x10\x01\x12*\n" +
 	"&TRANSCODE_FAILURE_REASON_INVALID_INPUT\x10\x02\x12.\n" +
 	"*TRANSCODE_FAILURE_REASON_DURATION_EXCEEDED\x10\x03\x12.\n" +
-	"*TRANSCODE_FAILURE_REASON_RETRIES_EXHAUSTED\x10\x04B\xb9\x01\n" +
-	"\x10com.svp.media.v1B\vEventsProtoP\x01ZFgithub.com/anhnvcoder/short-video-platform/gen/go/svp/media/v1;mediav1\xa2\x02\x03SMX\xaa\x02\fSvp.Media.V1\xca\x02\fSvp\\Media\\V1\xe2\x02\x18Svp\\Media\\V1\\GPBMetadata\xea\x02\x0eSvp::Media::V1b\x06proto3"
+	"*TRANSCODE_FAILURE_REASON_RETRIES_EXHAUSTED\x10\x04B\xb0\x01\n" +
+	"\x10com.svp.media.v1B\vEventsProtoP\x01Z=github.com/anhnvcoder/svp-backend/gen/go/svp/media/v1;mediav1\xa2\x02\x03SMX\xaa\x02\fSvp.Media.V1\xca\x02\fSvp\\Media\\V1\xe2\x02\x18Svp\\Media\\V1\\GPBMetadata\xea\x02\x0eSvp::Media::V1b\x06proto3"
 
 var (
 	file_svp_media_v1_events_proto_rawDescOnce sync.Once

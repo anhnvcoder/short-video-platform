@@ -312,28 +312,28 @@ hooks: ## Point git at .githooks (run once per clone)
 	git config core.hooksPath .githooks
 
 # The web client's end-to-end tests, measurements and source map upload against the stack of make up are code of
-# svp-web (its e2e/, lighthouse/ and Makefile). Each target here runs the target of svp-web its help names, in the
+# svp-frontend (its e2e/, lighthouse/ and Makefile). Each target here runs the target of svp-frontend its help names, in the
 # clone web_dir of deploy/k8s/lib.sh names (<workspace>/frontend, or SVP_WEB_DIR, which CI points at the clone of make
 # web-clone), with that clone's Node, pnpm and Playwright browsers, against this checkout's stack, scripts and .env
 # (SVP_BACKEND_DIR); results go to test-results/ of the clone. LOCAL LAB ONLY: the e2e seed and every Playwright worker,
 # measure-upload and Lighthouse delete the gateway's register rate limit keys in Redis db 10, as make smoke does.
 IN_WEB = dir=$$(bash -c '$(K8S_LIB) && web_dir') && SVP_BACKEND_DIR='$(CURDIR)' $(MAKE) --no-print-directory -C "$$dir"
 
-web-e2e: ## Playwright end-to-end tests of the web client on Chromium and WebKit against the stack of make up (make e2e of svp-web)
+web-e2e: ## Playwright end-to-end tests of the web client on Chromium and WebKit against the stack of make up (make e2e of svp-frontend)
 	@$(IN_WEB) e2e
 
-measure-web: ## Run the web client's e2e tests and print time to first frame after a swipe (p50/p95 per browser) and the memory of container web at rest and after (make measure-web of svp-web)
+measure-web: ## Run the web client's e2e tests and print time to first frame after a swipe (p50/p95 per browser) and the memory of container web at rest and after (make measure-web of svp-frontend)
 	@$(IN_WEB) measure-web
 
-measure-upload: ## Upload a ~100 MB video from Chromium through /upload; print time, throughput, page CPU and time to READY; needs ffmpeg and jq (make measure-upload of svp-web)
+measure-upload: ## Upload a ~100 MB video from Chromium through /upload; print time, throughput, page CPU and time to READY; needs ffmpeg and jq (make measure-upload of svp-frontend)
 	@$(IN_WEB) measure-upload
 
-web-lighthouse: ## Lighthouse (mobile, one run per page) of the feed logged in and /v/{id} logged out: LCP/CLS/TBT thresholds (make lighthouse of svp-web)
+web-lighthouse: ## Lighthouse (mobile, one run per page) of the feed logged in and /v/{id} logged out: LCP/CLS/TBT thresholds (make lighthouse of svp-frontend)
 	@$(IN_WEB) lighthouse
 
 # Only for a web client built from that clone (make up WEB_FROM=clone OBS=lgtm): a release keeps the build id CI gave
 # it, and its maps come from CI.
-web-sourcemaps: ## Upload the source maps of the web client's browser bundle, from the build the stack of make up OBS=lgtm WEB_FROM=clone runs, to its GlitchTip (http://127.0.0.1:8000); checks first that the web serves that build (make sourcemaps of svp-web)
+web-sourcemaps: ## Upload the source maps of the web client's browser bundle, from the build the stack of make up OBS=lgtm WEB_FROM=clone runs, to its GlitchTip (http://127.0.0.1:8000); checks first that the web serves that build (make sourcemaps of svp-frontend)
 	@$(IN_WEB) sourcemaps
 
 # Docker and compose targets live in their own file (stage 1, compose card).

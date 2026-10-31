@@ -2,7 +2,7 @@
 # plan.sh: the first job of images.yml. Decides what
 # this run does and hands it to the jobs after it as outputs (ci_output of platform.sh; stdout on a machine):
 #   mode            build | rescan | drill
-#   images          JSON array of the images to build (build: changed services; drill: the two drill images)
+#   images          JSON array of the images to build (build: changed services; drill: the drill images)
 #   legs            JSON matrix {"include": [{image, arch, runner}]}, every image on amd64 and arm64 (native runners)
 #   has_images      true | false
 #   base            the commit the changes were compared with ("" when none could be used)
@@ -25,7 +25,7 @@
 #                      all six
 #   pull request       merge-base of HEAD with the PR's base branch
 #   workflow_dispatch  merge-base of HEAD with origin/main; input services (all, or names from the six this repository
-#                      builds: built_services of deploy/k8s/lib.sh, never web, which svp-web builds) overrides
+#                      builds: built_services of deploy/k8s/lib.sh, never web, which svp-frontend builds) overrides
 #
 # Another repository's tree (SVP_CODE_ROOT, code_root of common.sh, is not this checkout: the CI of another release
 # source runs this script from a pinned checkout of this one): its whole tree is the code of its images, so a build

@@ -9,7 +9,8 @@
 # releases of the record (repository, tag, digest; every other line of main's file kept, but for the first sentence of
 # its comment when the release is of another release source than main's: that of the new source, from
 # deploy/ci/promote.sh --header, which names its repository and workflow) and envs/prd/charts.yaml with
-# its revision, podSecurityVersion and collectorConfigSha256, pushes it, opens or updates its pull request there. No
+# its revision, podSecurityVersion and collectorConfigSha256 (its comments kept, the URL of a renamed repository in
+# them made its current one: current_repo_urls of common.sh), pushes it, opens or updates its pull request there. No
 # auto-merge: envs/prd/ has a code owner, who must approve, and the check of svp-gitops (deploy/ci/gitops-check.sh)
 # compares the set at the head of the pull request with the records again. The record's ref (the commit of svp-gitops
 # stg ran) must be on main of svp-gitops: a record of a commit main no longer holds (a force push, a branch) is refused.
@@ -115,7 +116,8 @@ for svc in "${svp_services[@]}"; do
   fi
 done
 IFS="|" read -r rev psv sum <<<"$(jq -r '.payload.charts | "\(.revision)|\(.podSecurityVersion)|\(.collectorConfigSha256)"' <<<"$record")"
-charts=$(gg show "$gmain:$charts_file" | awk -v rev="$rev" -v psv="$psv" -v sha="$sum" '
+# Main's file with its three lines replaced, its comments kept, a renamed repository's URL in them made its current one.
+charts=$(gg show "$gmain:$charts_file" | current_repo_urls | awk -v rev="$rev" -v psv="$psv" -v sha="$sum" '
   /^revision:/ { n["r"]++; print "revision: " rev; next }
   /^podSecurityVersion:/ { n["p"]++; print "podSecurityVersion: " psv; next }
   /^collectorConfigSha256:/ { n["c"]++; print "collectorConfigSha256: " sha; next }

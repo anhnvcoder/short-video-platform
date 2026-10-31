@@ -1,6 +1,6 @@
-# Dựng và kiểm cài đặt GitHub của `svp-web` (repo, App `svp-web-promoter`, environment `promote`, package GHCR, ruleset)
+# Dựng và kiểm cài đặt GitHub của `svp-frontend` (repo, App `svp-web-promoter`, environment `promote`, package GHCR, ruleset)
 
-- Quy trình làm tay, không có cảnh báo. Mở khi dựng repo web `anhnvcoder/svp-web` lần đầu (tách web khỏi repo backend), khi dựng lại sau
+- Quy trình làm tay, không có cảnh báo. Mở khi dựng repo web `anhnvcoder/svp-frontend` lần đầu (tách web khỏi repo backend), khi dựng lại sau
   khi gỡ App, khi xoay khoá App, khi nghi khoá hay token của App bị lộ, khi lượt promote stg của web đỏ hay PR của nó không tự merge.
 - Mọi thao tác ghi (tạo repo, UI Settings, tạo và cài App, đặt secret, đổi visibility package, nhập ruleset, bật CodeQL, chạy lại check) do
   **người học chạy** với quyền admin. Mọi lệnh "Kiểm" ở đây chỉ `GET` (hay kéo ẩn danh từ GHCR), chạy bằng đăng nhập `gh` của người học:
@@ -20,12 +20,12 @@ repo backend giữ chart, hợp đồng API và script CI dùng chung:
 
 ```mermaid
 flowchart LR
-  subgraph be["repo backend: anhnvcoder/short-video-platform"]
-    contract["hợp đồng API đã ký<br/>ghcr.io/…/short-video-platform/api/gateway"]
+  subgraph be["repo backend: anhnvcoder/svp-backend"]
+    contract["hợp đồng API đã ký<br/>ghcr.io/…/svp-backend/api/gateway"]
     scripts["deploy/ci/*.sh, sources.json<br/>(ở BACKEND_COMMIT)"]
   end
-  subgraph web["repo anhnvcoder/svp-web"]
-    ci["ci.yml: lint, test, build, generate-check"] --> img["images.yml: build, quét, ký, provenance<br/>ghcr.io/anhnvcoder/svp-web/web<br/>…/svp-web/web-sourcemaps"]
+  subgraph web["repo anhnvcoder/svp-frontend"]
+    ci["ci.yml: lint, test, build, generate-check"] --> img["images.yml: build, quét, ký, provenance<br/>ghcr.io/anhnvcoder/svp-frontend/web<br/>…/svp-frontend/web-sourcemaps"]
     img --> promote["job promote<br/>environment promote (chỉ main)<br/>variable SVP_WEB_APP_CLIENT_ID + secret SVP_WEB_APP_PRIVATE_KEY"]
   end
   app["GitHub App svp-web-promoter<br/>token 1 giờ, chỉ svp-gitops,<br/>contents + pull_requests"]
@@ -38,11 +38,11 @@ flowchart LR
   app -- "token: đẩy nhánh, mở PR, bật auto-merge" --> pr
 ```
 
-**Vì sao App thứ hai, không dùng chung `svp-gitops-promoter`** (ADR-0033 §4, bảng "Credential của `svp-web`"):
+**Vì sao App thứ hai, không dùng chung `svp-gitops-promoter`** (ADR-0033 §4, bảng "Credential của `svp-frontend`"):
 
 - Khoá riêng, thu hồi riêng: lộ khoá của repo web không promote được image backend, và suspend App web không dừng promote của backend.
 - Tác giả PR là `svp-web-promoter[bot]`, khác bot backend, nên check của `svp-gitops` giới hạn được bot nào sửa file nào: bot web chỉ được
-  đổi `envs/stg/images/web.yaml` với image dưới prefix `ghcr.io/anhnvcoder/svp-web/` (ADR-0033 §3, mục "Tác giả PR").
+  đổi `envs/stg/images/web.yaml` với image dưới prefix `ghcr.io/anhnvcoder/svp-frontend/` (ADR-0033 §3, mục "Tác giả PR").
 - Không quyền `deployments`: bản ghi stg vẫn chỉ do App backend tạo, nên token web lộ không giả được bản ghi mà promote prd chép.
 - Lý do chung của App so với PAT hay `GITHUB_TOKEN` như ở [svp-gitops-setup.md](svp-gitops-setup.md#ý-nghĩa-và-tác-động-tới-người-dùng).
 
@@ -57,7 +57,7 @@ Một lượt, chỉ đọc. Mỗi lệnh in một dòng (`-q` in JSON gọn, kh
 xem mục của bước đó ở "Khôi phục và xác nhận". Lệnh của phần nào chưa làm tới (repo còn rỗng, chưa có lượt CI) thì bỏ qua.
 
 ```sh
-W=repos/anhnvcoder/svp-web
+W=repos/anhnvcoder/svp-frontend
 # A1, A2. Repo và cài đặt
 gh api $W -q '{visibility, default_branch, has_issues, allow_auto_merge, allow_squash_merge, allow_merge_commit, allow_rebase_merge}'
 gh api $W -q '{squash_merge_commit_title, squash_merge_commit_message}'
@@ -78,7 +78,7 @@ gh api $W/actions/secrets -q .total_count
 anon() { t=$(curl -s "https://ghcr.io/token?scope=repository:anhnvcoder/$1:pull" | jq -r '.token // empty')
   [ -n "$t" ] || { echo "$1 DENIED"; return; }
   echo "$1 $(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $t" "https://ghcr.io/v2/anhnvcoder/$1/tags/list")"; }
-anon short-video-platform/api/gateway; anon svp-web/web; anon svp-web/web-sourcemaps
+anon svp-backend/api/gateway; anon svp-frontend/web; anon svp-frontend/web-sourcemaps
 # B2. CodeQL default setup
 gh api $W/code-scanning/default-setup -q '{state, languages, query_suite, schedule}'
 # C2. Ruleset (sau khi nhập)
@@ -101,7 +101,7 @@ gh api $W/rules/branches/main -q '.[] | .type'
 | variables | `{"names":["SVP_WEB_APP_CLIENT_ID"],"total_count":1}` |
 | secrets | `{"names":["SVP_WEB_APP_PRIVATE_KEY"],"total_count":1}` |
 | repo secrets | `0` (`actions/secrets`: khoá đặt ở repo thay vì environment chạy được ở mọi nhánh, bỏ qua rule `main`-only; xoá ở Settings → Secrets and variables → Actions → tab Repository secrets) |
-| `anon` | mỗi package một dòng `<package> 200`. `DENIED` là package private hay chưa có (đọc ngày 2026-10-30: package chưa có trả `DENIED`, package public `200`). `api/gateway` có từ khi PR-1 của backend merge; hai package `svp-web/…` có từ lượt `images.yml` đầu của `svp-web` |
+| `anon` | mỗi package một dòng `<package> 200`. `DENIED` là package private hay chưa có (đọc ngày 2026-10-30: package chưa có trả `DENIED`, package public `200`). sau đổi tên repo (2026-10-31) cả ba là package mới: `svp-backend/api/gateway` có từ lượt `images.yml` đầu của backend sau đổi tên, hai package `svp-frontend/…` từ lượt `images.yml` đầu của `svp-frontend` sau đổi tên (E1) |
 | `default-setup` | `"state":"configured"`, `languages` có `actions` và `javascript-typescript` (API liệt kê thêm `javascript`, `typescript`), `"query_suite":"default"`, `"schedule":"weekly"` |
 | rulesets | đúng một dòng `main`, `"target":"branch"`, `"enforcement":"active"` |
 | `rules/branches/main` | `deletion`, `non_fast_forward`, `pull_request`, `required_status_checks` |
@@ -132,7 +132,7 @@ Theo thứ tự hay gặp (hai cái đầu đã gặp khi dựng `svp-gitops`, 2
 [svp-gitops-setup.md](svp-gitops-setup.md#giảm-thiểu); App backend không bị đụng):
 
 1. **Suspend bản cài** (cắt ngay mọi token còn hạn): https://github.com/settings/installations → `svp-web-promoter` → **Configure** → cuối
-   trang **Suspend**. Từ lúc này job `promote` của `svp-web` đỏ ở bước gọi API; web của stg giữ bản đang chạy; promote của backend chạy
+   trang **Suspend**. Từ lúc này job `promote` của `svp-frontend` đỏ ở bước gọi API; web của stg giữ bản đang chạy; promote của backend chạy
    bình thường.
 2. **Xoá khoá bị lộ, tạo khoá mới** theo "Xoay khoá App" bước 1, 2, 4 (xoá khoá cũ ngay).
 3. **Xem bot đã làm gì** (chỉ đọc). Token chỉ tới `svp-gitops`, chỉ `contents`, `pull_requests` write: đẩy được nhánh, mở PR, tạo tag hay
@@ -150,7 +150,7 @@ Theo thứ tự hay gặp (hai cái đầu đã gặp khi dựng `svp-gitops`, 2
    ```
 
    Thứ token lộ làm được mà không ai duyệt: PR chỉ đổi `envs/stg/images/web.yaml` qua `gitops-ok`, mà check chỉ nhận image dưới prefix
-   `svp-web`, tag là commit trên `main` của `svp-web`, ký bởi `images.yml@refs/heads/main` của `svp-web` (ADR-0033 §3). Lưu ý cửa sổ từ
+   `svp-frontend`, tag là commit trên `main` của `svp-frontend`, ký bởi `images.yml@refs/heads/main` của `svp-frontend` (ADR-0033 §3). Lưu ý cửa sổ từ
    bước 1 tới bước 4 của ADR-0033 §9 (từ lúc có khoá ở A3–A5 tới khi D1 "Trước đó" bump `CHECKER_COMMIT`): checker còn cũ chưa có luật tác
    giả, nên trong cửa sổ đó token lộ đổi được mọi file `envs/stg/` mà bot backend được đổi, ví dụ `charts.yaml`. Suspend ngay bước 1 là
    việc cần làm đầu tiên, trước mọi bước khác. Nên trường hợp xấu
@@ -162,7 +162,7 @@ Theo thứ tự hay gặp (hai cái đầu đã gặp khi dựng `svp-gitops`, 2
 
 **Gỡ hẳn** (không dùng App nữa, hay dựng lại từ đầu): https://github.com/settings/installations → `svp-web-promoter` → **Configure** →
 **Uninstall**; trang App https://github.com/settings/apps/svp-web-promoter → **Advanced** → **Delete GitHub App**; xoá variable và secret của
-environment `promote` của `svp-web` (Settings → Environments → `promote`). Dựng lại theo A3–A5.
+environment `promote` của `svp-frontend` (Settings → Environments → `promote`). Dựng lại theo A3–A5.
 
 ## Khôi phục và xác nhận
 
@@ -179,7 +179,7 @@ Dựng từ đầu theo thứ tự phụ thuộc của ADR-0033 §9:
 **Làm gì** (người học chạy, lệnh ghi):
 
 ```sh
-gh repo create anhnvcoder/svp-web --public --description 'Web client (Next.js + BFF) of the short-video platform lab'
+gh repo create anhnvcoder/svp-frontend --public --description 'Web client (Next.js + BFF) of the short-video platform lab'
 ```
 
 Không `--add-readme`, `--license`, `--gitignore` (hay trên UI https://github.com/new: không tích **Add a README file**, **.gitignore**
@@ -192,18 +192,18 @@ None, **License** None).
 **Kiểm:**
 
 ```sh
-gh api repos/anhnvcoder/svp-web -q '{visibility, size}'          # {"size":0,"visibility":"public"}
-gh api repos/anhnvcoder/svp-web/commits 2>&1 | tail -1           # 409: Git Repository is empty.
+gh api repos/anhnvcoder/svp-frontend -q '{visibility, size}'          # {"size":0,"visibility":"public"}
+gh api repos/anhnvcoder/svp-frontend/commits 2>&1 | tail -1           # 409: Git Repository is empty.
 ```
 
 **Nếu sai:** repo đã có commit (lệnh thứ hai liệt kê commit) và chưa push lịch sử → xoá repo rồi tạo lại (Settings → Danger Zone →
 **Delete this repository**; người học chạy, chỉ khi repo chưa có gì khác). `private` → Settings → Danger Zone → **Change visibility**.
 
-### A2. Cài đặt repo `svp-web`
+### A2. Cài đặt repo `svp-frontend`
 
 Làm trước khi bất kỳ commit nào có `.github/workflows/` được push (repo backend bật cài đặt trước push đầu, ADR-0015 §11).
 
-**Làm gì** (https://github.com/anhnvcoder/svp-web/settings):
+**Làm gì** (https://github.com/anhnvcoder/svp-frontend/settings):
 
 - **General** → mục **Pull Requests**: bật **Allow squash merging**, ô **Default commit message** chọn **Pull request title and
   description**; tắt **Allow merge commits** và **Allow rebase merging**; bật **Allow auto-merge**. Mục **Features**: giữ **Issues** bật.
@@ -220,16 +220,16 @@ Làm trước khi bất kỳ commit nào có `.github/workflows/` được push 
 **Vì sao** (ADR-0033 §10: như `svp-gitops` ở điểm khác backend, còn lại như backend):
 
 - Chỉ squash, auto-merge: mỗi PR là đúng một commit trên `main`, tức một tag image (12 hex của commit) và một ứng viên phát hành; luật
-  không lùi của promote web so tổ tiên trên `main` của `svp-web` (ADR-0033 §4), lịch sử thẳng thì tổ tiên trùng thứ tự merge; rollback
+  không lùi của promote web so tổ tiên trên `main` của `svp-frontend` (ADR-0033 §4), lịch sử thẳng thì tổ tiên trùng thứ tự merge; rollback
   một thay đổi là revert một commit. Auto-merge: Renovate tự bật trên PR bản `patch`, `digest` của danh sách cho phép (gói npm, Node,
   base image, image dịch vụ của CI; ADR-0035); người học bật trên PR của mình hay PR Renovate còn lại (sau khi đọc) để PR tự merge khi
   `ci-ok`, `images-ok` xanh; không mở đường nào qua ruleset (C2).
 - Commit squash lấy tiêu đề và mô tả của PR: tiêu đề PR (conventional commit) thành message trên `main`, footer `Refs:` hay dòng `This
   reverts commit <sha>.` của PR revert còn trong commit; mặc định của GitHub lấy message commit lẻ khi PR có một commit.
-- Chỉ action của GitHub và `sigstore/cosign-installer`, ghim SHA bắt buộc: như repo backend (ADR-0015 §11); `svp-web` ký image và
+- Chỉ action của GitHub và `sigstore/cosign-installer`, ghim SHA bắt buộc: như repo backend (ADR-0015 §11); `svp-frontend` ký image và
   attest provenance bằng cosign nên cần action cài cosign, khác `svp-gitops` (danh sách rỗng). Tag của action có thể bị đẩy sang code
   khác, SHA thì không.
-- Tắt "create and approve pull requests" (khác backend, như `svp-gitops`): không workflow nào của `svp-web` mở hay duyệt PR trong chính
+- Tắt "create and approve pull requests" (khác backend, như `svp-gitops`): không workflow nào của `svp-frontend` mở hay duyệt PR trong chính
   nó; PR promote mở ở `svp-gitops` bằng token App, không bằng `GITHUB_TOKEN`. Quyền không ai dùng thì tắt. Token mặc định chỉ đọc; job
   cần `packages: write` (đẩy image) hay `id-token: write` (ký keyless) tự khai ở `permissions:` của job.
 - Duyệt PR fork của mọi người ngoài: repo public, PR fork chạy `ci.yml` với code lạ trên runner; người học xem trước khi cho chạy.
@@ -247,7 +247,7 @@ permissions. `approval_policy` khác `all_external_contributors` → chọn lạ
 
 **Làm gì** (https://github.com/settings/apps/new):
 
-- **GitHub App name**: `svp-web-promoter`. **Homepage URL**: `https://github.com/anhnvcoder/svp-web`.
+- **GitHub App name**: `svp-web-promoter`. **Homepage URL**: `https://github.com/anhnvcoder/svp-frontend`.
 - **Callback URL** để trống, không tích **Request user authorization (OAuth) during installation**.
 - **Webhook**: **bỏ tích Active**.
 - **Permissions** → **Repository permissions**: **Contents** Read and write, **Pull requests** Read and write; **Metadata** Read-only
@@ -280,7 +280,7 @@ permissions. `approval_policy` khác `all_external_contributors` → chọn lạ
 **Làm gì:** trang App → **Install App** → dòng `anhnvcoder` → **Install** → **Only select repositories** → chọn `anhnvcoder/svp-gitops`
 → **Install**.
 
-**Vì sao:** token của App chỉ tới repo đã cài. Cài lên `svp-web` thì token lộ đẩy được nhánh, mở PR ở chính repo build image; cài lên
+**Vì sao:** token của App chỉ tới repo đã cài. Cài lên `svp-frontend` thì token lộ đẩy được nhánh, mở PR ở chính repo build image; cài lên
 repo backend thì chạm được chart và script mà mọi env chạy.
 
 **Kiểm** (UI): https://github.com/settings/installations → `svp-web-promoter` → **Configure**: **Repository access** là "Only select
@@ -289,9 +289,9 @@ chỉ `svp-gitops` (hai bản cài độc lập).
 
 **Nếu sai:** chọn lại repo ở cùng trang, **Save**.
 
-### A5. Environment `promote` của `svp-web`
+### A5. Environment `promote` của `svp-frontend`
 
-**Làm gì** (https://github.com/anhnvcoder/svp-web/settings/environments → **New environment**):
+**Làm gì** (https://github.com/anhnvcoder/svp-frontend/settings/environments → **New environment**):
 
 - **Name**: `promote` → **Configure environment**.
 - **Deployment protection rules**: không **Required reviewers**, không **Wait timer** (promote stg tự động; cổng prd là Code Owner của PR
@@ -303,7 +303,7 @@ chỉ `svp-gitops` (hai bản cài độc lập).
   `-----END …-----`). Hay từ terminal, không qua clipboard (người học chạy):
 
   ```sh
-  gh secret set SVP_WEB_APP_PRIVATE_KEY --env promote --repo anhnvcoder/svp-web < /đường/tới/khoá.pem
+  gh secret set SVP_WEB_APP_PRIVATE_KEY --env promote --repo anhnvcoder/svp-frontend < /đường/tới/khoá.pem
   ```
 
   Rồi xoá file `.pem` (khoá mới tạo lại được bất cứ lúc nào ở trang App).
@@ -311,12 +311,12 @@ chỉ `svp-gitops` (hai bản cài độc lập).
 **Vì sao:** secret của environment chỉ tới job khai `environment: promote` chạy trên nhánh khớp luật; luật chỉ `main` nên một nhánh hay PR
 thêm `environment: promote` vào workflow bị GitHub từ chối trước khi job chạy. Client ID là **variable** (đọc lại được để kiểm, workflow
 đọc `vars.SVP_WEB_APP_CLIENT_ID`); khoá là **secret** (GitHub không trả lại giá trị, che trong log). Tên biến đúng như ADR-0033 §4; job
-`promote` của `images.yml` trong `svp-web` đọc đúng hai tên này.
+`promote` của `images.yml` trong `svp-frontend` đọc đúng hai tên này.
 
 **Kiểm:** bốn lệnh "Environment promote" của "Kiểm tra nhanh". Thời điểm đặt khoá (không có giá trị):
 
 ```sh
-gh api repos/anhnvcoder/svp-web/environments/promote/secrets/SVP_WEB_APP_PRIVATE_KEY -q '{name, updated_at}'
+gh api repos/anhnvcoder/svp-frontend/environments/promote/secrets/SVP_WEB_APP_PRIVATE_KEY -q '{name, updated_at}'
 ```
 
 **Nếu sai:**
@@ -329,19 +329,19 @@ gh api repos/anhnvcoder/svp-web/environments/promote/secrets/SVP_WEB_APP_PRIVATE
 ### A6. Package hợp đồng API public (sau khi PR-1 của backend merge, trước push lịch sử)
 
 **Làm gì:** sau lượt `images.yml` trên `main` backend có job `contract` xanh (phát hành hợp đồng `1.0.0`), người học mở
-https://github.com/users/anhnvcoder/packages/container/package/short-video-platform%2Fapi%2Fgateway → **Package settings** → **Change
+https://github.com/users/anhnvcoder/packages/container/package/svp-backend%2Fapi%2Fgateway → **Package settings** → **Change
 visibility** → **Public**. Không đổi ngược lại được ("Once you make a package public, you cannot make it private again", ADR-0015 §5).
 
-**Vì sao:** `make generate` và `make generate-check` của `svp-web` (máy và CI) kéo hợp đồng ẩn danh theo digest rồi `cosign verify` với
+**Vì sao:** `make generate` và `make generate-check` của `svp-frontend` (máy và CI) kéo hợp đồng ẩn danh theo digest rồi `cosign verify` với
 identity backend (ADR-0033 §1); package private thì `generate-check` của lượt CI đầu đỏ.
 
-**Kiểm:** dòng `anon short-video-platform/api/gateway` của "Kiểm tra nhanh" in `200`. Chữ ký (cosign trên PATH; không có thì image
+**Kiểm:** dòng `anon svp-backend/api/gateway` của "Kiểm tra nhanh" in `200`. Chữ ký (cosign trên PATH; không có thì image
 `COSIGN_IMAGE` của `Makefile` backend):
 
 ```sh
 cosign verify --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity https://github.com/anhnvcoder/short-video-platform/.github/workflows/images.yml@refs/heads/main \
-  ghcr.io/anhnvcoder/short-video-platform/api/gateway:1.0.0 >/dev/null && echo verified
+  --certificate-identity https://github.com/anhnvcoder/svp-backend/.github/workflows/images.yml@refs/heads/main \
+  ghcr.io/anhnvcoder/svp-backend/api/gateway:1.0.0 >/dev/null && echo verified
 ```
 
 **Nếu sai:** `DENIED` sau khi đã đổi visibility → package chưa có (job `contract` chưa chạy hay đỏ: đọc log lượt `images.yml` backend).
@@ -355,10 +355,10 @@ Push lịch sử (bước 3 của ADR-0033 §9) và commit kế tiếp thêm CI 
 **Kiểm:**
 
 ```sh
-gh api repos/anhnvcoder/svp-web -q .default_branch                                     # main
-gh api 'repos/anhnvcoder/svp-web/contents/' -q '[.[].name] | join(" ")'               # có package.json, Dockerfile; không có web/
-gh api 'repos/anhnvcoder/svp-web/commits?per_page=1' -q '.[0] | {sha: .sha[0:12], msg: (.commit.message | split("\n")[0])}'
-gh run list --repo anhnvcoder/svp-web --branch main --limit 4 --json workflowName,conclusion,headSha,url
+gh api repos/anhnvcoder/svp-frontend -q .default_branch                                     # main
+gh api 'repos/anhnvcoder/svp-frontend/contents/' -q '[.[].name] | join(" ")'               # có package.json, Dockerfile; không có web/
+gh api 'repos/anhnvcoder/svp-frontend/commits?per_page=1' -q '.[0] | {sha: .sha[0:12], msg: (.commit.message | split("\n")[0])}'
+gh run list --repo anhnvcoder/svp-frontend --branch main --limit 4 --json workflowName,conclusion,headSha,url
 ```
 
 **Nếu sai:** nhánh mặc định khác `main` (ruleset C2 nhắm `~DEFAULT_BRANCH`) → Settings → General → **Default branch** → `main`. Gốc repo
@@ -371,7 +371,7 @@ push. Sau bản phát hành đầu không viết lại lịch sử `main`.
 **Làm gì** (người học chạy, sau khi `main` có mã web; như backend, [ci-cd.md](../ci-cd.md) mục 7, ADR-0030 §4):
 
 ```sh
-gh api -X PATCH repos/anhnvcoder/svp-web/code-scanning/default-setup \
+gh api -X PATCH repos/anhnvcoder/svp-frontend/code-scanning/default-setup \
   -f state=configured -f query_suite=default -f threat_model=remote -f runner_type=standard \
   -f 'languages[]=actions' -f 'languages[]=javascript-typescript'
 ```
@@ -383,48 +383,48 @@ là check bắt buộc. Repo rỗng thì không có ngôn ngữ nào để bật
 
 **Nếu sai:** `not-configured` → chạy lại lệnh bật; response báo ngôn ngữ không có → `main` chưa có mã web (làm lại sau B1).
 
-### B3. Renovate cho `svp-web`
+### B3. Renovate cho `svp-frontend`
 
-**Làm gì:** https://github.com/apps/renovate → **Configure** → `anhnvcoder` → **Only select repositories** → thêm `anhnvcoder/svp-web`
-(giữ `short-video-platform`, `svp-gitops`) → **Save**. Làm sau khi `renovate.json` đã ở `main` (commit thêm CI), để không có PR onboarding.
+**Làm gì:** https://github.com/apps/renovate → **Configure** → `anhnvcoder` → **Only select repositories** → thêm `anhnvcoder/svp-frontend`
+(giữ `svp-backend`, `svp-gitops`) → **Save**. Làm sau khi `renovate.json` đã ở `main` (commit thêm CI), để không có PR onboarding.
 
-**Vì sao:** `renovate.json` của `svp-web` mang các luật web chuyển từ backend (npm ghim chính xác, nhóm non-major, nhóm `sentry`, nhóm Node
+**Vì sao:** `renovate.json` của `svp-frontend` mang các luật web chuyển từ backend (npm ghim chính xác, nhóm non-major, nhóm `sentry`, nhóm Node
 gồm `.nvmrc`, `engines`, base image của `Dockerfile`), action, `.backend-commit` (datasource `git-refs`) và `api/contract.json` (ADR-0033
 §10); không có thì các ghim đó cũ dần.
 
-**Kiểm** (UI): https://github.com/settings/installations → **Renovate** → **Configure**: danh sách repo có `svp-web`. Vài giờ sau có issue
+**Kiểm** (UI): https://github.com/settings/installations → **Renovate** → **Configure**: danh sách repo có `svp-frontend`. Vài giờ sau có issue
 **Dependency Dashboard**:
 
 ```sh
-gh issue list --repo anhnvcoder/svp-web --state all --search 'Dependency Dashboard in:title' --json number,title,author
+gh issue list --repo anhnvcoder/svp-frontend --state all --search 'Dependency Dashboard in:title' --json number,title,author
 ```
 
-**Nếu sai:** không có issue sau một ngày → log của repo ở https://developer.mend.io → `anhnvcoder/svp-web`. PR nâng `api/contract.json`
+**Nếu sai:** không có issue sau một ngày → log của repo ở https://developer.mend.io → `anhnvcoder/svp-frontend`. PR nâng `api/contract.json`
 không bao giờ mở dù backend đã phát hành bản mới → custom manager datasource `docker` chưa đọc được OCI artifact (mục "Kiểm chứng sau"
-của ADR-0033): nâng tay bằng `make contract-bump VERSION=<x>` trong `svp-web`.
+của ADR-0033): nâng tay bằng `make contract-bump VERSION=<x>` trong `svp-frontend`.
 
 ### C1. Package image public, gắn repo (sau lượt `images.yml` đầu trên `main`)
 
-**Làm gì:** với mỗi package `svp-web/web`, `svp-web/web-sourcemaps`: https://github.com/users/anhnvcoder/packages/container/package/svp-web%2Fweb
-(và `svp-web%2Fweb-sourcemaps`) → **Package settings** → **Change visibility** → **Public**. Không có API đổi visibility (ADR-0015 §5).
+**Làm gì:** với mỗi package `svp-frontend/web`, `svp-frontend/web-sourcemaps`: https://github.com/users/anhnvcoder/packages/container/package/svp-frontend%2Fweb
+(và `svp-frontend%2Fweb-sourcemaps`) → **Package settings** → **Change visibility** → **Public**. Không có API đổi visibility (ADR-0015 §5).
 
 **Vì sao:** cluster stg kéo image ẩn danh theo digest; check `gitops-ok` của `svp-gitops` kéo ẩn danh để kiểm chữ ký, attestation `vuln`,
 provenance; `gitops-sourcemaps.sh` kéo image source map ẩn danh (ADR-0033 §7). Package do `GITHUB_TOKEN` tạo ở lần đẩy đầu thường là
-private. Gắn repo: package có nhãn `org.opencontainers.image.source` của `svp-web` từ lần đẩy đầu thì tự gắn và workflow của `svp-web`
-giữ quyền ghi; package gắn repo khác thì lượt sau của `svp-web` không đẩy được.
+private. Gắn repo: package có nhãn `org.opencontainers.image.source` của `svp-frontend` từ lần đẩy đầu thì tự gắn và workflow của `svp-frontend`
+giữ quyền ghi; package gắn repo khác thì lượt sau của `svp-frontend` không đẩy được.
 
-**Kiểm:** hai dòng `anon svp-web/…` của "Kiểm tra nhanh" in `200`. Repo gắn với package (cần `read:packages`):
+**Kiểm:** hai dòng `anon svp-frontend/…` của "Kiểm tra nhanh" in `200`. Repo gắn với package (cần `read:packages`):
 
 ```sh
-for p in svp-web%2Fweb svp-web%2Fweb-sourcemaps; do
+for p in svp-frontend%2Fweb svp-frontend%2Fweb-sourcemaps; do
   gh api users/anhnvcoder/packages/container/$p -q '{name, visibility, repo: .repository.full_name}'
-done   # mỗi dòng "visibility":"public", "repo":"anhnvcoder/svp-web"
+done   # mỗi dòng "visibility":"public", "repo":"anhnvcoder/svp-frontend"
 ```
 
-Không có scope đó: trang package (link trên), cột phải có `anhnvcoder/svp-web`; **Package settings** → **Manage Actions access** có
-`svp-web` với role Write hay Admin.
+Không có scope đó: trang package (link trên), cột phải có `anhnvcoder/svp-frontend`; **Package settings** → **Manage Actions access** có
+`svp-frontend` với role Write hay Admin.
 
-**Nếu sai:** `repo` rỗng → trang package → **Connect Repository** → `svp-web`. Thiếu `svp-web` ở Manage Actions access → **Add Repository**,
+**Nếu sai:** `repo` rỗng → trang package → **Connect Repository** → `svp-frontend`. Thiếu `svp-frontend` ở Manage Actions access → **Add Repository**,
 role Write. Sau khi package public, PR `bot/promote-stg-web` đang đỏ ở check thì người học chạy lại check:
 `gh run rerun <id lượt check> --repo anhnvcoder/svp-gitops --failed` (id ở trang Checks của PR).
 
@@ -436,26 +436,26 @@ thêm CI đã push thẳng được, và hai check đã chạy được trên `m
 **Trước khi nhập:**
 
 ```sh
-gh api repos/anhnvcoder/svp-web -q .default_branch                                     # main
+gh api repos/anhnvcoder/svp-frontend -q .default_branch                                     # main
 for w in ci.yml images.yml; do
-  gh run list --repo anhnvcoder/svp-web --workflow $w --branch main --limit 1 --json workflowName,conclusion,headSha
+  gh run list --repo anhnvcoder/svp-frontend --workflow $w --branch main --limit 1 --json workflowName,conclusion,headSha
 done                                                                                    # hai dòng "conclusion":"success"
 ```
 
-**Làm gì** (người học chạy, từ gốc bản clone `svp-web`, ở workspace là `frontend/`):
+**Làm gì** (người học chạy, từ gốc bản clone `svp-frontend`, ở workspace là `frontend/`):
 
 ```sh
-gh api -X POST repos/anhnvcoder/svp-web/rulesets --input .github/rulesets/main.json
+gh api -X POST repos/anhnvcoder/svp-frontend/rulesets --input .github/rulesets/main.json
 ```
 
 (UI: Settings → **Rules** → **Rulesets** → **New ruleset** → **Import a ruleset**.) File trong repo chỉ là bản để nhập; sửa sau đó bằng
-`gh api -X PUT repos/anhnvcoder/svp-web/rulesets/<id> --input .github/rulesets/main.json`.
+`gh api -X PUT repos/anhnvcoder/svp-frontend/rulesets/<id> --input .github/rulesets/main.json`.
 
 **Từng luật và vì sao** (ADR-0033 §10, cùng luật với `main` của backend, ADR-0015 §11):
 
 | Luật | Vì sao |
 | --- | --- |
-| `deletion`, `non_fast_forward` | Không ai xoá `main` hay force push: tag image là commit trên `main`, check của `svp-gitops` đòi tag là commit của `main` `svp-web` (ADR-0033 §3), viết lại lịch sử làm image đã phát hành mất commit gốc |
+| `deletion`, `non_fast_forward` | Không ai xoá `main` hay force push: tag image là commit trên `main`, check của `svp-gitops` đòi tag là commit của `main` `svp-frontend` (ADR-0033 §3), viết lại lịch sử làm image đã phát hành mất commit gốc |
 | `pull_request`, 0 approval | Mọi thay đổi qua PR để check chạy; repo một người nên không bắt người thứ hai (cổng triển khai nằm ở `svp-gitops`); không CODEOWNERS |
 | `required_status_checks` `ci-ok`, `images-ok`, `integration_id` 15368 | Hai check tổng phải xanh, chỉ nhận từ app GitHub Actions (`gh api apps/github-actions -q .id` là 15368, đọc 2026-10-30) |
 | `bypass_actors: []` | Không ai bỏ qua, cả admin |
@@ -463,8 +463,8 @@ gh api -X POST repos/anhnvcoder/svp-web/rulesets --input .github/rulesets/main.j
 **Kiểm:** hai lệnh "Ruleset" của "Kiểm tra nhanh", rồi:
 
 ```sh
-id=$(gh api repos/anhnvcoder/svp-web/rulesets -q '.[] | select(.name=="main") | .id')
-gh api repos/anhnvcoder/svp-web/rulesets/$id -q '{bypass_actors, include: .conditions.ref_name.include,
+id=$(gh api repos/anhnvcoder/svp-frontend/rulesets -q '.[] | select(.name=="main") | .id')
+gh api repos/anhnvcoder/svp-frontend/rulesets/$id -q '{bypass_actors, include: .conditions.ref_name.include,
   checks: [.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks[] | {context, integration_id}]}'
 # {"bypass_actors":[],"checks":[{"context":"ci-ok","integration_id":15368},{"context":"images-ok","integration_id":15368}],"include":["~DEFAULT_BRANCH"]}
 ```
@@ -474,29 +474,33 @@ check hay `integration_id` khác → sửa file bằng PR rồi `PUT` như trên
 
 ### D1. PR tiếp quản của bot web (bản phát hành đầu)
 
-**Trước đó** (ADR-0033 §9 bước 4): `check.yml` của `svp-gitops` đã ghim `CHECKER_COMMIT` lên commit của PR-1 và clone `svp-web` (bump
-theo C5 của [svp-gitops-setup.md](svp-gitops-setup.md#c5-bump-commit-ghim-chart-và-checker)):
+**Trước đó** (ADR-0033 §9 bước 4, [ADR-0036](../adr/0036-repo-rename.md) §4 bước 2): `check.yml` của `svp-gitops` đã ghim
+`CHECKER_COMMIT` lên một commit của backend có bảng nguồn hiện tại (bump theo C5 của
+[svp-gitops-setup.md](svp-gitops-setup.md#c5-bump-commit-ghim-chart-và-checker)); từ đổi tên, check checkout repo code
+`anhnvcoder/svp-backend` và không checkout repo web nữa (check tự clone ẩn danh repo của mỗi nguồn khác `backend`):
 
 ```sh
-gh api -H 'Accept: application/vnd.github.raw' repos/anhnvcoder/svp-gitops/contents/.github/workflows/check.yml | grep -n 'CHECKER_COMMIT:\|svp-web'
+gh api -H 'Accept: application/vnd.github.raw' repos/anhnvcoder/svp-gitops/contents/.github/workflows/check.yml |
+  grep -n 'CHECKER_COMMIT:\|repository: anhnvcoder/\|SVP_SOURCE_DIR_[A-Z]*:'   # CHECKER_COMMIT, repository: anhnvcoder/svp-backend; không SVP_SOURCE_DIR_*
 ```
 
-**Làm gì:** không làm gì. Lượt `images.yml` trên `main` của `svp-web` ký xong thì job `promote` (environment `promote`) chạy
+**Làm gì:** không làm gì. Lượt `images.yml` trên `main` của `svp-frontend` ký xong thì job `promote` (environment `promote`) chạy
 `promote.sh --source web` của backend ở `BACKEND_COMMIT`: dựng nhánh `bot/promote-stg-web` của `svp-gitops`, chỉ ghi
 `envs/stg/images/web.yaml`, mở PR, bật auto-merge; PR tự merge khi `gitops-ok` xanh (`envs/stg/` không Code Owner). Lần đầu, `web.yaml`
-trên `main` còn là image của backend: log job in dòng `takeover: …` thay vì đỏ (ADR-0033 §4).
+trên `main` còn là image của backend: log job in dòng `takeover: …` thay vì đỏ (ADR-0033 §4). Lần đầu sau đổi tên, `web.yaml` là bản
+của nguồn nghỉ hưu `oldweb` (prefix `ghcr.io/anhnvcoder/svp-web/`): dòng `takeover … (source oldweb, retired)` (ADR-0036 §3).
 
 **Kiểm:**
 
 ```sh
-gh run list --repo anhnvcoder/svp-web --workflow images.yml --branch main --limit 1 --json databaseId,conclusion,url
-gh run view <databaseId> --repo anhnvcoder/svp-web --log | grep -m1 'takeover:'          # chỉ lượt đầu
+gh run list --repo anhnvcoder/svp-frontend --workflow images.yml --branch main --limit 1 --json databaseId,conclusion,url
+gh run view <databaseId> --repo anhnvcoder/svp-frontend --log | grep -m1 'takeover:'          # chỉ lượt đầu
 gh pr list --repo anhnvcoder/svp-gitops --author 'app/svp-web-promoter' --state all --limit 1 \
   --json number,headRefName,state,mergedAt                                                # headRefName bot/promote-stg-web
 gh pr view <số PR> --repo anhnvcoder/svp-gitops --json files -q '.files[].path'          # chỉ envs/stg/images/web.yaml
 gh api -H 'Accept: application/vnd.github.raw' repos/anhnvcoder/svp-gitops/contents/envs/stg/images/web.yaml
-# repository: ghcr.io/anhnvcoder/svp-web/web, tag 12 hex là commit trên main của svp-web, digest sha256:…
-gh api 'repos/anhnvcoder/svp-web/deployments?environment=promote&per_page=3' -q '.[] | {ref, created_at}'   # ref main
+# repository: ghcr.io/anhnvcoder/svp-frontend/web, tag 12 hex là commit trên main của svp-frontend, digest sha256:…
+gh api 'repos/anhnvcoder/svp-frontend/deployments?environment=promote&per_page=3' -q '.[] | {ref, created_at}'   # ref main
 ```
 
 **Nếu sai:**
@@ -505,33 +509,72 @@ gh api 'repos/anhnvcoder/svp-web/deployments?environment=promote&per_page=3' -q 
 - PR mở mà `gitops-ok` đỏ: đọc message. Kéo ẩn danh hay chữ ký → C1 rồi chạy lại check. Tác giả hay file không được phép → checker chưa
   bump (bước "Trước đó") hay bot đổi file ngoài `web.yaml` (lỗi script, báo lại ở repo backend). PR xanh mà không tự merge →
   `allow_auto_merge` của `svp-gitops` (A1 của trang đó).
-- Job đỏ vì tag không phải commit của `main` `svp-web` hay `repository` không thuộc nguồn nào → `sources.json` ở `BACKEND_COMMIT` chưa có
-  nguồn `web`, hay `.backend-commit` của `svp-web` còn ghim commit trước PR-1: bump bằng PR ở `svp-web`.
+- Job đỏ vì tag không phải commit của `main` `svp-frontend` hay `repository` không thuộc nguồn nào → `sources.json` ở `BACKEND_COMMIT` chưa có
+  nguồn `web`, hay `.backend-commit` của `svp-frontend` còn ghim commit trước PR-1: bump bằng PR ở `svp-frontend`.
 
 ### D2. Image, chữ ký, provenance, source map kéo ẩn danh
 
 **Kiểm** (digest lấy từ `web.yaml` ở D1; cosign như A6):
 
 ```sh
-img=ghcr.io/anhnvcoder/svp-web/web@sha256:<digest>
-id=https://github.com/anhnvcoder/svp-web/.github/workflows/images.yml@refs/heads/main
+img=ghcr.io/anhnvcoder/svp-frontend/web@sha256:<digest>
+id=https://github.com/anhnvcoder/svp-frontend/.github/workflows/images.yml@refs/heads/main
 iss=https://token.actions.githubusercontent.com
 cosign verify --certificate-oidc-issuer $iss --certificate-identity $id $img >/dev/null && echo signature ok
 cosign verify-attestation --type slsaprovenance1 --certificate-oidc-issuer $iss --certificate-identity $id $img |
   jq -r '.payload | @base64d | fromjson | .predicate.buildDefinition.externalParameters.workflow.repository'
-# https://github.com/anhnvcoder/svp-web
+# https://github.com/anhnvcoder/svp-frontend
 # image source map: tag <arch>-<hex của digest manifest con>, mỗi kiến trúc một tag
-t=$(curl -s "https://ghcr.io/token?scope=repository:anhnvcoder/svp-web/web-sourcemaps:pull" | jq -r .token)
-curl -s -H "Authorization: Bearer $t" https://ghcr.io/v2/anhnvcoder/svp-web/web-sourcemaps/tags/list | jq -c .tags
+t=$(curl -s "https://ghcr.io/token?scope=repository:anhnvcoder/svp-frontend/web-sourcemaps:pull" | jq -r .token)
+curl -s -H "Authorization: Bearer $t" https://ghcr.io/v2/anhnvcoder/svp-frontend/web-sourcemaps/tags/list | jq -c .tags
 ```
 
-**Vì sao:** Kyverno của stg nhận image dưới prefix `svp-web` chỉ với identity của `svp-web` (ADR-0033 §2); lệnh này là cùng phép kiểm, chạy
+**Vì sao:** Kyverno của stg nhận image dưới prefix `svp-frontend` chỉ với identity của `svp-frontend` (ADR-0033 §2); lệnh này là cùng phép kiểm, chạy
 tay. Ký bằng identity backend, hay provenance mang repo backend, thì pod web bị từ chối khi Argo CD triển khai.
 
-**Nếu sai:** cosign báo identity không khớp → `images.yml` của `svp-web` chạy ký qua reusable workflow hay workflow khác tên (ADR-0033 §5:
-job ký chạy trong `images.yml` của chính `svp-web`). Không có tag source map → bước đẩy stage `sourcemaps` của `build-image.sh` không chạy
-ở `svp-web`; `drill-k8s-web-obs` trên `main` sẽ FAIL phép `errors`. Phép chéo nguồn trên cluster (ca `m` của `drill-k8s-supplychain`) và
+**Nếu sai:** cosign báo identity không khớp → `images.yml` của `svp-frontend` chạy ký qua reusable workflow hay workflow khác tên (ADR-0033 §5:
+job ký chạy trong `images.yml` của chính `svp-frontend`). Không có tag source map → bước đẩy stage `sourcemaps` của `build-image.sh` không chạy
+ở `svp-frontend`; `drill-k8s-web-obs` trên `main` sẽ FAIL phép `errors`. Phép chéo nguồn trên cluster (ca `m` của `drill-k8s-supplychain`) và
 lượt `gitops` sau bản phát hành đầu: mục "Kiểm chứng sau" của ADR-0033.
+
+### E1. Đổi tên repo: package GHCR mới public (2026-10-31)
+
+**Bối cảnh** ([ADR-0036](../adr/0036-repo-rename.md)): ngày 2026-10-31 `anhnvcoder/svp-web` đổi tên thành `anhnvcoder/svp-frontend`,
+`anhnvcoder/short-video-platform` thành `anhnvcoder/svp-backend`. Image mới đẩy dưới prefix mang tên mới; package mới do lần đẩy đầu tạo,
+mặc định private, không kế thừa visibility của package cũ. Package cũ (`svp-web/…`, `short-video-platform/…`) giữ nguyên, không xoá:
+bản ghi stg cũ và lịch sử trỏ tới chúng.
+
+**Làm gì:** người học bật public 12 package, mỗi package khi nó xuất hiện (thứ tự theo ADR-0036 §4), ở
+`https://github.com/users/anhnvcoder/packages/container/package/<tên, / viết thành %2F>` → **Package settings** → **Change visibility** →
+**Public** (không có API, không đổi ngược được):
+
+| Package | Có từ |
+| --- | --- |
+| `svp-backend/gateway`, `svp-backend/user-service`, `svp-backend/video-service`, `svp-backend/engagement-service`, `svp-backend/feed-service`, `svp-backend/media-worker`, `svp-backend/api/gateway` | lượt `images.yml` push `main` đầu của backend sau đổi tên (bước 1; bật trước khi chạy lại job `promote`, bước 3–4) |
+| `svp-backend/drill-vulnerable`, `svp-backend/drill-unsigned`, `svp-backend/drill-no-provenance` | `gh workflow run images.yml --repo anhnvcoder/svp-backend --ref main -f drill=true` (bước 4) |
+| `svp-frontend/web`, `svp-frontend/web-sourcemaps` | lượt `images.yml` push `main` đầu của `svp-frontend` sau đổi tên (bước 5) |
+
+**Vì sao:** check `gitops-ok` của `svp-gitops`, Kyverno, `make up IMAGES=stg`, `make generate` của `svp-frontend` (hợp đồng) và
+`gitops-sourcemaps.sh` kéo ẩn danh; package private thì PR bot của nó đỏ ở check, pod không kéo được image.
+
+**Kiểm** (chỉ đọc; `anon` như "Kiểm tra nhanh"; vòng thứ hai cần `read:packages`):
+
+```sh
+anon() { t=$(curl -s "https://ghcr.io/token?scope=repository:anhnvcoder/$1:pull" | jq -r '.token // empty')
+  [ -n "$t" ] || { echo "$1 DENIED"; return; }
+  echo "$1 $(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $t" "https://ghcr.io/v2/anhnvcoder/$1/tags/list")"; }
+pkgs="svp-backend/gateway svp-backend/user-service svp-backend/video-service svp-backend/engagement-service svp-backend/feed-service
+svp-backend/media-worker svp-backend/api/gateway svp-backend/drill-vulnerable svp-backend/drill-unsigned svp-backend/drill-no-provenance
+svp-frontend/web svp-frontend/web-sourcemaps"
+for p in $pkgs; do anon "$p"; done          # mỗi dòng "<package> 200"; DENIED: private hay chưa có (chưa tới bước tạo nó)
+for p in $pkgs; do gh api "users/anhnvcoder/packages/container/$(printf %s "$p" | sed 's#/#%2F#g')" \
+  -q '{name, visibility, repo: .repository.full_name}'; done
+# "visibility":"public"; "repo": anhnvcoder/svp-backend cho svp-backend/…, anhnvcoder/svp-frontend cho svp-frontend/…
+```
+
+**Nếu sai:** `DENIED` sau khi lượt tạo package đã xanh → bật public như trên, rồi chạy lại check của PR bot đang đỏ
+(`gh run rerun <id> --repo anhnvcoder/svp-gitops --failed`). `repo` rỗng hay khác → trang package → **Connect Repository**, và
+**Manage Actions access** có repo đó với role Write (như C1).
 
 ### Xoay khoá App
 
@@ -540,15 +583,15 @@ làm gián đoạn:
 
 1. https://github.com/settings/apps/svp-web-promoter → **Private keys** → **Generate a private key**.
 2. Đặt secret bằng khoá mới (lệnh `gh secret set` của A5), xoá file `.pem`.
-3. Kiểm `updated_at` của secret (lệnh ở A5); lượt `images.yml` kế trên `main` của `svp-web` có bước tạo token xanh. Không có thay đổi web
+3. Kiểm `updated_at` của secret (lệnh ở A5); lượt `images.yml` kế trên `main` của `svp-frontend` có bước tạo token xanh. Không có thay đổi web
    nào để phát hành thì đọc lượt kế khi có; khi nghi lộ chỉ làm bước này sau **Unsuspend**.
 4. **Private keys** → **Delete** khoá cũ (còn lại đúng một khoá, ngày tạo hôm nay). Khi nghi lộ thì xoá **ngay** sau bước 2.
 
 ## Leo thang
 
-- Bước tạo token vẫn đỏ sau khi đã kiểm đủ A3–A5: so input của bước tạo token trong `.github/workflows/images.yml` của `svp-web` với tên
+- Bước tạo token vẫn đỏ sau khi đã kiểm đủ A3–A5: so input của bước tạo token trong `.github/workflows/images.yml` của `svp-frontend` với tên
   ở đây (`client-id` đọc `vars.SVP_WEB_APP_CLIENT_ID`, `private-key` đọc `secrets.SVP_WEB_APP_PRIVATE_KEY`, `owner`, `repositories:
-  svp-gitops`); lệch tên thì sửa bằng PR ở `svp-web`.
+  svp-gitops`); lệch tên thì sửa bằng PR ở `svp-frontend`.
 - PR của bot web đổi file khác `envs/stg/images/web.yaml`, hay `gitops-ok` cho qua PR như vậy: lỗi ở `promote.sh --source` hay luật tác
   giả của `gitops-check.sh` (repo backend). Đóng PR, suspend bản cài như "Giảm thiểu" bước 1, sửa ở repo backend.
 - Nghi lộ mà `web.yaml` của stg đã đổi sang bản lạ, hay bot đã tạo tag, release trong `svp-gitops`: revert bằng PR, dọn như bước 3, ghi
@@ -563,10 +606,10 @@ làm gián đoạn:
 - [ADR-0025](../adr/0025-gitops-config-repo.md) §6–§7 (App, environment, ruleset của mẫu này); [ADR-0015](../adr/0015-cicd-devsecops-stage5.md)
   §5 (visibility package), §11 (cài đặt repo backend); [ADR-0030](../adr/0030-devsecops-supplement.md) §4 và [ci-cd.md](../ci-cd.md) mục 7
   (CodeQL).
-- Không có diễn tập; phép kiểm sau push là lượt CI đầu (C1, C2) và bản phát hành đầu (D1, D2) của `svp-web`.
+- Không có diễn tập; phép kiểm sau push là lượt CI đầu (C1, C2) và bản phát hành đầu (D1, D2) của `svp-frontend`.
 
 ## Đã kiểm
 
-- 2026-10-30, trước khi dựng: `gh repo view anhnvcoder/svp-web` trả "Could not resolve to a Repository"; `anon` với package chưa có trả
+- 2026-10-30, trước khi dựng: `gh repo view anhnvcoder/svp-web` (tên của repo lúc đó) trả "Could not resolve to a Repository"; `anon` với package chưa có trả
   `DENIED`, với `short-video-platform/web` (public) trả `200`; đọc package bằng token chỉ scope `repo` trả 403 cần `read:packages`.
 - Chưa kiểm: toàn bộ A–D, xoay khoá, gỡ khẩn cấp.

@@ -48,7 +48,7 @@
 build=up
 job_minutes_default=120
 k3d=0
-# make web-lighthouse and make measure-upload run the code of the web client: the clone of svp-web (verify-run.sh),
+# make web-lighthouse and make measure-upload run the code of the web client: the clone of svp-frontend (verify-run.sh),
 # at web_ref of the dispatch or the commit of the web release staging runs, the release make up runs.
 web=1
 
@@ -175,7 +175,7 @@ fallback_alert_check() {
 }
 
 # lighthouse_run N: make web-lighthouse, its manifest kept as manifest-N.json (each run writes manifest.json anew in
-# test-results/lighthouse/ of the clone of svp-web, SVP_WEB_DIR).
+# test-results/lighthouse/ of the clone of svp-frontend, SVP_WEB_DIR).
 lighthouse_run() {
   local rc dir=$SVP_WEB_DIR/test-results/lighthouse
   make web-lighthouse

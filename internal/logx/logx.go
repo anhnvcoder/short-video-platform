@@ -12,7 +12,7 @@ import (
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/anhnvcoder/short-video-platform/internal/sentryx"
+	"github.com/anhnvcoder/svp-backend/internal/sentryx"
 )
 
 // New returns a logger writing JSON to stdout and logs to the global OTel provider.

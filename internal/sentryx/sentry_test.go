@@ -27,7 +27,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/anhnvcoder/short-video-platform/internal/secret"
+	"github.com/anhnvcoder/svp-backend/internal/secret"
 )
 
 type transport struct {
