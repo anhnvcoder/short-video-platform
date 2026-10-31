@@ -1,8 +1,9 @@
 # 0033. Web client tách sang repo `svp-web` để mô phỏng team FE và team BE riêng: hợp đồng OpenAPI có version semver, kiểm breaking ở PR backend và phát hành có chữ ký trên GHCR; image web có nguồn phát hành và identity ký riêng, mọi nguồn khai ở một file của chart `svp-policy` mà Kyverno và script cùng đọc; `svp-web` promote riêng `envs/stg/images/web.yaml` sang `svp-gitops` bằng GitHub App thứ hai; script CI dùng chung chạy ở commit ghim của repo backend
 
 - Trạng thái: Chấp nhận (người học duyệt 2026-10-30, chọn (a) ở cả sáu dòng "Cần người học chọn"; các điểm thiết kế còn lại theo
-  đề xuất). PR-1 của mục 9 (phần chuẩn bị ở repo này) hiện thực 2026-10-30, chưa merge; repo `svp-web`, App thứ hai, PR-2, PR-3 chưa
-  (mục Hiện thực ở, Kiểm chứng sau)
+  đề xuất). Bước 1–5 của mục 9 xong 2026-10-30: PR-1 merge (`28bf2ca`, PR #43; sửa tiếp PR #45, #48), repo `svp-web` với lịch sử chụp
+  ở `28bf2ca`, check của `svp-gitops` theo nguồn (PR #20), bản phát hành đầu của `svp-web` chạy ở stg (PR #22 của `svp-gitops`); PR-2
+  (cắt `web/`) hiện thực 2026-10-31, chưa merge; promote prd có web của `svp-web` và PR-3 chưa (mục Kết quả, Hiện thực ở)
 - Ngày: 2026-10-30
 
 ## Bối cảnh
@@ -423,12 +424,12 @@ nguồn phát hành có prefix, identity, credential riêng nhưng được khai
 
 ### 6. Kiểm thử chéo
 
-- **CI `svp-web`**, job `e2e` (chỉ báo như job `stack` của backend, [ADR-0020](0020-reliability-stage6.md) §15; xét đưa vào `ci-ok` sau 20
+- **CI `svp-web`**, job `stack` (cùng tên và chỉ báo như job `stack` của backend, [ADR-0020](0020-reliability-stage6.md) §15; xét đưa vào `ci-ok` sau 20
   lượt xanh liền không lượt đỏ do môi trường): clone `svp-gitops` ở `main`, đọc `revision` của `envs/stg/charts.yaml` và sáu file image của
   backend; checkout backend ở `revision`; `make up IMAGES=stg WEB_FROM=clone SVP_WEB_DIR=<checkout của PR>` (chế độ mới: `compose_images` của
   `deploy/k8s/lib.sh` đặt biến image mà `deploy/compose/compose.yaml` đọc, `<repository>@<digest>` cho sáu service và bốn job migrate,
-  `docker pull` trước rồi `pull_policy: never`, không build Go); chạy e2e
-  của PR; `make down` luôn chạy.
+  `docker pull` trước rồi `pull_policy: never`, không build Go; `make stg-check` của `svp-web` đòi backend ở đúng `revision`); chạy
+  smoke, e2e và Lighthouse (chỉ báo) của PR; `make down` luôn chạy.
 - **CI backend:** job `web` của `ci.yml` bỏ (sang `svp-web`); job `stack` chạy `make gitops-clone`, `make up` dùng web của stg theo digest
   (mặc định mục 7), `smoke`, `load-ci`, `dast` như cũ; rồi `make web-clone` ở commit của web stg và `make web-e2e`, `make web-lighthouse`
   (wrapper sang `svp-web`, mục 7) trên stack build từ PR; cả job vẫn chỉ báo.
@@ -441,15 +442,16 @@ nguồn phát hành có prefix, identity, credential riêng nhưng được khai
   của `tag` trong `envs/stg/images/web.yaml` của bản clone `svp-gitops`, để test cùng commit với image đang chạy; web của stg chưa là bản
   `svp-web` thì dừng và đòi `WEB_REF`); job đặt `SVP_WEB_DIR` tới thư mục đó (hàm `web_clone` chỉ export trong shell của nó).
 - `make up`, `make k8s-up`: web mặc định là image của stg theo digest (đọc từ bản clone `svp-gitops`; k3d kéo ẩn danh từ GHCR, policy
-  Audit ở dev); `WEB_FROM=clone` build từ `web_dir` như hiện nay (`web_build_id` đọc `web_dir`). Mặc định đổi ở PR-2; tới đó không đặt
-  `WEB_FROM` vẫn là `clone`, `WEB_FROM=stg` chạy web của stg, `WEB_FROM=image WEB_IMAGE=<ghcr.io/…@sha256:…>` một bản cho sẵn.
-  `web_dir` còn bước lùi cuối là `web/` của repo này tới PR-2.
+  Audit ở dev); `WEB_FROM=clone` build từ `web_dir` (`web_build_id` đọc `web_dir`), `WEB_FROM=image WEB_IMAGE=<ghcr.io/…@sha256:…>`
+  một bản cho sẵn. Mặc định đổi ở PR-2 (trước đó không đặt `WEB_FROM` là `clone`, và `web_dir` lùi về `web/` của repo này khi không có
+  bản clone).
 - Target cần mã web (`web-e2e`, `measure-web`, `measure-upload`, `web-lighthouse`, `web-sourcemaps`, `k8s-web-e2e`, `k8s-web-sourcemaps`,
   `drill-k8s-web-canary`) giữ tên trong `Makefile` backend để bước của `verify.yml` không đổi, và thành wrapper gọi target của `svp-web`
   trong `web_dir`. Mã test và đo (spec e2e, `lighthouse/run.sh`, client canary, `measure-upload.e2e.ts`) ở `svp-web`; harness (stack,
   cluster, `deploy/compose/lib.sh`, `deploy/k8s/lib.sh`, xoá khoá rate limit) ở backend. `svp-web` tìm backend qua `SVP_BACKEND_DIR`
   (mặc định `<workspace>/backend`; CI: checkout của bước đó). Không target nào chép giữa hai repo.
-- Kịch bản `verify.yml`: `compose-obs`, `dev-k3d`, `web-canary`, `gitops` chạy `make web-clone` trước bước dựng; `dev-k3d` và `web-canary`
+- Kịch bản `verify.yml`: `compose-obs`, `dev-k3d`, `web-canary`, `gitops` chạy `make web-clone` trước bước dựng (bước riêng
+  `verify-run.sh --clones`, trước khi cài Node theo `.nvmrc` của bản clone); `dev-k3d` và `web-canary`
   đặt `WEB_FROM=clone` (diễn tập build từ mã như nay), `compose-obs` và `gitops` dùng image stg; input mới `web_ref` của `verify.yml` đổi
   commit.
 - **Source map:** mỗi chân build web của `svp-web` (amd64, arm64) đẩy stage `sourcemaps` của chính lần build đó (cùng cache nên cùng bundle,
@@ -495,7 +497,9 @@ nguồn phát hành có prefix, identity, credential riêng nhưng được khai
 5. `svp-web`: CI xanh, người học nhập ruleset và cài đặt (mục 10); bản phát hành đầu từ `main`, PR `bot/promote-stg-web` tự merge, stg
    chạy web của `svp-web`. Lượt `gitops` của backend `verify.yml` trên `main`: policy nhận web mới, e2e và source map của image mới.
 6. **PR-2 backend (cắt):** trước merge, `git diff S origin/main -- web deploy/docker/web.Dockerfile` rỗng (đóng băng được giữ); xoá `web/`,
-   `deploy/docker/web.Dockerfile`, `web` khỏi `svp_services`, job `web` của `ci.yml`; target web thành wrapper; `stack` và kịch bản dùng web
+   `deploy/docker/web.Dockerfile`, job `web` của `ci.yml`; danh sách image repo này build (`built_services` của `deploy/k8s/lib.sh`,
+   sáu) tách khỏi danh sách bảy bản triển khai (`svp_services`, giữ `web`: rescan, promote prd, bản ghi stg, check `svp-gitops`, DORA
+   vẫn đọc đủ bảy); target web thành wrapper; `stack` và kịch bản dùng web
    stg hay bản clone; `renovate.json` bỏ luật của web. Kịch bản `dev-k3d`, `compose-obs`, `web-canary` trên nhánh xanh. Merge: **hết đóng
    băng**.
 7. Promote prd một bản ghi stg có web của `svp-web` (người học duyệt PR prd).
@@ -554,17 +558,40 @@ ngày ghi vào cột cuối.
 
 | Giả định | Phép kiểm | Kết quả |
 | --- | --- | --- |
-| Lượt `contract` đầu đẩy được OCI artifact bằng ORAS lên GHCR, ký keyless, package public kéo ẩn danh; tag không bị ghi đè | Sau merge PR-1: `cosign verify` với identity backend trên `ghcr.io/anhnvcoder/short-video-platform/api/gateway@<digest>` không đăng nhập; chạy lại job thì "bỏ qua", đổi spec mà không tăng version thì PR đỏ | Chưa kiểm |
-| Renovate nhận bản hợp đồng mới qua custom manager datasource `docker` trên OCI artifact (tài liệu không nói [W18]) | PR backend tăng minor, lượt Renovate kế ở `svp-web` mở PR nâng `api/contract.json` | Chưa kiểm |
-| Kyverno v1.19 chọn attestor theo prefix trong một policy: image `svp-web` nhận, image dưới prefix `svp-web` ký bằng identity backend bị từ chối, và ngược lại | Ca `m` của `make drill-k8s-supplychain` trên kịch bản `gitops`: trước bản phát hành đầu của `svp-web` chỉ phần tên chạy (`svp-web/gateway` bị phép 1 từ chối), phần identity SKIP; sau bản đó, digest web của `svp-web` dưới prefix backend và digest web cũ của backend (image ca `l`) dưới prefix `svp-web` bị phép chữ ký từ chối nêu đúng nguồn, web của `svp-web` được nhận | Chưa kiểm |
-| Lượt `images.yml` đầu của `svp-web`: image dưới prefix `svp-web` ký với identity `svp-web`, provenance có `workflow.repository` là `svp-web`, `verify-release.sh` của backend qua | Bước 5 của trình tự: `cosign verify`, `cosign verify-attestation --type slsaprovenance1`, check của `svp-gitops` trên PR promote | Chưa kiểm |
-| Token App thứ hai mở PR `bot/promote-stg-web`, PR tự merge sau `gitops-ok`; check từ chối PR của bot web đổi file khác `envs/stg/images/web.yaml` | Bước 5; PR thử của bot web đổi `envs/stg/charts.yaml` (đỏ) | Chưa kiểm |
-| Tiếp quản: PR đầu của bot web (image trước thuộc nguồn `backend`) qua luật tác giả; `promote.sh --source web` in dòng `takeover` thay vì đỏ; PR kế dùng luật không lùi trên `main` của `svp-web` | Bước 5, hai lượt `images.yml` đầu của `svp-web` (luật tác giả và chế độ `--source` còn có ca ở `gitops-check-test.sh`, `promote-test.sh`, kiểm được trước push) | Chưa kiểm |
-| Backend `promote.sh` để nguyên `web.yaml` của nguồn khác; rescan hai repo mỗi bên chỉ attest image của mình | Lượt `images.yml` backend đầu sau bước 5 (dòng "web: released by svp-web"), lượt rescan hằng ngày của cả hai | Chưa kiểm |
-| Image `web-sourcemaps` kéo ẩn danh được, `drill-k8s-web-obs` PASS phép `errors` với image của `svp-web` | Lượt `gitops` trên `main` sau bản phát hành đầu của `svp-web` | Chưa kiểm |
-| e2e của `svp-web` chạy trên compose backend ở `revision` với sáu image stg; `stack` của backend chạy với web stg và e2e của `svp-web` | Lượt CI đầu của mỗi repo sau PR-1 và PR-2 | Chưa kiểm |
-| Gỡ nguồn cũ: rollback web về digest backend bị từ chối đúng message của phép 1 | Ca mới của `drill-k8s-supplychain` sau PR-3 | Chưa kiểm |
+| Lượt `contract` đầu đẩy được OCI artifact bằng ORAS lên GHCR, ký keyless, package public kéo ẩn danh; tag không bị ghi đè | Sau merge PR-1: `cosign verify` với identity backend trên `ghcr.io/anhnvcoder/short-video-platform/api/gateway@<digest>` không đăng nhập; chạy lại job thì "bỏ qua", đổi spec mà không tăng version thì PR đỏ | Đạt phần đẩy và tải (2026-10-30): lượt `images.yml` [41079830814](https://github.com/anhnvcoder/short-video-platform/actions/runs/41079830814) phát hành `1.0.0` (`sha256:141b0b10…`), kéo ẩn danh 200; `make generate-check` của `svp-web` kiểm digest và chữ ký identity backend trên máy và ở CI ([41108867928](https://github.com/anhnvcoder/svp-web/actions/runs/41108867928)). Chạy lại job, PR đổi spec không tăng version: chưa có lượt thật (ca có ở `contract-test.sh`) |
+| Renovate nhận bản hợp đồng mới qua custom manager datasource `docker` trên OCI artifact (tài liệu không nói [W18]) | PR backend tăng minor, lượt Renovate kế ở `svp-web` mở PR nâng `api/contract.json` | Chưa kiểm (chưa có version thứ hai) |
+| Kyverno v1.19 chọn attestor theo prefix trong một policy: image `svp-web` nhận, image dưới prefix `svp-web` ký bằng identity backend bị từ chối, và ngược lại | Ca `m` của `make drill-k8s-supplychain` trên kịch bản `gitops`: trước bản phát hành đầu của `svp-web` chỉ phần tên chạy (`svp-web/gateway` bị phép 1 từ chối), phần identity SKIP; sau bản đó, digest web của `svp-web` dưới prefix backend và digest web cũ của backend (image ca `l`) dưới prefix `svp-web` bị phép chữ ký từ chối nêu đúng nguồn, web của `svp-web` được nhận | Đạt (2026-10-30), cách kiểm đổi: đặt digest của nguồn này dưới prefix nguồn kia chỉ nhận lỗi registry (GHCR không có manifest đó), nên ca chéo identity gửi bản phát hành đang chạy dưới bản sao tạm của policy đổi chéo identity hai nguồn. Lượt `gitops` trên `main` [41098400504](https://github.com/anhnvcoder/short-video-platform/actions/runs/41098400504) (trước bản `svp-web`): tên lạ dưới prefix `svp-web` bị phép 1 từ chối, chiều web → backend PASS; [41112757906](https://github.com/anhnvcoder/short-video-platform/actions/runs/41112757906) (stg chạy web của `svp-web`): hai chiều PASS với message nêu nguồn, bản `svp-web` được nhận dưới Enforce. Glob mỗi prefix ban đầu làm tên lạ bị lỗi registry ([41081463084](https://github.com/anhnvcoder/short-video-platform/actions/runs/41081463084)), sửa thành glob mỗi tên (PR #45) |
+| Lượt `images.yml` đầu của `svp-web`: image dưới prefix `svp-web` ký với identity `svp-web`, provenance có `workflow.repository` là `svp-web`, `verify-release.sh` của backend qua | Bước 5 của trình tự: `cosign verify`, `cosign verify-attestation --type slsaprovenance1`, check của `svp-gitops` trên PR promote | Đạt (2026-10-30): [41111181126](https://github.com/anhnvcoder/svp-web/actions/runs/41111181126) build, ký `svp-web/web@sha256:d2c90e46…`; `cosign verify` identity `svp-web` rc 0, identity backend rc 12; provenance `builder.id` của nguồn `web`, `gitCommit` `8dd59c9`; một attestation `vuln` hai nền tảng; check của PR #22 [41112183849](https://github.com/anhnvcoder/svp-gitops/actions/runs/41112183849) qua |
+| Token App thứ hai mở PR `bot/promote-stg-web`, PR tự merge sau `gitops-ok`; check từ chối PR của bot web đổi file khác `envs/stg/images/web.yaml` | Bước 5; PR thử của bot web đổi `envs/stg/charts.yaml` (đỏ) | Đạt phần mở và tự merge: PR #22 của `svp-gitops` (tác giả, người merge `svp-web-promoter[bot]`, chỉ `envs/stg/images/web.yaml`, merge `d9dcc82`). PR thử đổi `charts.yaml`: chưa kiểm (ca âm có ở `gitops-check-test.sh`) |
+| Tiếp quản: PR đầu của bot web (image trước thuộc nguồn `backend`) qua luật tác giả; `promote.sh --source web` in dòng `takeover` thay vì đỏ; PR kế dùng luật không lùi trên `main` của `svp-web` | Bước 5, hai lượt `images.yml` đầu của `svp-web` (luật tác giả và chế độ `--source` còn có ca ở `gitops-check-test.sh`, `promote-test.sh`, kiểm được trước push) | Đạt lần tiếp quản: check của PR #22 in `takes web over from release source backend`, `1 changed files are all files its source may change`. PR kế dưới luật không lùi: chưa có bản thứ hai |
+| Backend `promote.sh` để nguyên `web.yaml` của nguồn khác; rescan hai repo mỗi bên chỉ attest image của mình | Lượt `images.yml` backend đầu sau bước 5 (dòng "web: released by svp-web"), lượt rescan hằng ngày của cả hai | Chưa kiểm (chưa có lượt backend nào sau bản web đầu, đọc 2026-10-30) |
+| Image `web-sourcemaps` kéo ẩn danh được, `drill-k8s-web-obs` PASS phép `errors` với image của `svp-web` | Lượt `gitops` trên `main` sau bản phát hành đầu của `svp-web` | Đạt (2026-10-30): [41112757906](https://github.com/anhnvcoder/short-video-platform/actions/runs/41112757906) kéo `svp-web/web-sourcemaps:amd64-d382029b…` ẩn danh, 30 map, mọi chunk `/login` có debug ID trong bộ map; `drill-k8s-web-obs` `errors` PASS có frame đã map, không `SVP_WEB_OBS_SKIP_ERRORS` |
+| e2e của `svp-web` chạy trên compose backend ở `revision` với sáu image stg; `stack` của backend chạy với web stg và e2e của `svp-web` | Lượt CI đầu của mỗi repo sau PR-1 và PR-2 | Đạt phía `svp-web`: PR #1 [41108867928](https://github.com/anhnvcoder/svp-web/actions/runs/41108867928), job `stack` xanh (smoke qua; e2e suy từ kết luận job, log của GitHub bị cụt). Phía backend sau PR-2: chưa chạy |
+| Gỡ nguồn cũ: rollback web về digest backend bị từ chối đúng message của phép 1 | Ca mới của `drill-k8s-supplychain` sau PR-3 | Chưa kiểm (PR-3 chưa) |
 | DORA tính lead time của web từ lịch sử `svp-web` | Lượt `dora.yml` sau bản phát hành đầu của `svp-web` | Chưa kiểm |
+
+## Kết quả
+
+Lượt thật theo trình tự của mục 9 (bằng chứng: `results.tsv` và log của artifact `verify-gitops`, log job, `cosign` ẩn danh):
+
+- **PR-1 trên nhánh** (PR #43, 2026-10-30): `ci` [41073538624](https://github.com/anhnvcoder/short-video-platform/actions/runs/41073538624) và `images` [41073538643](https://github.com/anhnvcoder/short-video-platform/actions/runs/41073538643)
+  xanh (14/14 chân `build-nopush`); `verify.yml` `gitops` [41068690228](https://github.com/anhnvcoder/short-video-platform/actions/runs/41068690228) 18/18 bước (policy cũ: kịch bản dựng
+  chart ở `revision` của `main`), `dev-k3d` [41068705757](https://github.com/anhnvcoder/short-video-platform/actions/runs/41068705757) 14/14 (policy mới ở Audit). Enforce của policy mới chưa
+  chứng minh được trên nhánh.
+- **PR-1 trên `main`** (`28bf2ca`): `images.yml` [41079830814](https://github.com/anhnvcoder/short-video-platform/actions/runs/41079830814) dựng bảy bản, phát hành hợp đồng `1.0.0`, PR bot #13
+  của `svp-gitops` tự merge. Lượt `gitops` đầu [41081463084](https://github.com/anhnvcoder/short-video-platform/actions/runs/41081463084) đỏ ở một ca: tên lạ dưới prefix `svp-web` bị từ chối bằng
+  lỗi registry thay vì phép 1 (vẫn từ chối, fail-closed); sửa ở PR #45 (glob mỗi tên), lượt lại [41098400504](https://github.com/anhnvcoder/short-video-platform/actions/runs/41098400504) 18/18,
+  Enforce nhận bảy bản, bản ghi stg Deployment `7445904100`.
+- **`svp-web` PR #1** (repo base, CI, image): `ci` [41108867928](https://github.com/anhnvcoder/svp-web/actions/runs/41108867928) và `images` [41108867921](https://github.com/anhnvcoder/svp-web/actions/runs/41108867921) xanh;
+  check của PR #20 ở `svp-gitops` ([41106509655](https://github.com/anhnvcoder/svp-gitops/actions/runs/41106509655)). Lighthouse của job `stack` vượt ngưỡng LCP, TBT trên runner (chỉ
+  báo).
+- **Bản phát hành đầu của `svp-web`** (`8dd59c9`): [41111181126](https://github.com/anhnvcoder/svp-web/actions/runs/41111181126); PR #22 của `svp-gitops` do `svp-web-promoter[bot]`
+  mở, check [41112183849](https://github.com/anhnvcoder/svp-gitops/actions/runs/41112183849) qua, tự merge `d9dcc82`. Lượt `gitops` trên `main` backend [41112757906](https://github.com/anhnvcoder/short-video-platform/actions/runs/41112757906):
+  18/18 bước, stg chạy web `ghcr.io/anhnvcoder/svp-web/web@sha256:d2c90e46…` dưới Enforce, ca chéo nguồn của `drill-k8s-supplychain`
+  PASS, `k8s-web-e2e` 66 test qua, source map từ image `web-sourcemaps`, bản ghi stg Deployment `7447977996` (`images.web` là bản
+  `svp-web`).
+- **PR-2** (cắt `web/`, nhánh `feat/stage6b-svp-web-cut`): kiểm trên máy (`make check`, test của `deploy/ci/`); CI và các kịch bản
+  `verify.yml` trên nhánh: chưa chạy.
 
 ## Hệ quả
 
@@ -587,8 +614,8 @@ ngày ghi vào cột cuối.
   - GitHub ghi rõ tải artifact chéo repo bằng `GITHUB_TOKEN`: xét bỏ image `web-sourcemaps`.
   - Có repo thứ ba dùng script chung (giai đoạn 7 có repo `infra/`): xét repo `svp-ci` riêng.
   - Mang CI sang GitLab thật: viết lại bằng component hay multi-project, đo lại (ADR-0023).
-- **ADR cũ được chỉnh** (ghi "chỉnh bởi 0033" ở trạng thái của chúng và ở `docs/adr/README.md` khi ADR này được chấp nhận, ở bước tài liệu
-  sau; ADR này không sửa chúng):
+- **ADR cũ được chỉnh** (đã ghi "chỉnh bởi 0033" ở trạng thái của cả tám ADR dưới, ở `docs/adr/README.md` và ở mục Hiện thực ở của sáu
+  ADR đầu, 2026-10-31):
   - [ADR-0016](0016-web-client.md): vị trí `web/` và các target `web-*` (sang `svp-web`, backend giữ wrapper); dữ liệu §8 (`gen/api.d.ts` sinh
     từ hợp đồng đã phát hành, không từ file trong repo); §10 (danh sách gói npm và Renovate của web ở `svp-web`).
   - [ADR-0019](0019-web-k3d-supply-chain-observability.md) §1 (web rời pipeline chung, đường `ghcr.io/anhnvcoder/svp-web/web`, `SVP_BUILD_ID`
@@ -611,7 +638,7 @@ ngày ghi vào cột cuối.
 
 ## Hiện thực ở
 
-PR-1 của mục 9 (phần chuẩn bị ở repo này) hiện thực 2026-10-30, chưa merge:
+PR-1 của mục 9 (phần chuẩn bị ở repo này), merge 2026-10-30 (`28bf2ca`, PR #43; glob mỗi tên của policy ở PR #45, `e66dd58`):
 
 - Hợp đồng (mục 1): `services/gateway/openapi.yaml` (`1.0.0`, luật version ở comment đầu file); `deploy/ci/contract.sh` (`check BASE`,
   `publish [--dry-run]`) và test `deploy/ci/contract-test.sh`; `Makefile` (`OASDIFF_IMAGE`, `ORAS_IMAGE`, target `api-contract-check`);
@@ -654,25 +681,51 @@ PR-1 của mục 9 (phần chuẩn bị ở repo này) hiện thực 2026-10-30,
   `<imagePrefix>(services|drillImages)` của bảng nguồn.
 - Cài đặt GitHub do người học làm: [`docs/runbooks/svp-web-setup.md`](../runbooks/svp-web-setup.md).
 
-Sau PR-1, hai script mà CI `svp-web` gọi từ checkout ghim (2026-10-31, chưa merge):
+Sau PR-1, hai script mà CI `svp-web` gọi từ checkout ghim (PR #48, `f59c4ca`, merge 2026-10-30; `.backend-commit` của `svp-web` ghim
+commit này):
 
 - Rescan (mục 4): `deploy/ci/rescan.sh run` đòi `--source` bằng nguồn của repo của lượt (`use_build_source`) và `ci_builder_id` bằng
   `subject` của nguồn, trước khi đọc gì; test ở `deploy/ci/platform-test.sh`.
 - Source map (mục 7): `deploy/ci/sourcemaps-image.sh push [--dry-run] ARCH DIR` và test `deploy/ci/sourcemaps-image-test.sh` (job
   `config` của `.github/workflows/ci.yml`); `deploy/ci/changed-services.sh` (hai file này không làm build lại image).
 
+PR-2 của mục 9 (cắt `web/`, 2026-10-31, nhánh `feat/stage6b-svp-web-cut`, chưa merge):
+
+- Xoá `web/`, `deploy/docker/web.Dockerfile`. `Makefile`: `check` là `check-go`, `generate` là `generate-go`; target chỉ của web bỏ;
+  `web-e2e`, `measure-web`, `measure-upload`, `web-lighthouse`, `web-sourcemaps` là wrapper `IN_WEB` gọi `make e2e`, `measure-web`,
+  `measure-upload`, `lighthouse`, `sourcemaps` của `web_dir` với `SVP_BACKEND_DIR`; `deploy/k8s/k8s.mk`: `k8s-web-sourcemaps`,
+  `k8s-web-e2e` là wrapper (`k8s-sourcemaps`, `k8s-e2e`), `drill-k8s-web-canary` đọc `web_dir`, help `k8s-up` sáu image.
+- `deploy/k8s/lib.sh`: `web_dir` chỉ `SVP_WEB_DIR` hay `<workspace>/frontend`; `built_services` (sáu, repo này build) cạnh
+  `svp_services` (bảy bản triển khai); `dockerfile`, `image_paths` không còn `web`; `web_source` mặc định `WEB_FROM=stg`.
+  `deploy/k8s/install.sh`, `deploy/compose/compose.mk`, `deploy/compose/compose.yaml` (mặc định web bản phát hành, `pull_policy: never`),
+  `deploy/observability/glitchtip/sourcemaps.sh` theo đó.
+- CI: `deploy/ci/plan.sh`, `deploy/ci/changed-services.sh` chỉ `built_services`; `deploy/ci/build-image.sh` từ chối `web` của checkout
+  này; `.github/workflows/images.yml` bỏ bước source map của web; `.github/workflows/ci.yml` bỏ job `web` và SARIF lockfile, `ci-ok` bảy
+  job, job `stack` với `make gitops-clone`, `make web-clone`, web bản stg, `make web-e2e`, `make web-lighthouse` của bản clone;
+  `deploy/ci/scan-gate.sh` (`--fs` giữ cho `svp-web`).
+- Runner: `.github/workflows/verify.yml` (bước `Clone svp-gitops and svp-web`, Node và Playwright theo bản clone), `deploy/ci/verify-run.sh`
+  (`--clones`), `deploy/ci/verify/compose-obs.sh` (`web=1`), `dev-k3d.sh`, `web-canary.sh` (`WEB_FROM=clone`), `gitops.sh`;
+  `deploy/ci/verify-collect.sh` (kết quả web ở `.web/svp-web/test-results`); `deploy/k8s/drills/web-canary.sh`, `web-obs.sh`.
+- `.trivyignore.yaml` (bỏ mục `@lhci/cli`), `deploy/ci/trivy-config-ignore.yaml`, `renovate.json` (bỏ luật npm, Node, Sentry), `.gitignore`;
+  test `deploy/ci/platform-test.sh`, `dora-test.sh`, `deploy/ci/verify-collect-test.sh`, `tools/vulngate/main_test.go`.
+
+Ở repo khác:
+
+- `svp-gitops` (PR #20, 2026-10-30): `.github/workflows/check.yml` (`CHECKER_COMMIT` `28bf2ca`, checkout `svp-web` đủ lịch sử,
+  `SVP_SOURCE_DIR_WEB`), `base/services/web.yaml` (comment), `README.md`.
+- `svp-web` (PR #1, `8dd59c9`, 2026-10-30): `Dockerfile` ở gốc, `Makefile`, `.backend-commit`, `scripts/backend.sh`, `api/contract.json`,
+  `scripts/contract.sh` (`make generate`), `.github/workflows/ci.yml` (`check`, `config`, `gitleaks`, `stack`, `sarif`, `ci-ok`),
+  `.github/workflows/images.yml` (`plan`, build, ký, provenance, image `web-sourcemaps`, `promote` với App `svp-web-promoter`, `rescan`,
+  `images-ok`), `.github/rulesets/main.json`, `renovate.json`, `.trivyignore.yaml`, `README.md`, `CLAUDE.md`.
+- Cài đặt GitHub (người học, theo [`docs/runbooks/svp-web-setup.md`](../runbooks/svp-web-setup.md)): App `svp-web-promoter`, environment
+  `promote` của `svp-web` và package `svp-web/web`, `svp-web/web-sourcemaps`, `short-video-platform/api/gateway` public đã dùng ở các lượt
+  của mục Kết quả.
+
 Chưa hiện thực:
 
-- Của PR-1 theo mục 9 mà PR này chưa có: gọi `sourcemaps-image.sh push` lúc build (việc của CI `svp-web`); `compose-obs` nhận
-  `web_ref` (mục 7 xếp nó vào các kịch bản chạy `make web-clone`; file kịch bản chưa khai `web=1`).
-- PR-2: mặc định `WEB_FROM` thành web của stg, target web thành wrapper, xoá `web/`, `deploy/docker/web.Dockerfile`, job `web` của
-  `ci.yml`, `web` khỏi `svp_services`, job `stack` với web stg. PR-3: bỏ `web` khỏi `services` của nguồn `backend`.
-- `svp-gitops`: `.github/workflows/check.yml` (`CHECKER_COMMIT` lên commit có luật mới, clone `svp-web`).
-- `svp-web` (mới): `Dockerfile`, `Makefile`, `.backend-commit`, `api/contract.json`, `.github/workflows/ci.yml`,
-  `.github/workflows/images.yml`, `.github/rulesets/main.json`, `renovate.json`, `README.md`.
-- Cài đặt GitHub (người học): repo `svp-web` và cài đặt mục 10; App `svp-web-promoter`; environment `promote` của `svp-web` (biến
-  `SVP_WEB_APP_CLIENT_ID`, secret `SVP_WEB_APP_PRIVATE_KEY`); package GHCR `short-video-platform/api/gateway`, `svp-web/web`,
-  `svp-web/web-sourcemaps` public.
+- PR-3: bỏ `web` khỏi `services` của nguồn `backend` (sau khi prd chạy web của `svp-web`); trước đó promote prd một bản ghi stg có web
+  của `svp-web` (bước 7).
+- `make contract-bump` (mục 1, chỉ khi Renovate không nâng được `api/contract.json`; chưa cần, Kiểm chứng sau).
 
 ## Nguồn
 

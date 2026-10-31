@@ -579,6 +579,8 @@ quyết định riêng, chưa làm.
 
 ## Hiện thực ở
 
+Từ 2026-10-31 mã web ở repo `svp-web` ([ADR-0033](0033-svp-web-repo.md)): mỗi đường `web/<x>` dưới đây là `<x>` của repo đó; `gen/api.d.ts` của web từ đó sinh từ hợp đồng đã phát hành.
+
 - `renovate.json`: rule `rangeStrategy: bump` cho directive `go` (mục 1).
 - `Makefile`: `GOVULNCHECK_VERSION`, `GRYPE_IMAGE`, `SCHEMATHESIS_IMAGE` (dòng `# renovate:` ngay trên); `make tools` cài
   govulncheck; `make vulncheck` trong `check-go` trước `test`; `make fuzz` (`FUZZTIME`); `make grype`; `-include deploy/dast/dast.mk`.

@@ -89,6 +89,8 @@ Service chỉ ký một URL có hạn dùng; client gửi file thẳng tới sto
 
 ## Hiện thực ở
 
+Từ 2026-10-31 mã web ở repo `svp-web` ([ADR-0033](0033-svp-web-repo.md)): mỗi đường `web/<x>` dưới đây là `<x>` của repo đó.
+
 - Upload thẳng bằng presigned POST: `internal/objstore/`; `InitUpload`, `CompleteUpload` và giới hạn 500 MiB ở
   `services/video-service/internal/server/server.go`; job dọn upload bỏ dở ở `services/video-service/internal/server/sweep.go`.
 - Transcode bất đồng bộ ra HLS: `services/media-worker/` (`internal/worker/` giới hạn kích thước tải về, `internal/transcode/`

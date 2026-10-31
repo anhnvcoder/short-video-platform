@@ -4,7 +4,7 @@
   lịch tuần của `verify.yml`); hiện thực 2026-10-29 (phần 4 của giai đoạn 6b, PR-B, nhánh `feat/stage6b-gitops-split`, PR #39; mục
   Hiện thực ở): `dora-test.sh` xanh ở job `config`; lượt `dora.yml` đầu chạy 2026-10-30 (kết quả ở mục Kiểm chứng sau); dòng 4 (kịch
   bản `gitops` vào lịch tuần) hiện thực 2026-10-30 ([ADR-0021](0021-deferred-verification-stage6b.md) mục 3): lịch tuần của
-  `verify.yml` chạy job `gitops` không chờ phát hành, bản ghi stg ghi khi bước kịch bản xanh; lượt lịch đầu kiểm sau merge
+  `verify.yml` chạy job `gitops` không chờ phát hành, bản ghi stg ghi khi bước kịch bản xanh; lượt lịch đầu kiểm sau merge; lead time của bản web do `svp-web` build tính trên lịch sử repo đó (ba repo) chỉnh bởi [0033](0033-svp-web-repo.md), từ 2026-10-30
 - Ngày: 2026-10-28
 
 ## Bối cảnh

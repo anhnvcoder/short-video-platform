@@ -9,7 +9,9 @@ thúc bằng hệ thống chạy được, có số đo và có ADR cho các quy
 
 Yêu cầu trên máy:
 
-- Docker, và Go, Node, pnpm theo các version ghim trong repo (`go.mod`, `web/.nvmrc`, `packageManager` của `web/package.json`).
+- Docker, và Go theo version ghim trong `go.mod`.
+- Bản clone [`svp-gitops`](https://github.com/anhnvcoder/svp-gitops) ở `../gitops` (mục dưới): `make up` chạy web client là bản
+  phát hành của stg theo digest đọc từ đó, kéo ẩn danh từ GHCR.
 - Postgres và Redis chạy trên máy, không nằm trong compose: Postgres `127.0.0.1:5432`, Redis `127.0.0.1:6379`. Các bước dưới
   dùng database và db Redis riêng của từng service, mô tả ở [`CLAUDE.md`](CLAUDE.md).
 - Công cụ dòng lệnh trên máy: `psql` (`make up` tạo role và database trên Postgres native), `redis-cli`, `curl`, `jq`, `openssl`
@@ -20,7 +22,7 @@ Từ gốc repo:
 ```sh
 make help        # liệt kê mọi target
 make env         # tạo .env (mode 600) với secret ngẫu nhiên; không bao giờ in giá trị
-make up          # tạo role/database trên Postgres native rồi dựng stack compose: Redpanda, object storage, các service, web
+make up          # tạo role/database trên Postgres native rồi dựng stack compose: Redpanda, object storage, các service, web (bản stg)
 make smoke       # luồng đầu-cuối qua gateway: đăng ký, upload tới READY, phát HLS, feed, like, follow
 ```
 
@@ -32,9 +34,22 @@ code của service gọi nó qua `internal/objstore`.
 Muốn xem thêm telemetry (Grafana, Alertmanager, GlitchTip) thì `make up OBS=lgtm`. Không dùng `OBS` thì chỉ chạy các service.
 Chỉ chạy một bộ observability một lúc vì máy 16 GB RAM không đủ cho hai bộ.
 
-## Hai repo: code và cấu hình triển khai
+## Ba repo: backend, web client, cấu hình triển khai
 
-Repo này giữ code, test, Dockerfile, chart Helm (`deploy/helm/`) và CI build, quét, ký image. **Thứ chạy ở từng môi trường** nằm ở
+Repo này giữ code backend, test, Dockerfile, chart Helm (`deploy/helm/`), stack compose, cluster k3d và CI build, quét, ký sáu image
+service Go. **Web client** (Next.js và BFF) ở repo [`anhnvcoder/svp-web`](https://github.com/anhnvcoder/svp-web)
+([ADR-0033](docs/adr/0033-svp-web-repo.md)): mã, test, CI và image web của riêng nó; hai bên nói chuyện qua hợp đồng REST
+`services/gateway/openapi.yaml` có version, phát hành có chữ ký thành `ghcr.io/anhnvcoder/short-video-platform/api/gateway:<version>`
+(`make api-contract-check` kiểm luật version ở PR). Việc cần mã web ở đây (`make up WEB_FROM=clone`, `make web-e2e`, Lighthouse, canary
+web) đọc bản clone `svp-web` ở `../frontend` (hay `SVP_WEB_DIR`):
+
+```sh
+git clone https://github.com/anhnvcoder/svp-web.git ../frontend
+```
+
+Bản clone cũ có thư mục `web/` (file bị ignore còn lại từ trước khi web tách repo) thì xoá: `rm -rf web`.
+
+**Thứ chạy ở từng môi trường** nằm ở
 repo public riêng [`anhnvcoder/svp-gitops`](https://github.com/anhnvcoder/svp-gitops) ([ADR-0025](docs/adr/0025-gitops-config-repo.md)):
 
 | Ở `svp-gitops` | Chứa gì |
@@ -69,9 +84,8 @@ Sổ lệnh đầy đủ (kiểm tra gồm `make vulncheck`, `make fuzz`, `make 
 | `proto/` | Contract `.proto` của gRPC và event, quản lý bằng buf. Sửa ở đây rồi chạy `make generate`. |
 | `gen/` | Code Go sinh từ `proto/` (`gen/go`); commit cùng thay đổi, không sửa tay. Code sinh từ SQL (sqlc) nằm ở `services/*/internal/store`. |
 | `tools/` | Công cụ nhỏ: `fakefollows` (tạo follow giả cho diễn tập), `jwtkey` (sinh khoá JWT), `vulngate` (gate của govulncheck trong `make vulncheck`). |
-| `web/` | Web client Next.js và BFF (giai đoạn 5b): `app/` route, `server/` phía server, `features/`, `components/`, `e2e/` Playwright. |
 | `deploy/compose/` | Stack compose `make up`, script smoke và diễn tập. |
-| `deploy/docker/` | Dockerfile của service Go, media-worker và web. |
+| `deploy/docker/` | Dockerfile của service Go và media-worker (Dockerfile web ở gốc `svp-web`). |
 | `deploy/postgres/`, `deploy/redpanda/`, `deploy/s3/` | Bootstrap database, topic Kafka (compose), bucket, user, policy và CORS của object storage (RustFS, service `s3`). ACL Kafka của cluster k3d nằm trong chart Helm. |
 | `deploy/observability/` | Collector, Prometheus và rule SLO, Alertmanager, Grafana LGTM, GlitchTip, Elastic (so sánh). |
 | `deploy/k8s/` | Cluster k3d: script `install.sh`, `gitops.sh` (đường GitOps), `k8s.mk`, PSA, `drills/` (diễn tập), `cloud/` (manifest cho cluster đo thật, phủ chỉ cho runner ở `cloud/runner/`). Values, overlay và digest của các môi trường nằm ở `svp-gitops`. |
@@ -81,7 +95,7 @@ Sổ lệnh đầy đủ (kiểm tra gồm `make vulncheck`, `make fuzz`, `make 
 | `deploy/ci/` | Script của pipeline: build, quét, ký, attest, promote sang `svp-gitops` (stg, prd), bản ghi triển khai stg, check của `svp-gitops` (`gitops-check.sh`), DORA; `verify/` là trình tự từng kịch bản của `verify.yml`. Phần lớn logic CI nằm ở đây, không nằm trong YAML. |
 | `.githooks/` | Git hook `pre-commit` (gofmt, golangci-lint, buf lint, gitleaks); bật một lần bằng `make hooks`. |
 | `.github/rulesets/` | Ruleset của nhánh `main` (check bắt buộc `ci-ok`, `images-ok`). |
-| `.github/workflows/` | `ci.yml` (kiểm tra và stack), `images.yml` (image, chuỗi cung ứng, promote), `verify.yml` (kiểm chứng dồn trên runner, chạy tay và hằng tuần; ghi bản ghi stg), `dora.yml` (DORA metrics của stg, hằng tuần). |
+| `.github/workflows/` | `ci.yml` (kiểm tra, luật version của hợp đồng REST, stack), `images.yml` (sáu image, chuỗi cung ứng, phát hành hợp đồng, promote), `verify.yml` (kiểm chứng dồn trên runner, chạy tay và hằng tuần; ghi bản ghi stg), `dora.yml` (DORA metrics của stg, hằng tuần). |
 | `docs/architecture.md` | Thiết kế hiện tại: yêu cầu, ước lượng quy mô, C4, luồng chính, contract. |
 | `docs/adr/` | Quyết định kiến trúc, mỗi quyết định một file (mục lục ở `docs/adr/README.md`). |
 | `docs/runbooks/` | Một runbook cho mỗi cảnh báo mức page và các sự cố đã gặp. Mở khi có cảnh báo. |
@@ -111,10 +125,10 @@ Bảng service: database và Redis db của từng service nằm ở `CLAUDE.md`
 | 3 | Quan sát: OpenTelemetry, LGTM, GlitchTip, SLO và cảnh báo burn rate | [0011](docs/adr/0011-observability-stage3.md), [0012](docs/adr/0012-elastic-vs-grafana-stage3.md) |
 | 4 | Kubernetes trên k3d với Helm, Envoy Gateway, Argo CD, canary | [0014](docs/adr/0014-kubernetes-local-stage4.md), [0017](docs/adr/0017-gitops-capacity-media-worker-max2.md) |
 | 5 | CI/CD và chuỗi cung ứng: image đa kiến trúc, ký, quét, Kyverno, promote bằng PR GitOps | [0015](docs/adr/0015-cicd-devsecops-stage5.md) |
-| 5b | Web client Next.js (BFF, session, hồ sơ, upload từ trình duyệt, web trên k3d) | [0016](docs/adr/0016-web-client.md), [0018](docs/adr/0018-web-profiles-public-video-upload.md), [0019](docs/adr/0019-web-k3d-supply-chain-observability.md) |
+| 5b | Web client Next.js (BFF, session, hồ sơ, upload từ trình duyệt, web trên k3d); từ giai đoạn 6b phần 4b ở repo `svp-web` | [0016](docs/adr/0016-web-client.md), [0018](docs/adr/0018-web-profiles-public-video-upload.md), [0019](docs/adr/0019-web-k3d-supply-chain-observability.md), [0033](docs/adr/0033-svp-web-repo.md) |
 | 6 | Độ tin cậy: k6 theo SLO, SLO web, backup và phục hồi Postgres, runbook, game day | [0020](docs/adr/0020-reliability-stage6.md) |
 
 Các ADR sau giai đoạn 6 (kiểm chứng dồn trên runner, object store của đường local, CI trung lập nền tảng, nhiều môi trường
 dev, stg, prd, repo cấu hình GitOps riêng, Secret của đường GitOps bằng External Secrets Operator, build provenance SLSA,
 DORA metrics, output HLS bất biến theo version, DevSecOps bổ sung: govulncheck, fuzz, DAST, CodeQL, grype, sửa các phát
-hiện của chaos và k6) có trong [`docs/adr/`](docs/adr/).
+hiện của chaos và k6, tách web client sang repo `svp-web`) có trong [`docs/adr/`](docs/adr/).

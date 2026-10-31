@@ -6,7 +6,7 @@
   bởi [0028](0028-dora-metrics.md) §5. Hiện thực 2026-10-29 đến 2026-10-30 (phần 4 của giai đoạn 6b, mục Hiện thực ở): `svp-gitops`
   khởi tạo (`55258e1`, rồi `a84e26d` thêm `check.yml`; lượt `check` đầu trên `main` xanh) với ba ruleset; PR-B cắt repo code (nhánh
   `feat/stage6b-gitops-split`, PR #39): CI, kịch bản `dev-k3d` và `gitops` trên nhánh đạt (mục Kiểm chứng sau); auto-merge của PR bot,
-  bản ghi stg, promote prd đạt sau merge PR-B (2026-10-30); duyệt của Code Owner và bypass `owners` không đạt với người học (mục Kiểm chứng sau)
+  bản ghi stg, promote prd đạt sau merge PR-B (2026-10-30); duyệt của Code Owner và bypass `owners` không đạt với người học (mục Kiểm chứng sau); §2 (luật tổ tiên chỉ cho nguồn `backend`, nguồn khác theo bảng nguồn), §5 (check đọc lịch sử `svp-web`, luật tác giả PR), §6 (App thứ hai `svp-web-promoter`) và mục "Xem lại khi" về App của phần 4b chỉnh bởi [0033](0033-svp-web-repo.md), từ 2026-10-30
 - Ngày: 2026-10-28
 
 ## Bối cảnh
@@ -506,6 +506,11 @@ Giả định chưa kiểm được lúc viết (không push, không ghi GitHub)
   `docs/ci-cd.md`, `docs/threat-model.md` (khoá App, bản ghi giả, bypass), runbook dựng `svp-gitops`.
 
 ## Hiện thực ở
+
+Từ 2026-10-30 ([ADR-0033](0033-svp-web-repo.md)): luật theo nguồn phát hành ở `deploy/ci/gitops-check.sh` (bước 1 theo
+`sources.json` ở `revision` của env, `SVP_SOURCE_DIR_<TÊN>` hay clone ẩn danh; bước 1c luật tác giả PR); `.github/workflows/check.yml`
+của `svp-gitops` checkout thêm `svp-web` đủ lịch sử, `CHECKER_COMMIT` `28bf2ca`; `deploy/ci/promote.sh --source <tên>` (nhánh
+`bot/promote-stg-<tên>`), gọi từ job `promote` của `images.yml` `svp-web` với App `svp-web-promoter`.
 
 Hiện thực 2026-10-29 đến 2026-10-30 (PR-B, nhánh `feat/stage6b-gitops-split`, PR #39):
 
