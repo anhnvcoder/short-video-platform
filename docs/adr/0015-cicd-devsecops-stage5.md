@@ -24,7 +24,7 @@
   GitHub App ở environment `promote`, nhánh `bot/promote-stg`, auto-merge sau `gitops-ok`, không còn "Approve workflows to run"; promote
   prd bằng PR có người duyệt chép cả bộ của một bản ghi stg; bỏ job `values-check` của repo code), §10 (Renovate tách hai repo,
   `svp-gitops` bỏ qua `envs/**`) và §11 (ruleset `main`, `owners`, `tags`, CODEOWNERS và cài đặt của `svp-gitops`) chỉnh bởi
-  [0024](0024-multi-environment.md) và [0025](0025-gitops-config-repo.md); từ 2026-10-31 §3, §7, §9 (`images.yml` của repo code build, ký, promote sáu image, không còn `web`; thêm job `contract`; rescan và promote theo nguồn phát hành) chỉnh bởi [0033](0033-svp-web-repo.md)
+  [0024](0024-multi-environment.md) và [0025](0025-gitops-config-repo.md); từ 2026-10-31 §3, §7, §9 (`images.yml` của repo code build, ký, promote sáu image, không còn `web`; thêm job `contract`; rescan và promote theo nguồn phát hành) chỉnh bởi [0033](0033-svp-web-repo.md); §10 (không automerge: bản `patch`, `digest` của Go module, gói npm, base image và image dịch vụ tự merge khi `ci-ok`, `images-ok` xanh; action, công cụ, minor, major giữ tay) chỉnh bởi [0035](0035-renovate-automerge.md)
 - Ngày: 2026-10-20
 
 ## Bối cảnh

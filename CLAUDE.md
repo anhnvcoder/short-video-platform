@@ -997,7 +997,9 @@ liệt kê target):
     quá 90 ngày; chỉ lựa chọn có chủ đích vào đây, cảnh báo sửa được thì sửa. `scan-gate.sh --check-ignorefile` kiểm cả hai
     file ở job `config`: file sai quy tắc làm job đỏ ở mọi PR.
   - Renovate: GitHub App Mend, repo này và `svp-gitops` (người học cài, **kiểm sau push**); `renovate.json`: sáng thứ Bảy giờ Việt
-    Nam, `minimumReleaseAge` 3 ngày (trừ cảnh báo lỗ hổng), không automerge, không đụng `deploy/ci/drill/`, `gen/`; luật npm, Node, Sentry của web ở
+    Nam, `minimumReleaseAge` 3 ngày (trừ cảnh báo lỗ hổng), bản `patch`, `digest` của Go module, base image, image của compose, CI và
+    chart của repo tự merge (auto-merge của GitHub, squash) khi `ci-ok`, `images-ok` xanh, action, nhóm `tools`, `cosign`, minor, major
+    giữ duyệt tay ([ADR-0035](docs/adr/0035-renovate-automerge.md); repo phải bật "Allow auto-merge"), không đụng `deploy/ci/drill/`, `gen/`; luật npm, Node, Sentry của web ở
     `renovate.json` của `svp-web` (cùng lịch); values của
     chart nền tảng, version chart trong `components.json`, bản cài Argo CD và digest phát hành ở `svp-gitops`, do `renovate.json` của
     repo đó quản (bỏ qua `envs/**`). Ghim mới trong `Makefile`, `lib.sh` hay values bên thứ ba theo dạng của
