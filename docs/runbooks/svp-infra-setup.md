@@ -5,7 +5,7 @@
 - Mọi thao tác ghi (UI Settings, nhập ruleset, cài Renovate, push đầu) do **người học chạy** với quyền admin. Mọi lệnh "Kiểm" ở đây chỉ
   `GET`, chạy bằng đăng nhập `gh` của người học (scope `repo` là đủ).
 - Thiết kế và lý do ở [ADR-0034](../adr/0034-aws-stage7.md) §2 (repo, bố cục, CI không credential) và threat model
-  [AWS-6](../threat-model.md#411-biên-aws-giai-đoạn-7); cài đặt theo cùng mẫu với [svp-web-setup.md](svp-web-setup.md) và
+  [AWS-6](../threat-model.md#411-biên-aws-giai-đoạn-7); cài đặt theo cùng mẫu với [svp-frontend-setup.md](svp-frontend-setup.md) và
   [svp-gitops-setup.md](svp-gitops-setup.md). Trang này chỉ nói làm gì, vì sao từng ô, kiểm thế nào.
 - **Ở giai đoạn 7a repo không có** secret, variable, environment, GitHub App hay role OIDC nào: CI chỉ kiểm tĩnh, mọi lệnh chạm tài khoản
   AWS do người học chạy từ máy. **Không ghi** account ID, IP, email, tên miền thật vào repo, issue, PR hay chat: repo public.
@@ -77,12 +77,12 @@ gh api $I/rules/branches/main -q '.[] | .type'
 | rulesets | đúng một dòng `main`, `"target":"branch"`, `"enforcement":"active"` |
 | `rules/branches/main` | `deletion`, `non_fast_forward`, `pull_request`, `required_status_checks` |
 
-Không kiểm được bằng `gh` của người học: **Renovate** (B2), như với hai repo kia ([svp-web-setup.md](svp-web-setup.md#kiểm-tra-nhanh-5-phút)).
+Không kiểm được bằng `gh` của người học: **Renovate** (B2), như với hai repo kia ([svp-frontend-setup.md](svp-frontend-setup.md#kiểm-tra-nhanh-5-phút)).
 Kiểm bằng UI ở bước đó.
 
 ## Nguyên nhân thường gặp
 
-Theo thứ tự hay gặp (ba cái đầu đã gặp hay suýt gặp khi dựng `svp-gitops`, `svp-web`), mỗi cái kèm dấu hiệu trong kết quả của "Kiểm tra
+Theo thứ tự hay gặp (ba cái đầu đã gặp hay suýt gặp khi dựng `svp-gitops`, `svp-frontend`), mỗi cái kèm dấu hiệu trong kết quả của "Kiểm tra
 nhanh":
 
 1. **Ruleset nhập trước lượt CI đầu xanh trên `main`**: commit thêm sau đó phải đi qua PR mà check `infra-ok` chưa từng chạy trên `main`.
@@ -95,7 +95,7 @@ nhanh":
    Tên đúng là `infra-ok`; sửa ruleset hay tên job cho khớp (C1).
 5. **Ai đó thêm secret, variable hay environment ở 7a** (`total_count` khác 0): không gì đỏ, nhưng repo public có credential. Xoá và xem
    "Giảm thiểu".
-6. **`patterns_allowed` không rỗng** (chép từ `svp-web`, nơi cần `sigstore/cosign-installer`): `svp-infra` không ký gì, ô đó chỉ làm danh
+6. **`patterns_allowed` không rỗng** (chép từ `svp-frontend`, nơi cần `sigstore/cosign-installer`): `svp-infra` không ký gì, ô đó chỉ làm danh
    sách action được chạy rộng ra. Sửa ở A2.
 
 ## Giảm thiểu
@@ -161,7 +161,7 @@ Làm trước khi bất kỳ commit nào có `.github/workflows/` được push.
   commit đọc được; hoàn tác là revert một commit. Commit squash lấy tiêu đề và mô tả của PR (conventional commit, footer, dòng revert còn
   trong commit). Auto-merge để PR của người học tự merge khi `infra-ok` xanh; không mở đường nào qua ruleset.
 - Chỉ action của GitHub, ghim SHA bắt buộc: như hai repo kia; `check.yml` chỉ dùng action của GitHub, còn terraform, tflint, trivy,
-  shellcheck chạy bằng image hay bản tải ghim, nên danh sách action ngoài để trống (khác `svp-web`, không ký gì).
+  shellcheck chạy bằng image hay bản tải ghim, nên danh sách action ngoài để trống (khác `svp-frontend`, không ký gì).
 - Token mặc định chỉ đọc, tắt "create and approve pull requests": không workflow nào của repo này ghi hay mở PR.
 - Duyệt PR fork của mọi người ngoài: repo public, PR fork chạy `check.yml` với code lạ trên runner; người học xem trước khi cho chạy.
 - Secret scanning + push protection: chặn ngay lúc push nếu ai lỡ commit khoá AWS (threat model AWS-6). Dependabot alerts: cảnh báo về
@@ -269,13 +269,13 @@ JSON
 (UI: Settings → **Rules** → **Rulesets** → **New ruleset** → **Import a ruleset**, dán JSON trên vào một file trước.) Sửa sau đó bằng
 `gh api -X PUT repos/anhnvcoder/svp-infra/rulesets/<id> --input -` với cùng JSON đã sửa.
 
-**Từng luật và vì sao** (như `main` của `svp-gitops`, `svp-web`):
+**Từng luật và vì sao** (như `main` của `svp-gitops`, `svp-frontend`):
 
 | Luật | Vì sao |
 | --- | --- |
 | `deletion`, `non_fast_forward` | Không ai xoá `main` hay force push: mỗi `apply` của người học ứng với một commit trên `main`, viết lại lịch sử làm mất dấu cấu hình đã apply |
 | `pull_request`, 0 approval | Mọi thay đổi qua PR để `make check` chạy; repo một người nên không bắt người thứ hai; không CODEOWNERS |
-| `required_status_checks` `infra-ok`, `integration_id` 15368 | Check tổng phải xanh, chỉ nhận từ app GitHub Actions (`gh api apps/github-actions -q .id` là 15368, như `svp-web-setup.md` đọc ngày 2026-10-30) |
+| `required_status_checks` `infra-ok`, `integration_id` 15368 | Check tổng phải xanh, chỉ nhận từ app GitHub Actions (`gh api apps/github-actions -q .id` là 15368, như `svp-frontend-setup.md` đọc ngày 2026-10-30) |
 | `bypass_actors: []` | Không ai bỏ qua, cả admin |
 
 **Kiểm:** hai lệnh "C1" của "Kiểm tra nhanh", rồi:
@@ -303,7 +303,7 @@ check (nguyên nhân 4) → so tên job tổng của `check.yml` với `context`
 
 - [ADR-0034](../adr/0034-aws-stage7.md) §2 (repo, bố cục, state, CI không credential), §14 (buổi AWS); threat model
   [AWS-6](../threat-model.md#411-biên-aws-giai-đoạn-7).
-- [svp-web-setup.md](svp-web-setup.md), [svp-gitops-setup.md](svp-gitops-setup.md): cùng mẫu cài đặt, ruleset, Renovate.
+- [svp-frontend-setup.md](svp-frontend-setup.md), [svp-gitops-setup.md](svp-gitops-setup.md): cùng mẫu cài đặt, ruleset, Renovate.
 - Trình tự buổi AWS và gỡ tài nguyên: `docs/runbooks/session-stg.md` của repo `svp-infra`.
 - Không có diễn tập; phép kiểm là lượt `check.yml` đầu (B1) và ruleset (C1).
 

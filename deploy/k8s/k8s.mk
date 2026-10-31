@@ -223,7 +223,7 @@ cloud-check: ## Check the cloud cluster's manifests without a cluster: render de
 
 # --- An EKS cluster of the project (stage 7), which the infrastructure repository makes and destroys, and its learner
 # reaches with the AWS profile of the session (the AI runs none of these). CONTEXT is the cluster's alias in the
-# kubeconfig, svp-stg or svp-prd (output update_kubeconfig of the infrastructure repository: aws eks update-kubeconfig
+# kubeconfig, svp-stg or svp-prd (output kubeconfig_command of the infrastructure repository: aws eks update-kubeconfig
 # --alias), never the current context; the scripts get it as SVP_KUBE_CONTEXT, and refuse every other name before any
 # command (deploy/k8s/lib.sh, deploy/compose/lib.sh). These targets never run k8s-exclusive: a cluster in the cloud
 # takes no memory of this machine. DOMAIN is the domain of the cluster's web client, its API api.<domain>, behind

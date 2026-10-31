@@ -367,6 +367,7 @@ infra/                          repo svp-infra
   | `uploadsBucket` | Bucket `uploads`: `UPLOAD_ORIGIN` của web `https://<uploadsBucket>.s3.<region>.amazonaws.com` (virtual-hosted) |
   | `mediaBucket` | Bucket `media` |
   | `mediaDomain` | Tên `*.cloudfront.net` của distribution: `MEDIA_ORIGIN` của web, `MEDIA_PUBLIC_BASE_URL` của gateway |
+  | `s3Cidrs` | Các dải IPv4 AWS công bố cho S3 của region (list; output Terraform từ `data "aws_ip_ranges"`, đọc lại mỗi lần `apply`): egress 443 tới S3 (`externalPeers.s3`) của video-service, media-worker |
 
   **Ai ghi:** output `cluster_values` (một map) của `aws/envs/<env>`; script buổi ghi nó ra file rồi `make eks-gitops-up
   CLUSTER_VALUES=<file>` đặt thành `helm.valuesObject.cluster` của root. **Ai đọc:** mẫu `platforms/eks/*.values.tpl` của `svp-gitops`;
@@ -435,6 +436,13 @@ infra/                          repo svp-infra
   80, credential tới pod qua `AWS_CONTAINER_CREDENTIALS_FULL_URI` và `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE` [N21]; NetworkPolicy chỉ mở
   `169.254.170.23/32` TCP 80 cho pod cần, không mở `169.254.0.0/16`. Trang tài liệu không ghi thời hạn của credential tạm (mục Kiểm chứng
   sau).
+- Egress tới S3 (threat model FF-5): NetworkPolicy của video-service, media-worker chỉ mở TCP 443 tới `s3Cidrs` và agent Pod Identity, không bao giờ
+  `0.0.0.0/0`; S3 đi qua gateway endpoint của VPC, chưa có endpoint policy. Rủi ro còn lại, **chấp nhận ở stg**: luật theo địa chỉ không phân
+  biệt bucket, nên media-worker đã bị chiếm bằng file dựng sẵn chép được file gốc của `uploads` (role của nó đọc được) sang một bucket lạ
+  nhận ghi trong region. Cần chạy được code trong worker trước; stg chỉ có dữ liệu thử và chỉ sống trong buổi. Không làm ngay vì endpoint
+  policy thiếu một bucket mà node cần (bucket layer ECR của region, nơi node kéo image addon của EKS) thì node không kéo được image và buổi
+  đo tính tiền hỏng. **Trước prd (7b):** endpoint policy chỉ bucket `uploads`, `media` của env cộng bucket layer ECR của region, kiểm trong
+  một buổi stg rồi mới áp cho prd; khi đó FF-5 đóng.
 - 7b: Secrets Manager `svp/prd/<entry>`, store `aws` mỗi namespace assume một role chỉ đọc entry của nó (0026).
 
 ### 11. Mức chuẩn theo env và bảng biến
@@ -537,6 +545,7 @@ Giả định chỉ chứng minh được trên AWS. Phép kiểm chạy ở bu�
 | PVC xoá khi EBS CSI còn chạy thì volume EBS xoá (`reclaimPolicy: Delete`) | `sweep.sh` không volume | Chưa kiểm |
 | Chi phí buổi khớp ước lượng mục 12 (trong ±50 %) | Cost Explorer sau 24 giờ, theo dịch vụ | Chưa kiểm |
 | Thời gian `apply` → mọi Application Synced/Healthy; `pre-destroy` + `destroy`; quét sạch | Mốc ghi trong runbook buổi; `sweep.sh` exit 0 | Chưa kiểm |
+| Bucket `media` không liệt kê được ẩn danh cả khi gọi thẳng endpoint vùng của S3, không qua CloudFront (UP-6, AWS-2); `make eks-smoke` chỉ thử được phép liệt kê qua gốc của CloudFront | Bước tay của runbook buổi: `curl -s -o /dev/null -w '%{http_code}' 'https://<mediaBucket>.s3.<region>.amazonaws.com/?list-type=2'` với `mediaBucket`, `region` của `cluster-values.json`; mong `403` | Chưa kiểm |
 | k6 profile `cloud` trên 3 node: bậc cao nhất đạt mọi threshold theo SLO | `run.sh --pods 1, 2, 4, 8`; p95/p99 phía server trong cửa sổ giữ | Chưa kiểm |
 
 ## Hệ quả

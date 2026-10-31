@@ -253,8 +253,8 @@ printf 'apiVersion: argoproj.io/v1alpha1\nkind: AppProject\nmetadata:\n  name: s
 # shellcheck disable=SC2016 # read from lib.sh by bash, not expanded here
 services=$(bash -c '. "$1/deploy/k8s/lib.sh" && echo "${svp_services[*]}"' _ "$fake")
 for svc in $services; do
-  prefix=ghcr.io/anhnvcoder/short-video-platform/
-  [ "$svc" != web ] || prefix=ghcr.io/anhnvcoder/svp-web/
+  prefix=ghcr.io/anhnvcoder/svp-backend/
+  [ "$svc" != web ] || prefix=ghcr.io/anhnvcoder/svp-frontend/
   printf 'image:\n  repository: %s%s\n  tag: "%s"\n  digest: "sha256:%s"\n' "$prefix" "$svc" "$(openssl rand -hex 6)" \
     "$(openssl rand -hex 32)" >"$gitops/envs/stg/images/$svc.yaml"
 done

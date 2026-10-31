@@ -255,7 +255,7 @@ want_apps=$(printf 'svp-root\n%s\n' "$want_apps")
 if cloud_context; then
   # --- the EKS cluster, made by the infrastructure repository: only reached here.
   kc get --raw /readyz >/dev/null 2>&1 ||
-    fail "cluster $kube_context is not reachable: add it to the kubeconfig under that name (the command of output update_kubeconfig of the infrastructure repository), with the AWS profile of the session"
+    fail "cluster $kube_context is not reachable: add it to the kubeconfig under that name (the command of output kubeconfig_command of the infrastructure repository), with the AWS profile of the session"
   ok "cluster $kube_context reachable"
 else
   # --- a new cluster only: the dev path's releases (Helm) and Argo CD's would fight over the same objects.

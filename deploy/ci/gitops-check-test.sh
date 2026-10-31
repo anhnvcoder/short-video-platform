@@ -7,8 +7,8 @@
 #   - an overlay of a release of chart svp-service that sets image;
 #   - an unknown environment: a directory envs/qa for the check, env=nope for the chart;
 #   - an empty revision in envs/stg/charts.yaml;
-#   - an image newer than the charts: revision set to the parent of an image's commit (derived values from that
-#     parent), so the image's tag is no ancestor of it;
+#   - an image newer than the charts: gateway's tag set to a commit made on top of the revision (git commit-tree, an
+#     object with no ref), so the tag is no ancestor of it, whichever commit stg runs;
 #   - a wrong collectorConfigSha256;
 #   - a short targetRevision (main, not refs/heads/main) for the sources of svp-gitops in argocd/apps/values.yaml;
 #   - the platform layer (gitops-check.sh --root, steps 1 and 2): a copy of TREE given platforms/ and a root chart
@@ -224,15 +224,15 @@ sed -i.bak 's/^revision:.*/revision:/' "$t/envs/stg/charts.yaml" && rm "$t/envs/
 check "an empty revision" "$t" "envs/stg/charts.yaml: revision is '', the full commit (40 hex)"
 render "an empty revision (root chart)" "$t" stg 'envs/stg/charts.yaml: revision is "", the full commit (40 hex)'
 
+# The revision stays as it is, so the table of release sources the check reads is the one stg runs; the tag becomes a
+# child of it that no ref names (git gc drops it), not the parent of the running tag, whose table may predate a rename.
 t=$(copy)
-tag=$(sed -n 's/^  tag: "\{0,1\}\([0-9a-f]*\)"\{0,1\}$/\1/p' "$t/envs/stg/images/gateway.yaml")
-parent=$(git -C "$repo_root" rev-parse --verify "$tag^1^{commit}")
-psv=$(git -C "$repo_root" show "$parent:deploy/helm/svp-cluster/values.yaml" | sed -n 's/^podSecurityVersion: *//p')
-sum=$(git -C "$repo_root" show "$parent:deploy/observability/otelcol/k8s-config.yaml" | shasum -a 256 | cut -d' ' -f1)
-printf 'revision: %s\npodSecurityVersion: %s\ncollectorConfigSha256: %s\n' "$parent" "$psv" "$sum" \
-  >"$t/envs/stg/charts.yaml"
+rev=$(sed -n 's/^revision: *//p' "$t/envs/stg/charts.yaml")
+child=$(gw "$repo_root" commit-tree "$rev^{tree}" -p "$rev" -m "gitops-check-test: a commit newer than the charts")
+tag=${child:0:12}
+sed -i.bak "s/^  tag: .*/  tag: \"$tag\"/" "$t/envs/stg/images/gateway.yaml" && rm "$t/envs/stg/images/gateway.yaml.bak"
 check "an image newer than the charts" "$t" \
-  "envs/stg/images/gateway.yaml: tag $tag is no ancestor of revision ${parent:0:12} of envs/stg/charts.yaml"
+  "envs/stg/images/gateway.yaml: tag $tag is no ancestor of revision ${rev:0:12} of envs/stg/charts.yaml"
 
 t=$(copy)
 sed -i.bak "s/^collectorConfigSha256:.*/collectorConfigSha256: $(printf '0%.0s' $(seq 64))/" "$t/envs/stg/charts.yaml" &&
